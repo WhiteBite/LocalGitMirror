@@ -1,7 +1,13 @@
 <template>
   <div class="dashboard-view">
-    <header class="view-header">
+    <header class="view-header flex justify-between items-center">
       <h1>Dashboard</h1>
+      <button @click="panicMode" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm font-bold flex items-center gap-2">
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        PANIC
+      </button>
     </header>
 
     <div class="view-content">
@@ -270,6 +276,18 @@ async function prepareForWork() {
     systemStore.addNotification('Failed to prepare for work: ' + (error.response?.data?.detail || error.message), 'error')
   } finally {
     syncing.value = false
+  }
+}
+
+async function panicMode() {
+  if (confirm("🚨 PANIC MODE 🚨\n\nKill server immediately? This will stop all connections.")) {
+    try {
+      await axios.post('/api/system/panic')
+    } catch (e) {
+      // Ignore error as server dies
+    }
+    window.close()
+    document.body.innerHTML = "<h1 style='color:red;text-align:center;margin-top:20%'>SERVER TERMINATED</h1>"
   }
 }
 </script>
