@@ -135,6 +135,7 @@ const handleContextMenu = (event) => {
 .folder-node {
   @apply flex items-center py-1.5 px-2 cursor-pointer transition-all duration-200;
   @apply hover:bg-gray-700 rounded;
+  @apply text-gray-200; /* High contrast for folders */
 }
 
 .folder-content {
@@ -142,7 +143,7 @@ const handleContextMenu = (event) => {
 }
 
 .folder-icon {
-  @apply text-lg flex-shrink-0;
+  @apply text-lg flex-shrink-0 opacity-90;
 }
 
 .folder-name {
@@ -150,17 +151,18 @@ const handleContextMenu = (event) => {
 }
 
 .file-count {
-  @apply text-xs text-gray-500 flex-shrink-0;
+  @apply text-xs text-gray-500 flex-shrink-0 opacity-60;
 }
 
 /* Файл */
 .file-node {
   @apply flex items-center py-1.5 px-2 cursor-pointer transition-all duration-200;
   @apply hover:bg-gray-700 rounded;
+  @apply text-gray-400; /* Medium contrast for files */
 }
 
 .file-node.is-selected {
-  @apply bg-blue-900 border-l-4 border-blue-500;
+  @apply bg-blue-900 border-l-4 border-blue-500 text-gray-100;
 }
 
 .file-content {
@@ -168,7 +170,7 @@ const handleContextMenu = (event) => {
 }
 
 .file-icon {
-  @apply text-base flex-shrink-0;
+  @apply text-base flex-shrink-0 opacity-80;
 }
 
 .file-name {
@@ -176,7 +178,7 @@ const handleContextMenu = (event) => {
 }
 
 .file-size {
-  @apply text-xs text-gray-500 flex-shrink-0;
+  @apply text-xs text-gray-600 flex-shrink-0 opacity-50;
 }
 
 /* Анимация разворачивания */

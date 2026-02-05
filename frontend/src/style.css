@@ -2,34 +2,90 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  /* Modern Dark Theme Variables */
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-sidebar: #252526;
+  --bg-card: #2d2d2d;
+  --bg-status-bar: #181818; /* Darker status bar */
+  
+  --border-color: #3e3e42;
+  --text-primary: #cccccc;
+  --text-secondary: #858585;
+  --text-bright: #ffffff;
+  
+  /* Refined Accent Color (Professional Blue) */
+  --accent: #3794ff;
+  --accent-hover: #2b7cd6;
+  --accent-dim: rgba(55, 148, 255, 0.1);
+  
+  --success: #89d185;
+  --warning: #cca700;
+  --error: #f48771;
+}
+
 @layer base {
   * {
     @apply border-gray-700;
   }
   
   body {
-    @apply antialiased;
+    @apply antialiased bg-[#1e1e1e] text-[#cccccc];
   }
 }
 
 @layer components {
   .btn {
-    @apply px-4 py-2 rounded-lg font-medium transition-colors duration-200;
+    @apply px-4 py-2 rounded font-medium transition-colors duration-200 flex items-center justify-center gap-2;
   }
   
   .btn-primary {
-    @apply bg-primary-600 hover:bg-primary-700 text-white;
+    background-color: var(--accent);
+    color: white;
+  }
+  
+  .btn-primary:hover {
+    background-color: var(--accent-hover);
   }
   
   .btn-secondary {
-    @apply bg-gray-700 hover:bg-gray-600 text-gray-100;
+    @apply bg-[#3a3d41] hover:bg-[#4a4d51] text-white;
   }
   
   .card {
-    @apply bg-gray-800 rounded-lg shadow-lg p-6 border border-gray-700;
+    background-color: var(--bg-card);
+    @apply rounded-lg shadow-sm p-6 border border-[#3e3e42];
   }
   
   .input {
-    @apply w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent;
+    @apply w-full px-3 py-2 bg-[#3c3c3c] border border-[#3c3c3c] rounded text-white placeholder-gray-400 focus:outline-none focus:ring-1 focus:border-[#3794ff];
+    border-color: transparent;
+  }
+  
+  .input:focus {
+    border-color: var(--accent);
+  }
+}
+
+@layer utilities {
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--bg-primary);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 10px;
+    border: 2px solid var(--bg-primary);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #444;
   }
 }

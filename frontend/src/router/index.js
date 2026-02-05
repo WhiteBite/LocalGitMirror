@@ -15,7 +15,18 @@ const router = createRouter({
       component: () => import('@/views/FileBrowser.vue'),
       meta: { title: 'File Browser' }
     },
-
+    {
+      path: '/search',
+      name: 'search',
+      component: () => import('@/views/SearchView.vue'),
+      meta: { title: 'Global Search' }
+    },
+    {
+      path: '/history',
+      name: 'history',
+      component: () => import('@/views/CommitsView.vue'),
+      meta: { title: 'Commit History' }
+    },
     {
       path: '/settings',
       name: 'settings',

@@ -1,0 +1,11 @@
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E402"]  # Line too long, module level import not at top
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

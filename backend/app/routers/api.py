@@ -1,8 +1,14 @@
+"""
+LocalGitMirror API Router
+"""
+
 import os
 import subprocess
+from datetime import datetime
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from typing import Optional
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -18,7 +24,7 @@ system_logger = None
 class ServerState:
     status = "idle"  # idle, processing, ready
     last_push_time = None
-    last_sync_time = None
+    last_sync_time: Optional[datetime] = None
 
 
 state = ServerState()
@@ -52,8 +58,7 @@ async def get_status():
     change_count = 0
 
     if repo_manager and (
-        not current_git_workspace
-        or current_git_workspace.workspace.name != repo_manager.current_repo
+        not current_git_workspace or current_git_workspace.workspace.name != repo_manager.current_repo
     ):
         from app.core.git_utils import GitWorkspace
 
@@ -72,6 +77,7 @@ async def get_status():
         "local_ip": SystemMonitor.get_local_ip(),
         "current_repo": repo_manager.current_repo if repo_manager else "default",
         "workflow_status": state.status,
+        "last_sync_time": state.last_sync_time,
         "has_changes": has_changes,
         "change_count": change_count,
         "storage_path": str(config.get("storage_path", "storage")),
@@ -112,8 +118,8 @@ async def set_storage_path(request: StoragePathRequest):
 
     # Reinitialize components
     from app.core.git_handler import GitHandler
-    from app.core.repo_manager import RepoManager
     from app.core.git_utils import GitWorkspace
+    from app.core.repo_manager import RepoManager
 
     git_handler = GitHandler(storage_path=new_path, port=config.get("git_port", 8081))
     repo_manager = RepoManager(new_path)
@@ -148,9 +154,7 @@ async def browse_folder():
         $browser.ShowNewFolderButton = $true
         if ($browser.ShowDialog() -eq "OK") { $browser.SelectedPath }
         """
-        result = subprocess.run(
-            ["powershell", "-Command", ps_script], capture_output=True, text=True
-        )
+        result = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True)
         path = result.stdout.strip()
         if path:
             return {"success": True, "path": path}
@@ -191,9 +195,7 @@ async def start_git():
     success = git_handler.start()
     if system_logger:
         if success:
-            system_logger.info(
-                "Git server started via API", {"port": config.get("git_port")}
-            )
+            system_logger.info("Git server started via API", {"port": config.get("git_port")})
         else:
             system_logger.warning("Git server start failed via API")
     return {"success": success, "running": git_handler.is_running}
@@ -219,21 +221,78 @@ async def get_repos():
     return {"repos": repo_manager.get_repos(), "current": repo_manager.current_repo}
 
 
-@router.post("/repos/select")
-async def select_repo(request: RepoSelectRequest):
+class RepoCreateRequest(BaseModel):
+    name: str
+
+
+class FileSaveRequest(BaseModel):
+    path: str
+    content: str
+
+
+@router.post("/file/save")
+async def save_file(request: FileSaveRequest):
+    """Save file content to disk"""
     if not repo_manager:
         raise HTTPException(500, "Repo manager not initialized")
-    repo_manager.current_repo = request.repo
 
-    # Reinitialize git_workspace globally for this session
-    global git_workspace
-    workspace = repo_manager._get_workspace_path(request.repo)
-    bare = repo_manager._get_bare_path(request.repo)
-    from app.core.git_utils import GitWorkspace
+    abs_path = repo_manager.get_absolute_path(request.path)
 
-    git_workspace = GitWorkspace(workspace, bare)
+    try:
+        # Create directories if they don't exist
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
 
-    return {"success": True, "current": repo_manager.current_repo}
+        with open(abs_path, "w", encoding="utf-8") as f:
+            f.write(request.content)
+
+        if system_logger:
+            system_logger.info("File saved", {"path": request.path})
+
+        return {"success": True, "path": request.path}
+    except Exception as e:
+        if system_logger:
+            system_logger.error("Failed to save file", {"error": str(e)})
+        raise HTTPException(500, f"Failed to save file: {str(e)}")
+
+
+@router.post("/repos/create")
+async def create_repo(request: RepoCreateRequest):
+    """Create a new repository"""
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager not initialized")
+
+    result = repo_manager.create_repo(request.name)
+    if result["success"]:
+        if system_logger:
+            system_logger.info(f"Created repository: {request.name}")
+    else:
+        if system_logger:
+            system_logger.error(f"Failed to create repo: {result['message']}")
+        raise HTTPException(400, result["message"])
+
+    return result
+
+
+@router.post("/repos/delete")
+async def delete_repo(request: RepoSelectRequest):
+    """Delete a repository"""
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager not initialized")
+
+    # Prevent deleting current repo if possible, or handle it
+    if repo_manager.current_repo == request.repo:
+        repo_manager.current_repo = "default"
+
+    result = repo_manager.delete_repo(request.repo)
+    if result["success"]:
+        if system_logger:
+            system_logger.info(f"Deleted repository: {request.repo}")
+    else:
+        if system_logger:
+            system_logger.error(f"Failed to delete repo: {result['message']}")
+        raise HTTPException(400, result["message"])
+
+    return result
 
 
 def _init_git_workspace():
@@ -260,6 +319,7 @@ async def sync_workspace():
     result = repo_manager.sync_workspace()
     if result["success"]:
         state.status = "processing"
+        state.last_sync_time = datetime.now()
         _init_git_workspace()
     return result
 
@@ -314,13 +374,12 @@ async def save_and_sync(message: Optional[str] = Query("Sync from Home")):
 
     if result["success"]:
         state.status = "ready"
+        state.last_sync_time = datetime.now()
         if system_logger:
             system_logger.info("Changes prepared for work")
     else:
         if system_logger:
-            system_logger.error(
-                "Failed to prepare changes", {"error": result.get("message")}
-            )
+            system_logger.error("Failed to prepare changes", {"error": result.get("message")})
 
     return result
 
@@ -337,6 +396,34 @@ async def get_changes():
         return {"has_changes": False, "changes": [], "change_count": 0}
 
     return git_workspace.get_status()
+
+
+@router.get("/git/diff")
+async def get_diff(file: Optional[str] = None):
+    """Get git diff for specific file"""
+    global git_workspace
+
+    if not git_workspace:
+        _init_git_workspace()
+
+    if not git_workspace:
+        raise HTTPException(500, "Git workspace not initialized")
+
+    return git_workspace.get_diff(file)
+
+
+@router.get("/git/commit/{commit_hash}")
+async def get_commit_details(commit_hash: str):
+    """Get specific commit details"""
+    global git_workspace
+
+    if not git_workspace:
+        _init_git_workspace()
+
+    if not git_workspace:
+        raise HTTPException(500, "Git workspace not initialized")
+
+    return git_workspace.get_commit_details(commit_hash)
 
 
 # ============ FILES ============
@@ -371,9 +458,7 @@ async def open_file(file: str = Query(..., description="Relative file path")):
             stderr=subprocess.DEVNULL,
         )
         if system_logger:
-            system_logger.info(
-                "File opened in editor", {"file": file, "editor": "cursor"}
-            )
+            system_logger.info("File opened in editor", {"file": file, "editor": "cursor"})
         return {"success": True, "editor": "cursor", "path": abs_path}
     except Exception:
         try:
@@ -384,9 +469,7 @@ async def open_file(file: str = Query(..., description="Relative file path")):
                 stderr=subprocess.DEVNULL,
             )
             if system_logger:
-                system_logger.info(
-                    "File opened in editor", {"file": file, "editor": "code"}
-                )
+                system_logger.info("File opened in editor", {"file": file, "editor": "code"})
             return {"success": True, "editor": "code", "path": abs_path}
         except Exception:
             os.startfile(abs_path)
@@ -575,7 +658,8 @@ async def get_commits(repo: Optional[str] = None):
 async def get_metrics():
     from app.core.system_monitor import SystemMonitor
 
-    return SystemMonitor.get_metrics()
+    storage_path = config.get("storage_path", "storage")
+    return SystemMonitor.get_metrics(str(storage_path))
 
 
 @router.get("/logs")
@@ -588,3 +672,87 @@ async def get_logs(limit: int = 50):
 @router.get("/context/status")
 async def get_context_status():
     return {"indexed": False, "size": 0}
+
+
+# ============ GLOBAL SEARCH ============
+
+
+@router.get("/search")
+async def search_repo(
+    q: str = Query(..., description="Query string to search for"),
+    repo: Optional[str] = Query(None, description="Repository name"),
+    limit: int = Query(100, description="Max results"),
+):
+    """
+    Search for code in the repository using 'git grep'.
+    """
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager not initialized")
+
+    # Resolve repository
+    repo_name = repo or repo_manager.current_repo
+    if not repo_name or repo_name == "default":
+        # Cannot search default/empty repo easily
+        return {"matches": [], "query": q, "repo": repo_name}
+
+    workspace_path = repo_manager._get_workspace_path(repo_name)
+    if not workspace_path.exists():
+        raise HTTPException(404, f"Repository '{repo_name}' workspace not found")
+
+    try:
+        # Run git grep
+        # -n: show line numbers
+        # -I: ignore binary files
+        # --heading: group matches by file (easier parsing? actually simpler with one line per match for now)
+        # --break: print newline between files
+        # We stick to simple parsing: filename:line:content
+
+        # NOTE: git grep requires being inside a git repo or using --git-dir/--work-tree
+        # But our workspace IS a git repo (checked out).
+
+        # Security check: strictly alphanumeric query is too restrictive for code.
+        # But we must prevent command injection. subprocess with shell=False does this.
+
+        cmd = ["git", "grep", "-n", "-I", str(q)]
+
+        # On Windows, we need to handle encoding carefully
+        result = subprocess.run(
+            cmd, cwd=str(workspace_path), capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
+
+        if result.returncode == 1:
+            # grep found nothing
+            return {"matches": [], "query": q, "repo": repo_name, "count": 0}
+        elif result.returncode > 1:
+            # git grep failed
+            if system_logger:
+                system_logger.error("Git grep failed", {"error": result.stderr})
+            # Don't crash, just return empty with error hint?
+            # Or maybe it's just invalid regex.
+            return {"matches": [], "error": "Search failed (invalid regex?)", "details": result.stderr}
+
+        # Parse output
+        matches = []
+        lines = result.stdout.splitlines()
+        for line in lines[:limit]:
+            parts = line.split(":", 2)
+            if len(parts) >= 3:
+                filename = parts[0]
+                linenum = int(parts[1])
+                content = parts[2]
+
+                matches.append(
+                    {
+                        "file": filename,
+                        "line": linenum,
+                        "content": content.strip(),
+                        # Preview could be context, but git grep default is just the line
+                    }
+                )
+
+        return {"matches": matches, "query": q, "repo": repo_name, "count": len(matches), "total_found": len(lines)}
+
+    except Exception as e:
+        if system_logger:
+            system_logger.error("Search exception", {"error": str(e)})
+        raise HTTPException(500, f"Search failed: {str(e)}")

@@ -94,50 +94,35 @@ export const useReposStore = defineStore('repos', () => {
     }
   }
 
-  async function addRepo(repoData) {
+  async function createRepo(name) {
     loading.value = true
     error.value = null
     
     try {
-      const response = await axios.post('/api/repos', repoData)
-      repos.value.push(response.data)
-      return response.data
+      await axios.post('/api/repos/create', { name })
+      await fetchRepos() // Refresh list
     } catch (err) {
-      error.value = err.response?.data?.detail || 'Failed to add repository'
-      console.error('Error adding repo:', err)
+      error.value = err.response?.data?.detail || 'Failed to create repository'
+      console.error('Error creating repo:', err)
       throw err
     } finally {
       loading.value = false
     }
   }
 
-  async function updateRepo(repoId, repoData) {
+  async function deleteRepo(name) {
     loading.value = true
     error.value = null
     
     try {
-      const response = await axios.put(`/api/repos/${repoId}`, repoData)
-      const index = repos.value.findIndex(r => r.id === repoId)
-      if (index !== -1) {
-        repos.value[index] = response.data
+      await axios.post('/api/repos/delete', { repo: name })
+      await fetchRepos() // Refresh list
+      // If we deleted the current repo, clear selection
+      if (currentRepo.value === name) {
+        currentRepo.value = null
+        commits.value = []
+        branches.value = []
       }
-      return response.data
-    } catch (err) {
-      error.value = err.response?.data?.detail || 'Failed to update repository'
-      console.error('Error updating repo:', err)
-      throw err
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function deleteRepo(repoId) {
-    loading.value = true
-    error.value = null
-    
-    try {
-      await axios.delete(`/api/repos/${repoId}`)
-      repos.value = repos.value.filter(r => r.id !== repoId)
     } catch (err) {
       error.value = err.response?.data?.detail || 'Failed to delete repository'
       console.error('Error deleting repo:', err)
@@ -195,8 +180,7 @@ export const useReposStore = defineStore('repos', () => {
     fetchRepoDetails,
     fetchBranches,
     fetchCommits,
-    addRepo,
-    updateRepo,
+    createRepo,
     deleteRepo,
     syncRepo,
     setCurrentRepo,

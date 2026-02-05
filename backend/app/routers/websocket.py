@@ -1,10 +1,41 @@
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+
 from app.core.logger import get_logger
 
 router = APIRouter(tags=["websocket"])
 
 # Active WebSocket connections
 active_connections = []
+file_watch_connections = []
+
+
+@router.websocket("/ws/files")
+async def websocket_files(websocket: WebSocket):
+    """WebSocket endpoint for real-time file system updates"""
+    await websocket.accept()
+    file_watch_connections.append(websocket)
+
+    try:
+        while True:
+            # Just keep connection open and handle ping/pong
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in file_watch_connections:
+            file_watch_connections.remove(websocket)
+
+
+async def notify_file_change(event_data):
+    """Broadcast file change event to all connected clients"""
+    for connection in file_watch_connections:
+        try:
+            await connection.send_json({"type": "file_change", "data": event_data})
+        except Exception:
+            # Connection might be dead, it will be removed in finally block
+            pass
 
 
 @router.websocket("/ws/logs")

@@ -3,11 +3,12 @@
 Integration test - проверяет весь workflow
 """
 
-import requests
-import time
-import pytest
 import subprocess
+import time
 from pathlib import Path
+
+import pytest
+import requests
 
 BASE = "http://localhost:80"
 

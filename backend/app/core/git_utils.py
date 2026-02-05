@@ -1,8 +1,10 @@
 import subprocess
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional
+
 from rich.console import Console
+
 from app.core.logger import get_logger
 
 console = Console()
@@ -161,3 +163,52 @@ class GitWorkspace:
         if reset_result["success"]:
             return {"success": True, "message": "Pulled latest changes"}
         return {"success": False, "message": f"Pull failed: {reset_result['stderr']}"}
+
+    def get_diff(self, filename: Optional[str] = None) -> Dict:
+        """Get git diff for a file or entire repo"""
+        args = ["diff"]
+        if filename:
+            args.append(filename)
+
+        result = self._run_git(*args)
+
+        if result["success"]:
+            return {"success": True, "diff": result["stdout"]}
+        return {"success": False, "message": f"Diff failed: {result['stderr']}"}
+
+    def get_commit_details(self, commit_hash: str) -> Dict:
+        """Get details of a specific commit including changed files"""
+        # Get commit info and changed files
+        result = self._run_git(
+            "show", "--name-status", "--format=%H|%s|%an|%ai|%b", commit_hash
+        )
+
+        if not result["success"]:
+            return {
+                "success": False,
+                "message": f"Failed to get commit info: {result['stderr']}",
+            }
+
+        lines = result["stdout"].strip().split("\n")
+        if not lines:
+            return {"success": False, "message": "Commit not found"}
+
+        header = lines[0].split("|")
+        files = []
+
+        # Parse files (they start after the header and optional body)
+        for line in lines[1:]:
+            if line.strip() and ("\t" in line or "  " in line):
+                parts = line.split()
+                if len(parts) >= 2:
+                    files.append({"status": parts[0], "path": parts[1]})
+
+        return {
+            "success": True,
+            "hash": header[0],
+            "message": header[1],
+            "author": header[2],
+            "date": header[3],
+            "body": header[4] if len(header) > 4 else "",
+            "files": files,
+        }

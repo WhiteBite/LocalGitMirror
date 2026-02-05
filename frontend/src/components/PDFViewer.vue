@@ -4,9 +4,9 @@
     <div class="toolbar">
       <div class="flex items-center space-x-4">
         <button 
-          @click="previousPage" 
-          :disabled="currentPage <= 1"
+          :disabled="currentPage <= 1" 
           class="nav-button"
+          @click="previousPage"
         >
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
@@ -21,9 +21,9 @@
         </div>
         
         <button 
-          @click="nextPage" 
-          :disabled="currentPage >= totalPages"
+          :disabled="currentPage >= totalPages" 
           class="nav-button"
+          @click="nextPage"
         >
           <span class="mr-1">Next</span>
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

@@ -12,22 +12,35 @@
       
       <div class="flex items-center space-x-2">
         <button 
-          @click="openInEditor" 
-          class="toolbar-button"
-          title="Open in editor"
+          v-if="isTextFile"
+          class="toolbar-button" 
+          :class="{ 'active': showEditor }"
+          title="Edit file"
+          @click="showEditor = !showEditor"
         >
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
           </svg>
-          <span class="ml-1">Editor</span>
+          <span class="ml-1">{{ showEditor ? 'Viewer' : 'Edit' }}</span>
+        </button>
+        
+        <button 
+          class="toolbar-button" 
+          title="Open in system editor"
+          @click="openInEditor"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+          </svg>
+          <span class="ml-1">IDE</span>
         </button>
         
         <button 
           v-if="fileType !== 'pdf'"
-          @click="copyContent" 
-          class="toolbar-button"
+          class="toolbar-button" 
           :class="{ 'copied': copied }"
           title="Copy content"
+          @click="copyContent"
         >
           <svg v-if="!copied" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -39,9 +52,9 @@
         </button>
         
         <button 
-          @click="downloadFile" 
-          class="toolbar-button"
+          class="toolbar-button" 
           title="Download file"
+          @click="downloadFile"
         >
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
@@ -65,22 +78,31 @@
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
         <p class="text-red-400 mb-4">{{ error }}</p>
-        <button @click="loadFile" class="btn-primary">Try Again</button>
+        <button class="btn-primary" @click="loadFile">Try Again</button>
       </div>
 
       <!-- Markdown Viewer -->
-      <div v-else-if="fileType === 'markdown'" class="viewer-container">
+      <div v-else-if="fileType === 'markdown' && !showEditor" class="viewer-container">
         <MarkdownRenderer :content="fileContent" />
       </div>
 
       <!-- Code Viewer -->
-      <div v-else-if="fileType === 'code'" class="viewer-container">
+      <div v-else-if="fileType === 'code' && !showEditor" class="viewer-container">
         <CodeViewer :content="fileContent" :language="codeLanguage" />
       </div>
 
       <!-- PDF Viewer -->
       <div v-else-if="fileType === 'pdf'" class="viewer-container">
-        <PDFViewer :pdfData="fileContent" />
+        <PDFViewer :pdf-data="fileContent" />
+      </div>
+
+      <!-- Code Editor -->
+      <div v-else-if="showEditor" class="editor-container h-full">
+        <CodeEditor 
+          :file-path="filePath" 
+          :initial-content="fileContent" 
+          @saved="onFileSaved"
+        />
       </div>
 
       <!-- Text Viewer -->
@@ -99,6 +121,7 @@ import axios from 'axios'
 import MarkdownRenderer from './MarkdownRenderer.vue'
 import CodeViewer from './CodeViewer.vue'
 import PDFViewer from './PDFViewer.vue'
+import CodeEditor from './CodeEditor.vue'
 
 const props = defineProps({
   filePath: {
@@ -111,6 +134,18 @@ const fileContent = ref('')
 const loading = ref(false)
 const error = ref(null)
 const copied = ref(false)
+const showEditor = ref(false)
+
+const isTextFile = computed(() => fileType.value !== 'pdf' && fileType.value !== 'image')
+
+// Reset editor mode when file changes
+watch(() => props.filePath, () => {
+  showEditor.value = false
+})
+
+function onFileSaved() {
+  loadFile() // Reload content
+}
 
 // File type detection
 const fileExtension = computed(() => {
@@ -298,6 +333,15 @@ watch(() => props.filePath, (newPath) => {
 
 .toolbar-button.copied {
   @apply text-green-400 bg-green-900 hover:bg-green-900;
+}
+
+.toolbar-button.active {
+  background: var(--accent);
+  color: white;
+}
+
+.editor-container {
+  @apply bg-gray-900;
 }
 
 .content-area {

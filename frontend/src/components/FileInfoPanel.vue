@@ -15,22 +15,22 @@
         <span class="value truncate" :title="file">{{ file }}</span>
       </div>
       
-      <div class="info-item" v-if="metadata?.size">
+      <div v-if="metadata?.size" class="info-item">
         <span class="label">Size:</span>
         <span class="value">{{ formatSize(metadata.size) }}</span>
       </div>
       
-      <div class="info-item" v-if="metadata?.modified">
+      <div v-if="metadata?.modified" class="info-item">
         <span class="label">Modified:</span>
         <span class="value">{{ formatDate(metadata.modified) }}</span>
       </div>
       
-      <div class="info-item" v-if="metadata?.type">
+      <div v-if="metadata?.type" class="info-item">
         <span class="label">Type:</span>
         <span class="value">{{ metadata.type }}</span>
       </div>
       
-      <div class="info-item" v-if="metadata?.lines">
+      <div v-if="metadata?.lines" class="info-item">
         <span class="label">Lines:</span>
         <span class="value">{{ metadata.lines }}</span>
       </div>

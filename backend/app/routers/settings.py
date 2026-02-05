@@ -1,6 +1,7 @@
+from typing import Any, Dict
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Dict, Any
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -34,6 +35,24 @@ async def save_settings(settings: SettingsUpdate):
 
     success = settings_manager.save_settings(settings.model_dump())
     return {"success": success, "settings": settings_manager.get_all()}
+
+
+@router.post("/browse")
+async def browse_folder():
+    """Open a native directory picker on the host machine"""
+    import tkinter as tk
+    from tkinter import filedialog
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+
+    folder_selected = filedialog.askdirectory()
+    root.destroy()
+
+    if folder_selected:
+        return {"path": folder_selected}
+    return {"path": None}
 
 
 @router.get("/defaults")
