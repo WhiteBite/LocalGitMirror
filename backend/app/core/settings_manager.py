@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
 
 
 class SettingsManager:
@@ -23,10 +23,18 @@ class SettingsManager:
         if self.settings_path.exists():
             try:
                 with open(self.settings_path, "r", encoding="utf-8") as f:
-                    return {**self.defaults, **json.load(f)}
+                    data = json.load(f)
+                    # Merge deep to ensure all keys exist
+                    merged = self.defaults.copy()
+                    for key, section in data.items():
+                        if key in merged and isinstance(section, dict):
+                            merged[key].update(section)
+                        else:
+                            merged[key] = section
+                    return merged
             except Exception:
-                return self.defaults
-        return self.defaults
+                return self.defaults.copy()
+        return self.defaults.copy()
 
     def save_settings(self, settings: Dict[str, Any]) -> bool:
         try:

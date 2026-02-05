@@ -29,22 +29,22 @@
         <button
           v-for="level in ['All', 'INFO', 'WARNING', 'ERROR']"
           :key="level"
-          @click="filterLevel = level"
           :class="[
             'px-2 py-1 text-xs rounded transition-colors',
             filterLevel === level 
               ? 'bg-blue-600 text-white' 
               : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
           ]"
+          @click="filterLevel = level"
         >
           {{ level }}
         </button>
         
         <!-- Export button -->
         <button
-          @click="exportLogs"
           class="px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded hover:bg-gray-600 transition-colors"
           title="Export logs to file"
+          @click="exportLogs"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
@@ -53,9 +53,9 @@
         
         <!-- Clear button -->
         <button
-          @click="clearLogs"
           class="px-2 py-1 text-xs bg-red-600 text-white rounded hover:bg-red-700 transition-colors"
           title="Clear all logs"
+          @click="clearLogs"
         >
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -96,11 +96,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 
 const logs = ref([])
 const filterLevel = ref('All')
-const isExpanded = ref(true)
+const isExpanded = ref(false)
 const wsConnected = ref(false)
 const logContainer = ref(null)
 const autoScroll = ref(true)
@@ -134,10 +134,11 @@ const connectWebSocket = () => {
   
   ws.onmessage = (event) => {
     try {
+      if (event.data === 'pong') return // Ignore keep-alive
       const logEntry = JSON.parse(event.data)
       addLog(logEntry)
     } catch (error) {
-      console.error('Failed to parse log entry:', error)
+      console.error('Failed to parse log entry:', error, event.data)
     }
   }
   
@@ -299,9 +300,14 @@ onUnmounted(() => {
 }
 
 .log-entries {
-  @apply max-h-96 overflow-y-auto p-4 space-y-2 font-mono text-sm;
+  @apply max-h-96 overflow-y-auto p-3 space-y-1 font-mono text-xs;
   scrollbar-width: thin;
   scrollbar-color: #4B5563 #1F2937;
+}
+
+.log-entry {
+  @apply flex items-start gap-2 p-1.5 rounded bg-gray-900 bg-opacity-50;
+  @apply border-l-2;
 }
 
 .log-entries::-webkit-scrollbar {

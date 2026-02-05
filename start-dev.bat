@@ -22,13 +22,17 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo [0/4] Cleaning up existing processes...
+taskkill /F /IM python.exe /T >nul 2>&1
+taskkill /F /IM node.exe /T >nul 2>&1
+
 echo [1/4] Starting Backend (hot reload)...
-start "Backend Dev" cmd /k "cd backend && python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
+start "Backend Dev" cmd /c "cd backend && python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000"
 
 timeout /t 2 /nobreak >nul
 
 echo [2/4] Starting Frontend (Vite dev server)...
-start "Frontend Dev" cmd /k "cd frontend && npm run dev"
+start "Frontend Dev" cmd /c "cd frontend && npm run dev"
 
 timeout /t 2 /nobreak >nul
 

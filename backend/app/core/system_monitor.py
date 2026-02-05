@@ -1,17 +1,47 @@
-import psutil
 import socket
-from typing import Dict, List
+from typing import Dict, List, Optional
+
+import psutil
 
 
 class SystemMonitor:
     @staticmethod
-    def get_metrics() -> Dict:
+    def get_metrics(path: Optional[str] = None) -> Dict:
         """Get current system metrics"""
         import os
 
         cpu = psutil.cpu_percent(interval=0.1)
         memory = psutil.virtual_memory()
-        disk = psutil.disk_usage(os.getenv("SystemDrive", "C:\\"))
+
+        # Safe disk usage check
+        target_path = os.getenv("SystemDrive", "C:\\")
+
+        if path:
+            try:
+                # Try to get drive from path
+                if os.path.exists(path):
+                    target_path = os.path.splitdrive(os.path.abspath(path))[0]
+                    if not target_path:  # If path is relative or no drive
+                        target_path = os.path.abspath(path)
+                else:
+                    # If path doesn't exist, try its parent or fallback
+                    target_path = os.getenv("SystemDrive", "C:\\")
+            except Exception:
+                target_path = os.getenv("SystemDrive", "C:\\")
+
+        # Ensure target path exists and is a directory/drive for psutil
+        if not os.path.exists(target_path):
+            target_path = os.getenv("SystemDrive", "C:\\")
+
+        # Must add trailing slash for root drive on Windows (e.g. "C:") fails, "C:\\" works
+        if len(target_path) == 2 and target_path[1] == ":":
+            target_path += "\\"
+
+        try:
+            disk = psutil.disk_usage(target_path)
+        except Exception:
+            # Absolute fallback if everything fails
+            disk = psutil.disk_usage(os.getenv("SystemDrive", "C:\\"))
 
         return {
             "cpu_percent": round(cpu, 1),

@@ -3,9 +3,11 @@
     <h1 class="text-3xl font-bold mb-8">Settings</h1>
 
     <!-- Success/Error Notifications -->
-    <div v-if="notification.show" 
-         class="mb-6 p-4 rounded-lg flex items-center justify-between"
-         :class="notification.type === 'success' ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'">
+    <div
+      v-if="notification.show" 
+      class="mb-6 p-4 rounded-lg flex items-center justify-between"
+      :class="notification.type === 'success' ? 'bg-green-900 text-green-300' : 'bg-red-900 text-red-300'"
+    >
       <div class="flex items-center space-x-3">
         <svg v-if="notification.type === 'success'" class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
@@ -15,7 +17,7 @@
         </svg>
         <span>{{ notification.message }}</span>
       </div>
-      <button @click="notification.show = false" class="text-gray-400 hover:text-white">
+      <button class="text-gray-400 hover:text-white" @click="notification.show = false">
         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
         </svg>
@@ -30,9 +32,9 @@
             <button
               v-for="tab in tabs"
               :key="tab.id"
-              @click="activeTab = tab.id"
               class="w-full text-left px-4 py-3 rounded-lg transition-colors"
               :class="activeTab === tab.id ? 'bg-primary-600 text-white' : 'text-gray-400 hover:bg-gray-700'"
+              @click="activeTab = tab.id"
             >
               <div class="flex items-center space-x-3">
                 <span class="text-xl">{{ tab.icon }}</span>
@@ -49,49 +51,52 @@
         <div v-if="activeTab === 'general'" class="card">
           <h2 class="text-xl font-bold mb-6">General Settings</h2>
           
-          <div class="space-y-6">
+          <div class="space-y-8">
             <div>
-              <label class="block text-sm font-medium mb-2">Default Repository</label>
+              <label class="block text-sm font-medium mb-2 text-gray-300">
+                {{ $t('settings.general.default_repo') }}
+                <span v-tippy="{ content: $t('settings.general.default_repo_hint') }" class="ml-1 cursor-help text-gray-500">ⓘ</span>
+              </label>
               <input 
                 v-model="localSettings.general.default_repo" 
                 type="text" 
                 class="input"
                 placeholder="default"
               />
-              <p class="text-sm text-gray-400 mt-1">Default repository to use on startup</p>
             </div>
 
             <div>
-              <label class="block text-sm font-medium mb-2">Default Folder</label>
-              <input 
-                v-model="localSettings.general.default_folder" 
-                type="text" 
-                class="input"
-                placeholder="Leave empty for workspace root"
-              />
-              <p class="text-sm text-gray-400 mt-1">Default folder path within repository</p>
-            </div>
-
-            <div>
-              <label class="block text-sm font-medium mb-2">Storage Path (Backend)</label>
-              <input 
-                v-model="localSettings.general.storage_path" 
-                type="text" 
-                class="input"
-                placeholder="e.g. D:/Projects"
-              />
-              <p class="text-sm text-gray-400 mt-1">Physical path to store repositories. Requires restart to apply.</p>
+              <label class="block text-sm font-medium mb-2 text-gray-300">
+                {{ $t('settings.general.storage_path') }}
+                <span v-tippy="{ content: $t('settings.general.storage_path_hint') }" class="ml-1 cursor-help text-gray-500">ⓘ</span>
+              </label>
+              <div class="flex gap-2">
+                <input 
+                  v-model="localSettings.general.storage_path" 
+                  type="text" 
+                  class="input flex-1 border-l-4"
+                  :class="localSettings.general.storage_path !== systemStore.status.storage_path ? 'border-yellow-500' : 'border-transparent'"
+                  placeholder="e.g. D:/Projects"
+                />
+                <button @click="browseStoragePath" class="btn-secondary whitespace-nowrap">
+                  {{ $t('settings.general.browse') }}
+                </button>
+              </div>
+              <p v-if="localSettings.general.storage_path !== systemStore.status.storage_path" class="text-xs text-yellow-500 mt-2 flex items-center gap-1">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                {{ $t('settings.general.restart_required') }}
+              </p>
             </div>
 
             <div class="flex items-center justify-between p-4 bg-gray-700 rounded-lg">
               <div>
-                <p class="font-medium">Auto Sync</p>
-                <p class="text-sm text-gray-400">Automatically sync workspace after push</p>
+                <p class="font-medium">{{ $t('settings.general.auto_sync') }}</p>
+                <p class="text-sm text-gray-400">{{ $t('settings.general.auto_sync_hint') }}</p>
               </div>
               <button 
-                @click="localSettings.general.auto_sync = !localSettings.general.auto_sync"
                 class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors"
                 :class="localSettings.general.auto_sync ? 'bg-primary-600' : 'bg-gray-600'"
+                @click="localSettings.general.auto_sync = !localSettings.general.auto_sync"
               >
                 <span 
                   class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
@@ -114,8 +119,8 @@
           </div>
 
           <div class="flex justify-end space-x-4 mt-8">
-            <button @click="resetToDefaults" class="btn-secondary">Reset to Defaults</button>
-            <button @click="saveSettings" class="btn-primary" :disabled="loading">
+            <button class="btn-secondary" @click="resetToDefaults">Reset to Defaults</button>
+            <button class="btn-primary" :disabled="loading" @click="saveSettings">
               <span v-if="loading">Saving...</span>
               <span v-else>Save Changes</span>
             </button>
@@ -126,9 +131,9 @@
         <div v-if="activeTab === 'git'" class="card">
           <h2 class="text-xl font-bold mb-6">Git Service Settings</h2>
           
-          <div class="space-y-6">
+          <div class="space-y-8">
             <div>
-              <label class="block text-sm font-medium mb-2">Git Server Port</label>
+              <label class="block text-sm font-medium mb-2 text-gray-300">Git Server Port</label>
               <input 
                 v-model.number="localSettings.git.port" 
                 type="number" 
@@ -145,9 +150,9 @@
                 <p class="text-sm text-gray-400">Start Git server automatically on launch</p>
               </div>
               <button 
-                @click="localSettings.git.auto_start = !localSettings.git.auto_start"
                 class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors"
                 :class="localSettings.git.auto_start ? 'bg-primary-600' : 'bg-gray-600'"
+                @click="localSettings.git.auto_start = !localSettings.git.auto_start"
               >
                 <span 
                   class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
@@ -162,9 +167,9 @@
                 <p class="text-sm text-gray-400">Automatically commit changes on save</p>
               </div>
               <button 
-                @click="localSettings.git.auto_commit = !localSettings.git.auto_commit"
                 class="relative inline-flex h-6 w-11 items-center rounded-full transition-colors"
                 :class="localSettings.git.auto_commit ? 'bg-primary-600' : 'bg-gray-600'"
+                @click="localSettings.git.auto_commit = !localSettings.git.auto_commit"
               >
                 <span 
                   class="inline-block h-4 w-4 transform rounded-full bg-white transition-transform"
@@ -195,8 +200,8 @@
           </div>
 
           <div class="flex justify-end space-x-4 mt-8">
-            <button @click="resetToDefaults" class="btn-secondary">Reset to Defaults</button>
-            <button @click="saveSettings" class="btn-primary" :disabled="loading">
+            <button class="btn-secondary" @click="resetToDefaults">Reset to Defaults</button>
+            <button class="btn-primary" :disabled="loading" @click="saveSettings">
               <span v-if="loading">Saving...</span>
               <span v-else>Save Changes</span>
             </button>
@@ -208,7 +213,7 @@
           <h2 class="text-xl font-bold mb-6">Editor Settings</h2>
           
           <div class="space-y-6">
-            <div class="p-4 bg-blue-900 bg-opacity-30 border border-blue-700 rounded-lg">
+            <div class="p-4 bg-blue-900/20 border border-blue-700/50 rounded-lg">
               <div class="flex items-start space-x-3">
                 <svg class="w-5 h-5 text-blue-400 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -222,8 +227,8 @@
           </div>
 
           <div class="flex justify-end space-x-4 mt-8">
-            <button @click="resetToDefaults" class="btn-secondary">Reset to Defaults</button>
-            <button @click="saveSettings" class="btn-primary" :disabled="loading">
+            <button class="btn-secondary" @click="resetToDefaults">Reset to Defaults</button>
+            <button class="btn-primary" :disabled="loading" @click="saveSettings">
               <span v-if="loading">Saving...</span>
               <span v-else>Save Changes</span>
             </button>
@@ -285,6 +290,18 @@ onMounted(async () => {
   await loadSettings()
   await systemStore.fetchStatus()
 })
+
+async function browseStoragePath() {
+  try {
+    const response = await axios.post('/api/settings/browse')
+    if (response.data.path) {
+      localSettings.general.storage_path = response.data.path
+    }
+  } catch (error) {
+    console.error('Failed to browse path:', error)
+    showNotification('Browser not available on this system', 'error')
+  }
+}
 
 async function loadSettings() {
   loading.value = true
