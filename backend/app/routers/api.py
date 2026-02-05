@@ -273,6 +273,21 @@ async def create_repo(request: RepoCreateRequest):
     return result
 
 
+@router.post("/repos/select")
+async def select_repo(request: RepoSelectRequest):
+    """Select a repository as active"""
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager not initialized")
+
+    repo_manager.current_repo = request.repo
+    _init_git_workspace()
+
+    if system_logger:
+        system_logger.info(f"Selected repository: {request.repo}")
+
+    return {"success": True, "current": repo_manager.current_repo}
+
+
 @router.post("/repos/delete")
 async def delete_repo(request: RepoSelectRequest):
     """Delete a repository"""
