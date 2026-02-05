@@ -1,53 +1,38 @@
-# TODO: LocalGitMirror - Simple Stealth Bridge
+# 🛡️ LocalGitMirror: Development Plan
 
-## 🎯 Основная концепция
-Создание "невидимого" моста для передачи кода между рабочим и домашним ПК через Git. 
-- **Work PC:** Делает `git push` прямо на домашний ПК.
-- **Home PC:** Принимает пуш в указанную рабочую папку (например, `D:/Workspace`), где файлы СРАЗУ обновляются физически.
-- **Home Workflow:** Открываешь папку в любой IDE (Cursor/VS Code) с ИИ, работаешь.
-- **Sync Back:** Нажимаешь кнопку в UI или выполняешь команду, чтобы подготовить изменения (add + commit), после чего на рабочем ПК делаешь `git pull`.
-
----
-
-## 🏗️ Архитектура (Упрощенная)
-- **Root Workspace:** Одна общая папка (настраивается в .env), где лежат все проекты.
-- **Git Server:** Принимает соединения на порту (например, 8081).
-- **Auto-Update:** Репозитории настроены так, чтобы пуш с работы обновлял файлы в рабочей директории мгновенно (`receive.denyCurrentBranch = updateInstead`).
+## ✅ Completed (Done)
+- [x] **Core:** Implement Git-over-HTTP (replace Git Protocol).
+- [x] **Fix:** Resolve "NoneType" error in Dulwich/WSGI.
+- [x] **Fix:** Resolve "Win32 application" error for Git Hooks on Windows.
+- [x] **Fix:** Implement robust "Auto-Sync" (Python fallback) for non-bare repos.
+- [x] **Feature:** Global Search (Grep) via API & UI.
+- [x] **UX:** Add loaders and status indicators for Sync operations.
+- [x] **Stability:** Remove emoji from logs to prevent Unicode crashes on Windows.
 
 ---
 
-## 📋 Список задач
+## 🚀 Phase 2: Stealth & Security (Priority: HIGH)
+*Задача: Сделать канал передачи данных невидимым для DLP и админов.*
 
-### 1. Backend: Ядро синхронизации
-- [x] **Настройка Root Workspace:** Реализовать логику сканирования и инициализации проектов в одной мастер-папке.
-- [x] **Git Configuration:** Автоматическая настройка `git config receive.denyCurrentBranch updateInstead` для каждого проекта, чтобы файлы обновлялись при пуше.
-- [x] **Discovery API:** Эндпоинт, возвращающий список всех проектов в Workspace.
-- [x] **Concurrent Server:** Реализована многопоточность для предотвращения зависаний на Windows.
+- [ ] **HTTPS / SSL Support**
+    - Внедрить SSL-сертификаты (self-signed) в Uvicorn.
+    - Весь трафик (и веб, и git) должен идти через `https://`.
+    - *Результат:* Снифферы видят только шифрованный поток, код внутри не прочитать.
 
-### 2. Frontend: VS Code-like UI
-- [x] **Sidebar Explorer:**
-    - [x] Список всех папок (проектов) в Root Workspace.
-    - [x] Дерево файлов выбранного проекта (навигация по папкам).
-- [x] **Project Actions:**
-    - [x] Кнопка "Open in Explorer" (открыть локальную папку в проводнике).
-    - [x] Кнопка "Prepare for Work" (автоматический `git add .` и `git commit -m "Sync from Home"`, чтобы изменения были готовы к pull на работе).
-- [x] **Navigation:** Хлебные крошки (breadcrumbs) для навигации внутри проекта.
+- [ ] **Traffic Masquerading (Маскировка)**
+    - Сменить порты по умолчанию. Вместо `8081` (палево) использовать `3000` (React/Dev) или `8443` (Common HTTPS).
+    - Добавить опцию "Fake Headers" для ответов сервера (чтобы сканер думал, что это обычный Nginx или Apache).
 
-### 3. Настройки и Инфо
-- [x] **Dashboard:** Показ текущего IP адреса и примера команды `git remote add home http://...` для настройки на рабочем ПК.
-- [x] **Settings:** Поле для изменения пути к Root Workspace.
+- [ ] **Security: Token Auth**
+    - Закрыть Git-доступ паролем/токеном.
+    - Сейчас любой в локалке может сделать `git pull`. Нужно внедрить Basic Auth в `git_http.py`.
+
+- [ ] **Feature: "Panic Button" (Boss Key)**
+    - Кнопка в UI (или хоткей), которая мгновенно убивает процесс сервера и закрывает вкладку.
 
 ---
 
-## 🚀 Будущие улучшения (AI & More)
-- [ ] **AI Context:** Индексация кода для Ollama (заглушки в `repo_manager.py`).
-- [ ] **Auth:** Добавление токенов доступа для Git сервера.
-- [ ] **UI:** Переключение веток (branches) через веб-интерфейс.
-
----
-
-## ✅ Критерии успеха
-- [x] Пуш с рабочего ПК физически обновляет файлы в `D:/Workspace/project`.
-- [x] В веб-интерфейсе можно ходить по папкам этого проекта.
-- [x] После правок дома и нажатия кнопки "Prepare", рабочий ПК успешно подтягивает изменения через `git pull`.
-
+## 🛠 Phase 3: Improvements (Priority: Medium)
+- [ ] **Smart Commits:** UI для просмотра изменений перед "Prepare for Work".
+- [ ] **File Editor:** Простенький редактор кода прямо в браузере (Monaco Editor).
+- [ ] **Context Awareness:** Интеграция с LLM для анализа кода (RAG).
