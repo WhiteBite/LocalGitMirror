@@ -32,8 +32,8 @@ console = Console()
 
 # Configuration
 CONFIG = {
-    "web_port": int(os.getenv("WEB_PORT", 3000)),  # Default to 3000 now
-    "git_port": int(os.getenv("GIT_PORT", 8443)),  # Default to 8443 now
+    "web_port": int(os.getenv("WEB_PORT", 8443)),
+    "git_port": int(os.getenv("GIT_PORT", 8444)),
     "storage_path": Path(os.getenv("STORAGE_PATH", "storage")),
 }
 
@@ -116,6 +116,18 @@ async def lifespan(app: FastAPI):
     git_handler = GitHandler(actual_storage_path, port=CONFIG["git_port"], on_receive=on_repo_receive)
     repo_manager = RepoManager(actual_storage_path)
 
+    # Inject dependencies into routers
+    from app.routers import api, settings, websocket
+
+    api.git_handler = git_handler
+    api.repo_manager = repo_manager
+    api.system_logger = system_logger
+    api.config = CONFIG
+
+    settings.settings_manager = settings_manager
+
+    websocket.system_logger = system_logger
+
     # Install hooks for ALL existing repos on startup
     if actual_storage_path.exists():
         for item in actual_storage_path.iterdir():
@@ -127,10 +139,6 @@ async def lifespan(app: FastAPI):
     from app.routers.git_http import init_git_http
 
     init_git_http(app, actual_storage_path)
-
-    # Git TCP Server is disabled in favor of HTTPS
-    # if settings_manager.get_all()["git"].get("auto_start", True):
-    #     git_handler.start()
 
     console.print("[bold green]LocalGitMirror is ready![/bold green]")
     console.print(f"[blue]Storage: {actual_storage_path.absolute()}[/blue]")
@@ -173,7 +181,10 @@ app.include_router(websocket_router)
 # Frontend
 frontend_dist = Path(__file__).parent.parent.parent / "frontend" / "dist"
 if frontend_dist.exists():
+    # Mount assets for CSS/JS
     app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
+    # Mount root for favicon, vite.svg etc
+    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
 
 if __name__ == "__main__":
     # Check for SSL
