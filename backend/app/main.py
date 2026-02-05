@@ -32,8 +32,8 @@ console = Console()
 
 # Configuration
 CONFIG = {
-    "web_port": int(os.getenv("WEB_PORT", 8000)),
-    "git_port": int(os.getenv("GIT_PORT", 8081)),
+    "web_port": int(os.getenv("WEB_PORT", 3000)),  # Default to 3000 now
+    "git_port": int(os.getenv("GIT_PORT", 8443)),  # Default to 8443 now
     "storage_path": Path(os.getenv("STORAGE_PATH", "storage")),
 }
 
@@ -128,12 +128,19 @@ async def lifespan(app: FastAPI):
 
     init_git_http(app, actual_storage_path)
 
-    if settings_manager.get_all()["git"].get("auto_start", True):
-        git_handler.start()
+    # Git TCP Server is disabled in favor of HTTPS
+    # if settings_manager.get_all()["git"].get("auto_start", True):
+    #     git_handler.start()
 
     console.print("[bold green]LocalGitMirror is ready![/bold green]")
     console.print(f"[blue]Storage: {actual_storage_path.absolute()}[/blue]")
-    console.print(f"[blue]Web UI:  http://0.0.0.0:{CONFIG['web_port']}[/blue]")
+
+    # Show HTTPS if cert exists
+    protocol = "http"
+    if Path("cert.pem").exists() and Path("key.pem").exists():
+        protocol = "https"
+
+    console.print(f"[blue]Web UI:  {protocol}://0.0.0.0:{CONFIG['web_port']}[/blue]")
 
     yield
     if git_handler:
@@ -169,4 +176,17 @@ if frontend_dist.exists():
     app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
 
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=CONFIG["web_port"], reload=False)
+    # Check for SSL
+    ssl_keyfile = "key.pem"
+    ssl_certfile = "cert.pem"
+
+    kwargs = {"host": "0.0.0.0", "port": CONFIG["web_port"], "reload": False}
+
+    if os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
+        kwargs["ssl_keyfile"] = ssl_keyfile
+        kwargs["ssl_certfile"] = ssl_certfile
+        console.print("[green]🔒 SSL Enabled[/green]")
+    else:
+        console.print("[yellow]⚠️  SSL Certificates not found. Running in HTTP mode.[/yellow]")
+
+    uvicorn.run("app.main:app", **kwargs)
