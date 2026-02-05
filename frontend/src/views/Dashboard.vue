@@ -175,7 +175,6 @@ const systemStore = useSystemStore()
 
 const gitRunning = ref(false)
 const gitStatus = ref({ modified: 0, untracked: 0 })
-const currentRepo = ref('default')
 const localIP = ref('localhost')
 const gitPort = ref(8081)
 const storagePath = ref('storage')
@@ -187,11 +186,16 @@ const metrics = ref({
   memory_used_gb: 0
 })
 
+const currentRepo = computed(() => reposStore.currentRepo || 'default')
+
 const syncing = ref(false)
 const copied = ref(false)
 const lastActivity = ref('Never')
 
 onMounted(async () => {
+  if (!reposStore.currentRepo) {
+    await reposStore.fetchRepos()
+  }
   await fetchStatus()
   await fetchMetrics()
   // Refresh metrics every 30s
@@ -203,7 +207,10 @@ async function fetchStatus() {
     const response = await axios.get('/api/status')
     const data = response.data
     gitRunning.value = data.git_running
-    currentRepo.value = data.current_repo
+    // Don't overwrite store if it has a value, but sync if empty
+    if (!reposStore.currentRepo && data.current_repo) {
+        reposStore.currentRepo = data.current_repo
+    }
     localIP.value = data.local_ip || 'localhost'
     gitPort.value = data.git_port || 8081
     storagePath.value = data.storage_path || 'storage'
