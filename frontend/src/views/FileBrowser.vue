@@ -134,7 +134,7 @@ const connectWebSocket = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   // Use port 8000 for backend API if we are on dev port 5173
   const host = window.location.hostname
-  const port = window.location.port === '5173' ? '8000' : (window.location.port || (window.location.protocol === 'https:' ? '443' : '80'))
+  const port = window.location.port
   const wsUrl = `${protocol}//${host}:${port}/ws/files`
   
   if (ws) {
@@ -197,6 +197,14 @@ const handleFileChange = (_data) => {
 }
 
 onMounted(async () => {
+  if (!reposStore.currentRepo) {
+    await reposStore.fetchRepos()
+    // Try to get status to see what's active on backend
+    const statusResp = await axios.get('/api/status')
+    if (statusResp.data.current_repo) {
+        reposStore.currentRepo = statusResp.data.current_repo
+    }
+  }
   await filesStore.fetchFiles('/')
   checkAndOpenReadme()
   connectWebSocket()

@@ -26,8 +26,8 @@ if __name__ == "__main__":
     if ssl_cert.exists() and ssl_key.exists():
         kwargs["ssl_certfile"] = str(ssl_cert)
         kwargs["ssl_keyfile"] = str(ssl_key)
-        print(f"🔒 SSL Enabled (Cert: {ssl_cert.name})")
+        print(f"[SSL] Enabled (Cert: {ssl_cert.name})")
     else:
-        print(f"⚠️  SSL Certificates not found in {project_root}. Running in HTTP mode.")
+        print(f"[HTTP] SSL Certificates not found in {project_root}. Running in HTTP mode.")
 
     uvicorn.run("app.main:app", **kwargs)

@@ -119,9 +119,8 @@ const filteredLogs = computed(() => {
 // Connect to WebSocket
 const connectWebSocket = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  // Use port 8000 for backend API if we are on dev port 5173
   const host = window.location.hostname
-  const port = window.location.port === '5173' ? '8000' : (window.location.port || (window.location.protocol === 'https:' ? '443' : '80'))
+  const port = window.location.port
   const wsUrl = `${protocol}//${host}:${port}/ws/logs`
   
   ws = new WebSocket(wsUrl)
