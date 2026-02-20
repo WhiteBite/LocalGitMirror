@@ -5,9 +5,10 @@ LocalGitMirror API Router
 import os
 import subprocess
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -16,6 +17,7 @@ router = APIRouter(prefix="/api", tags=["api"])
 git_handler = None
 repo_manager = None
 git_workspace = None
+shared_manager = None
 config = {}
 system_logger = None
 
@@ -71,13 +73,26 @@ async def get_status():
         has_changes = ws_status.get("has_changes", False)
         change_count = ws_status.get("change_count", 0)
 
+    # Resolve last sync time
+    sync_time = state.last_sync_time
+    if not sync_time and current_git_workspace and repo_manager:
+        # Fallback to last commit time if never synced via UI
+        try:
+            commits = repo_manager.get_recent_commits(repo_manager.current_repo)
+            if commits:
+                # commits[0].date is already a string or datetime from git log
+                sync_time = commits[0].get("date")
+        except:
+            pass
+
     return {
-        "git_running": git_handler.is_running if git_handler else False,
-        "git_port": config.get("git_port", 8081),
+        "git_running": True,
+        "git_port": config.get("git_port", 8444),
+        "web_port": config.get("web_port", 8443),
         "local_ip": SystemMonitor.get_local_ip(),
         "current_repo": repo_manager.current_repo if repo_manager else "default",
         "workflow_status": state.status,
-        "last_sync_time": state.last_sync_time,
+        "last_sync_time": sync_time,
         "has_changes": has_changes,
         "change_count": change_count,
         "storage_path": str(config.get("storage_path", "storage")),
@@ -789,3 +804,271 @@ async def search_repo(
         if system_logger:
             system_logger.error("Search exception", {"error": str(e)})
         raise HTTPException(500, f"Search failed: {str(e)}")
+
+
+# ============ SHARED FOLDERS ============
+
+
+@router.get("/shared/folders")
+async def get_shared_folders():
+    """Get list of shared folders with sizes"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    try:
+        folders = shared_manager.get_folders()
+        return {"success": True, "folders": folders}
+    except Exception as e:
+        if system_logger:
+            system_logger.error("Failed to get shared folders", {"error": str(e)})
+        raise HTTPException(500, f"Failed to get shared folders: {str(e)}")
+
+
+class CreateFolderRequest(BaseModel):
+    name: str
+
+
+@router.post("/shared/folders")
+async def create_shared_folder(request: CreateFolderRequest):
+    """Create a new shared folder"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.create_folder(request.name)
+    if not result["success"]:
+        raise HTTPException(400, result["message"])
+
+    if system_logger:
+        system_logger.info("Created shared folder", {"name": request.name})
+
+    return result
+
+
+@router.delete("/shared/folders/{name}")
+async def delete_shared_folder(name: str):
+    """Delete a shared folder"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.delete_folder(name)
+    if not result["success"]:
+        raise HTTPException(400, result["message"])
+
+    if system_logger:
+        system_logger.info("Deleted shared folder", {"name": name})
+
+    return result
+
+
+@router.get("/shared/files")
+async def get_shared_files(folder: str = Query(...), subfolder: Optional[str] = Query(None)):
+    """Get files in shared folder"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.get_files(folder, subfolder)
+    if not result["success"]:
+        raise HTTPException(404, result["message"])
+
+    return result
+
+
+@router.post("/shared/upload")
+async def upload_shared_file(
+    folder: str = Form(...),
+    file: UploadFile = File(...),
+    subfolder: Optional[str] = Form(None),
+    tags: Optional[str] = Form(None),
+    description: Optional[str] = Form(""),
+):
+    """Upload file to shared folder"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    try:
+        # Read file content
+        content = await file.read()
+
+        # Build file path
+        file_path = file.filename
+        if subfolder:
+            file_path = f"{subfolder}/{file.filename}"
+
+        # Parse tags
+        tag_list = []
+        if tags:
+            tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+
+        result = shared_manager.save_file(folder, file_path, content, tag_list, description)
+        if not result["success"]:
+            raise HTTPException(400, result["message"])
+
+        if system_logger:
+            system_logger.info("File uploaded", {"folder": folder, "file": file.filename})
+
+        return result
+    except Exception as e:
+        if system_logger:
+            system_logger.error("Failed to upload file", {"error": str(e)})
+        raise HTTPException(500, f"Failed to upload file: {str(e)}")
+
+
+@router.delete("/shared/files")
+async def delete_shared_file(folder: str = Query(...), path: str = Query(...)):
+    """Delete file from shared folder"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.delete_file(folder, path)
+    if not result["success"]:
+        raise HTTPException(400, result["message"])
+
+    if system_logger:
+        system_logger.info("File deleted", {"folder": folder, "path": path})
+
+    return result
+
+
+@router.get("/shared/history")
+async def get_file_history(folder: str = Query(...), path: str = Query(...)):
+    """Get Git history for a file"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.get_file_history(folder, path)
+    if not result["success"]:
+        raise HTTPException(404, result["message"])
+
+    return result
+
+
+class RestoreFileRequest(BaseModel):
+    folder: str
+    path: str
+    commit_hash: str
+
+
+@router.post("/shared/restore")
+async def restore_shared_file(request: RestoreFileRequest):
+    """Restore file to specific commit"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.restore_file(request.folder, request.path, request.commit_hash)
+    if not result["success"]:
+        raise HTTPException(400, result["message"])
+
+    if system_logger:
+        system_logger.info("File restored", {"folder": request.folder, "path": request.path, "commit": request.commit_hash})
+
+    return result
+
+
+class CreateSubfolderRequest(BaseModel):
+    folder: str
+    path: str
+
+
+@router.post("/shared/subfolder")
+async def create_shared_subfolder(request: CreateSubfolderRequest):
+    """Create subfolder in shared folder"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.create_subfolder(request.folder, request.path)
+    if not result["success"]:
+        raise HTTPException(400, result["message"])
+
+    if system_logger:
+        system_logger.info("Subfolder created", {"folder": request.folder, "path": request.path})
+
+    return result
+
+
+@router.get("/shared/search")
+async def search_shared_files(folder: str = Query(...), query: str = Query(...)):
+    """Search files in shared folder"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.search_files(folder, query)
+    if not result["success"]:
+        raise HTTPException(400, result["message"])
+
+    return result
+
+
+class BulkDeleteRequest(BaseModel):
+    folder: str
+    paths: List[str]
+
+
+@router.post("/shared/bulk-delete")
+async def bulk_delete_shared_files(request: BulkDeleteRequest):
+    """Delete multiple files at once"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.bulk_delete_files(request.folder, request.paths)
+    if not result["success"]:
+        raise HTTPException(400, result["message"])
+
+    if system_logger:
+        system_logger.info("Bulk delete completed", {"folder": request.folder, "count": len(request.paths)})
+
+    return result
+
+
+@router.get("/shared/download")
+async def download_shared_file(folder: str = Query(...), path: str = Query(...)):
+    """Download file from shared folder"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.get_file_content(folder, path)
+    if not result["success"]:
+        raise HTTPException(404, result["message"])
+
+    # Return file as download
+    return Response(
+        content=result["content"],
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{result["filename"]}"'},
+    )
+
+
+class UpdateTagsRequest(BaseModel):
+    folder: str
+    path: str
+    tags: List[str]
+
+
+@router.post("/shared/tags")
+async def update_file_tags(request: UpdateTagsRequest):
+    """Update file tags"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    result = shared_manager.update_tags(request.folder, request.path, request.tags)
+    if not result["success"]:
+        raise HTTPException(400, result["message"])
+
+    if system_logger:
+        system_logger.info("Tags updated", {"folder": request.folder, "path": request.path})
+
+    return result
+
+
+@router.get("/shared/metadata")
+async def get_file_metadata(folder: str = Query(...), path: str = Query(...)):
+    """Get file metadata"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager not initialized")
+
+    try:
+        metadata = shared_manager._get_file_metadata(folder, path)
+        return {"success": True, "metadata": metadata}
+    except Exception as e:
+        if system_logger:
+            system_logger.error("Failed to get metadata", {"error": str(e)})
+        raise HTTPException(500, f"Failed to get metadata: {str(e)}")

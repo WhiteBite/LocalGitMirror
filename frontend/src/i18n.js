@@ -1,15 +1,14 @@
-import i18next from 'i18next'
-import LanguageDetector from 'i18next-browser-languagedetector'
+import { createI18n } from 'vue-i18n'
 import ru from './locales/ru.json'
 
-i18next
-  .use(LanguageDetector)
-  .init({
-    fallbackLng: 'ru',
-    debug: false,
-    resources: {
-      ru: { translation: ru }
-    }
-  })
+const i18n = createI18n({
+  legacy: false, // Usage with Composition API
+  globalInjection: true, // Inject $t globally
+  locale: 'ru',
+  fallbackLng: 'ru',
+  messages: {
+    ru
+  }
+})
 
-export default i18next
+export default i18n
