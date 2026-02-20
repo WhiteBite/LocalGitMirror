@@ -1,18 +1,23 @@
 <template>
   <div class="h-full flex flex-col bg-gray-900 text-gray-100 p-6">
     <div class="flex justify-between items-center mb-6">
-      <h1 class="text-2xl font-bold">Global Search</h1>
+      <h1 class="text-2xl font-bold">
+        {{ t('search.title') }}
+        <span class="text-blue-400 ml-2 text-lg font-medium opacity-80">
+          [{{ reposStore.currentRepo || '...' }}]
+        </span>
+      </h1>
     </div>
 
-    <!-- Search Bar -->
+    <!-- Поисковая строка -->
     <div class="mb-6 flex gap-2">
       <div class="relative flex-1">
         <input
           v-model="query"
           @keyup.enter="performSearch"
           type="text"
-          placeholder="Search code (regex supported)..."
-          class="w-full bg-gray-800 border border-gray-700 rounded p-3 pl-10 text-white focus:outline-none focus:border-blue-500"
+          :placeholder="t('search.placeholder')"
+          class="w-full bg-gray-800 border border-gray-700 rounded p-3 pl-10 text-white focus:outline-none focus:border-blue-500 transition-all"
         />
         <svg
           class="w-5 h-5 absolute left-3 top-3.5 text-gray-500"
@@ -31,44 +36,47 @@
       <button
         @click="performSearch"
         :disabled="loading"
-        class="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded font-medium disabled:opacity-50"
+        class="bg-blue-600 hover:bg-blue-700 px-8 py-2 rounded font-bold disabled:opacity-50 transition-all flex items-center gap-2"
       >
-        <span v-if="loading">Searching...</span>
-        <span v-else>Search</span>
+        <span v-if="loading">{{ t('search.searching') }}</span>
+        <span v-else>{{ t('search.button') }}</span>
       </button>
     </div>
 
-    <!-- Results -->
+    <!-- Результаты -->
     <div class="flex-1 overflow-auto">
       <div v-if="loading" class="flex justify-center items-center h-32">
         <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
       </div>
 
       <div v-else-if="results.length > 0" class="space-y-4">
-        <div class="text-sm text-gray-400 mb-2">
-          Found {{ count }} matches (limit 100)
+        <div class="text-sm text-gray-400 mb-2 flex items-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+          {{ t('search.found', { count }) }}
         </div>
         
         <div
           v-for="(match, index) in results"
           :key="index"
           @click="openFile(match.file, match.line)"
-          class="bg-gray-800 rounded p-3 cursor-pointer hover:bg-gray-750 border border-transparent hover:border-gray-600 group"
+          class="bg-gray-800 rounded p-3 cursor-pointer hover:bg-gray-750 border border-transparent hover:border-gray-600 group transition-all"
         >
           <div class="flex justify-between text-sm text-gray-400 mb-1">
-            <span class="font-mono text-blue-400">{{ match.file }}</span>
-            <span class="text-gray-500">Line {{ match.line }}</span>
+            <span class="font-mono text-blue-400 group-hover:text-blue-300">{{ match.file }}</span>
+            <span class="text-gray-500">{{ t('search.line') }} {{ match.line }}</span>
           </div>
-          <pre class="font-mono text-sm overflow-x-auto text-gray-300 bg-gray-900 p-2 rounded">{{ match.content }}</pre>
+          <pre class="font-mono text-sm overflow-x-auto text-gray-300 bg-gray-900 p-2 rounded border border-gray-800">{{ match.content }}</pre>
         </div>
       </div>
 
-      <div v-else-if="hasSearched" class="text-center text-gray-500 mt-10">
-        No matches found for "{{ lastQuery }}"
+      <div v-else-if="hasSearched" class="text-center py-20 bg-gray-800/20 rounded-lg border border-dashed border-gray-700">
+        <div class="text-4xl mb-4 text-gray-600">🔍</div>
+        <p class="text-gray-400">{{ t('search.nothing_found') }} "{{ lastQuery }}"</p>
       </div>
 
-      <div v-else class="text-center text-gray-500 mt-10">
-        Enter a search term to find code in the current repository.
+      <div v-else class="text-center py-20 text-gray-500">
+        <div class="text-4xl mb-4 opacity-30">📂</div>
+        {{ t('search.empty_state') }}
       </div>
     </div>
   </div>
@@ -76,8 +84,12 @@
 
 <script setup>
 import { ref } from 'vue';
+import { useI18n } from 'vue-i18n';
+import { useReposStore } from '@/stores/repos';
 import axios from 'axios';
 
+const { t } = useI18n();
+const reposStore = useReposStore();
 const query = ref('');
 const lastQuery = ref('');
 const results = ref([]);
@@ -93,7 +105,6 @@ const performSearch = async () => {
   results.value = [];
   
   try {
-    // Get current repo first? Backend handles default repo if not specified
     const response = await axios.get(`/api/search`, {
       params: { q: query.value }
     });
@@ -104,7 +115,6 @@ const performSearch = async () => {
     }
   } catch (error) {
     console.error("Search failed", error);
-    alert("Search failed: " + (error.response?.data?.detail || error.message));
   } finally {
     loading.value = false;
     hasSearched.value = true;
@@ -113,16 +123,10 @@ const performSearch = async () => {
 
 const openFile = async (file, line) => {
   try {
-    // We can use the editor open endpoint, but we probably want to navigate 
-    // to the FileBrowser if we want to stay in-app.
-    // For now, let's open in external editor since that's what "open_file" does.
     await axios.post(`/api/editor/open`, null, {
       params: { file }
     });
-    // Optional: Toast notification
-  } catch (error) {
-    console.error("Failed to open file", error);
-  }
+  } catch (error) {}
 };
 </script>
 

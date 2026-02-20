@@ -22,6 +22,7 @@ from app.core import (
     GitWorkspace,
     RepoManager,
     SettingsManager,
+    SharedManager,
     SystemMonitor,
     get_logger,
 )
@@ -37,11 +38,12 @@ CONFIG = {
     "storage_path": Path(os.getenv("STORAGE_PATH", "storage")),
 }
 
-# Global instances
+# Global instances (will be initialized in lifespan but defined here)
 git_handler = None
 repo_manager = None
 git_workspace = None
 settings_manager = None
+shared_manager = None
 system_logger = None
 
 
@@ -65,7 +67,7 @@ def ensure_post_receive_hook(repo_name: str, storage_path: Path):
     if hook_file.exists():
         try:
             os.remove(hook_file)
-            console.print(f"[yellow] Removed legacy hook for {repo_name}[/yellow]")
+            console.print(f"[yellow][!] Removed legacy hook for {repo_name} to prevent Win32 errors[/yellow]")
         except Exception:
             pass
 
@@ -75,35 +77,64 @@ def on_repo_receive(repo_name: str):
     global repo_manager, git_workspace
     import threading
     import time
+    import subprocess
 
     from app.core import GitWorkspace
 
-    console.print(f"[cyan][>>] Push received: {repo_name}[/cyan]")
-
-    # Ensure hook is present (self-healing)
-    if repo_manager:
-        ensure_post_receive_hook(repo_name, repo_manager.storage_path)
+    console.print(f"[cyan][>>] Push detected for: {repo_name}[/cyan]")
 
     if repo_manager:
+        # Auto-checkout to the latest branch pushed
+        def run_sync(mgr, name):
+            time.sleep(0.5)
+            workspace = mgr._get_workspace_path(name)
 
-        def run_sync(mgr):
-            # Fallback sync in case hook fails or for non-git-bash envs
-            time.sleep(1.0)
-            result = mgr.sync_workspace(repo_name)
-            if result["success"]:
-                console.print(f"[green]* Synced: {result['message']}[/green]")
-                workspace = mgr._get_workspace_path(repo_name)
-                bare = mgr._get_bare_path(repo_name)
-                global git_workspace
-                git_workspace = GitWorkspace(workspace, bare)
+            if not workspace.exists():
+                return
 
-        threading.Thread(target=run_sync, args=(repo_manager,), daemon=True).start()
+            try:
+                # 1. Detect which branch was just updated in the bare repo
+                bare_path = mgr._get_bare_path(name)
+                proc = subprocess.run(
+                    [
+                        "git",
+                        "for-each-ref",
+                        "--sort=-committerdate",
+                        "--format=%(refname:short)",
+                        "--count=1",
+                        "refs/heads/",
+                    ],
+                    cwd=str(bare_path),
+                    capture_output=True,
+                    text=True,
+                )
+                latest_branch = proc.stdout.strip()
+
+                if not latest_branch:
+                    latest_branch = "main"
+
+                console.print(f"[cyan][i] Latest branch on {name}: {latest_branch}[/cyan]")
+
+                # 2. Perform sync and checkout to that branch
+                result = mgr.sync_workspace(name, branch=latest_branch)
+
+                if result["success"]:
+                    console.print(f"[green][v] Auto-switched {name} to: {latest_branch}[/green]")
+                    # Update global workspace reference
+                    global git_workspace
+                    bare = mgr._get_bare_path(name)
+                    git_workspace = GitWorkspace(workspace, bare)
+            except Exception as e:
+                console.print(f"[red][!] Auto-switch failed: {e}[/red]")
+
+        threading.Thread(target=run_sync, args=(repo_manager, repo_name), daemon=True).start()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global git_handler, repo_manager, git_workspace, settings_manager, system_logger
+    global git_handler, repo_manager, git_workspace, settings_manager, shared_manager, system_logger
 
+    # 1. Initialize core managers
     base_storage = Path(CONFIG["storage_path"])
     settings_manager = SettingsManager(base_storage)
     saved_settings = settings_manager.get_all()
@@ -115,39 +146,28 @@ async def lifespan(app: FastAPI):
     system_logger = get_logger(actual_storage_path)
     git_handler = GitHandler(actual_storage_path, port=CONFIG["git_port"], on_receive=on_repo_receive)
     repo_manager = RepoManager(actual_storage_path)
+    shared_manager = SharedManager(actual_storage_path)
 
-    # Inject dependencies into routers
-    from app.routers import api, settings, websocket
+    # 2. Inject dependencies into routers
+    from app.routers import api, settings
 
     api.git_handler = git_handler
     api.repo_manager = repo_manager
+    api.shared_manager = shared_manager
     api.system_logger = system_logger
     api.config = CONFIG
-
     settings.settings_manager = settings_manager
 
-    websocket.system_logger = system_logger
-
-    # Install hooks for ALL existing repos on startup
+    # 3. Clean up legacy hooks
     if actual_storage_path.exists():
         for item in actual_storage_path.iterdir():
-            if item.is_dir():
-                if (item / ".git").exists():
-                    ensure_post_receive_hook(item.name, actual_storage_path)
-
-    # Initialize Git HTTP Bridge (Standard WSGI mount)
-    from app.routers.git_http import init_git_http
-
-    init_git_http(app, actual_storage_path)
+            if item.is_dir() and (item / ".git").exists():
+                ensure_post_receive_hook(item.name, actual_storage_path)
 
     console.print("[bold green]LocalGitMirror is ready![/bold green]")
     console.print(f"[blue]Storage: {actual_storage_path.absolute()}[/blue]")
 
-    # Show HTTPS if cert exists
-    protocol = "http"
-    if Path("cert.pem").exists() and Path("key.pem").exists():
-        protocol = "https"
-
+    protocol = "https" if (Path("cert.pem").exists() and Path("key.pem").exists()) else "http"
     console.print(f"[blue]Web UI:  {protocol}://0.0.0.0:{CONFIG['web_port']}[/blue]")
 
     yield
@@ -167,8 +187,17 @@ async def get_api_key(api_key_header: str = Security(api_key_header)):
     raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Could not validate credentials")
 
 
-# App
+# --- INITIALIZE APP ---
 app = FastAPI(title="LocalGitMirror", version="3.2.0", lifespan=lifespan)
+
+# --- MOUNT GIT HTTP (CRITICAL: MUST BE BEFORE START) ---
+# We use a placeholder path for now, it will use absolute paths inside the middleware
+from app.routers.git_http import init_git_http
+
+# Load storage path from env for immediate mounting
+initial_storage = Path(os.getenv("STORAGE_PATH", "storage"))
+init_git_http(app, initial_storage)
+
 
 # Include routers
 from app.routers import api_router, settings_router, web_router, websocket_router
@@ -181,23 +210,14 @@ app.include_router(websocket_router)
 # Frontend
 frontend_dist = Path(__file__).parent.parent.parent / "frontend" / "dist"
 if frontend_dist.exists():
-    # Mount assets for CSS/JS
     app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
-    # Mount root for favicon, vite.svg etc
     app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
 
 if __name__ == "__main__":
-    # Check for SSL
     ssl_keyfile = "key.pem"
     ssl_certfile = "cert.pem"
-
     kwargs = {"host": "0.0.0.0", "port": CONFIG["web_port"], "reload": False}
-
     if os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
         kwargs["ssl_keyfile"] = ssl_keyfile
         kwargs["ssl_certfile"] = ssl_certfile
-        console.print("[green]🔒 SSL Enabled[/green]")
-    else:
-        console.print("[yellow]⚠️  SSL Certificates not found. Running in HTTP mode.[/yellow]")
-
     uvicorn.run("app.main:app", **kwargs)

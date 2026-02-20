@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 from rich.console import Console
 
 from app.core.logger import get_logger
+from app.core.settings_manager import SettingsManager
 
 console = Console()
 
@@ -15,6 +16,9 @@ class RepoManager:
         self.storage_path = storage_path
         self.storage_path.mkdir(parents=True, exist_ok=True)
         self._current_repo = "default"
+        # We need access to settings to get user preference
+        # SettingsManager typically reads from storage_path/.sisyphus/settings.json
+        self.settings_manager = SettingsManager(storage_path)
 
     @property
     def current_repo(self) -> str:
@@ -26,8 +30,6 @@ class RepoManager:
 
     def _get_bare_path(self, repo_name: str) -> Path:
         """The bare repository where git push/pull happens"""
-        # For non-bare setup used in this project, bare_path is often ignored
-        # or points to .git inside workspace if it's not a separate bare repo.
         return self.storage_path / f"{repo_name}.git"
 
     def _get_workspace_path(self, repo_name: str) -> Path:
@@ -50,6 +52,54 @@ class RepoManager:
 
         return sorted(list(repos))
 
+    def _configure_user_from_last_commit(self, workspace: Path):
+        """
+        Configure user.name and user.email based on settings OR detection.
+        Priority:
+        1. Global Settings (if set) -> Force apply
+        2. Existing Repo Config -> Respect it
+        3. Auto-detect from last commit -> Apply
+        """
+        try:
+            # 0. Load global settings
+            settings = self.settings_manager.get_all()
+            global_name = settings.get("git", {}).get("user_name")
+            global_email = settings.get("git", {}).get("user_email")
+
+            if global_name and global_email:
+                # Force apply global settings if they exist
+                subprocess.run(["git", "config", "user.name", global_name], cwd=str(workspace))
+                subprocess.run(["git", "config", "user.email", global_email], cwd=str(workspace))
+                console.print(f"[cyan][i] Enforced Git Identity: {global_name} <{global_email}>[/cyan]")
+                return
+
+            # 1. Check if user.name is already configured locally
+            existing_name = subprocess.run(
+                ["git", "config", "user.name"], cwd=str(workspace), capture_output=True, text=True
+            ).stdout.strip()
+
+            if existing_name:
+                return  # Respect existing config if no global override
+
+            # 2. Auto-detect from last commit
+            proc_name = subprocess.run(
+                ["git", "log", "-1", "--format=%an"], cwd=str(workspace), capture_output=True, text=True
+            )
+            author_name = proc_name.stdout.strip()
+
+            proc_email = subprocess.run(
+                ["git", "log", "-1", "--format=%ae"], cwd=str(workspace), capture_output=True, text=True
+            )
+            author_email = proc_email.stdout.strip()
+
+            if author_name and author_email:
+                subprocess.run(["git", "config", "user.name", author_name], cwd=str(workspace))
+                subprocess.run(["git", "config", "user.email", author_email], cwd=str(workspace))
+                console.print(f"[cyan][i] Auto-detected Git Identity: {author_name} <{author_email}>[/cyan]")
+
+        except Exception as e:
+            console.print(f"[red][!] Failed to configure git user: {e}[/red]")
+
     def sync_workspace(self, repo_name: Optional[str] = None, branch: str = "main") -> Dict:
         """Sync workspace from bare repo - perform checkout/reset"""
         logger = get_logger()
@@ -65,7 +115,6 @@ class RepoManager:
 
         logger.info("Sync triggered", {"repo": repo_name})
 
-        # Check if we are dealing with a non-bare repo directly
         is_non_bare = (workspace / ".git").exists()
 
         if not bare_path.exists() and not is_non_bare:
@@ -73,29 +122,24 @@ class RepoManager:
             return result
 
         try:
-            # 1. Ensure workspace directory exists
             workspace.mkdir(parents=True, exist_ok=True)
 
             if is_non_bare:
-                # If we are pushing directly to workspace/.git (non-bare)
-                # We just need to reset hard to HEAD to update working tree
-                # from the index which was updated by push.
-
-                # Check current branch
                 branch_proc = subprocess.run(
                     ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(workspace), capture_output=True, text=True
                 )
                 current_branch = branch_proc.stdout.strip()
 
-                # Reset hard to update files
                 subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=str(workspace), check=True)
+
+                # APPLY IDENTITY CONFIG
+                self._configure_user_from_last_commit(workspace)
 
                 result["success"] = True
                 result["message"] = f"Workspace reset to HEAD ({current_branch})"
                 logger.info("Non-bare sync successful", {"repo": repo_name})
                 return result
 
-            # Fallback for separate bare repo logic (original logic)
             if not (workspace / ".git").exists():
                 subprocess.run(["git", "init"], cwd=str(workspace), check=True)
                 subprocess.run(
@@ -104,7 +148,6 @@ class RepoManager:
                     check=True,
                 )
 
-            # 3. Fetch from our internal bare repo
             subprocess.run(
                 ["git", "fetch", "origin"],
                 cwd=str(workspace),
@@ -112,7 +155,6 @@ class RepoManager:
                 text=True,
             )
 
-            # 4. Detect default branch if needed
             branch_proc = subprocess.run(
                 ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
                 cwd=str(workspace),
@@ -122,10 +164,8 @@ class RepoManager:
             target_branch = branch_proc.stdout.strip().replace("origin/", "") or branch
 
             if not target_branch or target_branch == "refs/remotes/origin/HEAD":
-                # Fallback to master/main
                 target_branch = branch
 
-            # 5. Hard reset to origin's branch
             sync_res = subprocess.run(
                 ["git", "reset", "--hard", f"origin/{target_branch}"],
                 cwd=str(workspace),
@@ -134,13 +174,15 @@ class RepoManager:
             )
 
             if sync_res.returncode != 0:
-                # Try fallback to 'master' if 'main' failed and vice versa
                 alt_branch = "master" if target_branch == "main" else "main"
                 subprocess.run(
                     ["git", "reset", "--hard", f"origin/{alt_branch}"],
                     cwd=str(workspace),
                     check=False,
                 )
+
+            # APPLY IDENTITY CONFIG
+            self._configure_user_from_last_commit(workspace)
 
             result["success"] = True
             result["message"] = f"Workspace synced to {repo_name}"
@@ -163,11 +205,9 @@ class RepoManager:
             return {"success": False, "message": "Repository already exists"}
 
         try:
-            # 1. Create bare repo
             bare_path.mkdir(parents=True, exist_ok=True)
             subprocess.run(["git", "init", "--bare"], cwd=str(bare_path), check=True)
 
-            # 2. Create workspace and initial commit
             workspace.mkdir(parents=True, exist_ok=True)
             subprocess.run(["git", "init"], cwd=str(workspace), check=True)
             subprocess.run(
@@ -179,23 +219,16 @@ class RepoManager:
             (workspace / "README.md").write_text(f"# {repo_name}\nInitial commit via LocalGitMirror")
 
             subprocess.run(["git", "add", "."], cwd=str(workspace), check=True)
-            subprocess.run(
-                ["git", "config", "user.email", "mirror@local"],
-                cwd=str(workspace),
-                check=True,
-            )
-            subprocess.run(
-                ["git", "config", "user.name", "LocalGitMirror"],
-                cwd=str(workspace),
-                check=True,
-            )
-            subprocess.run(
-                ["git", "commit", "-m", "Initial commit"],
-                cwd=str(workspace),
-                check=True,
-            )
 
-            # 3. Push to bare
+            # Use settings if available immediately for creation
+            settings = self.settings_manager.get_all()
+            name = settings.get("git", {}).get("user_name", "LocalGitMirror")
+            email = settings.get("git", {}).get("user_email", "mirror@local")
+
+            subprocess.run(["git", "config", "user.email", email], cwd=str(workspace), check=True)
+            subprocess.run(["git", "config", "user.name", name], cwd=str(workspace), check=True)
+
+            subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=str(workspace), check=True)
             subprocess.run(["git", "push", "origin", "HEAD"], cwd=str(workspace), check=True)
 
             return {"success": True, "message": f"Repository '{repo_name}' created"}
@@ -274,6 +307,31 @@ class RepoManager:
         repo_name = repo_name or self._current_repo
         workspace = self._get_workspace_path(repo_name)
         return str((workspace / relative_path).absolute())
+
+    def get_latest_pushed_branch(self, repo_name: str) -> Optional[str]:
+        """Detect which branch was just updated in the bare repo"""
+        bare_path = self._get_bare_path(repo_name)
+        if not bare_path.exists():
+            return None
+
+        try:
+            proc = subprocess.run(
+                [
+                    "git",
+                    "for-each-ref",
+                    "--sort=-committerdate",
+                    "--format=%(refname:short)",
+                    "--count=1",
+                    "refs/heads/",
+                ],
+                cwd=str(bare_path),
+                capture_output=True,
+                text=True,
+            )
+            branch = proc.stdout.strip()
+            return branch if branch else None
+        except Exception:
+            return None
 
     def get_recent_commits(self, repo_name: Optional[str] = None, limit: int = 10) -> List[Dict]:
         repo_name = repo_name or self._current_repo

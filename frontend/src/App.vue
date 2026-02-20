@@ -4,17 +4,21 @@
     <aside v-if="showSidebar" class="sidebar">
       <!-- Main Navigation Links -->
       <div class="nav-section">
-        <router-link to="/dashboard" class="nav-item" title="Dashboard">
+        <router-link to="/dashboard" class="nav-item" title="Панель управления">
           <span class="icon">🏠</span>
-          <span class="label">Dashboard</span>
+          <span class="label">Панель управления</span>
         </router-link>
-        <router-link to="/files" class="nav-item" title="Explorer">
+        <router-link to="/files" class="nav-item" title="Проводник">
           <span class="icon">📂</span>
-          <span class="label">File Browser</span>
+          <span class="label">Файлы</span>
         </router-link>
-        <router-link to="/settings" class="nav-item" title="Settings">
+        <router-link to="/search" class="nav-item" title="Поиск">
+          <span class="icon">🔍</span>
+          <span class="label">Поиск</span>
+        </router-link>
+        <router-link to="/settings" class="nav-item" title="Настройки">
           <span class="icon">⚙️</span>
-          <span class="label">Settings</span>
+          <span class="label">Настройки</span>
         </router-link>
       </div>
 
@@ -23,8 +27,8 @@
       <!-- Repositories List -->
       <div class="sidebar-section">
         <div class="section-header">
-          <header>REPOSITORIES</header>
-          <button class="icon-btn" title="New Repository" @click="showCreateModal = true">
+          <header>РЕПОЗИТОРИИ</header>
+          <button class="icon-btn" title="Новый репозиторий" @click="showCreateModal = true">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -51,7 +55,7 @@
             <button 
               v-if="repo !== 'default'"
               class="delete-btn" 
-              title="Delete Repository" 
+              title="Удалить репозиторий" 
               @click.stop="confirmDelete(repo)"
             >
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -78,23 +82,20 @@
     <!-- Status Bar -->
     <footer class="status-bar">
       <div class="left">
-        <div class="status-item" :class="{ ok: systemStore.gitRunning }">
+        <div class="status-item" :class="{ ok: true }">
           <span class="dot"></span>
-          Git Server: {{ systemStore.gitRunning ? 'Active' : 'Stopped' }}
+          Git HTTPS: Активен
         </div>
         <div 
           class="status-item interactive" 
-          title="Click to copy IP" 
+          title="Нажмите, чтобы скопировать IP" 
           @click="copyIP"
         >
           IP: {{ systemStore.status.local_ip || '...' }}
         </div>
         <div class="status-item">
-          Project: {{ reposStore.currentRepo || 'None' }}
+          Проект: {{ reposStore.currentRepo || 'Не выбран' }}
         </div>
-      </div>
-      <div class="right">
-        <!-- 'Prepare for Work' logic can be here or dashboard, keeping simple status here -->
       </div>
     </footer>
 
@@ -123,16 +124,16 @@
     <transition name="fade">
       <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
         <div class="modal">
-          <h3>Create New Repository</h3>
+          <h3>Создать новый репозиторий</h3>
           <input 
             v-model="newRepoName" 
-            placeholder="Repository Name" 
+            placeholder="Название репозитория" 
             class="input-field"
             @keyup.enter="createRepository"
           />
           <div class="modal-actions">
-            <button class="btn btn-secondary" @click="showCreateModal = false">Cancel</button>
-            <button class="btn btn-primary" :disabled="!isValidRepoName" @click="createRepository">Create</button>
+            <button class="btn btn-secondary" @click="showCreateModal = false">Отмена</button>
+            <button class="btn btn-primary" :disabled="!isValidRepoName" @click="createRepository">Создать</button>
           </div>
         </div>
       </div>
@@ -142,12 +143,12 @@
     <transition name="fade">
       <div v-if="repoToDelete" class="modal-overlay" @click.self="repoToDelete = null">
         <div class="modal">
-          <h3>Delete Repository</h3>
-          <p>Are you sure you want to delete <strong>{{ repoToDelete }}</strong>?</p>
-          <p class="warning-text">This action cannot be undone.</p>
+          <h3>Удалить репозиторий</h3>
+          <p>Вы уверены, что хотите удалить <strong>{{ repoToDelete }}</strong>?</p>
+          <p class="warning-text">Это действие нельзя отменить.</p>
           <div class="modal-actions">
-            <button class="btn btn-secondary" @click="repoToDelete = null">Cancel</button>
-            <button class="btn btn-danger" @click="executeDelete">Delete</button>
+            <button class="btn btn-secondary" @click="repoToDelete = null">Отмена</button>
+            <button class="btn btn-danger" @click="executeDelete">Удалить</button>
           </div>
         </div>
       </div>
@@ -203,9 +204,18 @@ function handleGlobalKeydown(e) {
 }
 
 async function selectProject(repo) {
-  await axios.post('/api/repos/select', { repo })
-  reposStore.currentRepo = repo
-  await filesStore.fetchFiles('/')
+  try {
+    await axios.post('/api/repos/select', { repo })
+    reposStore.currentRepo = repo
+    // Refresh files if we are on the files page
+    if (filesStore.currentFolder) {
+      await filesStore.fetchFiles('/')
+    }
+    systemStore.addNotification(`Репозиторий '${repo}' выбран`, 'info')
+  } catch (err) {
+    console.error('Failed to select repo:', err)
+    systemStore.addNotification('Не удалось сменить репозиторий', 'error')
+  }
 }
 
 async function createRepository() {
@@ -213,11 +223,11 @@ async function createRepository() {
   
   try {
     await reposStore.createRepo(newRepoName.value)
-    systemStore.addNotification(`Repository '${newRepoName.value}' created`, 'success')
+    systemStore.addNotification(`Репозиторий '${newRepoName.value}' создан`, 'success')
     showCreateModal.value = false
     newRepoName.value = ''
   } catch (err) {
-    systemStore.addNotification(reposStore.error || 'Failed to create repository', 'error')
+    systemStore.addNotification(reposStore.error || 'Ошибка создания репозитория', 'error')
   }
 }
 
@@ -230,10 +240,10 @@ async function executeDelete() {
   
   try {
     await reposStore.deleteRepo(repoToDelete.value)
-    systemStore.addNotification(`Repository '${repoToDelete.value}' deleted`, 'success')
+    systemStore.addNotification(`Репозиторий '${repoToDelete.value}' удален`, 'success')
     repoToDelete.value = null
   } catch (err) {
-    systemStore.addNotification(reposStore.error || 'Failed to delete repository', 'error')
+    systemStore.addNotification(reposStore.error || 'Ошибка удаления репозитория', 'error')
   }
 }
 
@@ -242,10 +252,10 @@ function copyIP() {
   if (ip) {
     navigator.clipboard.writeText(ip)
       .then(() => {
-        systemStore.addNotification(`IP Copied: ${ip}`, 'success')
+        systemStore.addNotification(`IP скопирован: ${ip}`, 'success')
       })
       .catch(() => {
-        systemStore.addNotification('Failed to copy IP', 'error')
+        systemStore.addNotification('Не удалось скопировать IP', 'error')
       })
   }
 }
@@ -480,6 +490,44 @@ body {
   width: 400px;
   border: 1px solid var(--border-color);
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.modal.max-w-2xl {
+  width: 672px;
+  max-width: 90vw;
+}
+
+.modal-content {
+  background: var(--bg-sidebar);
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  max-width: 500px;
+  width: 90vw;
+}
+
+.modal-content.max-w-2xl {
+  max-width: 672px;
+}
+
+.modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.modal-body {
+  padding: 24px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border-color);
 }
 
 .modal h3 {

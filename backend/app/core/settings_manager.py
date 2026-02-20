@@ -14,7 +14,13 @@ class SettingsManager:
                 "auto_sync": True,
                 "refresh_interval": 5,
             },
-            "git": {"port": 8081, "auto_start": True, "auto_commit": False},
+            "git": {
+                "port": 8081,
+                "auto_start": True,
+                "auto_commit": False,
+                "user_name": "",
+                "user_email": "",
+            },
             "ui": {"theme": "dark", "font_size": 14, "show_system_log": True},
         }
         self.settings = self.load_settings()
