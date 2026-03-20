@@ -57,7 +57,7 @@ class CustomReceivePackHandler(ReceivePackHandler):
                 ):
                     self._server_instance.on_receive(repo_name)
             except Exception as e:
-                console.print(f"[red]Error in receive callback: {e}[/red]")
+                console.print(f"[red]Ошибка в callback получения: {e}[/red]")
 
 
 class ThreadingTCPGitServer(socketserver.ThreadingMixIn, TCPGitServer):
@@ -117,7 +117,7 @@ class GitHandler:
         if not default_path.exists():
             default_path.mkdir(parents=True, exist_ok=True)
             Repo.init_bare(str(default_path))
-            console.print("[green]Initialized default repo[/green]")
+            console.print("[green]Инициализирован репозиторий по умолчанию[/green]")
 
     def start(self) -> bool:
         logger = get_logger()
@@ -129,13 +129,13 @@ class GitHandler:
 
             def run_server():
                 self._running = True
-                console.print(f"[green]Git server started on 0.0.0.0:{self.port}[/green]")
+                console.print(f"[green]Git сервер запущен на 0.0.0.0:{self.port}[/green]")
                 try:
                     if self._server:
                         self._server.serve_forever()
                 except Exception as e:
                     if logger:
-                        logger.error(f"Git server loop error: {e}")
+                        logger.error(f"Ошибка цикла Git сервера: {e}")
                 finally:
                     self._running = False
 
@@ -143,15 +143,24 @@ class GitHandler:
             self._thread.start()
             return True
         except Exception as e:
-            logger.error("Git server start failed", {"error": str(e)})
+            logger.error("Не удалось запустить Git сервер", {"error": str(e)})
             return False
 
     def stop(self):
         if self._server and self._running:
             self._running = False
             try:
-                self._server.shutdown()
-                self._server.server_close()
+                # Use a daemon thread to avoid blocking on shutdown
+                def shutdown_server():
+                    try:
+                        self._server.shutdown()
+                        self._server.server_close()
+                    except Exception:
+                        pass
+                
+                shutdown_thread = threading.Thread(target=shutdown_server, daemon=True)
+                shutdown_thread.start()
+                shutdown_thread.join(timeout=1.0)  # Wait max 1 second
             except Exception:
                 pass
 

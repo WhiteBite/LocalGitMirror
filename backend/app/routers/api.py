@@ -1,15 +1,18 @@
-"""
-LocalGitMirror API Router
-"""
+"""LocalGitMirror API Router."""
 
 import os
+import re
 import subprocess
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
+
+from app.core.stealth_crypto import decrypt_dump_to_bundle, encrypt_bundle_to_dump, MAGIC
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -88,7 +91,7 @@ async def get_status():
     return {
         "git_running": True,
         "git_port": config.get("git_port", 8444),
-        "web_port": config.get("web_port", 8443),
+        "web_port": config.get("web_port", 443),
         "local_ip": SystemMonitor.get_local_ip(),
         "current_repo": repo_manager.current_repo if repo_manager else "default",
         "workflow_status": state.status,
@@ -206,23 +209,23 @@ async def get_workflow_status():
 @router.post("/git/start")
 async def start_git():
     if not git_handler:
-        raise HTTPException(500, "Git handler not initialized")
+        raise HTTPException(500, "Git handler не инициализирован")
     success = git_handler.start()
     if system_logger:
         if success:
-            system_logger.info("Git server started via API", {"port": config.get("git_port")})
+            system_logger.info("Git сервер запущен через API", {"port": config.get("git_port")})
         else:
-            system_logger.warning("Git server start failed via API")
+            system_logger.warning("Не удалось запустить Git сервер через API")
     return {"success": success, "running": git_handler.is_running}
 
 
 @router.post("/git/stop")
 async def stop_git():
     if not git_handler:
-        raise HTTPException(500, "Git handler not initialized")
+        raise HTTPException(500, "Git handler не инициализирован")
     git_handler.stop()
     if system_logger:
-        system_logger.info("Git server stopped via API")
+        system_logger.info("Git сервер остановлен через API")
     return {"success": True, "running": git_handler.is_running}
 
 
@@ -240,6 +243,74 @@ class RepoCreateRequest(BaseModel):
     name: str
 
 
+class SyncHasCommitsRequest(BaseModel):
+    repo: str
+    commits: List[str]
+
+
+class SyncApplyKnownRequest(BaseModel):
+    repo: str
+    commit: str
+
+
+class PreviewPullRequest(BaseModel):
+    repo: str
+    since: Optional[str] = None
+
+
+class PreviewPullDetailsRequest(BaseModel):
+    repo: str
+    since: Optional[str] = None
+
+
+@router.get("/capabilities")
+async def capabilities():
+    return {
+        "apiVersion": 1,
+        "server": {
+            "name": "LocalGitMirror",
+            "version": "2026.03",
+            "build": "dev",
+        },
+        "sync": {
+            "protocolVersion": 1,
+            "features": {
+                "preflight": True,
+                "dryRun": True,
+                "passwordProbe": True,
+                "uploadAndApply": True,
+                "hasCommits": True,
+                "applyKnown": True,
+                "exportDump": True,
+            },
+            "modes": ["no-op", "pointer-only", "incremental", "full"],
+        },
+    }
+
+
+@router.get("/sync/password-probe")
+async def sync_password_probe():
+    password = os.getenv("SYNC_PASSWORD", "")
+    if not password:
+        raise HTTPException(500, "SYNC_PASSWORD not configured in environment")
+
+    with tempfile.TemporaryDirectory(prefix="lgm-probe-") as tmp:
+        tmp_dir = Path(tmp)
+        src = tmp_dir / "probe.bin"
+        dst = tmp_dir / "probe.dmp"
+        src.write_bytes(b"LGM-PROBE\n")
+        try:
+            encrypt_bundle_to_dump(src, dst, password)
+        except Exception as e:
+            raise HTTPException(500, f"Failed to create password probe: {e}")
+
+        return Response(
+            content=dst.read_bytes(),
+            media_type="application/octet-stream",
+            headers={"X-LGM-Probe": "1"},
+        )
+
+
 class FileSaveRequest(BaseModel):
     path: str
     content: str
@@ -249,7 +320,7 @@ class FileSaveRequest(BaseModel):
 async def save_file(request: FileSaveRequest):
     """Save file content to disk"""
     if not repo_manager:
-        raise HTTPException(500, "Repo manager not initialized")
+        raise HTTPException(500, "Repo manager не инициализирован")
 
     abs_path = repo_manager.get_absolute_path(request.path)
 
@@ -261,28 +332,28 @@ async def save_file(request: FileSaveRequest):
             f.write(request.content)
 
         if system_logger:
-            system_logger.info("File saved", {"path": request.path})
+            system_logger.info("Файл сохранен", {"path": request.path})
 
         return {"success": True, "path": request.path}
     except Exception as e:
         if system_logger:
-            system_logger.error("Failed to save file", {"error": str(e)})
-        raise HTTPException(500, f"Failed to save file: {str(e)}")
+            system_logger.error("Не удалось сохранить файл", {"error": str(e)})
+        raise HTTPException(500, f"Не удалось сохранить файл: {str(e)}")
 
 
 @router.post("/repos/create")
 async def create_repo(request: RepoCreateRequest):
     """Create a new repository"""
     if not repo_manager:
-        raise HTTPException(500, "Repo manager not initialized")
+        raise HTTPException(500, "Repo manager не инициализирован")
 
     result = repo_manager.create_repo(request.name)
     if result["success"]:
         if system_logger:
-            system_logger.info(f"Created repository: {request.name}")
+            system_logger.info(f"Создан репозиторий: {request.name}")
     else:
         if system_logger:
-            system_logger.error(f"Failed to create repo: {result['message']}")
+            system_logger.error(f"Не удалось создать репозиторий: {result['message']}")
         raise HTTPException(400, result["message"])
 
     return result
@@ -292,13 +363,13 @@ async def create_repo(request: RepoCreateRequest):
 async def select_repo(request: RepoSelectRequest):
     """Select a repository as active"""
     if not repo_manager:
-        raise HTTPException(500, "Repo manager not initialized")
+        raise HTTPException(500, "Repo manager не инициализирован")
 
     repo_manager.current_repo = request.repo
     _init_git_workspace()
 
     if system_logger:
-        system_logger.info(f"Selected repository: {request.repo}")
+        system_logger.info(f"Выбран репозиторий: {request.repo}")
 
     return {"success": True, "current": repo_manager.current_repo}
 
@@ -307,7 +378,7 @@ async def select_repo(request: RepoSelectRequest):
 async def delete_repo(request: RepoSelectRequest):
     """Delete a repository"""
     if not repo_manager:
-        raise HTTPException(500, "Repo manager not initialized")
+        raise HTTPException(500, "Repo manager не инициализирован")
 
     # Prevent deleting current repo if possible, or handle it
     if repo_manager.current_repo == request.repo:
@@ -316,10 +387,10 @@ async def delete_repo(request: RepoSelectRequest):
     result = repo_manager.delete_repo(request.repo)
     if result["success"]:
         if system_logger:
-            system_logger.info(f"Deleted repository: {request.repo}")
+            system_logger.info(f"Удален репозиторий: {request.repo}")
     else:
         if system_logger:
-            system_logger.error(f"Failed to delete repo: {result['message']}")
+            system_logger.error(f"Не удалось удалить репозиторий: {result['message']}")
         raise HTTPException(400, result["message"])
 
     return result
@@ -336,6 +407,479 @@ def _init_git_workspace():
         git_workspace = GitWorkspace(workspace, bare)
 
 
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+
+
+def _infer_repo_from_dump_filename(filename: str) -> Optional[str]:
+    name = Path(filename).name
+    m = re.fullmatch(r"dump_([A-Za-z0-9_-]+)_([0-9]{8})_([0-9]{4})\.dmp", name)
+    if not m:
+        return None
+    repo = m.group(1)
+    # Defensive: prevent path traversal-like tokens even if regex already blocks '/'
+    if "/" in repo or "\\" in repo:
+        return None
+    return repo
+
+
+def _pick_bundle_ref(workspace_path: Path, bundle_path: Path, preferred_branch: str = "main") -> str:
+    proc = _git(workspace_path, "bundle", "list-heads", str(bundle_path))
+    if proc.returncode != 0:
+        return "HEAD"
+
+    refs = []
+    for line in (proc.stdout or "").splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2:
+            refs.append(parts[1])
+
+    if not refs:
+        return "HEAD"
+
+    preferred = [
+        f"refs/heads/{preferred_branch}",
+        preferred_branch,
+        "refs/heads/main",
+        "main",
+        "refs/heads/master",
+        "master",
+    ]
+    for candidate in preferred:
+        if candidate in refs:
+            return candidate
+
+    if "HEAD" in refs:
+        return "HEAD"
+    return refs[0]
+
+
+def _ensure_clean_workspace(path: Path) -> Optional[dict]:
+    """Check if workspace is clean; if not, try to reset/clean. Returns error dict if failed."""
+    status_proc = _git(path, "status", "--porcelain")
+    if status_proc.returncode != 0:
+        return {"success": False, "message": status_proc.stderr.strip() or "Failed to inspect workspace status"}
+
+    if not (status_proc.stdout or "").strip():
+        return None  # Clean
+
+    # Workspace is dirty, try to self-heal
+    if system_logger:
+        system_logger.warning("Workspace dirty, attempting self-healing reset", {"path": str(path)})
+
+    _git(path, "reset", "--hard", "HEAD")
+    _git(path, "clean", "-fd")
+
+    # Double check
+    status_proc = _git(path, "status", "--porcelain")
+    if (status_proc.stdout or "").strip():
+        return {"success": False, "message": "Uncommitted changes detected on Mirror. Self-healing failed."}
+
+    return None
+
+
+def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_filename: str) -> dict:
+    if not repo_manager:
+        return {"success": False, "message": "Repo manager is not initialized"}
+
+    workspace_path = repo_manager._get_workspace_path(repo_name)
+    bare_path = repo_manager._get_bare_path(repo_name)
+
+    if not workspace_path.exists():
+        return {"success": False, "message": f"Workspace '{repo_name}' is not found"}
+
+    clean_err = _ensure_clean_workspace(workspace_path)
+    if clean_err:
+        return clean_err
+
+    password = os.getenv("SYNC_PASSWORD", "")
+    if not password:
+        return {"success": False, "message": "SYNC_PASSWORD not configured in environment"}
+
+    with tempfile.TemporaryDirectory(prefix="lgm-upload-apply-") as tmp:
+        tmp_dir = Path(tmp)
+        bundle_path = tmp_dir / "incoming.bundle"
+
+        try:
+            decrypt_dump_to_bundle(dump_path, bundle_path, password)
+        except Exception as e:
+            decrypt_msg = str(e).strip() or e.__class__.__name__
+            if "Unsupported dump format" in decrypt_msg:
+                base_error = "Failed to decrypt dump: Unsupported dump format (likely stale/legacy work_kit on sender)."
+            elif "InvalidTag" in decrypt_msg:
+                base_error = (
+                    "Failed to decrypt dump: InvalidTag "
+                    "(encryption password mismatch between plugin Sync Password and backend SYNC_PASSWORD)"
+                )
+            else:
+                base_error = f"Failed to decrypt dump: {decrypt_msg}"
+            return {"success": False, "message": base_error}
+
+        current_branch = None
+        branch_proc = _git(workspace_path, "rev-parse", "--abbrev-ref", "HEAD")
+        if branch_proc.returncode == 0:
+            branch = (branch_proc.stdout or "").strip()
+            if branch and branch != "HEAD":
+                current_branch = branch
+
+        preferred = current_branch or "main"
+        ref = _pick_bundle_ref(workspace_path, bundle_path, preferred_branch=preferred)
+
+        fetch_proc = _git(workspace_path, "fetch", str(bundle_path), ref)
+        if fetch_proc.returncode != 0:
+            return {"success": False, "message": fetch_proc.stderr.strip() or "Failed to fetch bundle"}
+
+        replaced_history = False
+
+        if not current_branch:
+            target = preferred
+            checkout_proc = _git(workspace_path, "checkout", "-B", target, "FETCH_HEAD")
+            if checkout_proc.returncode != 0:
+                return {
+                    "success": False,
+                    "message": checkout_proc.stderr.strip() or "Failed to bootstrap branch from bundle",
+                }
+            current_branch = target
+        else:
+            merge_proc = _git(workspace_path, "merge", "--ff-only", "FETCH_HEAD")
+            if merge_proc.returncode != 0:
+                merge_err = (merge_proc.stderr or merge_proc.stdout or "").strip()
+                if "refusing to merge unrelated histories" in merge_err.lower():
+                    # Deterministic server-side policy: replace local branch with incoming history.
+                    # This keeps mirror sync resilient when repo roots diverged.
+                    reset_branch = _git(workspace_path, "checkout", "-B", current_branch, "FETCH_HEAD")
+                    if reset_branch.returncode != 0:
+                        return {
+                            "success": False,
+                            "message": reset_branch.stderr.strip() or "Failed to replace branch with incoming history",
+                        }
+                    replaced_history = True
+                else:
+                    return {"success": False, "message": merge_err or "Fast-forward merge failed"}
+
+        if bare_path.exists():
+            push_args = ["push"]
+            if replaced_history:
+                push_args.append("--force")
+            push_args.extend([str(bare_path), f"HEAD:{current_branch}"])
+            push_proc = _git(workspace_path, *push_args)
+            if push_proc.returncode != 0:
+                return {"success": False, "message": push_proc.stderr.strip() or "Failed to sync bare repo"}
+
+        log_proc = _git(workspace_path, "log", "-1", "--oneline")
+        commit = (log_proc.stdout or "").strip() if log_proc.returncode == 0 else ""
+
+        if system_logger:
+            system_logger.info(
+                "upload-and-apply result",
+                {"repo": repo_name, "success": True, "dump_file": dump_filename, "commit": commit},
+            )
+
+        return {
+            "success": True,
+            "repo": repo_name,
+            "dump_file": dump_filename,
+            "commit": commit,
+            "message": "Sync applied successfully",
+        }
+
+
+@router.post("/sync/has-commits")
+async def sync_has_commits(request: SyncHasCommitsRequest):
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager не инициализирован")
+
+    repo = (request.repo or "").strip()
+    commits = [c.strip() for c in (request.commits or []) if c and c.strip()]
+
+    if not repo:
+        raise HTTPException(400, "Repository name is required")
+
+    if repo not in repo_manager.get_repos():
+        return {"success": True, "repo": repo, "known": []}
+
+    workspace = repo_manager._get_workspace_path(repo)
+    if not workspace.exists():
+        return {"success": True, "repo": repo, "known": []}
+
+    known = []
+    for h in commits:
+        proc = _git(workspace, "cat-file", "-e", f"{h}^{{commit}}")
+        if proc.returncode == 0:
+            known.append(h)
+
+    head = None
+    head_proc = _git(workspace, "rev-parse", "HEAD")
+    if head_proc.returncode == 0:
+        head = (head_proc.stdout or "").strip() or None
+
+    return {"success": True, "repo": repo, "known": known, "head": head}
+
+
+@router.post("/sync/apply-known")
+async def sync_apply_known(request: SyncApplyKnownRequest):
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager не инициализирован")
+
+    repo = (request.repo or "").strip()
+    commit = (request.commit or "").strip()
+    if not repo or not commit:
+        raise HTTPException(400, "Repository and commit are required")
+
+    if repo not in repo_manager.get_repos():
+        return {"success": False, "message": f"Repository '{repo}' not found", "repo": repo}
+
+    workspace = repo_manager._get_workspace_path(repo)
+    bare = repo_manager._get_bare_path(repo)
+    if not workspace.exists():
+        return {"success": False, "message": f"Workspace for '{repo}' not found", "repo": repo}
+
+    status_err = _ensure_clean_workspace(workspace)
+    if status_err:
+        status_err["repo"] = repo
+        return status_err
+
+    exists_proc = _git(workspace, "cat-file", "-e", f"{commit}^{{commit}}")
+    if exists_proc.returncode != 0:
+        return {"success": False, "message": f"Commit not found locally: {commit}", "repo": repo}
+
+    reset_proc = _git(workspace, "reset", "--hard", commit)
+    if reset_proc.returncode != 0:
+        return {"success": False, "message": reset_proc.stderr.strip() or "Failed to reset workspace", "repo": repo}
+
+    branch_proc = _git(workspace, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = (branch_proc.stdout or "").strip() if branch_proc.returncode == 0 else ""
+    if branch and branch != "HEAD" and bare.exists():
+        push_proc = _git(workspace, "push", str(bare), f"HEAD:{branch}")
+        if push_proc.returncode != 0:
+            return {"success": False, "message": push_proc.stderr.strip() or "Failed to sync bare repo", "repo": repo}
+
+    return {"success": True, "repo": repo, "commit": commit, "message": "Applied known commit"}
+
+
+@router.post("/sync/upload-and-apply")
+async def sync_upload_and_apply(repo: str = Form(...), dump_file: UploadFile = File(...)):
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager не инициализирован")
+
+    repo_name = (repo or "").strip()
+    if not repo_name:
+        raise HTTPException(400, "Repository name is required")
+
+    if repo_name not in repo_manager.get_repos():
+        return {"success": False, "message": f"Repository '{repo_name}' not found", "repo": repo_name}
+
+    filename = dump_file.filename or ""
+    inferred = _infer_repo_from_dump_filename(filename)
+    if inferred and inferred != repo_name:
+        return {
+            "success": False,
+            "repo": repo_name,
+            "message": f"Uploaded filename indicates repo '{inferred}' but request repo is '{repo_name}'",
+        }
+
+    if system_logger:
+        system_logger.info("upload-and-apply requested", {"repo": repo_name, "filename": filename})
+
+    with tempfile.TemporaryDirectory(prefix="lgm-upload-") as tmp:
+        tmp_dir = Path(tmp)
+        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        safe_name = filename if filename.endswith(".dmp") else f"dump_{repo_name}_{ts}.dmp"
+        dump_path = tmp_dir / Path(safe_name).name
+
+        payload = await dump_file.read()
+        dump_path.write_bytes(payload)
+
+        result = _apply_dump_to_repo_and_sync_bare(
+            dump_path=dump_path, repo_name=repo_name, dump_filename=dump_path.name
+        )
+        return result
+
+
+@router.post("/sync/export-dump")
+async def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(None)):
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager не инициализирован")
+
+    repo_name = (repo or "").strip()
+    if not repo_name:
+        raise HTTPException(400, "Repository name is required")
+    if repo_name not in repo_manager.get_repos():
+        raise HTTPException(404, "Repository not found")
+
+    workspace = repo_manager._get_workspace_path(repo_name)
+    if not workspace.exists():
+        raise HTTPException(404, "Workspace not found")
+
+    head_proc = _git(workspace, "rev-parse", "HEAD")
+    if head_proc.returncode != 0:
+        raise HTTPException(400, "Repository has no commits")
+    head = (head_proc.stdout or "").strip()
+
+    if since:
+        check_since = _git(workspace, "cat-file", "-e", f"{since}^{{commit}}")
+        if check_since.returncode == 0 and since == head:
+            return Response(status_code=204, headers={"X-LGM-Head": head, "X-LGM-Repo": repo_name})
+
+    with tempfile.TemporaryDirectory(prefix="lgm-export-") as tmp:
+        tmp_dir = Path(tmp)
+        bundle_path = tmp_dir / "export.bundle"
+
+        if since:
+            check_since = _git(workspace, "cat-file", "-e", f"{since}^{{commit}}")
+            if check_since.returncode == 0:
+                bundle_proc = _git(workspace, "bundle", "create", str(bundle_path), f"{since}..HEAD")
+            else:
+                bundle_proc = _git(workspace, "bundle", "create", str(bundle_path), "--all")
+        else:
+            bundle_proc = _git(workspace, "bundle", "create", str(bundle_path), "--all")
+
+        if bundle_proc.returncode != 0:
+            raise HTTPException(500, bundle_proc.stderr.strip() or "Failed to create bundle")
+
+        password = os.getenv("SYNC_PASSWORD", "")
+        if not password:
+            raise HTTPException(500, "SYNC_PASSWORD not configured in environment")
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M")
+        dump_path = tmp_dir / f"dump_{repo_name}_{ts}.dmp"
+        try:
+            encrypt_bundle_to_dump(bundle_path, dump_path, password)
+        except Exception as e:
+            raise HTTPException(500, f"Failed to encrypt dump: {e}")
+
+        return Response(
+            content=dump_path.read_bytes(),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f'attachment; filename="{dump_path.name}"',
+                "X-LGM-Head": head,
+                "X-LGM-Repo": repo_name,
+            },
+        )
+
+
+@router.post("/sync/preview-pull")
+async def sync_preview_pull(request: PreviewPullRequest):
+    """Lightweight preview: are there incoming commits to pull?"""
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager не инициализирован")
+
+    repo_name = (request.repo or "").strip()
+    if not repo_name:
+        raise HTTPException(400, "Repository name is required")
+
+    if repo_name not in repo_manager.get_repos():
+        return {
+            "success": True,
+            "repo": repo_name,
+            "remoteHead": None,
+            "hasUpdates": False,
+            "reason": "repo-not-found",
+        }
+
+    workspace = repo_manager._get_workspace_path(repo_name)
+    if not workspace.exists():
+        return {
+            "success": True,
+            "repo": repo_name,
+            "remoteHead": None,
+            "hasUpdates": False,
+            "reason": "workspace-not-found",
+        }
+
+    head_proc = _git(workspace, "rev-parse", "HEAD")
+    if head_proc.returncode != 0:
+        return {
+            "success": True,
+            "repo": repo_name,
+            "remoteHead": None,
+            "hasUpdates": False,
+            "reason": "no-commits",
+        }
+
+    head = (head_proc.stdout or "").strip()
+    since = (request.since or "").strip()
+
+    if not since:
+        return {
+            "success": True,
+            "repo": repo_name,
+            "remoteHead": head,
+            "hasUpdates": True,
+            "reason": "full-sync-needed",
+        }
+
+    if since == head:
+        return {
+            "success": True,
+            "repo": repo_name,
+            "remoteHead": head,
+            "hasUpdates": False,
+            "reason": "no-new-commits",
+        }
+
+    check_since = _git(workspace, "cat-file", "-e", f"{since}^{{commit}}")
+    if check_since.returncode != 0:
+        return {
+            "success": True,
+            "repo": repo_name,
+            "remoteHead": head,
+            "hasUpdates": True,
+            "reason": "since-not-found",
+        }
+
+    return {
+        "success": True,
+        "repo": repo_name,
+        "remoteHead": head,
+        "hasUpdates": True,
+        "reason": "ahead",
+    }
+
+
+@router.post("/sync/preview-pull-details")
+async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
+    """Get commit list and diffstat for incoming changes"""
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager not initialized")
+
+    repo_name = (request.repo or "").strip()
+    if repo_name not in repo_manager.get_repos():
+        raise HTTPException(404, "Repository not found")
+
+    workspace = repo_manager._get_workspace_path(repo_name)
+    if not workspace.exists():
+        raise HTTPException(404, "Workspace not found")
+
+    since = (request.since or "").strip()
+    rev_range = f"{since}..HEAD" if since else "HEAD"
+
+    # Get commits
+    log_proc = _git(workspace, "log", "--oneline", "-n", "30", rev_range)
+    commits = []
+    if log_proc.returncode == 0:
+        for line in (log_proc.stdout or "").strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split(" ", 1)
+            commits.append({
+                "hash": parts[0],
+                "message": parts[1] if len(parts) > 1 else ""
+            })
+
+    # Get diffstat
+    diff_proc = _git(workspace, "diff", "--stat", rev_range)
+    diffstat = diff_proc.stdout or ""
+
+    return {
+        "success": True,
+        "repo": repo_name,
+        "commits": commits,
+        "diffstat": diffstat
+    }
+
+
 # ============ SYNC ============
 
 
@@ -344,7 +888,7 @@ async def sync_workspace():
     """Sync workspace from bare repo (after push from work)"""
     global state
     if not repo_manager:
-        raise HTTPException(500, "Repo manager not initialized")
+        raise HTTPException(500, "Repo manager не инициализирован")
 
     result = repo_manager.sync_workspace()
     if result["success"]:
@@ -369,19 +913,19 @@ async def notify_push():
 async def open_explorer():
     """Open current workspace in system explorer"""
     if not repo_manager:
-        raise HTTPException(500, "Repo manager not initialized")
+        raise HTTPException(500, "Repo manager не инициализирован")
 
     workspace = repo_manager._get_workspace_path(repo_manager.current_repo)
     abs_path = str(workspace.absolute())
 
     if not workspace.exists():
-        raise HTTPException(404, "Workspace not found")
+        raise HTTPException(404, "Workspace не найден")
 
     try:
         os.startfile(abs_path)
         return {"success": True, "path": abs_path}
     except Exception as e:
-        raise HTTPException(500, f"Failed to open explorer: {str(e)}")
+        raise HTTPException(500, f"Не удалось открыть проводник: {str(e)}")
 
 
 @router.post("/git/save-and-sync")
@@ -393,10 +937,10 @@ async def save_and_sync(message: Optional[str] = Query("Sync from Home")):
         _init_git_workspace()
 
     if not git_workspace:
-        raise HTTPException(500, "Git workspace not initialized")
+        raise HTTPException(500, "Git workspace не инициализирован")
 
     if system_logger:
-        system_logger.info("Prepare for work initiated")
+        system_logger.info("Инициирована подготовка к работе")
 
     # Just commit changes. Since it's a non-bare repo,
     # work PC will pull these commits.
@@ -406,10 +950,10 @@ async def save_and_sync(message: Optional[str] = Query("Sync from Home")):
         state.status = "ready"
         state.last_sync_time = datetime.now()
         if system_logger:
-            system_logger.info("Changes prepared for work")
+            system_logger.info("Изменения подготовлены для работы")
     else:
         if system_logger:
-            system_logger.error("Failed to prepare changes", {"error": result.get("message")})
+            system_logger.error("Не удалось подготовить изменения", {"error": result.get("message")})
 
     return result
 
@@ -437,7 +981,7 @@ async def get_diff(file: Optional[str] = None):
         _init_git_workspace()
 
     if not git_workspace:
-        raise HTTPException(500, "Git workspace not initialized")
+        raise HTTPException(500, "Git workspace не инициализирован")
 
     return git_workspace.get_diff(file)
 
@@ -451,7 +995,7 @@ async def get_commit_details(commit_hash: str):
         _init_git_workspace()
 
     if not git_workspace:
-        raise HTTPException(500, "Git workspace not initialized")
+        raise HTTPException(500, "Git workspace не инициализирован")
 
     return git_workspace.get_commit_details(commit_hash)
 
@@ -470,14 +1014,14 @@ async def get_files(repo: Optional[str] = None):
 async def open_file(file: str = Query(..., description="Relative file path")):
     """Open specific file in Cursor/VS Code (Alias for frontend compatibility)"""
     if not repo_manager:
-        raise HTTPException(500, "Repo manager not initialized")
+        raise HTTPException(500, "Repo manager не инициализирован")
 
     abs_path = repo_manager.get_absolute_path(file)
 
     if not os.path.exists(abs_path):
         if system_logger:
-            system_logger.error("File not found", {"file": file})
-        raise HTTPException(404, f"File not found: {file}")
+            system_logger.error("Файл не найден", {"file": file})
+        raise HTTPException(404, f"Файл не найден: {file}")
 
     try:
         # Try Cursor first
@@ -488,7 +1032,7 @@ async def open_file(file: str = Query(..., description="Relative file path")):
             stderr=subprocess.DEVNULL,
         )
         if system_logger:
-            system_logger.info("File opened in editor", {"file": file, "editor": "cursor"})
+            system_logger.info("Файл открыт в редакторе", {"file": file, "editor": "cursor"})
         return {"success": True, "editor": "cursor", "path": abs_path}
     except Exception:
         try:
@@ -499,12 +1043,12 @@ async def open_file(file: str = Query(..., description="Relative file path")):
                 stderr=subprocess.DEVNULL,
             )
             if system_logger:
-                system_logger.info("File opened in editor", {"file": file, "editor": "code"})
+                system_logger.info("Файл открыт в редакторе", {"file": file, "editor": "code"})
             return {"success": True, "editor": "code", "path": abs_path}
         except Exception:
             os.startfile(abs_path)
             if system_logger:
-                system_logger.info("File opened in default app", {"file": file})
+                system_logger.info("Файл открыт в приложении по умолчанию", {"file": file})
             return {"success": True, "editor": "default", "path": abs_path}
 
 
@@ -529,15 +1073,15 @@ async def get_file_content(path: str = Query(..., description="Relative file pat
 async def _get_file_content(file: str):
     """Internal function to get file content"""
     if not repo_manager:
-        raise HTTPException(500, "Repo manager not initialized")
+        raise HTTPException(500, "Repo manager не инициализирован")
 
     abs_path = repo_manager.get_absolute_path(file)
 
     if not os.path.exists(abs_path):
-        raise HTTPException(404, f"File not found: {file}")
+        raise HTTPException(404, f"Файл не найден: {file}")
 
     if os.path.isdir(abs_path):
-        raise HTTPException(400, "Cannot view directory")
+        raise HTTPException(400, "Невозможно просмотреть директорию")
 
     # Handle binary files (images, icons)
     ext = os.path.splitext(file)[1].lower()
@@ -576,7 +1120,7 @@ async def _get_file_content(file: str):
                 },
             }
         except Exception as e:
-            raise HTTPException(500, f"Error reading binary file: {str(e)}")
+            raise HTTPException(500, f"Ошибка чтения бинарного файла: {str(e)}")
 
     try:
         # Try to read as text
@@ -644,22 +1188,22 @@ async def _get_file_content(file: str):
             },
         }
     except Exception as e:
-        raise HTTPException(500, f"Error reading file: {str(e)}")
+        raise HTTPException(500, f"Ошибка чтения файла: {str(e)}")
 
 
 @router.get("/file/pdf")
 async def view_pdf(file: str = Query(..., description="Relative file path")):
     """Get PDF file as base64 for viewing in browser"""
     if not repo_manager:
-        raise HTTPException(500, "Repo manager not initialized")
+        raise HTTPException(500, "Repo manager не инициализирован")
 
     abs_path = repo_manager.get_absolute_path(file)
 
     if not os.path.exists(abs_path):
-        raise HTTPException(404, f"File not found: {file}")
+        raise HTTPException(404, f"Файл не найден: {file}")
 
     if not file.lower().endswith(".pdf"):
-        raise HTTPException(400, "Not a PDF file")
+        raise HTTPException(400, "Это не PDF файл")
 
     try:
         import base64
@@ -674,7 +1218,7 @@ async def view_pdf(file: str = Query(..., description="Relative file path")):
             "size": len(content),
         }
     except Exception as e:
-        raise HTTPException(500, f"Error reading PDF: {str(e)}")
+        raise HTTPException(500, f"Ошибка чтения PDF: {str(e)}")
 
 
 @router.get("/commits")
@@ -735,7 +1279,7 @@ async def search_repo(
     Search for code in the repository using 'git grep'.
     """
     if not repo_manager:
-        raise HTTPException(500, "Repo manager not initialized")
+        raise HTTPException(500, "Repo manager не инициализирован")
 
     # Resolve repository
     repo_name = repo or repo_manager.current_repo
@@ -745,7 +1289,7 @@ async def search_repo(
 
     workspace_path = repo_manager._get_workspace_path(repo_name)
     if not workspace_path.exists():
-        raise HTTPException(404, f"Repository '{repo_name}' workspace not found")
+        raise HTTPException(404, f"Workspace репозитория '{repo_name}' не найден")
 
     try:
         # Run git grep
@@ -774,10 +1318,14 @@ async def search_repo(
         elif result.returncode > 1:
             # git grep failed
             if system_logger:
-                system_logger.error("Git grep failed", {"error": result.stderr})
+                system_logger.error("Git grep завершился с ошибкой", {"error": result.stderr})
             # Don't crash, just return empty with error hint?
             # Or maybe it's just invalid regex.
-            return {"matches": [], "error": "Search failed (invalid regex?)", "details": result.stderr}
+            return {
+                "matches": [],
+                "error": "Поиск не удался (неверное регулярное выражение?)",
+                "details": result.stderr,
+            }
 
         # Parse output
         matches = []
@@ -802,8 +1350,8 @@ async def search_repo(
 
     except Exception as e:
         if system_logger:
-            system_logger.error("Search exception", {"error": str(e)})
-        raise HTTPException(500, f"Search failed: {str(e)}")
+            system_logger.error("Исключение при поиске", {"error": str(e)})
+        raise HTTPException(500, f"Поиск не удался: {str(e)}")
 
 
 # ============ SHARED FOLDERS ============
@@ -813,15 +1361,15 @@ async def search_repo(
 async def get_shared_folders():
     """Get list of shared folders with sizes"""
     if not shared_manager:
-        raise HTTPException(500, "Shared manager not initialized")
+        raise HTTPException(500, "Shared manager не инициализирован")
 
     try:
         folders = shared_manager.get_folders()
         return {"success": True, "folders": folders}
     except Exception as e:
         if system_logger:
-            system_logger.error("Failed to get shared folders", {"error": str(e)})
-        raise HTTPException(500, f"Failed to get shared folders: {str(e)}")
+            system_logger.error("Не удалось получить список общих папок", {"error": str(e)})
+        raise HTTPException(500, f"Не удалось получить список общих папок: {str(e)}")
 
 
 class CreateFolderRequest(BaseModel):
@@ -832,14 +1380,14 @@ class CreateFolderRequest(BaseModel):
 async def create_shared_folder(request: CreateFolderRequest):
     """Create a new shared folder"""
     if not shared_manager:
-        raise HTTPException(500, "Shared manager not initialized")
+        raise HTTPException(500, "Shared manager не инициализирован")
 
     result = shared_manager.create_folder(request.name)
     if not result["success"]:
         raise HTTPException(400, result["message"])
 
     if system_logger:
-        system_logger.info("Created shared folder", {"name": request.name})
+        system_logger.info("Создана общая папка", {"name": request.name})
 
     return result
 
@@ -848,14 +1396,14 @@ async def create_shared_folder(request: CreateFolderRequest):
 async def delete_shared_folder(name: str):
     """Delete a shared folder"""
     if not shared_manager:
-        raise HTTPException(500, "Shared manager not initialized")
+        raise HTTPException(500, "Shared manager не инициализирован")
 
     result = shared_manager.delete_folder(name)
     if not result["success"]:
         raise HTTPException(400, result["message"])
 
     if system_logger:
-        system_logger.info("Deleted shared folder", {"name": name})
+        system_logger.info("Удалена общая папка", {"name": name})
 
     return result
 
@@ -864,7 +1412,7 @@ async def delete_shared_folder(name: str):
 async def get_shared_files(folder: str = Query(...), subfolder: Optional[str] = Query(None)):
     """Get files in shared folder"""
     if not shared_manager:
-        raise HTTPException(500, "Shared manager not initialized")
+        raise HTTPException(500, "Shared manager не инициализирован")
 
     result = shared_manager.get_files(folder, subfolder)
     if not result["success"]:
@@ -881,14 +1429,11 @@ async def upload_shared_file(
     tags: Optional[str] = Form(None),
     description: Optional[str] = Form(""),
 ):
-    """Upload file to shared folder"""
+    """Upload file to shared folder using async streaming"""
     if not shared_manager:
-        raise HTTPException(500, "Shared manager not initialized")
+        raise HTTPException(500, "Shared manager не инициализирован")
 
     try:
-        # Read file content
-        content = await file.read()
-
         # Build file path
         file_path = file.filename
         if subfolder:
@@ -899,32 +1444,33 @@ async def upload_shared_file(
         if tags:
             tag_list = [t.strip() for t in tags.split(",") if t.strip()]
 
-        result = shared_manager.save_file(folder, file_path, content, tag_list, description)
+        # Use streaming method to avoid loading entire file into RAM
+        result = await shared_manager.save_upload_file_streaming(folder, file_path, file, tag_list, description)
         if not result["success"]:
             raise HTTPException(400, result["message"])
 
         if system_logger:
-            system_logger.info("File uploaded", {"folder": folder, "file": file.filename})
+            system_logger.info("Файл загружен", {"folder": folder, "file": file.filename})
 
         return result
     except Exception as e:
         if system_logger:
-            system_logger.error("Failed to upload file", {"error": str(e)})
-        raise HTTPException(500, f"Failed to upload file: {str(e)}")
+            system_logger.error("Не удалось загрузить файл", {"error": str(e)})
+        raise HTTPException(500, f"Не удалось загрузить файл: {str(e)}")
 
 
 @router.delete("/shared/files")
 async def delete_shared_file(folder: str = Query(...), path: str = Query(...)):
     """Delete file from shared folder"""
     if not shared_manager:
-        raise HTTPException(500, "Shared manager not initialized")
+        raise HTTPException(500, "Shared manager не инициализирован")
 
     result = shared_manager.delete_file(folder, path)
     if not result["success"]:
         raise HTTPException(400, result["message"])
 
     if system_logger:
-        system_logger.info("File deleted", {"folder": folder, "path": path})
+        system_logger.info("Файл удален", {"folder": folder, "path": path})
 
     return result
 
@@ -933,7 +1479,7 @@ async def delete_shared_file(folder: str = Query(...), path: str = Query(...)):
 async def get_file_history(folder: str = Query(...), path: str = Query(...)):
     """Get Git history for a file"""
     if not shared_manager:
-        raise HTTPException(500, "Shared manager not initialized")
+        raise HTTPException(500, "Shared manager не инициализирован")
 
     result = shared_manager.get_file_history(folder, path)
     if not result["success"]:
@@ -952,14 +1498,16 @@ class RestoreFileRequest(BaseModel):
 async def restore_shared_file(request: RestoreFileRequest):
     """Restore file to specific commit"""
     if not shared_manager:
-        raise HTTPException(500, "Shared manager not initialized")
+        raise HTTPException(500, "Shared manager не инициализирован")
 
     result = shared_manager.restore_file(request.folder, request.path, request.commit_hash)
     if not result["success"]:
         raise HTTPException(400, result["message"])
 
     if system_logger:
-        system_logger.info("File restored", {"folder": request.folder, "path": request.path, "commit": request.commit_hash})
+        system_logger.info(
+            "Файл восстановлен", {"folder": request.folder, "path": request.path, "commit": request.commit_hash}
+        )
 
     return result
 
@@ -973,14 +1521,14 @@ class CreateSubfolderRequest(BaseModel):
 async def create_shared_subfolder(request: CreateSubfolderRequest):
     """Create subfolder in shared folder"""
     if not shared_manager:
-        raise HTTPException(500, "Shared manager not initialized")
+        raise HTTPException(500, "Shared manager не инициализирован")
 
     result = shared_manager.create_subfolder(request.folder, request.path)
     if not result["success"]:
         raise HTTPException(400, result["message"])
 
     if system_logger:
-        system_logger.info("Subfolder created", {"folder": request.folder, "path": request.path})
+        system_logger.info("Создана подпапка", {"folder": request.folder, "path": request.path})
 
     return result
 
@@ -1072,3 +1620,300 @@ async def get_file_metadata(folder: str = Query(...), path: str = Query(...)):
         if system_logger:
             system_logger.error("Failed to get metadata", {"error": str(e)})
         raise HTTPException(500, f"Failed to get metadata: {str(e)}")
+
+
+@router.post("/sync/apply-bundle")
+async def apply_stealth_bundle():
+    """Apply latest stealth dump to workspace with conflict resolution and repo verification"""
+    if not shared_manager or not repo_manager:
+        raise HTTPException(500, "Managers не инициализированы")
+
+    try:
+        import random
+        import asyncio
+
+        # Find latest dump in shared folders.
+        # We prefer common well-known sync folders, but also scan all existing shared folders
+        # so users can pick their own (e.g. "onyx").
+        preferred = ["work-sync", "sync", "backups"]
+        all_folders = []
+        try:
+            all_folders = [f.get("name") for f in (shared_manager.get_folders() or []) if f.get("name")]
+        except Exception:
+            all_folders = []
+
+        # Folder names are case-sensitive on some filesystems.
+        # Normalize by including lowercase variants too.
+        normalized_all = []
+        for name in all_folders:
+            normalized_all.append(name)
+            lower = str(name).lower()
+            if lower != name:
+                normalized_all.append(lower)
+
+        sync_folders = []
+        for name in preferred + normalized_all:
+            if name and name not in sync_folders:
+                sync_folders.append(name)
+
+        if not repo_manager.current_repo:
+            return {"success": False, "message": "No repository selected"}
+
+        # Collect all candidates first, then choose the newest dump matching the current repo.
+        latest_dump = None
+        folder_name = None
+        scanned = []
+        candidates = []
+        current_repo_name = str(repo_manager.current_repo)
+
+        for folder in sync_folders:
+            scanned.append(folder)
+            try:
+                folder_path = shared_manager._get_folder_path(folder)
+                if not folder_path.exists():
+                    continue
+
+                for dump in folder_path.glob("dump_*.dmp"):
+                    candidates.append(
+                        {"path": dump, "folder": folder, "name": dump.name, "mtime": dump.stat().st_mtime}
+                    )
+            except Exception:
+                continue
+
+        matching_candidates = [item for item in candidates if item["name"].startswith(f"dump_{current_repo_name}_")]
+
+        if matching_candidates:
+            selected = sorted(matching_candidates, key=lambda x: x["mtime"], reverse=True)[0]
+            latest_dump = selected["path"]
+            folder_name = selected["folder"]
+        elif candidates:
+            # Keep old behavior as fallback, but surface a clear mismatch error below.
+            selected = sorted(candidates, key=lambda x: x["mtime"], reverse=True)[0]
+            latest_dump = selected["path"]
+            folder_name = selected["folder"]
+
+        if not latest_dump:
+            return {
+                "success": False,
+                "message": "No stealth dumps found",
+                "scanned_folders": scanned,
+                "expected_pattern": "dump_*.dmp",
+                "current_repo": current_repo_name,
+            }
+
+        # Extract project name from dump filename (e.g., dump_MyProject_20240520_1800.dmp)
+        dump_name = latest_dump.name
+        try:
+            dump_stem = dump_name.replace("dump_", "").replace(".dmp", "")
+            if dump_name.startswith(f"dump_{current_repo_name}_"):
+                dump_repo = current_repo_name
+            else:
+                parts = dump_stem.split("_")
+                dump_repo = parts[0]  # legacy fallback for older naming
+        except (IndexError, ValueError):
+            return {"success": False, "message": "Invalid dump filename format"}
+
+        # Verify repo match
+        if dump_repo != current_repo_name:
+            return {
+                "success": False,
+                "message": f"Dump is for '{dump_repo}' but current repo is '{current_repo_name}'. Please select the correct repository.",
+                "selected_dump": dump_name,
+                "selected_folder": folder_name,
+                "scanned_folders": scanned,
+            }
+
+        # Get workspace path
+        workspace_path = repo_manager._get_workspace_path(repo_manager.current_repo)
+        if not workspace_path or not workspace_path.exists():
+            return {"success": False, "message": "Workspace not initialized"}
+
+        # Check for uncommitted changes
+        status_result = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=str(workspace_path), capture_output=True, text=True
+        )
+
+        if status_result.stdout.strip():
+            return {
+                "success": False,
+                "message": "Uncommitted changes detected. Please commit or stash changes first before applying sync.",
+            }
+
+        # Get password from environment
+        password = os.getenv("SYNC_PASSWORD", "")
+        if not password:
+            return {"success": False, "message": "SYNC_PASSWORD not configured in .env"}
+
+        # OpSec: Add random delay 2-4 seconds before decryption
+        delay = random.uniform(2, 4)
+        await asyncio.sleep(delay)
+
+        # Decrypt dump (native LGMSTRL1 only)
+        temp_bundle = None
+        temp_dir = Path(tempfile.mkdtemp(prefix="lgm-stealth-", dir=str(latest_dump.parent)))
+        bundle_candidate = temp_dir / "debug_info.tmp"
+        try:
+            with latest_dump.open("rb") as fh:
+                header = fh.read(len(MAGIC))
+
+            if header == MAGIC:
+                decrypt_dump_to_bundle(latest_dump, bundle_candidate, password)
+                temp_bundle = bundle_candidate
+            else:
+                return {"success": False, "message": "Unsupported dump format (expected native LGMSTRL1)"}
+
+        except Exception as e:
+            try:
+                temp_dir.rmdir()
+            except Exception:
+                pass
+            msg = str(e).strip() or e.__class__.__name__
+            return {"success": False, "message": f"Decryption failed: {msg}"}
+
+        try:
+            # Get current branch
+            branch_result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=str(workspace_path),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            current_branch = branch_result.stdout.strip()
+
+            # Use fetch + reset instead of pull to ensure exact copy
+            fetch_result = subprocess.run(
+                ["git", "fetch", str(temp_bundle), f"{current_branch}:{current_branch}"],
+                cwd=str(workspace_path),
+                capture_output=True,
+                text=True,
+            )
+
+            if fetch_result.returncode != 0:
+                temp_bundle.unlink(missing_ok=True)
+                try:
+                    temp_dir.rmdir()
+                except Exception:
+                    pass
+                return {"success": False, "message": f"Failed to fetch from bundle: {fetch_result.stderr}"}
+
+            # Reset to FETCH_HEAD to ensure exact copy
+            reset_result = subprocess.run(
+                ["git", "reset", "--hard", "FETCH_HEAD"], cwd=str(workspace_path), capture_output=True, text=True
+            )
+
+            if reset_result.returncode != 0:
+                temp_bundle.unlink(missing_ok=True)
+                try:
+                    temp_dir.rmdir()
+                except Exception:
+                    pass
+                return {"success": False, "message": f"Failed to reset workspace: {reset_result.stderr}"}
+
+            # Get latest commit info
+            log_result = subprocess.run(
+                ["git", "log", "-1", "--oneline"], cwd=str(workspace_path), capture_output=True, text=True, check=True
+            )
+            latest_commit = log_result.stdout.strip()
+
+            # Cleanup
+            temp_bundle.unlink(missing_ok=True)
+            try:
+                temp_dir.rmdir()
+            except Exception:
+                pass
+
+            if system_logger:
+                system_logger.info(
+                    "Stealth sync applied",
+                    {
+                        "dump": latest_dump.name,
+                        "repo": repo_manager.current_repo,
+                        "commit": latest_commit,
+                        "delay_seconds": round(delay, 2),
+                    },
+                )
+
+            return {
+                "success": True,
+                "message": "Sync applied successfully",
+                "commit": latest_commit,
+                "dump_file": latest_dump.name,
+                "repo": repo_manager.current_repo,
+            }
+
+        except Exception as e:
+            if temp_bundle and temp_bundle.exists():
+                temp_bundle.unlink(missing_ok=True)
+            try:
+                if "temp_dir" in locals() and temp_dir.exists():
+                    for child in temp_dir.iterdir():
+                        child.unlink(missing_ok=True)
+                    temp_dir.rmdir()
+            except Exception:
+                pass
+            raise e
+
+    except Exception as e:
+        if system_logger:
+            system_logger.error("Failed to apply stealth sync", {"error": str(e)})
+        raise HTTPException(500, f"Failed to apply sync: {str(e)}")
+
+
+@router.get("/sync/state")
+async def get_sync_state():
+    """Get sync state for dashboard"""
+    if not shared_manager:
+        raise HTTPException(500, "Shared manager не инициализирован")
+
+    try:
+        # Look for backup folder
+        backup_folders = ["work-backups", "backups", "sync"]
+        latest_backup = None
+        backup_count = 0
+
+        for folder_name in backup_folders:
+            folder_path = shared_manager._get_folder_path(folder_name)
+            if folder_path.exists():
+                # Find latest chunk_*.bin file
+                backups = sorted(folder_path.glob("chunk_*.bin"), key=lambda p: p.stat().st_mtime, reverse=True)
+                if backups:
+                    latest = backups[0]
+                    backup_count = len(backups)
+                    latest_backup = {
+                        "filename": latest.name,
+                        "size": latest.stat().st_size,
+                        "modified": datetime.fromtimestamp(latest.stat().st_mtime).isoformat(),
+                        "folder": folder_name,
+                    }
+                    break
+
+        if latest_backup:
+            # Calculate time ago
+            modified_time = datetime.fromisoformat(latest_backup["modified"])
+            time_diff = datetime.now() - modified_time
+
+            if time_diff.total_seconds() < 3600:
+                time_ago = f"{int(time_diff.total_seconds() / 60)} minutes ago"
+            elif time_diff.total_seconds() < 86400:
+                time_ago = f"{int(time_diff.total_seconds() / 3600)} hours ago"
+            else:
+                time_ago = f"{int(time_diff.total_seconds() / 86400)} days ago"
+
+            return {
+                "success": True,
+                "state": {
+                    "status": "active",
+                    "lastSync": time_ago,
+                    "lastSize": f"{latest_backup['size'] / (1024 * 1024):.1f} MB",
+                    "backupCount": backup_count,
+                    "latestFile": latest_backup["filename"],
+                },
+            }
+        else:
+            return {
+                "success": True,
+                "state": {"status": "idle", "lastSync": None, "lastSize": None, "backupCount": 0, "latestFile": None},
+            }
+    except Exception as e:
+        raise HTTPException(500, f"Не удалось получить статус синхронизации: {str(e)}")

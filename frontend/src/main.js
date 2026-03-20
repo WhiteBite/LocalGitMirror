@@ -8,9 +8,11 @@ import i18n from './i18n'
 import 'tippy.js/dist/tippy.css'
 import { plugin as VueTippy } from 'vue-tippy'
 
-// Set default axios headers for API Key
-const apiKey = import.meta.env.VITE_API_KEY || 'stealth-bridge-token-2026'
-axios.defaults.headers.common['X-API-Key'] = apiKey
+// Set axios headers for Session ID (from .env only, no fallback)
+const sessionId = import.meta.env.VITE_API_KEY
+if (sessionId) {
+  axios.defaults.headers.common['X-Session-ID'] = sessionId
+}
 
 const app = createApp(App)
 app.use(createPinia())

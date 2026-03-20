@@ -1,38 +1,38 @@
-# 🛡️ LocalGitMirror: Development Plan
+# 🛡️ LocalGitMirror: План разработки
 
-## ✅ Completed (Done)
-- [x] **Core:** Implement Git-over-HTTP (replace Git Protocol).
-- [x] **Fix:** Resolve "NoneType" error in Dulwich/WSGI.
-- [x] **Fix:** Resolve "Win32 application" error for Git Hooks on Windows.
-- [x] **Fix:** Implement robust "Auto-Sync" (Python fallback) for non-bare repos.
-- [x] **Feature:** Global Search (Grep) via API & UI.
-- [x] **UX:** Add loaders and status indicators for Sync operations.
-- [x] **Stability:** Remove emoji from logs to prevent Unicode crashes on Windows.
+## ✅ Завершено (Done)
+- [x] **Core:** Реализовать Git-over-HTTP (заменить Git Protocol).
+- [x] **Fix:** Решить ошибку "NoneType" в Dulwich/WSGI.
+- [x] **Fix:** Решить ошибку "Win32 application" для Git Hooks на Windows.
+- [x] **Fix:** Реализовать надёжный "Auto-Sync" (Python fallback) для непустых репозиториев.
+- [x] **Feature:** Глобальный поиск (Grep) через API и UI.
+- [x] **UX:** Добавить загрузчики и индикаторы статуса для операций Sync.
+- [x] **Stability:** Убрать эмодзи из логов, чтобы предотвратить сбои Unicode на Windows.
 
 ---
 
-## 🚀 Phase 2: Stealth & Security (Priority: HIGH)
+## 🚀 Фаза 2: Скрытность и безопасность (Приоритет: ВЫСОКИЙ)
 *Задача: Сделать канал передачи данных невидимым для DLP и админов.*
 
-- [ ] **HTTPS / SSL Support**
-    - Внедрить SSL-сертификаты (self-signed) в Uvicorn.
+- [ ] **HTTPS / SSL поддержка**
+    - Внедрить SSL-сертификаты (самоподписанные) в Uvicorn.
     - Весь трафик (и веб, и git) должен идти через `https://`.
-    - *Результат:* Снифферы видят только шифрованный поток, код внутри не прочитать.
+    - *Результат:* Снифферы видят только зашифрованный поток, код внутри не прочитать.
 
-- [ ] **Traffic Masquerading (Маскировка)**
+- [ ] **Маскировка трафика**
     - Сменить порты по умолчанию. Вместо `8081` (палево) использовать `3000` (React/Dev) или `8443` (Common HTTPS).
     - Добавить опцию "Fake Headers" для ответов сервера (чтобы сканер думал, что это обычный Nginx или Apache).
 
-- [ ] **Security: Token Auth**
+- [ ] **Безопасность: Token Auth**
     - Закрыть Git-доступ паролем/токеном.
     - Сейчас любой в локалке может сделать `git pull`. Нужно внедрить Basic Auth в `git_http.py`.
 
-- [ ] **Feature: "Panic Button" (Boss Key)**
+- [ ] **Feature: "Кнопка паники" (Boss Key)**
     - Кнопка в UI (или хоткей), которая мгновенно убивает процесс сервера и закрывает вкладку.
 
 ---
 
-## 🛠 Phase 3: Improvements (Priority: Medium)
-- [ ] **Smart Commits:** UI для просмотра изменений перед "Prepare for Work".
-- [ ] **File Editor:** Простенький редактор кода прямо в браузере (Monaco Editor).
-- [ ] **Context Awareness:** Интеграция с LLM для анализа кода (RAG).
+## 🛠 Фаза 3: Улучшения (Приоритет: СРЕДНИЙ)
+- [ ] **Smart Commits:** UI для просмотра изменений перед "Подготовить к работе".
+- [ ] **Редактор файлов:** Простой редактор кода прямо в браузере (Monaco Editor).
+- [ ] **Контекстное осознание:** Интеграция с LLM для анализа кода (RAG).

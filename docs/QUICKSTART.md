@@ -1,138 +1,138 @@
-# Quick Start Guide
+# Быстрый старт
 
-## Installation
+## Установка
 
 ```bash
 cd frontend
 npm install
 ```
 
-## Development
+## Разработка
 
-Start the development server:
+Запуск dev-сервера:
 ```bash
 npm run dev
 ```
 
-The application will be available at: http://localhost:5173
+Приложение будет доступно по адресу: http://localhost:5173
 
-**Important:** Make sure the FastAPI backend is running on port 8000 before starting the frontend.
+**Важно:** Убедитесь, что FastAPI-бэкенд запущен на порту 8000 перед запуском frontend.
 
-## Backend Integration
+## Интеграция с бэкендом
 
-The Vite dev server automatically proxies requests:
-- API calls to `/api/*` are forwarded to `http://localhost:8000`
-- WebSocket connections to `/ws` are forwarded to `ws://localhost:8000`
+Dev-сервер Vite автоматически проксирует запросы:
+- API-вызовы к `/api/*` перенаправляются на `http://localhost:8000`
+- WebSocket-соединения к `/ws` перенаправляются на `ws://localhost:8000`
 
-## First Steps
+## Первые шаги
 
-1. **Start Backend**: Ensure your FastAPI server is running on port 8000
-2. **Install Dependencies**: Run `npm install` in the frontend directory
-3. **Start Dev Server**: Run `npm run dev`
-4. **Open Browser**: Navigate to http://localhost:5173
+1. **Запустите бэкенд**: Убедитесь, что FastAPI-сервер запущен на порту 8000
+2. **Установите зависимости**: Запустите `npm install` в папке frontend
+3. **Запустите dev-сервер**: Запустите `npm run dev`
+4. **Откройте браузер**: Перейдите на http://localhost:5173
 
-## Available Routes
+## Доступные маршруты
 
-- `/` - Dashboard (system overview, stats, recent activity)
-- `/files` - File Browser (navigate and preview files)
-- `/settings` - Settings (configuration, Git service control)
+- `/` - Панель управления (обзор системы, статистика, недавняя активность)
+- `/files` - Браузер файлов (навигация и предпросмотр файлов)
+- `/settings` - Настройки (конфигурация, управление Git-сервисом)
 
-## Project Structure Overview
+## Обзор структуры проекта
 
 ```
 frontend/
 ├── src/
-│   ├── main.js              # Entry point
-│   ├── App.vue              # Root component with navigation
-│   ├── style.css            # Global styles + Tailwind
+│   ├── main.js              # Точка входа
+│   ├── App.vue              # Корневой компонент с навигацией
+│   ├── style.css            # Глобальные стили + Tailwind
 │   ├── router/
-│   │   └── index.js         # Route definitions
-│   ├── stores/              # Pinia state management
-│   │   ├── files.js         # File operations
-│   │   ├── repos.js         # Repository management
-│   │   └── system.js        # System status & settings
-│   ├── views/               # Page components
+│   │   └── index.js         # Определения маршрутов
+│   ├── stores/              # Управление состоянием Pinia
+│   │   ├── files.js         # Операции с файлами
+│   │   ├── repos.js         # Управление репозиториями
+│   │   └── system.js        # Статус системы и настройки
+│   ├── views/               # Компоненты страниц
 │   │   ├── Dashboard.vue
 │   │   ├── FileBrowser.vue
 │   │   └── Settings.vue
-│   ├── components/          # Reusable components (empty, ready for use)
-│   └── assets/              # Static files (empty, ready for use)
-├── index.html               # HTML template
-├── vite.config.js           # Vite + proxy configuration
-├── tailwind.config.js       # Tailwind CSS config
-└── package.json             # Dependencies
+│   ├── components/          # Переиспользуемые компоненты (пусто, готово к использованию)
+│   └── assets/              # Статические файлы (пусто, готово к использованию)
+├── index.html               # HTML шаблон
+├── vite.config.js           # Конфигурация Vite + прокси
+├── tailwind.config.js       # Конфигурация Tailwind CSS
+└── package.json             # Зависимости
 ```
 
-## Key Features Implemented
+## Реализованные ключевые функции
 
-### State Management (Pinia Stores)
+### Управление состоянием (Pinia хранилища)
 
-**Files Store:**
-- File listing and navigation
-- File content preview
-- Search functionality
-- Breadcrumb navigation
+**Хранилище файлов:**
+- Список и навигация по файлам
+- Предпросмотр содержимого файлов
+- Поиск
+- Навигация через хлебные крошки
 
-**Repos Store:**
-- Repository CRUD operations
-- Branch and commit tracking
-- Sync operations
-- Repository statistics
+**Хранилище репозиториев:**
+- CRUD операции с репозиториями
+- Отслеживание веток и коммитов
+- Операции синхронизации
+- Статистика репозиториев
 
-**System Store:**
-- System status monitoring
-- Git service control (start/stop)
-- Settings management
-- WebSocket for real-time updates
-- Notification system
+**Системное хранилище:**
+- Мониторинг состояния системы
+- Управление Git-сервисом (запуск/остановка)
+- Управление настройками
+- WebSocket для real-time обновлений
+- Система уведомлений
 
-### UI Components
+### UI компоненты
 
-All views are fully implemented with:
-- Dark theme by default
-- Responsive design
-- Loading states
-- Error handling
-- Smooth transitions
+Все представления полностью реализованы с:
+- Тёмной темой по умолчанию
+- Адаптивным дизайном
+- Состояниями загрузки
+- Обработкой ошибок
+- Плавными переходами
 
-## Development Tips
+## Советы по разработке
 
-1. **Hot Module Replacement**: Changes are reflected instantly
-2. **Vue DevTools**: Install browser extension for debugging
-3. **Tailwind IntelliSense**: Use VS Code extension for class autocomplete
-4. **API Errors**: Check browser console and Network tab if API calls fail
+1. **Hot Module Replacement**: Изменения применяются мгновенно
+2. **Vue DevTools**: Установите расширение браузера для отладки
+3. **Tailwind IntelliSense**: Используйте расширение VS Code для автодополнения классов
+4. **Ошибки API**: Проверьте консоль браузера и вкладку Network, если API-вызовы не работают
 
-## Common Issues
+## Распространённые проблемы
 
-### Port Already in Use
-If port 5173 is busy, Vite will automatically try the next available port.
+### Порт уже используется
+Если порт 5173 занят, Vite автоматически попробует следующий доступный порт.
 
-### API Connection Failed
-- Verify backend is running on port 8000
-- Check browser console for CORS errors
-- Ensure proxy configuration in vite.config.js is correct
+### Не удалось подключиться к API
+- Убедитесь, что бэкенд запущен на порту 8000
+- Проверьте консоль браузера на ошибки CORS
+- Убедитесь, что конфигурация прокси в vite.config.js правильная
 
-### WebSocket Connection Failed
-- Backend must support WebSocket at `/ws` endpoint
-- Check browser console for connection errors
+### Не удалось подключиться к WebSocket
+- Бэкенд должен поддерживать WebSocket на endpoint `/ws`
+- Проверьте консоль браузера на ошибки подключения
 
-## Next Steps
+## Следующие шаги
 
-1. Add custom components in `src/components/`
-2. Implement additional features in views
-3. Extend stores with more API endpoints
-4. Customize Tailwind theme in `tailwind.config.js`
-5. Add more routes in `src/router/index.js`
+1. Добавьте пользовательские компоненты в `src/components/`
+2. Реализуйте дополнительные функции в представлениях
+3. Расширьте хранилища новыми API endpoints
+4. Настройте тему Tailwind в `tailwind.config.js`
+5. Добавьте больше маршрутов в `src/router/index.js`
 
-## Build for Production
+## Сборка для продакшна
 
 ```bash
 npm run build
 ```
 
-Output will be in `dist/` directory, ready to serve statically.
+Результат будет в папке `dist/`, готов к статической раздаче.
 
-Preview production build:
+Предпросмотр собранной версии:
 ```bash
 npm run preview
 ```

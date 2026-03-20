@@ -1,0 +1,115 @@
+<idea-plugin>
+  <id>localgitmirror.idea.orchestrator</id>
+  <name>LocalGitMirror</name>
+  <vendor email="dev@localgitmirror" url="https://localhost">LocalGitMirror</vendor>
+
+  <description><![CDATA[
+  LocalGitMirror transport plugin.
+  Send branches/commits and pull changes back.
+  ]]></description>
+
+  <depends>com.intellij.modules.platform</depends>
+
+  <resource-bundle>messages.LocalGitMirrorBundle</resource-bundle>
+
+  <extensions defaultExtensionNs="com.intellij">
+    <applicationService serviceImplementation="localgitmirror.idea.settings.MirrorSettingsService"/>
+    <applicationService serviceImplementation="localgitmirror.idea.settings.OperationsHistoryService"/>
+    <applicationConfigurable instance="localgitmirror.idea.settings.MirrorSettingsConfigurable"
+                             id="localgitmirror.settings"
+                             displayName="LocalGitMirror"
+                             groupId="tools"/>
+    <toolWindow id="LocalGitMirror"
+                factoryClass="localgitmirror.idea.ui.LocalGitMirrorToolWindowFactory"
+                anchor="bottom"
+                icon="AllIcons.Toolwindows.ToolWindowMessages"/>
+
+    <notificationGroup id="LocalGitMirror"
+                       displayType="BALLOON"
+                       isLogByDefault="true"
+                       bundle="messages.LocalGitMirrorBundle"
+                       key="notification.group.name"/>
+
+    <postStartupActivity implementation="localgitmirror.idea.startup.PullCheckStartupActivity"/>
+  </extensions>
+
+  <actions>
+    <group id="LocalGitMirror.Group" text="LocalGitMirror" description="LocalGitMirror actions">
+      <add-to-group group-id="ToolsMenu" anchor="last"/>
+      <add-to-group group-id="VcsGroup" anchor="last"/>
+      <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+      <add-to-group group-id="Vcs.Log.ContextMenu" anchor="last"/>
+      <add-to-group group-id="Vcs.FileHistory.ContextMenu" anchor="last"/>
+    </group>
+
+    <action id="LocalGitMirror.SyncCurrentBranch"
+            class="localgitmirror.idea.actions.SyncCurrentBranchToMirrorAction"
+            text="LocalGitMirror: Send current"
+            description="Send current branch to Mirror">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+    </action>
+
+    <action id="LocalGitMirror.SyncBranch"
+            class="localgitmirror.idea.actions.SyncBranchToMirrorAction"
+            text="LocalGitMirror: Send branch…"
+            description="Send selected branch to Mirror">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+    </action>
+
+    <action id="LocalGitMirror.SyncGitLabMR"
+            class="localgitmirror.idea.actions.SyncGitLabMrToMirrorAction"
+            text="LocalGitMirror: Send MR/PR…"
+            description="Send MR/PR source branch to Mirror">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+    </action>
+
+    <action id="LocalGitMirror.SendSelectedCommits"
+            class="localgitmirror.idea.actions.SendSelectedCommitsToMirrorAction"
+            text="LocalGitMirror: Send commits…"
+            description="Send selected commits to Mirror">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+    </action>
+
+    <action id="LocalGitMirror.PullBack"
+            class="localgitmirror.idea.actions.PullBackFromRemoteAction"
+            text="LocalGitMirror: Pull back…"
+            description="Pull changes back from remote">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+    </action>
+
+    <action id="LocalGitMirror.StealthPullBack"
+            class="localgitmirror.idea.actions.StealthPullBackFromMirrorAction"
+            text="LocalGitMirror: Stealth pull back…"
+            description="Pull changes back from Mirror via encrypted dump">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+    </action>
+
+    <action id="LocalGitMirror.ApplyLocalDump"
+            class="localgitmirror.idea.actions.ApplyLocalDumpAction"
+            text="LocalGitMirror: Apply local dump…"
+            description="Apply local encrypted dump to current project">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+    </action>
+
+    <action id="LocalGitMirror.Preflight"
+            class="localgitmirror.idea.actions.PreflightCheckAction"
+            text="LocalGitMirror: Preflight"
+            description="Run preflight diagnostics before sync">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+    </action>
+
+    <action id="LocalGitMirror.DryRun"
+            class="localgitmirror.idea.actions.DryRunSyncAction"
+            text="LocalGitMirror: Dry-run (send)"
+            description="Preview send plan without upload">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+    </action>
+
+    <action id="LocalGitMirror.DryRunPull"
+            class="localgitmirror.idea.actions.DryRunPullSyncAction"
+            text="LocalGitMirror: Dry-run (pull)"
+            description="Preview incoming changes from Mirror">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+    </action>
+  </actions>
+</idea-plugin>

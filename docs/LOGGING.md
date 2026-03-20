@@ -1,56 +1,56 @@
-# System Logging Documentation
+# Документация системного логирования
 
-## 🎯 Overview
+## 🎯 Обзор
 
-LocalGitMirror includes a comprehensive system logging solution with:
+LocalGitMirror включает комплексное решение для системного логирования с:
 
-- ✅ **Real-time WebSocket streaming** - See logs as they happen
-- ✅ **File-based persistence** - Logs saved to disk with rotation
-- ✅ **Vue.js component** - Beautiful UI with filtering and export
-- ✅ **Three log levels** - INFO, WARNING, ERROR
-- ✅ **Structured format** - JSON logs with context
-- ✅ **Auto-reconnect** - Resilient WebSocket connection
+- ✅ **Потоковая передача WebSocket в реальном времени** - Логи отображаются по мере их появления
+- ✅ **Постоянное хранение в файлах** - Логи сохраняются на диск с ротацией
+- ✅ **Vue.js компонент** - Красивый интерфейс с фильтрацией и экспортом
+- ✅ **Три уровня логов** - INFO, WARNING, ERROR
+- ✅ **Структурированный формат** - JSON логи с контекстом
+- ✅ **Авто-переподключение** - Устойчивое WebSocket-соединение
 
-## 🚀 Quick Start
+## 🚀 Быстрый старт
 
-### 1. Start the Application
+### 1. Запуск приложения
 
 ```bash
 python main.py
 ```
 
-### 2. View Logs
+### 2. Просмотр логов
 
-The SystemLog component appears at the bottom of the Dashboard. You should see:
-- 🟢 Green "Live" indicator (WebSocket connected)
-- Recent log entries
-- Filter buttons (All, INFO, WARNING, ERROR)
-- Export and Clear buttons
+Компонент SystemLog появляется внизу панели управления. Вы должны увидеть:
+- 🟢 Зелёный индикатор "Live" (WebSocket подключён)
+- Недавние записи логов
+- Кнопки фильтрации (Все, INFO, WARNING, ERROR)
+- Кнопки экспорта и очистки
 
-### 3. Add Logging to Your Code
+### 3. Добавление логирования в ваш код
 
 ```python
 from core.logger import get_logger
 
 logger = get_logger()
 
-# Info level - normal operations
-logger.info("User logged in", {"user_id": 123, "ip": "192.168.1.1"})
+# Уровень INFO - нормальные операции
+logger.info("Пользователь вошёл в систему", {"user_id": 123, "ip": "192.168.1.1"})
 
-# Warning level - potential issues
-logger.warning("API rate limit approaching", {"requests": 950, "limit": 1000})
+# Уровень WARNING - потенциальные проблемы
+logger.warning("Приближение к лимиту API", {"requests": 950, "limit": 1000})
 
-# Error level - failures
-logger.error("Database connection failed", {"error": str(e), "retry": 3})
+# Уровень ERROR - сбои
+logger.error("Не удалось подключиться к базе данных", {"error": str(e), "retry": 3})
 ```
 
-## 📖 Architecture
+## 📖 Архитектура
 
-### System Overview
+### Общая схема
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                     LocalGitMirror Application                   │
+│                     Приложение LocalGitMirror                    │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -62,8 +62,8 @@ logger.error("Database connection failed", {"error": str(e), "retry": 3})
 │  │              ┌───────────┴───────────┐                   │  │
 │  │              ▼                       ▼                    │  │
 │  │    ┌─────────────────┐    ┌──────────────────┐          │  │
-│  │    │  File Handler   │    │  WebSocket Pool  │          │  │
-│  │    │  (Rotating)     │    │  (Broadcast)     │          │  │
+│  │    │  Файловый обработчик   │    │  Пул WebSocket  │          │  │
+│  │    │  (Ротация)      │    │  (Трансляция)    │          │  │
 │  │    └─────────────────┘    └──────────────────┘          │  │
 │  └──────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
@@ -73,105 +73,105 @@ logger.error("Database connection failed", {"error": str(e), "retry": 3})
 │                      FRONTEND (Vue.js)                           │
 ├─────────────────────────────────────────────────────────────────┤
 │  ┌──────────────────────────────────────────────────────────┐  │
-│  │              SystemLog.vue Component                     │  │
-│  │  • WebSocket Connection                                  │  │
-│  │  • Real-time updates                                     │  │
-│  │  • Filter by level                                       │  │
-│  │  • Export/Clear functionality                            │  │
+│  │              Компонент SystemLog.vue                      │  │
+│  │  • WebSocket соединение                                  │  │
+│  │  • Обновления в реальном времени                         │  │
+│  │  • Фильтрация по уровню                                  │  │
+│  │  • Функциональность экспорта/очистки                     │  │
 │  └──────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Backend Components
+### Компоненты бэкенда
 
-#### 1. `core/logger.py` - SystemLogger Class
+#### 1. `core/logger.py` - Класс SystemLogger
 
-**Features:**
-- Singleton pattern for global access
-- Dual logging: file + WebSocket broadcast
-- Log rotation (10 MB max, 5 backup files)
-- Three log levels: INFO, WARNING, ERROR
-- Structured JSON format
-- Thread-safe operations
+**Функции:**
+- Паттерн Singleton для глобального доступа
+- Двойное логирование: файл + трансляция WebSocket
+- Ротация логов (макс. 10 МБ, 5 резервных файлов)
+- Три уровня логов: INFO, WARNING, ERROR
+- Структурированный формат JSON
+- Потокобезоперационные операции
 
-**Log Format:**
+**Формат лога:**
 ```json
 {
   "timestamp": "2026-01-28T12:00:00.123Z",
   "level": "INFO",
-  "message": "Git push received",
+  "message": "Получен git push",
   "details": {"repo": "default", "branch": "main"}
 }
 ```
 
-#### 2. `routers/websocket.py` - WebSocket Router
+#### 2. `routers/websocket.py` - Роутер WebSocket
 
 **Endpoints:**
 
 - **WebSocket:** `ws://localhost:8000/ws/logs`
-  - Real-time log streaming
-  - Sends last 50 logs on connect
-  - Auto-reconnect support
-  - Ping/pong keepalive
+  - Потоковая передача логов в реальном времени
+  - Отправка последних 50 логов при подключении
+  - Поддержка авто-переподключения
+  - Ping/pong для поддержания соединения
 
 - **GET** `/api/logs?limit=100`
-  - Retrieve log history
-  - Configurable limit (1-1000)
-  - Returns JSON array
+  - Получение истории логов
+  - Настраиваемый лимит (1-1000)
+  - Возврат JSON массива
 
 - **DELETE** `/api/logs`
-  - Clear all log files
-  - Removes main + rotated logs
+  - Очистка всех файлов логов
+  - Удаление основного и ротированных логов
 
 - **GET** `/api/logs/stats`
-  - Log statistics
-  - Count by level
-  - Active WebSocket connections
+  - Статистика логов
+  - Подсчёт по уровням
+  - Акти��ные WebSocket-соединения
 
-### Frontend Component
+### Frontend компонент
 
 #### `frontend/src/components/SystemLog.vue`
 
-**Features:**
-- Real-time WebSocket connection
-- Auto-reconnect on disconnect
-- Filter by level (All, INFO, WARNING, ERROR)
-- Collapsible panel
-- Auto-scroll to new logs
-- Export logs to text file
-- Clear logs button
-- Color-coded log levels
-- Connection status indicator
-- Maximum 100 logs in memory
+**Функции:**
+- Реальное WebSocket-соединение
+- Авто-переподключение при отключении
+- Фильтрация по уровню (Все, INFO, WARNING, ERROR)
+- Сворачиваемая панель
+- Автопрокрутка к новым логам
+- Экспорт логов в текстовый файл
+- Кнопка очистки логов
+- Цветовая кодировка уровней логов
+- Индикатор состояния соединения
+- Максимум 100 логов в памяти
 
-**Color Scheme:**
-- INFO: Blue (`text-blue-400`)
-- WARNING: Yellow (`text-yellow-400`)
-- ERROR: Red (`text-red-400`)
+**Цветовая схема:**
+- INFO: Синий (`text-blue-400`)
+- WARNING: Жёлтый (`text-yellow-400`)
+- ERROR: Красный (`text-red-400`)
 
-## 💻 Usage Examples
+## 💻 Примеры использования
 
-### Backend - Common Patterns
+### Backend - Общие паттерны
 
-**Git Operations:**
+**Операции Git:**
 ```python
-logger.info("Git push received", {"repo": repo_name, "branch": branch})
-logger.info("Repository synced", {"repo": repo_name, "files": file_count})
+logger.info("Получен git push", {"repo": repo_name, "branch": branch})
+logger.info("Репозиторий синхронизирован", {"repo": repo_name, "files": file_count})
 ```
 
-**File Operations:**
+**Операции с файлами:**
 ```python
-logger.info("File opened", {"file": filename, "editor": "cursor"})
-logger.error("File not found", {"file": filename, "path": abs_path})
+logger.info("Файл открыт", {"file": filename, "editor": "cursor"})
+logger.error("Файл не найден", {"file": filename, "path": abs_path})
 ```
 
-**API Endpoints:**
+**API endpoints:**
 ```python
-logger.info("API request", {"endpoint": "/api/sync", "method": "POST"})
-logger.error("API error", {"endpoint": "/api/sync", "status": 500, "error": str(e)})
+logger.info("API запрос", {"endpoint": "/api/sync", "method": "POST"})
+logger.error("Ошибка API", {"endpoint": "/api/sync", "status": 500, "error": str(e)})
 ```
 
-### Frontend - Display Logs
+### Frontend - Отображение логов
 
 ```vue
 <template>
@@ -183,170 +183,170 @@ import SystemLog from '@/components/SystemLog.vue'
 </script>
 ```
 
-### API - Access Logs
+### API - Доступ к логам
 
 ```bash
-# Get recent logs
+# Получение недавних логов
 curl http://localhost:8000/api/logs?limit=100
 
-# Clear logs
+# Очистка логов
 curl -X DELETE http://localhost:8000/api/logs
 
-# Get statistics
+# Получение статистики
 curl http://localhost:8000/api/logs/stats
 ```
 
-## 🔧 Configuration
+## 🔧 Конфигурация
 
-### Log Rotation
+### Ротация логов
 
-Edit `core/logger.py`:
+Редактируйте `core/logger.py`:
 
 ```python
 file_handler = RotatingFileHandler(
     self.log_file,
     maxBytes=10 * 1024 * 1024,  # 10 MB
-    backupCount=5,               # 5 backup files
+    backupCount=5,               # 5 резервных файлов
     encoding='utf-8'
 )
 ```
 
-### Frontend Max Logs
+### Максимум логов во frontend
 
-Edit `frontend/src/components/SystemLog.vue`:
+Редактируйте `frontend/src/components/SystemLog.vue`:
 
 ```javascript
-const MAX_LOGS = 100  // Maximum logs in memory
+const MAX_LOGS = 100  # Максимум логов в памяти
 ```
 
-### WebSocket Keepalive
+### Keepalive WebSocket
 
-Edit `frontend/src/components/SystemLog.vue`:
+Редактируйте `frontend/src/components/SystemLog.vue`:
 
 ```javascript
 setInterval(() => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send('ping')
   }
-}, 30000)  // 30 seconds
+}, 30000)  # 30 секунд
 ```
 
-## 📁 File Structure
+## 📁 Структура файлов
 
 ```
 storage/
 └── logs/
-    ├── system.log          # Current log file
-    ├── system.log.1        # Rotated backup
+    ├── system.log          # Текущий файл логов
+    ├── system.log.1        # Резервная копия
     ├── system.log.2
     ├── system.log.3
     ├── system.log.4
-    └── system.log.5        # Oldest backup
+    └── system.log.5        # Самый старый резервный файл
 ```
 
-## 🐛 Troubleshooting
+## 🐛 Устранение неполадок
 
-### WebSocket Not Connecting
+### WebSocket не подключается
 
-**Symptoms:** Red "Disconnected" indicator
+**Симптомы:** Красный индикатор "Отключено"
 
-**Solutions:**
-1. Check if backend is running
-2. Verify WebSocket endpoint: `/ws/logs`
-3. Check browser console for errors
-4. Ensure no firewall blocking WebSocket
+**Решения:**
+1. Проверьте, запущен ли бэкенд
+2. Убедитесь, что endpoint WebSocket: `/ws/logs`
+3. Проверьте консоль браузера на ошибки
+4. Убедитесь, что брандмауэр не блокирует WebSocket
 
-### Logs Not Appearing
+### Логи не отображаются
 
-**Symptoms:** No logs in UI or file
+**Симптомы:** Нет логов в UI или файле
 
-**Solutions:**
-1. Check if logger is initialized in `main.py`
-2. Verify `storage/logs/` directory exists
-3. Check file permissions
-4. Look for errors in console
+**Решения:**
+1. Проверьте, инициализирован ли логгер в `main.py`
+2. Убедитесь, что папка `storage/logs/` существует
+3. Проверьте права доступа к файлу
+4. Ищите ошибки в консоли
 
-### High Memory Usage
+### Высокое использование памяти
 
-**Symptoms:** Browser slowing down
+**Симптомы:** Замедление браузера
 
-**Solutions:**
-1. Clear old logs: `DELETE /api/logs`
-2. Reduce MAX_LOGS in frontend
-3. Check for log rotation issues
+**Решения:**
+1. Очистите старые логи: `DELETE /api/logs`
+2. Уменьшите MAX_LOGS во frontend
+3. Проверьте проблемы с ротацией логов
 
-## 🎯 Best Practices
+## 🎯 Лучшие практики
 
 ### Backend
 
-1. **Use appropriate log levels**
-   - INFO: Normal operations, state changes
-   - WARNING: Recoverable issues, deprecations
-   - ERROR: Failures, exceptions
+1. **Используйте соответствующие уровни логов**
+   - INFO: Нормальные операции, изменения состояния
+   - WARNING: Восстанавливаемые проблемы, устаревания
+   - ERROR: Сбои, исключения
 
-2. **Include context in details:**
+2. **Включайте контекст в детали:**
    ```python
-   logger.info("File opened", {
+   logger.info("Файл открыт", {
        "file": "main.py",
        "repo": "default",
        "user": "admin"
    })
    ```
 
-3. **Don't log sensitive data:**
-   - Avoid passwords, tokens, API keys
-   - Sanitize user input
+3. **Не логируйте чувствительные данные:**
+   - Избегайте паролей, токенов, API ключей
+   - Очищайте пользовательский ввод
 
-4. **Keep messages concise:**
-   - Clear, actionable messages
-   - Details in the `details` dict
+4. **Делайте сообщения краткими:**
+   - Ясные, конкретные сообщения
+   - Детали в словаре `details`
 
 ### Frontend
 
-1. **Filter logs appropriately:**
-   - Use level filters for debugging
-   - Export logs for analysis
+1. **Фильтруйте логи соответствующим образом:**
+   - Используйте фильтры уровней для отладки
+   - Экспортируйте логи для анализа
 
-2. **Monitor connection status:**
-   - Check the live indicator
-   - Logs may be delayed if disconnected
+2. **Мониторьте состояние соединения:**
+   - Проверяйте индикатор live
+   - Логи могут быть задержаны при отключении
 
-3. **Clear logs periodically:**
-   - Prevents memory buildup
-   - Improves performance
+3. **Периодически очищайте логи:**
+   - Предотвращает накопление памяти
+   - Улучшает производительность
 
-## 📊 API Reference
+## 📊 Справочник API
 
-### Log Levels
+### Уровни логов
 
-| Level   | Use Case                          | Color  |
-|---------|-----------------------------------|--------|
-| INFO    | Normal operations, state changes  | Blue   |
-| WARNING | Potential issues, deprecations    | Yellow |
-| ERROR   | Failures, exceptions              | Red    |
+| Уровень | Сценарий использования          | Цвет  |
+|---------|---------------------------------|--------|
+| INFO    | Нормальные операции, изменения состояния | Синий  |
+| WARNING | Потенциальные проблемы, устаревания      | Жёлтый |
+| ERROR   | Сбои, исключения              | Красный |
 
-### API Endpoints
+### API endpoints
 
-| Method | Endpoint          | Description              |
-|--------|-------------------|--------------------------|
-| GET    | `/api/logs`       | Get log history          |
-| DELETE | `/api/logs`       | Clear all logs           |
-| GET    | `/api/logs/stats` | Get log statistics       |
-| WS     | `/ws/logs`        | Real-time log streaming  |
+| Метод | Endpoint          | Описание              |
+|-------|-------------------|-----------------------|
+| GET   | `/api/logs`       | Получение истории логов |
+| DELETE| `/api/logs`       | Очистка всех логов    |
+| GET   | `/api/logs/stats` | Получение статистики логов |
+| WS    | `/ws/logs`        | Потоковая передача логов в реальном времени |
 
-## 🔮 Future Enhancements
+## 🔮 Будущие улучшения
 
-- [ ] Log search functionality
-- [ ] Server-side filtering
-- [ ] Log level configuration via API
-- [ ] Email/Slack notifications
-- [ ] Analytics dashboard
-- [ ] Structured query language
-- [ ] Log compression
-- [ ] Authentication
+- [ ] Функциональность поиска логов
+- [ ] Фильтрация на стороне сервера
+- [ ] Конфигурация уровня логов через API
+- [ ] Уведомления по email/Slack
+- [ ] Панель аналитики
+- [ ] Структурированный язык запросов
+- [ ] Сжатие логов
+- [ ] Аутентификация
 
 ---
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-01-28  
-**Part of:** LocalGitMirror v3.0
+**Версия:** 1.0.0  
+**Последнее обновление:** 2026-01-28  
+**Часть:** LocalGitMirror v3.0

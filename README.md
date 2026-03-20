@@ -1,62 +1,62 @@
 # LocalGitMirror 🚀
 
-**Stealth Git Bridge for Seamless Work-Home Synchronization**
+**Скрытый Git-мост для бесшовной синхронизации работы и дома**
 
-LocalGitMirror is a self-hosted tool that bridges the gap between your restricted work environment and your personal development setup. It mimics a standard Git remote, allowing you to push code from work, edit it at home with your favorite tools (and AI), and pull it back—all without cloud services.
+LocalGitMirror — это инструмент с открытым исходным кодом, который соединяет ваше ограниченное рабочее окружение с личной средой разработки. Он имитирует стандартный Git-репозиторий, позволяя вам отправлять код с работы, редактировать его дома с помощью любимых инструментов (и ИИ), и извлекать обратно — всё без облачных сервисов.
 
-![Dashboard Preview](frontend/public/favicon.ico)
+![Предпросмотр панели управления](frontend/public/favicon.ico)
 
-## 🔥 Features
+## 🔥 Возможности
 
-*   **Stealth Sync**: Acts as a standard Git server. Your work PC just sees a remote repo.
-*   **Auto-Update**: Pushing to the server automatically updates physical files in your workspace (`updateInstead` logic).
-*   **VS Code-like UI**: A clean, dark-mode web interface to manage repositories and files.
-*   **One-Click Commit**: "Prepare for Work" button automatically stages and commits your home changes for retrieval.
-*   **Zero Dependencies**: Runs locally on your machine. No cloud, no tracking.
+*   **Скрытая синхронизация**: Работает как стандартный Git-сервер. Ваш рабочий ПК видит его как обычный удалённый репозиторий.
+*   **Автообновление**: Отправка на сервер автоматически обновляет физические файлы в вашей рабочей области (логика `updateInstead`).
+*   **Интерфейс как в VS Code**: Чистый веб-интерфейс в тёмной теме для управления репозиториями и файлами.
+*   **Коммит в один клик**: Кнопка "Подготовить к работе" автоматически фиксирует изменения дома для последующего извлечения.
+*   **Нулевые зависимости**: Работает локально на вашем компьютере. Нет облака, нет отслеживания.
 
-## 🚀 Quick Start
+## 🚀 Быстрый старт
 
-### 1. Start the Server (Home PC)
-Simply double-click **`start.bat`** (Windows).
-*   **Web UI**: [http://localhost:8000](http://localhost:8000)
-*   **Git Server**: Port `8081`
+### 1. Запуск сервера (дома)
+Просто дважды кликните на **`start.bat`** (Windows).
+*   **Веб-интерфейс**: [http://localhost:8000](http://localhost:8000)
+*   **Git-сервер**: Порт `8081`
 
-### 2. Configure Work PC
-In your project folder on your work computer:
+### 2. Настройка рабочего ПК
+В папке вашего проекта на рабочем компьютере:
 
 ```bash
-# Add your home PC as a remote (replace IP with your home IP)
+# Добавьте домашний ПК как удалённый (замените IP на ваш домашний IP)
 git remote add home git://192.168.1.X:8081/my-project
 ```
 
-### 3. Workflow
+### 3. Рабочий процесс
 
-**From Work to Home:**
+**С работы на домой:**
 ```bash
 git push home main
 ```
-*Files immediately appear in `storage/my-project` on your home PC.*
+*Файлы сразу появляются в `storage/my-project` на вашем домашнем ПК.*
 
-**At Home:**
-1.  Open the folder in Cursor / VS Code.
-2.  Edit files, use AI tools, compile, etc.
-3.  Go to the Web UI -> Click **"Prepare for Work"**.
+**Дома:**
+1.  Откройте папку в Cursor / VS Code.
+2.  Редактируйте файлы, используйте ИИ-инструменты, компилируйте и т.д.
+3.  Перейдите в веб-интерфейс → Нажмите **"Подготовить к работе"**.
 
-**From Home to Work:**
+**С домой на работу:**
 ```bash
 git pull home main
 ```
 
-## 🛠️ Configuration
+## 🛠️ Конфигурация
 
-*   **Storage Path**: By default, projects are stored in the `storage/` folder. You can change this in the `.env` file or UI settings.
-*   **Ports**: Default Web: 8000, Git: 8081.
+*   **Путь хранения**: По умолчанию проекты хранятся в папке `storage/`. Вы можете изменить это в файле `.env` или настройках интерфейса.
+*   **Порты**: По умолчанию Веб: 8000, Git: 8081.
 
-## 🏗️ Architecture
+## 🏗️ Архитектура
 
 *   **Backend**: Python (FastAPI) + GitPython
 *   **Frontend**: Vue 3 + Vite + TailwindCSS
-*   **Protocol**: Native Git Protocol (Daemon)
+*   **Протокол**: Нативный Git-протокол (Daemon)
 
 ---
-*Built for the modern developer who values freedom and efficiency.*
+*Создано для современного разработчика, ценящего свободу и эффективность.*

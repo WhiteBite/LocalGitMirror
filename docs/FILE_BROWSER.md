@@ -1,277 +1,277 @@
-# File Browser Documentation
+# Документация браузера файлов
 
-## 📁 Overview
+## 📁 Обзор
 
-Separate page for browsing and navigating files, similar to Windows Explorer or VS Code.
+Отдельная страница для просмотра и навигации по файлам, аналогично Windows Explorer или VS Code.
 
-## ✨ Features
+## ✨ Возможности
 
-### 🗂️ Sidebar
-- Tree structure of files and folders
-- Expand/collapse folders
-- File count in each folder
-- Icons for different file types
-- Repository selection
+### 🗂️ Боковая панель
+- Дерево файлов и папок
+- Развертывание/сворачивание папок
+- Количество файлов в каждой папке
+- Иконки для разных типов файлов
+- Выбор репозитория
 
-### 📍 Breadcrumbs Navigation
-- Breadcrumb trail for current path
-- Quick navigation through folders
-- Current file display
+### 📍 Навигация через хлебные крошки
+- Цепочка хлебных крошек для текущего пути
+- Быстрая навигация через папки
+- Отображение текущего файла
 
-### 📄 Preview Area
-- Full-screen file viewing
-- Markdown with Mermaid diagrams
-- Code syntax highlighting
-- PDF viewer
-- Open in editor button
+### 📄 Область предпросмотра
+- Полноэкранное просмотр файлов
+- Markdown с диаграммами Mermaid
+- Подсветка синтаксиса кода
+- Просмотр PDF
+- Кнопка открытия в редакторе
 
-## 🚀 How to Use
+## 🚀 Как использовать
 
-### 1. Open File Browser
-On the main page, click **"File Browser"** button or navigate to:
+### 1. Открытие браузера файлов
+На главной странице нажмите кнопку **"Браузер файлов"** или перейдите по адресу:
 ```
 http://localhost:8000/files
 ```
 
-### 2. Navigate Folders
-- Click on a folder (📁) in the sidebar to expand
-- Click again to collapse
-- Folders automatically expand when selecting files inside
+### 2. Навигация по папкам
+- Кликните на папку (📁) в боковой панели для развертывания
+- Кликните снова для сворачивания
+- Папки автоматически разворачиваются при выборе файлов внутри
 
-### 3. View Files
-- Click on a file in the sidebar
-- Content displays in the center area
-- Breadcrumbs show the file path
+### 3. Просмотр файлов
+- Кликните на файл в боковой панели
+- Содержимое отображается в центральной области
+- Хлебные крошки показывают путь к файлу
 
-### 4. Open in Editor
-- Click **"✏️ Editor"** button in the top panel
-- File opens in Cursor or VS Code
+### 4. Открытие в редакторе
+- Нажмите кнопку **"✏️ Редактор"** в верхней панели
+- Файл открывается в Cursor или VS Code
 
-### 5. Refresh List
-- Click **"↻"** button to refresh the file list
+### 5. Обновление списка
+- Нажмите кнопку **"↻"** для обновления списка файлов
 
-## 🎨 Interface
+## 🎨 Интерфейс
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  File Browser                              ← Back           │
-│  [Repository: default ▼]                                    │
+│  Браузер файлов                              ← Назад         │
+│  [Репозиторий: default ▼]                                   │
 ├─────────────┬───────────────────────────────────────────────┤
-│             │  🏠 Root / docs / architecture.md             │
-│ 📁 config   │  [↻] [✏️ Editor]                              │
+│             │  🏠 Корень / docs / architecture.md           │
+│ 📁 config   │  [↻] [✏️ Редактор]                            │
 │ 📂 docs     ├───────────────────────────────────────────────┤
 │   📝 api.md │                                               │
-│   📝 arch.. │  # System Architecture                        │
+│   📝 arch.. │  # Архитектура системы                        │
 │ 📁 src      │                                               │
-│ 📝 README   │  [Mermaid diagram]                            │
+│ 📝 README   │  [Диаграмма Mermaid]                          │
 │ 📄 notes    │                                               │
-│             │  [File content...]                            │
+│             │  [Содержимое файла...]                         │
 │             │                                               │
 └─────────────┴───────────────────────────────────────────────┘
 ```
 
-## 📋 Supported Formats
+## 📋 Поддерживаемые форматы
 
 ### Markdown (.md)
-- Full rendering
-- Mermaid diagrams
-- Code block highlighting
-- Tables, links, images
+- Полный рендеринг
+- Диаграммы Mermaid
+- Подсветка синтаксиса кода
+- Таблицы, ссылки, изображения
 
-### Code
+### Код
 - Python, JavaScript, TypeScript
 - JSON, YAML, XML
 - HTML, CSS
-- And many more
+- И многие другие
 
 ### PDF
-- Page-by-page viewing
-- Forward/backward navigation
-- Page counter
+- Просмотр по страницам
+- Навигация вперёд/назад
+- Счётчик страниц
 
-### Text
-- .txt, .log files
-- Any text formats
+### Текст
+- .txt, .log файлы
+- Любой текстовый формат
 
-## ✅ Advantages
+## ✅ Преимущества
 
-✅ **Full-screen mode** - More space for content  
-✅ **Fast navigation** - Breadcrumbs and tree structure  
-✅ **Convenient viewing** - Like Windows Explorer  
-✅ **Separate page** - Doesn't interfere with main dashboard  
-✅ **All features** - Markdown, Mermaid, PDF, code highlighting  
+✅ **Полноэкранный режим** - Больше места для контента  
+✅ **Быстрая навигация** - Хлебные крошки и дерево структуры  
+✅ **Удобный просмотр** - Как в Windows Explorer  
+✅ **Отдельная страница** - Не мешает на главной панели управления  
+✅ **Все функции** - Markdown, Mermaid, PDF, подсветка кода  
 
-## ⌨️ Keyboard Shortcuts
+## ⌨️ Горячие клавиши
 
-- Click on folder - expand/collapse
-- Click on file - open for viewing
-- Breadcrumb - quick navigation
+- Клик на папку - развернуть/свернуть
+- Клик на файл - открыть для просмотра
+- Хлебная крошка - быстрая навигация
 
-## 💡 Usage Examples
+## 💡 Примеры использования
 
-### View Documentation
-1. Open file browser
-2. Expand `docs/` folder
-3. Click on `architecture.md`
-4. See 5 Mermaid diagrams!
+### Просмотр документации
+1. Откройте браузер файлов
+2. Разверните папку `docs/`
+3. Кликните на `architecture.md`
+4. Увидите 5 диаграмм Mermaid!
 
-### View Code
-1. Expand `src/` folder
-2. Click on `utils.py`
-3. Code displays with syntax highlighting
+### Просмотр кода
+1. Разверните папку `src/`
+2. Кликните на `utils.py`
+3. Код отображается с подсветкой синтаксиса
 
-### Navigate Project
-1. Use breadcrumbs for quick navigation
-2. Click on folders to navigate
-3. Counters show number of files
+### Навигация по проекту
+1. Используйте хлебные крошки для быстрой навигации
+2. Кликайте на папки для навигации
+3. Счётчики показывают количество файлов
 
-## 🔧 Technical Details
+## 🔧 Технические детали
 
-### Structure
-- **Sidebar**: 280px fixed width (VS Code standard)
-- **Content**: Responsive width
-- **Responsive**: Works on all screens
+### Структура
+- **Боковая панель**: Фиксированная ширина 280px (стандарт VS Code)
+- **Контент**: Адаптивная ширина
+- **Адаптивность**: Работает на всех экранах
 
 ### API
-Uses the same endpoints:
-- `/api/files` - File list
-- `/api/file/view` - View text
-- `/api/file/pdf` - View PDF
-- `/api/repos` - Repository list
+Использует те же endpoints:
+- `/api/files` - Список файлов
+- `/api/file/view` - Просмотр текста
+- `/api/file/pdf` - Просмотр PDF
+- `/api/repos` - Список репозиториев
 
-### Libraries
+### Библиотеки
 - Marked.js - Markdown
-- Mermaid.js - Diagrams
-- Highlight.js - Code highlighting
-- PDF.js - PDF viewing
+- Mermaid.js - Диаграммы
+- Highlight.js - Подсветка кода
+- PDF.js - Просмотр PDF
 
-## 🔍 Comparison with Modal Window
+## 🔍 Сравнение с модальным окном
 
-| Feature | Modal Window | File Browser |
-|---------|--------------|--------------|
-| Screen Size | Limited | Full screen |
-| Navigation | No | Breadcrumbs + Sidebar |
-| Folder Tree | Yes | Yes, improved |
-| Viewing | Popup window | Separate page |
-| Convenience | Quick view | Full-featured work |
+| Функция | Модальное окно | Браузер файлов |
+|---------|----------------|----------------|
+| Размер экрана | Ограничен | Полный экран |
+| Навигация | Нет | Хлебные крошки + Боковая панель |
+| Дерево папок | Да | Да, улучшенное |
+| Просмотр | Всплывающее окно | Отдельная страница |
+| Удобство | Быстрый просмотр | Полнофункциональная работа |
 
-## 📌 When to Use
+## 📌 Когда использовать
 
-**Modal Window** (on main page):
-- Quick file view
-- Don't want to leave dashboard
-- Need to quickly check content
+**Модальное окно** (на главной странице):
+- Быстрый просмотр файлов
+- Не хотите покидать панель управления
+- Нужно быстро проверить содержимое
 
-**File Browser** (separate page):
-- Working with documentation
-- Exploring project structure
-- Extended file viewing
-- Navigating through multiple files
+**Браузер файлов** (отдельная страница):
+- Работа с документацией
+- Исследование структуры проекта
+- Длительный просмотр файлов
+- Навигация по нескольким файлам
 
-## 🐛 Troubleshooting
+## 🐛 Устранение неполадок
 
-### File Tree Not Showing
+### Дерево файлов не отображается
 
-**Problem:** Empty file tree or "EXPLORER" header with no files
+**Проблема:** Пустое дерево файлов или заголовок "ПРОСМОТР" без файлов
 
-**Solutions:**
-1. Check if backend is running (`python main.py`)
-2. Verify API endpoint: `curl http://localhost:8000/api/files`
-3. Check browser console for errors
-4. Verify FileTree component receives props
+**Решения:**
+1. Проверьте, запущен ли бэкенд (`python main.py`)
+2. Убедитесь, что API endpoint работает: `curl http://localhost:8000/api/files`
+3. Проверьте консоль браузера на ошибки
+4. Убедитесь, что компонент FileTree получает props
 
-### File Preview Not Working
+### Предпросмотр файла не работает
 
-**Problem:** Clicking file doesn't show preview
+**Проблема:** Клик на файл не показывает предпросмотр
 
-**Solutions:**
-1. Check event handlers are implemented
-2. Verify `handleFileSelect` function exists
-3. Check browser console for errors
-4. Verify API returns file content
+**Решения:**
+1. Проверьте, реализованы ли обработчики событий
+2. Убедитесь, что функция `handleFileSelect` существует
+3. Проверьте консоль браузера на ошибки
+4. Убедитесь, что API возвращает содержимое файла
 
-### Layout Issues
+### Проблемы с макетом
 
-**Problem:** Sidebar too wide or content not displaying
+**Проблема:** Боковая панель слишком широкая или контент не отображается
 
-**Solutions:**
-1. Verify sidebar width is 280px
-2. Check CSS classes are applied correctly
-3. Clear browser cache
-4. Check for conflicting styles
+**Решения:**
+1. Убедитесь, что ширина боковой панели 280px
+2. Проверьте, что CSS-классы применены правильно
+3. Очистите кэш браузера
+4. Проверьте на конфликтующие стили
 
-## 🎯 Component Architecture
+## 🎯 Архитектура компонентов
 
 ```
-FileBrowser.vue (Main View)
-├── Header
-│   ├── Title
-│   ├── Search Input
-│   └── Refresh Button
-├── Sidebar (280px)
-│   ├── Explorer Header
-│   └── FileTree Component
-│       └── TreeNode Components (recursive)
-└── Preview Panel
-    ├── File Header (when file selected)
-    ├── FileViewer Component
+FileBrowser.vue (Основное представление)
+├── Заголовок
+│   ├── Заголовок
+│   ├── Поле поиска
+│   └── Кнопка обновления
+├── Боковая панель (280px)
+│   ├── Заголовок ПРОСМОТР
+│   └── Компонент FileTree
+│       └── Рекурсивные компоненты TreeNode
+└── Панель предпросмотра
+    ├── Заголовок файла (при выборе файла)
+    ├── Компонент FileViewer
     │   ├── MarkdownRenderer
     │   ├── CodeViewer
     │   └── PDFViewer
-    └── Empty State (when no file selected)
+    └── Пустое состояние (при отсутствии выбранного файла)
 ```
 
-## 📊 Data Flow
+## 📊 Поток данных
 
 ```
-1. User navigates to /files
+1. Пользователь переходит на /files
    ↓
-2. FileBrowser.vue mounts
+2. FileBrowser.vue монтируется
    ↓
-3. onMounted() calls filesStore.fetchFiles('/')
+3. onMounted() вызывает filesStore.fetchFiles('/')
    ↓
-4. Store fetches from /api/files
+4. Хранилище получает из /api/files
    ↓
-5. Files stored in filesStore.files
+5. Файлы сохраняются в filesStore.files
    ↓
-6. FileTree receives files via props
+6. FileTree получает файлы через props
    ↓
-7. FileTree builds tree structure
+7. FileTree строит структуру дерева
    ↓
-8. TreeNode components render recursively
+8. Компоненты TreeNode рендерятся рекурсивно
    ↓
-9. User clicks file
+9. Пользователь кликает на файл
    ↓
-10. file-select event emitted
+10. Событие file-select эмитируется
    ↓
-11. handleFileSelect() called
+11. Вызывается handleFileSelect()
    ↓
-12. filesStore.fetchFileContent() called
+12. Вызывается filesStore.fetchFileContent()
    ↓
-13. Content fetched from /api/files/content
+13. Содержимое получается из /api/files/content
    ↓
-14. FileViewer displays content
+14. FileViewer отображает содержимое
 ```
 
-## 🔮 Future Enhancements
+## 🔮 Будущие улучшения
 
-### Short Term
-- Remove debug logging after verification
-- Add keyboard shortcuts (arrow keys for navigation)
-- Add file type icons (beyond emoji)
-- Implement file size limits for preview
+### Краткосрочные
+- Удаление отладочного логирования после проверки
+- Добавление горячих клавиш (стрелки для навигации)
+- Добавление иконок типов файлов (за пределами эмодзи)
+- Реализация ограничений размера файлов для предпросмотра
 
-### Long Term
-- Add backend search endpoint
-- Implement lazy loading for large trees
-- Add file upload functionality
-- Add inline file editing
-- Add file comparison view
-- Add git diff integration
+### Долгосрочные
+- Добавление endpoint поиска на backend
+- Реализация ленивой загрузки для больших деревьев
+- Добавление функциональности загрузки файлов
+- Добавление редактирования файлов встроенно
+- Добавление представления сравнения файлов
+- Интеграция git diff
 
 ---
 
-**Status:** ✅ COMPLETE  
-**Version:** 3.2.0  
-**Access:** http://localhost:8000/files  
-**Part of:** LocalGitMirror v3.0
+**Статус:** ✅ ЗАВЕРШЕНО  
+**Версия:** 3.2.0  
+**Доступ:** http://localhost:8000/files  
+**Часть:** LocalGitMirror v3.0

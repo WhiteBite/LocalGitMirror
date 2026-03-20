@@ -28,7 +28,7 @@ start-dev.bat
 
 ## 📋 Описание скриптов
 
-### Production Mode
+### Production режим
 
 **Файлы:** `start.bat`, `start-prod.bat`, `start.sh`, `start-prod.sh`
 
@@ -36,7 +36,7 @@ start-dev.bat
 - Проверяет наличие собранного frontend (`frontend/dist/`)
 - Если нет - собирает автоматически (`npm run build`)
 - Запускает backend на порту 8000
-- Backend отдает статические файлы frontend
+- Backend отдаёт статические файлы frontend
 
 **Когда использовать:**
 - Для production использования
@@ -48,7 +48,7 @@ start-dev.bat
 
 ---
 
-### Development Mode
+### Development режим
 
 **Файлы:** `start-dev.bat`, `start-dev.sh`
 
@@ -70,11 +70,11 @@ start-dev.bat
 
 ## 🔧 Требования
 
-### Production Mode
+### Production режим
 - Python 3.10+
 - Node.js 18+ (только для первой сборки)
 
-### Development Mode
+### Development режим
 - Python 3.10+
 - Node.js 18+
 - npm
@@ -96,7 +96,7 @@ chmod +x start.sh start-prod.sh
 
 Скрипт автоматически:
 1. Проверит наличие `frontend/dist/`
-2. Если нет - соберет frontend
+2. Если нет - соберёт frontend
 3. Запустит backend
 4. Откроет http://localhost:8000
 
@@ -120,25 +120,25 @@ chmod +x start-dev.sh
 ### 3. Остановка серверов
 
 **Production:**
-- Нажми `Ctrl+C` в терминале
+- Нажмите `Ctrl+C` в терминале
 
 **Development (Windows):**
-- Закрой оба окна терминала
-- Или нажми `Ctrl+C` в каждом окне
+- Закройте оба окна терминала
+- Или нажмите `Ctrl+C` в каждом окне
 
 **Development (Linux/Mac):**
-- Нажми `Ctrl+C` в терминале
+- Нажмите `Ctrl+C` в терминале
 - Скрипт автоматически остановит оба процесса
 
 ---
 
-## 🐛 Troubleshooting
+## 🐛 Устранение неполадок
 
 ### "Python not found"
-Установи Python 3.10+: https://www.python.org/downloads/
+Установите Python 3.10+: https://www.python.org/downloads/
 
 ### "Node.js not found"
-Установи Node.js 18+: https://nodejs.org/
+Установите Node.js 18+: https://nodejs.org/
 
 ### "Frontend not built"
 ```bash
@@ -149,7 +149,7 @@ cd ..
 ```
 
 ### "Port 8000 already in use"
-Останови другой процесс на порту 8000:
+Остановите другой процесс на порту 8000:
 ```bash
 # Windows
 netstat -ano | findstr :8000
@@ -169,21 +169,21 @@ chmod +x start.sh start-prod.sh start-dev.sh
 ## 🎯 Рекомендации
 
 ### Для разработки
-✅ Используй `start-dev.bat` / `start-dev.sh`
+✅ Используйте `start-dev.bat` / `start-dev.sh`
 - Hot reload для backend и frontend
 - Быстрое тестирование изменений
 - Удобная отладка
 
 ### Для production
-✅ Используй `start.bat` / `start.sh`
+✅ Используйте `start.bat` / `start.sh`
 - Оптимизированный frontend
 - Один сервер на порту 8000
 - Готово к деплою
 
 ### Для демонстрации
-✅ Используй `start.bat` / `start.sh`
+✅ Используйте `start.bat` / `start.sh`
 - Быстрый запуск
-- Все в одном месте
+- Всё в одном месте
 - Профессиональный вид
 
 ---
@@ -199,10 +199,10 @@ LocalGitMirror/
 ├── start-dev.bat          # Development (Windows)
 ├── start-dev.sh           # Development (Linux/Mac)
 ├── backend/
-│   └── run.py            # Backend entry point
+│   └── run.py            # Точка входа backend
 └── frontend/
-    ├── dist/             # Built frontend (production)
-    └── package.json      # Frontend config
+    ├── dist/             # Собранный frontend (production)
+    └── package.json      # Конфигурация frontend
 ```
 
 ---
@@ -211,28 +211,28 @@ LocalGitMirror/
 
 ### Типичный день разработки:
 
-1. **Утро:** Запусти `start-dev.bat`
-2. **Работа:** Редактируй код, изменения применяются автоматически
-3. **Тестирование:** Проверяй на http://localhost:5173
-4. **Вечер:** Закрой терминалы
+1. **Утро:** Запустите `start-dev.bat`
+2. **Работа:** Редактируйте код, изменения применяются автоматически
+3. **Тестирование:** Проверяйте на http://localhost:5173
+4. **Вечер:** Закройте терминалы
 
 ### Перед коммитом:
 
-1. Останови dev серверы
-2. Запусти `start.bat` (production mode)
-3. Проверь что все работает на http://localhost:8000
-4. Коммить изменения
+1. Остановите dev серверы
+2. Запустите `start.bat` (production режим)
+3. Проверьте что всё работает на http://localhost:8000
+4. Сделайте коммит изменений
 
 ### Деплой:
 
-1. Собери frontend: `cd frontend && npm run build`
-2. Скопируй проект на сервер
-3. Запусти `start.sh` на сервере
+1. Соберите frontend: `cd frontend && npm run build`
+2. Скопируйте проект на сервер
+3. Запустите `start.sh` на сервере
 4. Готово!
 
 ---
 
-## 💡 Tips
+## 💡 Советы
 
 ### Быстрая пересборка frontend
 ```bash
@@ -253,4 +253,4 @@ curl http://localhost:5173
 ### Логи
 - Backend логи: в терминале
 - Frontend логи: в терминале + browser console
-- System логи: `storage/logs/system.log`
+- Системные логи: `storage/logs/system.log`

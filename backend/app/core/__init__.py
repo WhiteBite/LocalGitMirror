@@ -1,5 +1,11 @@
-"""
-Core business logic modules
+"""Core business logic modules.
+
+IMPORTANT:
+This package is imported in multiple contexts:
+- as part of the backend app (where top-level module is `app`)
+- as source files imported directly by helper scripts/tests.
+
+To keep these scripts working, core should not hard-require `app.*` imports at import time.
 """
 
 from app.core.git_handler import GitHandler

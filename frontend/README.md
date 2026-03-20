@@ -1,147 +1,147 @@
 # LocalGitMirror Frontend
 
-Vue.js 3 frontend application for LocalGitMirror.
+Vue.js 3 фронтенд-приложение для LocalGitMirror.
 
-## Tech Stack
+## Технологический стек
 
-- **Vue 3** - Progressive JavaScript framework with Composition API
-- **Vite** - Next generation frontend tooling
-- **Vue Router** - Official router for Vue.js
-- **Pinia** - State management for Vue
-- **TailwindCSS** - Utility-first CSS framework
-- **Axios** - HTTP client for API requests
+- **Vue 3** - Прогрессивный JavaScript-фреймворк с Composition API
+- **Vite** - Инструмент сборки следующего поколения
+- **Vue Router** - Официальный роутер для Vue.js
+- **Pinia** - Управление состоянием для Vue
+- **TailwindCSS** - Utility-first CSS-фреймворк
+- **Axios** - HTTP-клиент для API-запросов
 
-## Additional Libraries
+## Дополнительные библиотеки
 
-- **marked** - Markdown parser and compiler
-- **mermaid** - Diagram and flowchart generation
-- **highlight.js** - Syntax highlighting
-- **pdfjs-dist** - PDF rendering
+- **marked** - Парсер и компилятор Markdown
+- **mermaid** - Генерация диаграмм и блок-схем
+- **highlight.js** - Подсветка синтаксиса
+- **pdfjs-dist** - Рендеринг PDF
 
-## Project Structure
+## Структура проекта
 
 ```
 frontend/
 ├── src/
-│   ├── assets/          # Static assets (images, fonts, etc.)
-│   ├── components/      # Reusable Vue components
-│   ├── views/           # Page components
+│   ├── assets/          # Статические ресурсы (изображения, шрифты и т.д.)
+│   ├── components/      # Переиспользуемые Vue-компоненты
+│   ├── views/           # Компоненты страниц
 │   │   ├── Dashboard.vue
 │   │   ├── FileBrowser.vue
 │   │   └── Settings.vue
-│   ├── stores/          # Pinia stores
-│   │   ├── files.js     # File management state
-│   │   ├── repos.js     # Repository management state
-│   │   └── system.js    # System state and settings
-│   ├── router/          # Vue Router configuration
+│   ├── stores/          # Pinia хранилища
+│   │   ├── files.js     # Управление файлами
+│   │   ├── repos.js     # Управление репозиториями
+│   │   └── system.js    # Системное состояние и настройки
+│   ├── router/          # Конфигурация Vue Router
 │   │   └── index.js
-│   ├── App.vue          # Root component
-│   ├── main.js          # Application entry point
-│   └── style.css        # Global styles with Tailwind
-├── index.html           # HTML entry point
-├── vite.config.js       # Vite configuration
-├── tailwind.config.js   # Tailwind CSS configuration
-├── postcss.config.js    # PostCSS configuration
-└── package.json         # Dependencies and scripts
+│   ├── App.vue          # Корневой компонент
+│   ├── main.js          # Точка входа приложения
+│   └── style.css        # Глобальные стили с Tailwind
+├── index.html           # HTML точка входа
+├── vite.config.js       # Конфигурация Vite
+├── tailwind.config.js   # Конфигурация Tailwind CSS
+├── postcss.config.js    # Конфигурация PostCSS
+└── package.json         # Зависимости и скрипты
 ```
 
-## Setup
+## Настройка
 
-1. Install dependencies:
+1. Установите зависимости:
 ```bash
 npm install
 ```
 
-2. Start development server:
+2. Запустите dev-сервер:
 ```bash
 npm run dev
 ```
 
-The application will be available at `http://localhost:5173`
+Приложение будет доступно по адресу `http://localhost:5173`
 
-## Development
+## Разработка
 
-### API Proxy
+### Прокси API
 
-The Vite dev server is configured to proxy API requests:
+Dev-сервер Vite настроен проксировать API-запросы:
 - `/api/*` → `http://localhost:8000/api/*`
 - `/ws` → `ws://localhost:8000/ws`
 
-Make sure the FastAPI backend is running on port 8000.
+Убедитесь, что FastAPI-бэкенд запущен на порту 8000.
 
 ### Hot Module Replacement
 
-Vite provides instant HMR for a smooth development experience. Changes to Vue components, styles, and JavaScript will be reflected immediately without full page reloads.
+Vite обеспечивает мгновенный HMR для плавного процесса разработки. Изменения в Vue-компонентах, стилях и JavaScript применяются мгновенно без полной перезагрузки страницы.
 
-## Build
+## Сборка
 
-Build for production:
+Сборка для продакшна:
 ```bash
 npm run build
 ```
 
-Preview production build:
+Предпросмотр собранной версии:
 ```bash
 npm run preview
 ```
 
-## Features
+## Возможности
 
-### Dashboard
-- System status overview
-- Repository statistics
-- Recent activity logs
-- Storage usage monitoring
+### Панель управления
+- Обзор состояния системы
+- Статистика репозиториев
+- Журнал недавней активности
+- Мониторинг использования хранилища
 
-### File Browser
-- Navigate repository files
-- File preview
-- Search functionality
-- Breadcrumb navigation
+### Браузер файлов
+- Навигация по файлам репозитория
+- Предпросмотр файлов
+- Поиск
+- Навигация через хлебные крошки
 
-### Settings
-- General configuration
-- Git service management
-- Appearance customization
-- System information
+### Настройки
+- Общая конфигурация
+- Управление Git-сервисом
+- Настройка внешнего вида
+- Системная информация
 
-## State Management
+## Управление состоянием
 
-### Files Store (`stores/files.js`)
-- File listing and navigation
-- File content fetching
-- Search functionality
-- Current folder tracking
+### Хранилище файлов (`stores/files.js`)
+- Список и навигация по файлам
+- Получение содержимого файлов
+- Поиск
+- Отслеживание текущей папки
 
-### Repos Store (`stores/repos.js`)
-- Repository management
-- Branch and commit tracking
-- Sync operations
-- Repository CRUD operations
+### Хранилище репозиториев (`stores/repos.js`)
+- Управление репозиториями
+- Отслеживание веток и коммитов
+- Операции синхронизации
+- CRUD операции с репозиториями
 
-### System Store (`stores/system.js`)
-- System status monitoring
-- Settings management
-- Git service control
-- WebSocket connection for real-time updates
-- Notification system
+### Системное хранилище (`stores/system.js`)
+- Мониторинг состояния системы
+- Управление настройками
+- Управление Git-сервисом
+- WebSocket-соединение для real-time обновлений
+- Система уведомлений
 
-## Styling
+## Стилизация
 
-The application uses TailwindCSS with a dark theme by default. Custom utility classes are defined in `src/style.css`:
+Приложение использует TailwindCSS с тёмной темой по умолчанию. Пользовательские утилитарные классы определены в `src/style.css`:
 
-- `.btn`, `.btn-primary`, `.btn-secondary` - Button styles
-- `.card` - Card container
-- `.input` - Form input styles
+- `.btn`, `.btn-primary`, `.btn-secondary` - Стили кнопок
+- `.card` - Контейнер карточки
+- `.input` - Стили форм ввода
 
-## WebSocket Integration
+## Интеграция WebSocket
 
-The system store includes WebSocket support for real-time updates:
-- System status changes
-- Log streaming
-- Notifications
+Системное хранилище включает поддержку WebSocket для real-time обновлений:
+- Изменения состояния системы
+- Поток логов
+- Уведомления
 
-Connect to WebSocket on component mount:
+Подключитесь к WebSocket при монтировании компонента:
 ```javascript
 import { useSystemStore } from '@/stores/system'
 
@@ -149,12 +149,12 @@ const systemStore = useSystemStore()
 systemStore.connectWebSocket()
 ```
 
-## Contributing
+## Вкладка в проект
 
-When adding new features:
-1. Create components in `src/components/`
-2. Add new pages in `src/views/`
-3. Update routes in `src/router/index.js`
-4. Add state management in appropriate store
-5. Follow Vue 3 Composition API patterns
-6. Use TailwindCSS for styling
+При добавлении новых функций:
+1. Создавайте компоненты в `src/components/`
+2. Добавляйте новые страницы в `src/views/`
+3. Обновляйте маршруты в `src/router/index.js`
+4. Добавляйте управление состоянием в соответствующее хранилище
+5. Следуйте паттернам Vue 3 Composition API
+6. Используйте TailwindCSS для стилизации

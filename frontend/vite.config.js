@@ -14,12 +14,12 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'https://localhost:8443',
+        target: 'https://localhost:443',
         changeOrigin: true,
         secure: false
       },
       '/ws': {
-        target: 'wss://localhost:8443',
+        target: 'wss://localhost:443',
         ws: true,
         changeOrigin: true,
         secure: false

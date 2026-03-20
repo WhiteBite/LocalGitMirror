@@ -33,7 +33,7 @@ console = Console()
 
 # Configuration
 CONFIG = {
-    "web_port": int(os.getenv("WEB_PORT", 8443)),
+    "web_port": int(os.getenv("WEB_PORT", 443)),
     "git_port": int(os.getenv("GIT_PORT", 8444)),
     "storage_path": Path(os.getenv("STORAGE_PATH", "storage")),
 }
@@ -171,20 +171,28 @@ async def lifespan(app: FastAPI):
     console.print(f"[blue]Web UI:  {protocol}://0.0.0.0:{CONFIG['web_port']}[/blue]")
 
     yield
+    # Non-blocking shutdown
     if git_handler:
-        git_handler.stop()
+        try:
+            git_handler.stop()
+        except Exception:
+            pass
 
 
 # Security
-API_KEY_NAME = "X-API-Key"
+API_KEY_NAME = "X-Session-ID"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
 
 
 async def get_api_key(api_key_header: str = Security(api_key_header)):
     expected_key = os.getenv("API_KEY")
-    if not expected_key or api_key_header == expected_key:
+    # Allow requests without API key (for development/local use)
+    if not expected_key:
         return api_key_header
-    raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Could not validate credentials")
+    if api_key_header == expected_key:
+        return api_key_header
+    # Return 404 instead of 403 to hide server existence from scanners
+    raise HTTPException(status_code=404, detail="Not Found")
 
 
 # --- INITIALIZE APP ---
@@ -216,8 +224,26 @@ if frontend_dist.exists():
 if __name__ == "__main__":
     ssl_keyfile = "key.pem"
     ssl_certfile = "cert.pem"
-    kwargs = {"host": "0.0.0.0", "port": CONFIG["web_port"], "reload": False}
+    kwargs = {"host": "0.0.0.0", "port": CONFIG["web_port"], "reload": False, "log_level": "error"}
     if os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
         kwargs["ssl_keyfile"] = ssl_keyfile
         kwargs["ssl_certfile"] = ssl_certfile
-    uvicorn.run("app.main:app", **kwargs)
+
+    try:
+        uvicorn.run("app.main:app", **kwargs)
+    except PermissionError:
+        console.print("[bold red]❌ Permission denied: Port 443 requires administrator privileges[/bold red]")
+        console.print("[yellow]Please run the terminal as Administrator and try again:[/yellow]")
+        console.print("[cyan]  1. Right-click on Terminal/PowerShell[/cyan]")
+        console.print("[cyan]  2. Select 'Run as Administrator'[/cyan]")
+        console.print("[cyan]  3. Navigate to project directory and run again[/cyan]")
+        raise
+    except OSError as e:
+        if "address already in use" in str(e).lower() or e.errno == 10048:
+            console.print(f"[bold red]❌ Port {CONFIG['web_port']} is already in use[/bold red]")
+            console.print("[yellow]Another application is using this port. Options:[/yellow]")
+            console.print("[cyan]  1. Stop the other application[/cyan]")
+            console.print("[cyan]  2. Change WEB_PORT in .env file[/cyan]")
+            console.print("[cyan]  3. Run as Administrator if permission is the issue[/cyan]")
+            raise
+        raise

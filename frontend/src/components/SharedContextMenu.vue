@@ -12,33 +12,33 @@
         <template v-if="menuType === 'file'">
           <div class="menu-item" @click="handleAction('view')">
             <span class="menu-icon">👁️</span>
-            <span>Просмотреть</span>
+            <span>{{ t('sharedContextMenu.view') }}</span>
           </div>
           <div class="menu-item" @click="handleAction('rename')">
             <span class="menu-icon">✏️</span>
-            <span>Переименовать</span>
+            <span>{{ t('sharedContextMenu.rename') }}</span>
           </div>
           <div class="menu-item" @click="handleAction('tags')">
             <span class="menu-icon">🏷️</span>
-            <span>Теги</span>
+            <span>{{ t('sharedContextMenu.tags') }}</span>
           </div>
           <div class="menu-item" @click="handleAction('history')">
             <span class="menu-icon">📜</span>
-            <span>История</span>
+            <span>{{ t('sharedContextMenu.history') }}</span>
           </div>
           <div class="menu-divider"></div>
           <div class="menu-item" @click="handleAction('download')">
             <span class="menu-icon">💾</span>
-            <span>Скачать</span>
+            <span>{{ t('sharedContextMenu.download') }}</span>
           </div>
           <div class="menu-item" @click="handleAction('copy-path')">
             <span class="menu-icon">📋</span>
-            <span>Копировать путь</span>
+            <span>{{ t('sharedContextMenu.copy_path') }}</span>
           </div>
           <div class="menu-divider"></div>
           <div class="menu-item text-red-400 hover:bg-red-900/20" @click="handleAction('delete')">
             <span class="menu-icon">🗑️</span>
-            <span>Удалить</span>
+            <span>{{ t('sharedContextMenu.delete') }}</span>
           </div>
         </template>
 
@@ -46,20 +46,20 @@
         <template v-else-if="menuType === 'folder'">
           <div class="menu-item" @click="handleAction('open')">
             <span class="menu-icon">📂</span>
-            <span>Открыть</span>
+            <span>{{ t('sharedContextMenu.open') }}</span>
           </div>
           <div class="menu-item" @click="handleAction('rename')">
             <span class="menu-icon">✏️</span>
-            <span>Переименовать</span>
+            <span>{{ t('sharedContextMenu.rename') }}</span>
           </div>
           <div class="menu-item" @click="handleAction('stats')">
             <span class="menu-icon">📊</span>
-            <span>Статистика</span>
+            <span>{{ t('sharedContextMenu.stats') }}</span>
           </div>
           <div class="menu-divider"></div>
           <div class="menu-item text-red-400 hover:bg-red-900/20" @click="handleAction('delete')">
             <span class="menu-icon">🗑️</span>
-            <span>Удалить</span>
+            <span>{{ t('sharedContextMenu.delete') }}</span>
           </div>
         </template>
 
@@ -67,12 +67,12 @@
         <template v-else-if="menuType === 'multiple'">
           <div class="menu-item text-red-400 hover:bg-red-900/20" @click="handleAction('delete-multiple')">
             <span class="menu-icon">🗑️</span>
-            <span>Удалить выбранные ({{ selectedCount }} файлов)</span>
+            <span>{{ t('sharedContextMenu.delete_multiple', { count: selectedCount }) }}</span>
           </div>
           <div class="menu-divider"></div>
           <div class="menu-item" @click="handleAction('download-zip')">
             <span class="menu-icon">📦</span>
-            <span>Скачать как ZIP</span>
+            <span>{{ t('sharedContextMenu.download_zip') }}</span>
           </div>
         </template>
       </div>
@@ -82,6 +82,9 @@
 
 <script setup>
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps({
   visible: {

@@ -23,9 +23,15 @@ async def websocket_files(websocket: WebSocket):
                 await websocket.send_text("pong")
     except WebSocketDisconnect:
         pass
+    except (ConnectionResetError, RuntimeError):
+        # Handle Windows connection reset errors silently
+        pass
     finally:
-        if websocket in file_watch_connections:
-            file_watch_connections.remove(websocket)
+        try:
+            if websocket in file_watch_connections:
+                file_watch_connections.remove(websocket)
+        except Exception:
+            pass
 
 
 async def notify_file_change(event_data):
@@ -64,13 +70,19 @@ async def websocket_logs(websocket: WebSocket):
 
     except WebSocketDisconnect:
         pass
+    except (ConnectionResetError, RuntimeError):
+        # Handle Windows connection reset errors silently
+        pass
     except Exception as e:
         print(f"WebSocket error: {e}")
     finally:
         # Clean up on disconnect
-        logger.remove_websocket(websocket)
-        if websocket in active_connections:
-            active_connections.remove(websocket)
+        try:
+            logger.remove_websocket(websocket)
+            if websocket in active_connections:
+                active_connections.remove(websocket)
+        except Exception:
+            pass
 
 
 @router.get("/api/logs")
