@@ -11,7 +11,7 @@
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" />
           </svg>
-          <span class="ml-1">Previous</span>
+          <span class="ml-1">{{ t('pdfViewer.previous') }}</span>
         </button>
         
         <div class="page-info">
@@ -25,7 +25,7 @@
           class="nav-button"
           @click="nextPage"
         >
-          <span class="mr-1">Next</span>
+          <span class="mr-1">{{ t('pdfViewer.next') }}</span>
           <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
           </svg>
@@ -37,7 +37,7 @@
     <div class="pdf-container">
       <div v-if="loading" class="loading-state">
         <div class="spinner"></div>
-        <p class="mt-4 text-gray-400">Loading PDF...</p>
+        <p class="mt-4 text-gray-400">{{ t('pdfViewer.loading_pdf') }}</p>
       </div>
       
       <div v-else-if="error" class="error-state">
@@ -54,7 +54,10 @@
 
 <script setup>
 import { ref, onMounted, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import * as pdfjsLib from 'pdfjs-dist'
+
+const { t } = useI18n()
 
 // Set worker path
 pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`

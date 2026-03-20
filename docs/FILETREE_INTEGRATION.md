@@ -1,6 +1,4 @@
-# FileTree Component Integration Guide
-
-Руководство по интеграции компонента FileTree в LocalGitMirror.
+# Руководство по интеграции компонента FileTree в LocalGitMirror
 
 ## Созданные файлы
 
@@ -50,7 +48,7 @@ const handleFileSelect = (path) => {
 }
 
 const handleFolderToggle = (path) => {
-  console.log('Folder toggled:', path)
+  console.log('Папка переключена:', path)
 }
 </script>
 ```
@@ -78,10 +76,10 @@ mv frontend/src/views/FileBrowserWithTree.vue frontend/src/views/FileBrowser.vue
   <div class="file-browser">
     <!-- Кнопка переключения режима -->
     <button @click="toggleViewMode" class="btn-toggle">
-      {{ viewMode === 'tree' ? 'List View' : 'Tree View' }}
+      {{ viewMode === 'tree' ? 'Просмотр списком' : 'Просмотр деревом' }}
     </button>
 
-    <!-- Древовидный режим -->
+    <!-- Режим дерева -->
     <FileTree
       v-if="viewMode === 'tree'"
       :files="filesStore.files"
@@ -200,7 +198,7 @@ async function loadFileContent(path) {
     const content = await response.text()
     return content
   } catch (error) {
-    console.error('Failed to load file:', error)
+    console.error('Не удалось загрузить файл:', error)
     throw error
   }
 }
@@ -257,14 +255,14 @@ FileTree автоматически преобразует плоский спи
 ```vue
 <template>
   <div>
-    <input v-model="searchQuery" placeholder="Search..." />
+    <input v-model="searchQuery" placeholder="Поиск..." />
     <FileTree :search-query="searchQuery" :files="files" />
   </div>
 </template>
 ```
 
 При поиске:
-- Фильтруются файлы по имени и пути
+- Фильтруютс�� файлы по имени и пути
 - Папки с совпадениями автоматически разворачиваются
 - Пустые папки скрываются
 
@@ -278,7 +276,7 @@ FileTree автоматически преобразует плоский спи
 />
 ```
 
-### 5. Счетчик файлов
+### 5. Счётчик файлов
 
 Каждая папка показывает количество файлов внутри:
 
@@ -290,7 +288,7 @@ FileTree автоматически преобразует плоский спи
 
 ## Стилизация
 
-### Темная тема (по умолчанию)
+### Тёмная тема (по умолчанию)
 
 ```css
 .file-tree {
@@ -366,9 +364,9 @@ const showContextMenu = (event) => {
 }
 
 const contextMenuItems = [
-  { label: 'Download', action: downloadFile },
-  { label: 'Copy Path', action: copyPath },
-  { label: 'Open in New Tab', action: openInNewTab }
+  { label: 'Скачать', action: downloadFile },
+  { label: 'Копировать путь', action: copyPath },
+  { label: 'Открыть в новой вкладке', action: openInNewTab }
 ]
 </script>
 ```
@@ -447,7 +445,7 @@ import { mount } from '@vue/test-utils'
 import FileTree from '@/components/FileTree.vue'
 
 describe('FileTree', () => {
-  it('renders files correctly', () => {
+  it('отображает файлы корректно', () => {
     const files = [
       { path: 'README.md', name: 'README.md', size: 1234, modified: '2026-01-28' }
     ]
@@ -472,7 +470,7 @@ describe('FileTree', () => {
 3. **Пагинация** - ограничить количество отображаемых файлов
 4. **Web Workers** - построение дерева в фоновом потоке
 
-## Troubleshooting
+## Устранение неполадок
 
 ### Проблема: Файлы не отображаются
 
@@ -483,7 +481,7 @@ describe('FileTree', () => {
 { path: 'src/main.js', name: 'main.js', size: 890, modified: '2026-01-28' }
 
 // ❌ Неправильно
-{ filepath: 'src/main.js' }  // Неверное имя поля
+{ filepath: 'src/main.js' }  # Неверное имя поля
 ```
 
 ### Проблема: Папки не разворачиваются

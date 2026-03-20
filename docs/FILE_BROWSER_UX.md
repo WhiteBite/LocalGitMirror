@@ -1,134 +1,135 @@
-# File Browser UX Improvements
+# Улучшения UX браузера файлов
 
-## Overview
-Enhanced File Browser with VS Code-like interface, keyboard shortcuts, context menu, and improved navigation.
+## Обзор
+Улучшенный браузер файлов с интерфейсом как в VS Code, горячими клавишами и улучшенной навигацией.
 
-## New Features
+## Новые функции
 
-### 1. Context Menu (Right Click)
-Right-click on any file to access quick actions:
-- **Open in Editor** - Opens file in Cursor/VS Code
-- **Copy Path** - Copies file path to clipboard
-- **Copy Content** - Copies file content to clipboard
-- **Show in Explorer** - Opens file location in system file explorer
-- **Download** - Downloads the file
+### 1. Контекстное меню (правый клик)
+Правый клик на любом файле для доступа к быстрым действиям:
+- **Открыть в редакторе** - Открывает файл в Cursor/VS Code
+- **Копировать путь** - Копирует путь файла в буфер обмена
+- **Копировать содержимое** - Копирует содержимое файла в буфер обмена
+- **Показать в проводнике** - Открывает местоположение файла в системном проводнике
+- **Скачать** - Скачивает файл
 
-### 2. Keyboard Shortcuts
+### 2. Горячие клавиши
 
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+P` | Focus search / Quick Open |
-| `Ctrl+B` | Toggle sidebar visibility |
-| `Ctrl+F` | Search in file (planned) |
-| `Ctrl+Shift+C` | Copy file path |
-| `Enter` | Open selected file in editor |
-| `Escape` | Close file preview |
-| `Right Click` | Open context menu |
+| Комбинация | Действие |
+|------------|----------|
+| `Ctrl+P` | Фокус на поиск / Быстрое открытие |
+| `Ctrl+B` | Переключение видимости боковой панели |
+| `Ctrl+F` | Поиск в файле (планируется) |
+| `Ctrl+Shift+C` | Копировать путь файла |
+| `Enter` | Открыть выбранный файл в редакторе |
+| `Escape` | Закрыть предпросмотр файла |
+| `Правый клик` | Открыть контекстное меню |
 
-### 3. Breadcrumbs Navigation
-- Shows current file path as clickable breadcrumbs
-- Click any part of the path to navigate
-- Home icon for root directory
+### 3. Навигация через хлебные крошки
+- Показывает текущий путь файла как кликабельные хлебные крошки
+- Клик на любую часть пути для навигации
+- Иконка дома для корневой директории
 
-### 4. File Info Panel
-Displays detailed information about selected file:
-- File name
-- Full path
-- File size (formatted)
-- Last modified date
-- File type
-- Line count (for text files)
+### 4. Панель информации о файле
+Отображает подробную информацию о выбранном файле:
+- Имя файла
+- Полный путь
+- Размер файла (отформатированный)
+- Дата последнего изменения
+- Тип файла
+- Количество строк (для текстовых файлов)
 
-### 5. Resizable Sidebar
-- Drag the right edge of sidebar to resize
-- Min width: 200px
-- Max width: 600px
-- Smooth resize with visual feedback
+### 5. Изменяемая боковая панель
+- Перетаскивание правого края боковой панели для изменения размера
+- Минимальная ширина: 200px
+- Максимальная ширина: 600px
+- Плавное изменение размера с визуальной обратной связью
 
-### 6. Improved UI/UX
-- VS Code-style layout
-- Fixed sidebar width (280px default)
-- Flexible preview panel
-- Loading/error/empty states
-- Smooth animations
-- Better visual hierarchy
+### 6. Улучшенный UI/UX
+- Интерфейс как в VS Code
+- Фиксированная ширина боковой панели (по умолчанию 280px)
+- Гибкая панель предпросмотра
+- Состояния загрузки/ошибки/пустого состояния
+- Плавные анимации
+- Лучшая визуальная иерархия
 
-## Usage
+## Использование
 
-### Basic Navigation
-1. Click on folders to expand/collapse
-2. Click on files to preview
-3. Use breadcrumbs to navigate up the tree
-4. Search files using the search box
+### Базовая навигация
+1. Клик на папки для развертывания/сворачивания
+2. Клик на файлы для предпросмотра
+3. Используйте хлебные крошки для навигации вверх по дереву
+4. Ищите файлы с помощью поля поиска
 
-### Quick Actions
-1. **Right-click** on any file for context menu
-2. Press **Enter** to open file in editor
-3. Press **Ctrl+Shift+C** to copy path
-4. Press **Escape** to close preview
+### Быстрые действия
+1. **Правый клик** на любом файле для контекстного меню
+2. Нажмите **Enter** для открытия файла в редакторе
+3. Нажмите **Ctrl+Shift+C** для копирования пути
+4. Нажмите **Escape** для закрытия предпросмотра
 
-### Sidebar Management
-1. Press **Ctrl+B** to toggle sidebar
-2. Drag the right edge to resize
-3. File info panel shows at bottom when file is selected
+### Управление боковой панелью
+1. Нажмите **Ctrl+B** для переключения боковой панели
+2. Перетащите правый край для изменения размера
+3. Панель информации о файле показывается внизу при выборе файла
 
-## Components
+## Компоненты
 
-### New Components
-- `ContextMenu.vue` - Right-click context menu
-- `Breadcrumbs.vue` - Path navigation
-- `FileInfoPanel.vue` - File information display
+### Новые компоненты
+- `ContextMenu.vue` - Контекстное меню правого клика
+- `Breadcrumbs.vue` - Навигация по пути
+- `FileInfoPanel.vue` - Отображение информации о файле
 
-### New Composables
-- `useKeyboardShortcuts.js` - Keyboard shortcut handler
+### Новые композаблы
+- `useKeyboardShortcuts.js` - Обработчик горячих клавиш
 
-### Updated Components
-- `FileBrowserEnhanced.vue` - Main file browser with all features
-- `TreeNode.vue` - Added context menu support
-- `FileTree.vue` - Added context menu event handling
+### Обновлённые компоненты
+- `FileBrowserEnhanced.vue` - Основной браузер файлов со всеми функциями
+- `TreeNode.vue` - Добавлена поддержка контекстного меню
+- `FileTree.vue` - Добавлена обработка событий контекстного меню
 
-## Technical Details
+## Технические детали
 
-### Context Menu
-- Teleported to body for proper positioning
-- Closes on click outside or Escape
-- Positioned at mouse cursor
-- Emits events for all actions
+### Контекстное меню
+- Телепортируется в body для правильного позиционирования
+- Закрывается при клике вне или Escape
+- Позиционируется по курсору мыши
+- Эмитирует события для всех действий
 
-### Keyboard Shortcuts
-- Global event listeners
-- Prevents default browser behavior
-- Composable for reusability
-- Easy to extend
+### Горячие клавиши
+- Глобальные слушатели событий
+- Предотвращает поведение браузера по умолчанию
+- Композабл для переиспользования
+- Легко расширяемый
 
-### Sidebar Resize
-- Mouse drag to resize
-- Constrained min/max width
-- Smooth visual feedback
-- Persists during session
+### Изменение размера боковой панели
+- Перетаскивание мышью для изменения размера
+- Ограничение минимальной/максимальной ширины
+- Плавная визуальная обратная связь
+- Сохраняется во время сессии
 
-## Future Improvements
-- [ ] Fuzzy search (Ctrl+P quick open)
-- [ ] Search in file content (Ctrl+F)
-- [ ] Git status indicators
-- [ ] File icons by type
-- [ ] Drag & drop support
-- [ ] Multi-file selection
-- [ ] Keyboard navigation in tree
+## Будущие улучшения
+- [ ] Нечёткий поиск (быстрое открытие Ctrl+P)
+- [ ] Поиск в содержимом файлов (Ctrl+F)
+- [ ] Индикаторы статуса Git
+- [ ] Иконки файлов по типу
+- [ ] Поддержка Drag & Drop
+- [ ] Множественный выбор файлов
+- [ ] Bulk операции (скачать, удалить)
+- [ ] Навигация по дереву с клавиатуры
 
-## Migration
-Old `FileBrowser.vue` is kept for reference. New `FileBrowserEnhanced.vue` is now the default.
+## Миграция
+Старый `FileBrowser.vue` сохранён для справки. Новый `FileBrowserEnhanced.vue` теперь по умолчанию.
 
-To switch back to old version:
+Для переключения на старую версию:
 ```javascript
 // frontend/src/router/index.js
 component: () => import('@/views/FileBrowser.vue')
 ```
 
-## Testing
-1. Start frontend: `npm run dev` in `frontend/`
-2. Navigate to `/files`
-3. Test all keyboard shortcuts
-4. Test context menu on files
-5. Test sidebar resize
-6. Test breadcrumbs navigation
+## Тестирование
+1. Запустите frontend: `npm run dev` в `frontend/`
+2. Перейдите на `/files`
+3. Протестируйте все горячие клавиши
+4. Протестируйте контекстное меню на файлах
+5. Протестируйте изменение размера боковой панели
+6. Протестируйте навигацию через хлебные крошки

@@ -1,7 +1,7 @@
 <template>
   <div class="commits-view">
     <div class="view-header">
-      <h2>Commit History: {{ reposStore.currentRepo }}</h2>
+      <h2>{{ t('commits.title') }}: {{ reposStore.currentRepo }}</h2>
       <button class="icon-btn" :disabled="loading" @click="fetchCommits">
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></svg>
       </button>
@@ -10,8 +10,8 @@
     <div class="view-content">
       <!-- Commit List -->
       <div class="commit-list-pane">
-        <div v-if="loading" class="loading-state">Loading commits...</div>
-        <div v-else-if="commits.length === 0" class="empty-state">No commits found</div>
+        <div v-if="loading" class="loading-state">{{ t('commits.loading_commits') }}</div>
+        <div v-else-if="commits.length === 0" class="empty-state">{{ t('commits.no_commits_found') }}</div>
         <div 
           v-for="commit in commits" 
           :key="commit.hash"
@@ -30,19 +30,19 @@
 
       <!-- Commit Details -->
       <div class="commit-details-pane">
-        <div v-if="detailsLoading" class="loading-state">Loading details...</div>
+        <div v-if="detailsLoading" class="loading-state">{{ t('commits.loading_details') }}</div>
         <div v-else-if="selectedCommitDetails" class="details-container">
           <div class="details-header">
             <h3>{{ selectedCommitDetails.hash }}</h3>
             <p class="full-msg">{{ selectedCommitDetails.message }}</p>
             <div class="meta-row">
-              <span><strong>Author:</strong> {{ selectedCommitDetails.author }}</span>
-              <span><strong>Date:</strong> {{ formatDate(selectedCommitDetails.date) }}</span>
+              <span><strong>{{ t('commits.author') }}:</strong> {{ selectedCommitDetails.author }}</span>
+              <span><strong>{{ t('commits.date') }}:</strong> {{ formatDate(selectedCommitDetails.date) }}</span>
             </div>
           </div>
           
           <div class="changed-files">
-            <h4>Changed Files ({{ selectedCommitDetails.files.length }})</h4>
+            <h4>{{ t('commits.changed_files') }} ({{ selectedCommitDetails.files.length }})</h4>
             <div v-for="file in selectedCommitDetails.files" :key="file.path" class="file-change-item">
               <span class="status-badge" :class="file.status">{{ file.status }}</span>
               <span class="file-path">{{ file.path }}</span>
@@ -50,7 +50,7 @@
           </div>
         </div>
         <div v-else class="empty-details">
-          Select a commit to see details
+          {{ t('commits.select_commit') }}
         </div>
       </div>
     </div>
@@ -61,6 +61,9 @@
 import { ref, onMounted, watch } from 'vue'
 import { useReposStore } from '@/stores/repos'
 import axios from 'axios'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const reposStore = useReposStore()
 const commits = ref([])

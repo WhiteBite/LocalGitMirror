@@ -1,64 +1,64 @@
-# Settings System Documentation
+# Документация системы настроек
 
-## 🎯 Overview
+## 🎯 Обзор
 
-Complete settings management system for LocalGitMirror with backend persistence and comprehensive Vue frontend.
+Полная система управления настройками для LocalGitMirror с бэкендным хранением и комплексным Vue-интерфейсом.
 
-## 🚀 Quick Start
+## 🚀 Быстрый старт
 
-### 1. Start the Application
+### 1. Запуск приложения
 
 ```bash
-# Start backend
+# Запуск бэкенда
 python main.py
 
-# In another terminal, start frontend
+# В другом терминале запустите frontend
 cd frontend
 npm run dev
 ```
 
-### 2. Access Settings
+### 2. Доступ к настройкам
 
-Navigate to: **http://localhost:5173/settings**
+Перейдите по адресу: **http://localhost:5173/settings**
 
-### 3. Configure Your Settings
+### 3. Настройка параметров
 
-#### General Tab
-- Set your default repository
-- Enable/disable auto-sync
-- Adjust refresh interval (1-60 seconds)
+#### Вкладка Общие
+- Установите репозиторий по умолчанию
+- Включите/отключите автосинхронизацию
+- Настройте интервал обновления (1-60 секунд)
 
-#### Git Tab
-- Configure Git server port (default: 8081)
-- Enable auto-start for Git server
-- Enable auto-commit if desired
+#### Вкладка Git
+- Настройте порт Git-сервера (по умолчанию: 8081)
+- Включите автозапуск Git-сервера
+- Включите автосохранение при необходимости
 
-#### Editor Tab
-- Choose your preferred editor:
-  - ⚡ **Cursor** - AI-powered editor
+#### Вкладка Редактор
+- Выберите предпочитаемый редактор:
+  - ⚡ **Cursor** - редактор с ИИ
   - 💻 **VS Code** - Visual Studio Code
-  - 📁 **System** - Default system application
-- Optionally set custom editor path
+  - 📁 **Системный** - приложение по умолчанию
+- При необходимости установите пользовательский путь редактора
 
-#### UI Tab
-- Choose theme: 🌙 Dark or ☀️ Light
-- Adjust font size (10-24px)
-- Toggle system log visibility
+#### Вкладка UI
+- Выберите тему: 🌙 Тёмная или ☀️ Светлая
+- Настройте размер шрифта (10-24px)
+- Включите/отключите отображение системного лога
 
-#### Ollama Tab
-- Enable/disable AI integration
-- Set Ollama server URL (default: http://localhost:11434)
-- Choose AI model (default: llama3.2)
+#### Вкладка Ollama
+- Включите/отключите интеграцию ИИ
+- Установите URL сервера Ollama (по умолчанию: http://localhost:11434)
+- Выберите модель ИИ (по умолчанию: llama3.2)
 
-### 4. Save Your Changes
+### 4. Сохранение изменений
 
-Click **"Save Changes"** button at the bottom of any tab.
+Нажмите кнопку **"Сохранить изменения"** внизу любой вкладки.
 
-You'll see a success notification: ✅ "Settings saved successfully"
+Вы увидите уведомление об успехе: ✅ "Настройки успешно сохранены"
 
-## 📖 Architecture
+## 📖 Архитектура
 
-### Settings Structure
+### Структура настроек
 
 ```python
 {
@@ -66,7 +66,7 @@ You'll see a success notification: ✅ "Settings saved successfully"
         "default_repo": "default",
         "default_folder": "",
         "auto_sync": True,
-        "refresh_interval": 5  # 1-60 seconds
+        "refresh_interval": 5  # 1-60 секунд
     },
     "git": {
         "port": 8081,  # 1024-65535
@@ -90,103 +90,103 @@ You'll see a success notification: ✅ "Settings saved successfully"
 }
 ```
 
-### Backend Components
+### Компоненты бэкенда
 
-#### 1. Settings Manager (`core/settings_manager.py`)
+#### 1. Менеджер настроек (`core/settings_manager.py`)
 
-**Features:**
-- Pydantic-based validation for all settings
-- JSON file persistence (`storage/settings.json`)
-- Default values with type checking
-- Import/Export functionality
-- Reset to defaults
+**Функции:**
+- Валидация на основе Pydantic для всех настроек
+- Постоянное хранение в JSON файле (`storage/settings.json`)
+- Значения по умолчанию с проверкой типов
+- Функциональность импорта/экспорта
+- Сброс к значениям по умолчанию
 
-**Classes:**
-- `GeneralSettings` - General application settings
-- `GitSettings` - Git service configuration
-- `EditorSettings` - Editor preferences with validation
-- `UISettings` - UI appearance settings
-- `OllamaSettings` - AI integration settings
-- `AppSettings` - Complete settings container
-- `SettingsManager` - Main manager class
+**Классы:**
+- `GeneralSettings` - Общие настройки приложения
+- `GitSettings` - Конфигурация Git-сервиса
+- `EditorSettings` - Предпочтения редактора с валидацией
+- `UISettings` - Настройки внешнего вида
+- `OllamaSettings` - Настройки интеграции ИИ
+- `AppSettings` - Полный контейнер настроек
+- `SettingsManager` - Основной класс менеджера
 
-**Methods:**
-- `load()` - Load settings from file or create defaults
-- `save()` - Save current settings to file
-- `get()` - Get current settings
-- `update(settings_dict)` - Update settings with validation
-- `reset_to_defaults()` - Reset all settings
-- `get_defaults()` - Get default values
-- `export_settings(path)` - Export to file
-- `import_settings(path)` - Import from file
+**Методы:**
+- `load()` - Загрузка настроек из файла или создание по умолчанию
+- `save()` - Сохранение текущих настроек в файл
+- `get()` - Получение текущих настроек
+- `update(settings_dict)` - Обновление настроек с валидацией
+- `reset_to_defaults()` - Сброс всех настроек
+- `get_defaults()` - Получение значений по умолчанию
+- `export_settings(path)` - Экспорт в файл
+- `import_settings(path)` - Импорт из файла
 
-#### 2. Settings Router (`routers/settings.py`)
+#### 2. Роутер настроек (`routers/settings.py`)
 
 **Endpoints:**
 
-| Method | Endpoint                  | Description                    |
-|--------|---------------------------|--------------------------------|
-| GET    | `/api/settings`           | Get current settings           |
-| POST   | `/api/settings`           | Update settings (partial)      |
-| PUT    | `/api/settings`           | Replace all settings           |
-| GET    | `/api/settings/defaults`  | Get default values             |
-| POST   | `/api/settings/reset`     | Reset to defaults              |
-| POST   | `/api/settings/export`    | Export to file                 |
-| POST   | `/api/settings/import`    | Import from file               |
+| Метод | Endpoint                  | Описание                    |
+|-------|---------------------------|-----------------------------|
+| GET   | `/api/settings`           | Получение текущих настроек  |
+| POST  | `/api/settings`           | Обновление настроек (частичное) |
+| PUT   | `/api/settings`           | Замена всех настроек        |
+| GET   | `/api/settings/defaults`  | Получение значений по умолчанию |
+| POST  | `/api/settings/reset`     | Сброс к значениям по умолчанию |
+| POST  | `/api/settings/export`    | Экспорт в файл              |
+| POST  | `/api/settings/import`    | Импорт из файла             |
 
-### Frontend Component
+### Frontend компонент
 
 #### Settings.vue (`frontend/src/views/Settings.vue`)
 
-**Features:**
-- Tab-based navigation (5 tabs)
-- Real-time validation
-- Success/Error notifications
-- Loading states
-- Auto-hide notifications (5 seconds)
-- Responsive design with Tailwind CSS
+**Функции:**
+- Навигация по вкладкам (5 вкладок)
+- Валидация в реальном времени
+- Уведомления об успехе/ошибке
+- Состояния загрузки
+- Автоматическое скрытие уведомлений (5 секунд)
+- Адаптивный дизайн с Tailwind CSS
 
-**UI Components:**
-- Text inputs (5)
-- Number inputs (2)
-- Range slider (1)
-- Toggle switches (6)
-- Card selectors (5)
-- Buttons (2 per tab)
+**UI компоненты:**
+- Текстовые поля ввода (5)
+- Числовые поля ввода (2)
+- Ползунок диапазона (1)
+- Переключатели (6)
+- Карточки выбора (5)
+- Кнопки (2 на вкладку)
 
-## 💻 Usage Examples
+## 💻 Примеры использования
 
-### Backend Usage
+### Использование бэкенда
 
 ```python
-# In main.py or any module
+# В main.py или любом модуле
 from core.settings_manager import SettingsManager
 
-# Initialize
+# Инициализация
 settings_manager = SettingsManager(storage_path)
 
-# Get settings
+# Получение настроек
 settings = settings_manager.get()
 print(settings.git.port)  # 8081
 
-# Update settings
+# Обновление настроек
 new_settings = {
     "git": {"port": 9000},
     "ui": {"theme": "light"}
 }
 settings_manager.update(new_settings)
 
-# Reset to defaults
+# Сброс к значениям по умолчанию
 settings_manager.reset_to_defaults()
 ```
 
-### API Usage
+### Использование API
 
 ```bash
-# Get current settings
+# Получение текущих настроек
 curl http://localhost:8000/api/settings
 
-# Update settings
+# Обновление настроек
 curl -X POST http://localhost:8000/api/settings \
   -H "Content-Type: application/json" \
   -d '{
@@ -194,42 +194,42 @@ curl -X POST http://localhost:8000/api/settings \
     "ui": {"theme": "light"}
   }'
 
-# Get defaults
+# Получение значений по умолчанию
 curl http://localhost:8000/api/settings/defaults
 
-# Reset to defaults
+# Сброс к значениям по умолчанию
 curl -X POST http://localhost:8000/api/settings/reset
 ```
 
-## ✅ Validation Rules
+## ✅ Правила валидации
 
-### General Settings
-- `refresh_interval`: 1-60 seconds
+### Общие настройки
+- `refresh_interval`: 1-60 секунд
 
-### Git Settings
-- `port`: 1024-65535 (valid port range)
+### Настройки Git
+- `port`: 1024-65535 (допустимый диапазон портов)
 
-### Editor Settings
-- `type`: Must be "cursor", "vscode", or "system"
+### Настройки редактора
+- `type`: Должно быть "cursor", "vscode" или "system"
 
-### UI Settings
-- `theme`: Must be "dark" or "light"
-- `font_size`: 10-24 pixels
+### Настройки UI
+- `theme`: Должно быть "dark" или "light"
+- `font_size`: 10-24 пикселя
 
-### Ollama Settings
-- `url`: String (no validation)
-- `model`: String (no validation)
+### Настройки Ollama
+- `url`: Строка (без валидации)
+- `model`: Строка (без валидации)
 
-## 🔧 Configuration
+## 🔧 Конфигурация
 
-### Settings File Location
+### Расположение файла настроек
 
-Your settings are automatically saved to:
+Ваши настройки автоматически сохраняются в:
 ```
 storage/settings.json
 ```
 
-### Example Settings File
+### Пример файла настроек
 
 ```json
 {
@@ -261,76 +261,76 @@ storage/settings.json
 }
 ```
 
-## 🐛 Troubleshooting
+## 🐛 Устранение неполадок
 
-### Settings Not Saving
-- Check console for error messages
-- Verify `storage` directory exists and is writable
-- Check backend logs for validation errors
+### Настройки не сохраняются
+- Проверьте консоль на сообщения об ошибках
+- Убедитесь, что папка `storage` существует и доступна для записи
+- Проверьте логи бэкенда на ошибки валидации
 
-### Settings Reset After Restart
-- Ensure `storage/settings.json` file exists
-- Check file permissions
-- Verify no errors in backend startup logs
+### Настройки сбрасываются после перезапуска
+- Убедитесь, что файл `storage/settings.json` существует
+- Проверьте права доступа к файлу
+- Проверьте логи запуска бэкенда на ошибки
 
-### Validation Errors
-- Check that values are within allowed ranges
-- Verify enum values (theme, editor type) are correct
-- Review error notification for specific details
+### Ошибки валидации
+- Проверьте, что значения находятся в допустимых диапазонах
+- Убедитесь, что перечисляемые значения (тема, тип редактора) правильные
+- Просмотрите уведомление об ошибке для конкретных деталей
 
-## 🎯 Common Use Cases
+## 🎯 Распространённые сценарии
 
-### Change Git Port
-1. Go to **Git** tab
-2. Change port number (e.g., 9000)
-3. Click **Save Changes**
-4. Restart Git server for changes to take effect
+### Изменение порта Git
+1. Перейдите на вкладку **Git**
+2. Измените номер порта (например, 9000)
+3. Нажмите **Сохранить изменения**
+4. Перезапустите Git-сервер, чтобы изменения вступили в силу
 
-### Switch to Light Theme
-1. Go to **UI** tab
-2. Click on **Light Theme** card
-3. Click **Save Changes**
-4. Refresh page if needed
+### Переключение на светлую тему
+1. Перейдите на вкладку **UI**
+2. Нажмите на карточку **Светлая тема**
+3. Нажмите **Сохранить изменения**
+4. При необходимости обновите страницу
 
-### Configure Ollama
-1. Go to **Ollama** tab
-2. Ensure toggle is **ON**
-3. Set URL: `http://localhost:11434`
-4. Set model: `llama3.2` (or your preferred model)
-5. Click **Save Changes**
+### Настройка Ollama
+1. Перейдите на вкладку **Ollama**
+2. Убедитесь, что переключатель **ВКЛ**
+3. Установите URL: `http://localhost:11434`
+4. Установите модель: `llama3.2` (или вашу предпочтительную модель)
+5. Нажмите **Сохранить изменения**
 
-### Set Custom Editor
-1. Go to **Editor** tab
-2. Enter full path in **Custom Editor Path**
-   - Example: `C:\Program Files\MyEditor\editor.exe`
-3. Click **Save Changes**
+### Настройка пользовательского редактора
+1. Перейдите на вкладку **Редактор**
+2. Введите полный путь в поле **Пользовательский путь редактора**
+   - Пример: `C:\Program Files\MyEditor\editor.exe`
+3. Нажмите **Сохранить изменения**
 
-## 🔮 Future Enhancements
+## 🔮 Будущие улучшения
 
-Potential improvements:
-- Settings search/filter
-- Settings history/undo
-- Settings profiles
-- Cloud sync
-- Settings validation on frontend
-- Real-time settings sync across tabs
-- Settings backup/restore
-- Advanced editor configuration
-- Custom themes
-- Keyboard shortcuts configuration
+Потенциальные улучшения:
+- Поиск/фильтрация настроек
+- История/отмена настроек
+- Профили настроек
+- Синхронизация в облако
+- Валидация настроек на frontend
+- Real-time синхронизация настроек между вкладками
+- Резервное копирование/восстановление настроек
+- Расширенная настройка редактора
+- Пользовательские темы
+- Настройка горячих клавиш
 
-## 📝 Notes
+## 📝 Примечания
 
-- Settings are stored in `storage/settings.json`
-- File is created automatically on first run
-- Invalid settings fall back to defaults
-- All changes are validated before saving
-- Settings persist across restarts
-- Frontend uses reactive Vue 3 Composition API
-- Backend uses Pydantic for type safety
+- Настройки хранятся в `storage/settings.json`
+- Файл создаётся автоматически при первом запуске
+- Недопустимые настройки возвращаются к значениям по умолчанию
+- Все изменения валидируются перед сохранением
+- Настройки сохраняются между перезапусками
+- Frontend использует реактивный Vue 3 Composition API
+- Backend использует Pydantic для безопасности типов
 
 ---
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-01-28  
-**Part of:** LocalGitMirror v3.0
+**Версия:** 1.0.0  
+**Последнее обновление:** 2026-01-28  
+**Часть:** LocalGitMirror v3.0

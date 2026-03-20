@@ -4,21 +4,21 @@
     <aside v-if="showSidebar" class="sidebar">
       <!-- Main Navigation Links -->
       <div class="nav-section">
-        <router-link to="/dashboard" class="nav-item" title="Панель управления">
+        <router-link to="/dashboard" class="nav-item" :title="t('nav.dashboard')">
           <span class="icon">🏠</span>
-          <span class="label">Панель управления</span>
+          <span class="label">{{ t('nav.dashboard') }}</span>
         </router-link>
-        <router-link to="/files" class="nav-item" title="Проводник">
+        <router-link to="/files" class="nav-item" :title="t('nav.files')">
           <span class="icon">📂</span>
-          <span class="label">Файлы</span>
+          <span class="label">{{ t('nav.files') }}</span>
         </router-link>
-        <router-link to="/search" class="nav-item" title="Поиск">
+        <router-link to="/search" class="nav-item" :title="t('nav.search')">
           <span class="icon">🔍</span>
-          <span class="label">Поиск</span>
+          <span class="label">{{ t('nav.search') }}</span>
         </router-link>
-        <router-link to="/settings" class="nav-item" title="Настройки">
+        <router-link to="/settings" class="nav-item" :title="t('nav.settings')">
           <span class="icon">⚙️</span>
-          <span class="label">Настройки</span>
+          <span class="label">{{ t('nav.settings') }}</span>
         </router-link>
       </div>
 
@@ -27,8 +27,8 @@
       <!-- Repositories List -->
       <div class="sidebar-section">
         <div class="section-header">
-          <header>РЕПОЗИТОРИИ</header>
-          <button class="icon-btn" title="Новый репозиторий" @click="showCreateModal = true">
+          <header>{{ t('nav.repositories') }}</header>
+          <button class="icon-btn" :title="t('nav.new_repo')" @click="showCreateModal = true">
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="5" x2="12" y2="19"></line>
               <line x1="5" y1="12" x2="19" y2="12"></line>
@@ -55,7 +55,7 @@
             <button 
               v-if="repo !== 'default'"
               class="delete-btn" 
-              title="Удалить репозиторий" 
+              :title="t('nav.delete_repo')" 
               @click.stop="confirmDelete(repo)"
             >
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -82,20 +82,20 @@
     <!-- Status Bar -->
     <footer class="status-bar">
       <div class="left">
-        <div class="status-item" :class="{ ok: true }">
-          <span class="dot"></span>
-          Git HTTPS: Активен
-        </div>
-        <div 
-          class="status-item interactive" 
-          title="Нажмите, чтобы скопировать IP" 
+          <div class="status-item" :class="{ ok: true }">
+            <span class="dot"></span>
+            {{ t('app.cloud_access_active') }}
+          </div>
+        <div
+          class="status-item interactive"
+          :title="t('app.copy_ip_tooltip')"
           @click="copyIP"
         >
           IP: {{ systemStore.status.local_ip || '...' }}
         </div>
-        <div class="status-item">
-          Проект: {{ reposStore.currentRepo || 'Не выбран' }}
-        </div>
+          <div class="status-item">
+            {{ t('app.volume') }}: {{ reposStore.currentRepo || t('app.volume_not_selected') }}
+          </div>
       </div>
     </footer>
 
@@ -124,16 +124,16 @@
     <transition name="fade">
       <div v-if="showCreateModal" class="modal-overlay" @click.self="showCreateModal = false">
         <div class="modal">
-          <h3>Создать новый репозиторий</h3>
+          <h3>{{ t('app.create_volume_title') }}</h3>
           <input 
             v-model="newRepoName" 
-            placeholder="Название репозитория" 
+            :placeholder="t('app.volume_name_placeholder')" 
             class="input-field"
             @keyup.enter="createRepository"
           />
           <div class="modal-actions">
-            <button class="btn btn-secondary" @click="showCreateModal = false">Отмена</button>
-            <button class="btn btn-primary" :disabled="!isValidRepoName" @click="createRepository">Создать</button>
+            <button class="btn btn-secondary" @click="showCreateModal = false">{{ t('common.cancel') }}</button>
+            <button class="btn btn-primary" :disabled="!isValidRepoName" @click="createRepository">{{ t('common.create') }}</button>
           </div>
         </div>
       </div>
@@ -143,12 +143,12 @@
     <transition name="fade">
       <div v-if="repoToDelete" class="modal-overlay" @click.self="repoToDelete = null">
         <div class="modal">
-          <h3>Удалить репозиторий</h3>
-          <p>Вы уверены, что хотите удалить <strong>{{ repoToDelete }}</strong>?</p>
-          <p class="warning-text">Это действие нельзя отменить.</p>
+          <h3>{{ t('app.delete_volume_title') }}</h3>
+          <p>{{ t('app.delete_volume_confirm', { name: repoToDelete }) }}</p>
+          <p class="warning-text">{{ t('app.delete_volume_irreversible') }}</p>
           <div class="modal-actions">
-            <button class="btn btn-secondary" @click="repoToDelete = null">Отмена</button>
-            <button class="btn btn-danger" @click="executeDelete">Удалить</button>
+            <button class="btn btn-secondary" @click="repoToDelete = null">{{ t('common.cancel') }}</button>
+            <button class="btn btn-danger" @click="executeDelete">{{ t('common.delete') }}</button>
           </div>
         </div>
       </div>
@@ -163,6 +163,9 @@ import { useSystemStore } from '@/stores/system'
 import { useFilesStore } from '@/stores/files'
 import CommandPalette from '@/components/CommandPalette.vue'
 import axios from 'axios'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const reposStore = useReposStore()
 const systemStore = useSystemStore()
@@ -211,10 +214,10 @@ async function selectProject(repo) {
     if (filesStore.currentFolder) {
       await filesStore.fetchFiles('/')
     }
-    systemStore.addNotification(`Репозиторий '${repo}' выбран`, 'info')
+    systemStore.addNotification(t('settings.notifications.repo_selected', { name: repo }), 'info')
   } catch (err) {
     console.error('Failed to select repo:', err)
-    systemStore.addNotification('Не удалось сменить репозиторий', 'error')
+    systemStore.addNotification(t('settings.notifications.repo_select_error'), 'error')
   }
 }
 
@@ -223,11 +226,11 @@ async function createRepository() {
   
   try {
     await reposStore.createRepo(newRepoName.value)
-    systemStore.addNotification(`Репозиторий '${newRepoName.value}' создан`, 'success')
+    systemStore.addNotification(t('settings.notifications.repo_created', { name: newRepoName.value }), 'success')
     showCreateModal.value = false
     newRepoName.value = ''
   } catch (err) {
-    systemStore.addNotification(reposStore.error || 'Ошибка создания репозитория', 'error')
+    systemStore.addNotification(reposStore.error || t('settings.notifications.repo_create_error'), 'error')
   }
 }
 
@@ -240,10 +243,10 @@ async function executeDelete() {
   
   try {
     await reposStore.deleteRepo(repoToDelete.value)
-    systemStore.addNotification(`Репозиторий '${repoToDelete.value}' удален`, 'success')
+    systemStore.addNotification(t('settings.notifications.repo_deleted', { name: repoToDelete.value }), 'success')
     repoToDelete.value = null
   } catch (err) {
-    systemStore.addNotification(reposStore.error || 'Ошибка удаления репозитория', 'error')
+    systemStore.addNotification(reposStore.error || t('settings.notifications.repo_delete_error'), 'error')
   }
 }
 
@@ -252,10 +255,10 @@ function copyIP() {
   if (ip) {
     navigator.clipboard.writeText(ip)
       .then(() => {
-        systemStore.addNotification(`IP скопирован: ${ip}`, 'success')
+        systemStore.addNotification(t('settings.notifications.ip_copied', { ip }), 'success')
       })
       .catch(() => {
-        systemStore.addNotification('Не удалось скопировать IP', 'error')
+        systemStore.addNotification(t('settings.notifications.ip_copy_error'), 'error')
       })
   }
 }

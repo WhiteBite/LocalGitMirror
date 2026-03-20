@@ -15,48 +15,52 @@
     </header>
 
     <div class="view-content">
+      <div v-if="statusError" class="alert-card">
+        <div class="alert-title">{{ t('common.error') }}</div>
+        <div class="alert-text">{{ statusError }}</div>
+        <button class="btn btn-secondary" @click="fetchStatus">{{ t('common.refresh') }}</button>
+      </div>
+
       <!-- Метрики -->
       <div class="metrics-grid">
         <div class="metric-card">
           <div class="metric-icon active">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
-              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+              <path d="M3 15v4c0 1.1.9 2 2 2h14a2 2 0 0 0 2-2v-4M17 9l-5 5-5-5M12 12.8V2.5"/>
             </svg>
           </div>
           <div class="metric-info">
             <label>{{ t('dashboard.git_server') }}</label>
             <div class="value-row">
-              <span class="status-text text-success">Активен (HTTPS)</span>
+              <span class="status-text text-success">{{ t('dashboard.status_active_https') }}</span>
             </div>
-            <div class="sub-text warning">Трафик зашифрован</div>
+            <div class="sub-text warning">{{ t('dashboard.traffic_encrypted') }}</div>
           </div>
         </div>
 
         <div class="metric-card">
           <div class="metric-icon" :class="{ 'warn': metrics.disk_percent > 85 }">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M6 2h12a2 2 0 0 1 2 2v16a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"></path>
-              <line x1="6" y1="10" x2="18" y2="10"></line>
-              <line x1="6" y1="18" x2="18" y2="18"></line>
+              <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
             </svg>
           </div>
           <div class="metric-info">
             <label>{{ t('dashboard.metrics.disk') }}</label>
             <div class="value-row">
               <span class="value">{{ metrics.disk_percent }}%</span>
-              <span class="unit">занято</span>
+              <span class="unit">{{ t('dashboard.disk_used') }}</span>
             </div>
-            <div class="sub-text">{{ metrics.disk_used_gb }}ГБ / {{ metrics.disk_total_gb }}ГБ</div>
+              <div class="sub-text">{{ metrics.disk_used_gb }} {{ t('dashboard.gb') }} / {{ metrics.disk_total_gb }} {{ t('dashboard.gb') }}</div>
           </div>
         </div>
 
         <div class="metric-card">
           <div class="metric-icon">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M4 6h16a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"></path>
-              <line x1="12" y1="2" x2="12" y2="6"></line>
-              <line x1="12" y1="18" x2="12" y2="22"></line>
+              <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect>
+              <path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
             </svg>
           </div>
           <div class="metric-info">
@@ -64,18 +68,20 @@
             <div class="value-row">
               <span class="value">{{ metrics.memory_percent }}%</span>
             </div>
-            <div class="sub-text">{{ metrics.memory_used_gb }}ГБ используется</div>
+            <div class="sub-text">{{ metrics.memory_used_gb }} {{ t('dashboard.gb') }} {{ t('dashboard.memory_used_suffix') }}</div>
           </div>
         </div>
       </div>
 
-      <!-- Активный проект -->
+      <!-- Активный том -->
       <section class="active-project-card border-l-4 border-blue-500">
         <div class="card-header">
           <div class="project-title">
             <span class="icon healthy">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
               </svg>
               <span class="health-dot"></span>
             </span>
@@ -90,14 +96,14 @@
                   </span>
                 </span>
               </p>
-              <div class="git-url-row">
-                <input 
-                  readonly 
-                  :value="`https://${localIP}:${webPort}/git/${currentRepo}`" 
-                  class="git-url-input"
-                  @click="$event.target.select()"
-                />
-                <button class="btn-icon" :title="t('dashboard.copy_command')" @click="copyGitCommand">
+               <div class="git-url-row">
+                 <input 
+                   readonly 
+                   :value="`https://${localIP}:${webPort}/git/${currentRepo}`" 
+                   class="git-url-input"
+                   @click="$event.target.select()"
+                 />
+                 <button class="btn-icon" :title="t('dashboard.copy_command')" @click="copyGitCommand">
                   <svg v-if="!copied" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                   <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
                 </button>
@@ -130,6 +136,9 @@
           </div>
         </div>
       </section>
+
+      <!-- Sync Wizard -->
+      <SyncWizard />
 
       <!-- Инструкция -->
       <section class="sync-guide-section">
@@ -182,6 +191,7 @@ import { useSystemStore } from '@/stores/system'
 import { useReposStore } from '@/stores/repos'
 import { useI18n } from 'vue-i18n'
 import SystemLog from '@/components/SystemLog.vue'
+import SyncWizard from '@/components/SyncWizard.vue'
 import axios from 'axios'
 
 const { t } = useI18n()
@@ -203,8 +213,9 @@ const currentRepo = computed(() => reposStore.currentRepo || 'default')
 const syncing = ref(false)
 const copied = ref(false)
 const lastActivity = ref('Никогда')
+const statusError = ref('')
 
-// Обновлять данные при смене репозитория в сайдбаре
+// Обновлять данные при смене тома в сайдбаре
 watch(() => reposStore.currentRepo, () => {
   fetchStatus()
 })
@@ -220,6 +231,7 @@ onMounted(async () => {
 
 async function fetchStatus() {
   try {
+    statusError.value = ''
     const response = await axios.get('/api/status')
     const data = response.data
     
@@ -228,8 +240,8 @@ async function fetchStatus() {
     }
     
     localIP.value = data.local_ip || window.location.hostname
-    // ПРИОРИТЕТ: берем порт из конфига бэкенда, а не из браузера
-    webPort.value = data.git_port || 8443 
+    // ПРИОРИТЕТ: берем порт Web UI из статуса бэкенда
+    webPort.value = data.web_port || window.location.port || 443
     storagePath.value = data.storage_path || 'storage'
     
     if (data.last_sync_time) {
@@ -239,6 +251,7 @@ async function fetchStatus() {
     }
   } catch (error) {
     console.error('Ошибка получения статуса:', error)
+    statusError.value = error?.response?.data?.detail || t('common.error')
   }
 }
 
@@ -288,12 +301,12 @@ async function prepareForWork() {
 }
 
 async function panicMode() {
-  if (confirm("🚨 РЕЖИМ ПАНИКИ 🚨\n\nНемедленно остановить сервер? Все соединения будут разорваны.")) {
+  if (confirm(t('dashboard.panic_confirm'))) {
     try {
       await axios.post('/api/system/panic')
     } catch (e) {}
     window.close()
-    document.body.innerHTML = "<h1 style='color:red;text-align:center;margin-top:20%'>СЕРВЕР ОСТАНОВЛЕН</h1>"
+    document.body.innerHTML = `<h1 style='color:red;text-align:center;margin-top:20%'>${t('dashboard.server_stopped')}</h1>`
   }
 }
 </script>
@@ -303,6 +316,26 @@ async function panicMode() {
 .view-header { padding: 20px 30px; border-bottom: 1px solid var(--border-color); background: var(--bg-primary); }
 .view-header h1 { margin: 0; font-size: 20px; font-weight: 500; color: var(--text-bright); }
 .view-content { padding: 30px; max-width: 1200px; margin: 0 auto; width: 100%; }
+
+.alert-card {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+}
+
+.alert-title {
+  font-weight: 700;
+  color: #fecaca;
+  margin-bottom: 4px;
+}
+
+.alert-text {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-bottom: 10px;
+}
 .metrics-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 30px; }
 .metric-card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 20px; display: flex; align-items: center; gap: 15px; }
 .metric-icon { width: 40px; height: 40px; border-radius: 8px; background: rgba(255, 255, 255, 0.05); display: flex; align-items: center; justify-content: center; color: var(--text-secondary); }
@@ -331,4 +364,17 @@ details summary { padding: 15px 20px; cursor: pointer; display: flex; justify-co
 .step-badge { background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-secondary); width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; flex-shrink: 0; }
 .code-block { background: #111; padding: 4px 8px; border-radius: 4px; font-family: monospace; font-size: 12px; color: var(--success); display: inline-block; }
 .highlight { color: var(--accent); font-weight: 500; }
+
+@media (max-width: 1020px) {
+  .metrics-grid { grid-template-columns: 1fr; }
+  .card-header { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .git-url-input { width: min(520px, 100%); }
+  .steps-grid { flex-direction: column; align-items: stretch; gap: 10px; }
+  .guide-step.arrow { display: none; }
+}
+
+@media (max-width: 640px) {
+  .view-header { padding: 16px 16px; }
+  .view-content { padding: 16px; }
+}
 </style>

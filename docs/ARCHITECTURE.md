@@ -4,48 +4,48 @@
 
 ```mermaid
 graph TB
-    subgraph "Work PC"
-        W[Developer]
-        WG[Git Client]
+    subgraph "Рабочий ПК"
+        W[Разработчик]
+        WG[Git клиент]
     end
     
-    subgraph "Home PC - LocalGitMirror"
+    subgraph "Домашний ПК - LocalGitMirror"
         subgraph "Backend (FastAPI)"
-            API[API Server]
-            GS[Git Server]
-            RM[Repo Manager]
+            API[API сервер]
+            GS[Git сервер]
+            RM[Менеджер репозиториев]
             WS[WebSocket]
-            SM[Settings Manager]
-            LOG[Logger]
+            SM[Менеджер настроек]
+            LOG[Логгер]
         end
         
         subgraph "Frontend (Vue.js)"
             APP[App.vue]
-            DASH[Dashboard]
-            FB[File Browser]
-            SET[Settings]
+            DASH[Панель управления]
+            FB[Браузер файлов]
+            SET[Настройки]
             
-            subgraph "Components"
+            subgraph "Компоненты"
                 FT[FileTree]
                 FV[FileViewer]
                 MD[MarkdownRenderer]
                 CV[CodeViewer]
                 PDF[PDFViewer]
-                SL[SystemLog]
+                SL[Системный лог]
             end
             
-            subgraph "Stores (Pinia)"
-                FS[Files Store]
-                RS[Repos Store]
-                SS[System Store]
+            subgraph "Хранилища (Pinia)"
+                FS[Хранилище файлов]
+                RS[Хранилище репозиториев]
+                SS[Системное хранилище]
             end
         end
         
-        subgraph "Storage"
-            BARE[Bare Repos]
-            WORK[Workspaces]
-            CONF[Settings]
-            LOGS[Log Files]
+        subgraph "Хранилище"
+            BARE[Пустые репозитории]
+            WORK[Рабочие копии]
+            CONF[Настройки]
+            LOGS[Файлы логов]
         end
     end
     
@@ -100,20 +100,20 @@ LocalGitMirror/
 │   │   ├── repo_manager.py      # Управление репозиториями
 │   │   ├── git_utils.py         # Git утилиты
 │   │   ├── system_monitor.py    # Мониторинг системы
-│   │   ├── logger.py            # NEW: Логирование
-│   │   ├── settings_manager.py  # NEW: Настройки
-│   │   └── cache_manager.py     # NEW: Кэширование
+│   │   ├── logger.py            # НОВОЕ: Логирование
+│   │   ├── settings_manager.py  # НОВОЕ: Настройки
+│   │   └── cache_manager.py     # НОВОЕ: Кэширование
 │   │
 │   ├── routers/
 │   │   ├── api.py               # REST API
 │   │   ├── web.py               # Web страницы
-│   │   ├── websocket.py         # NEW: WebSocket
-│   │   └── settings.py          # NEW: API настроек
+│   │   ├── websocket.py         # НОВОЕ: WebSocket
+│   │   └── settings.py          # НОВОЕ: API настроек
 │   │
 │   ├── main.py                  # Точка входа
 │   └── requirements.txt
 │
-├── frontend/                    # NEW: Vue.js проект
+├── frontend/                    # НОВОЕ: Vue.js проект
 │   ├── src/
 │   │   ├── components/
 │   │   │   ├── FileTree.vue
@@ -157,10 +157,10 @@ LocalGitMirror/
 │   └── tailwind.config.js
 │
 ├── storage/
-│   ├── *.git/                   # Bare репозитории
+│   ├── *.git/                   # Пустые репозитории
 │   ├── workspaces/              # Рабочие копии
-│   ├── settings.json            # NEW: Настройки
-│   └── logs/                    # NEW: Логи
+│   ├── settings.json            # НОВОЕ: Настройки
+│   └── logs/                    # НОВОЕ: Логи
 │
 ├── .env
 ├── TODO.md
@@ -171,135 +171,135 @@ LocalGitMirror/
 
 ## Поток данных
 
-### 1. Git Push (Work → Home)
+### 1. Git Push (Работа → Домой)
 
 ```mermaid
 sequenceDiagram
-    participant W as Work PC
-    participant G as Git Server
-    participant R as Repo Manager
-    participant WS as Workspace
-    participant L as Logger
+    participant W as Рабочий ПК
+    participant G as Git сервер
+    participant R as Менеджер репозиториев
+    participant WS as Рабочая копия
+    participant L as Логгер
     participant UI as Frontend
     
     W->>G: git push
-    G->>L: Log: Push received
-    G->>R: Trigger sync
-    R->>WS: Checkout files
-    R->>L: Log: Sync complete
-    L->>UI: WebSocket: Update log
-    UI->>UI: Refresh file list
+    G->>L: Log: Push получен
+    G->>R: Триггер синхронизации
+    R->>WS: Checkout файлов
+    R->>L: Log: Синхронизация завершена
+    L->>UI: WebSocket: Обновление лога
+    UI->>UI: Обновление списка файлов
 ```
 
-### 2. Просмотр файла (Home)
+### 2. Просмотр файла (Домой)
 
 ```mermaid
 sequenceDiagram
-    participant U as User
+    participant U as Пользователь
     participant FT as FileTree
     participant API as Backend API
-    participant FS as Files Store
+    participant FS as Хранилище файлов
     participant FV as FileViewer
     
-    U->>FT: Click on file
-    FT->>FS: Update selected file
+    U->>FT: Клик на файл
+    FT->>FS: Обновление выбранного файла
     FS->>API: GET /api/file/view
-    API->>API: Read file
-    API->>FS: Return content
-    FS->>FV: Update content
-    FV->>U: Display file
+    API->>API: Чтение файла
+    API->>FS: Возврат содержимого
+    FS->>FV: Обновление содержимого
+    FV->>U: Отображение файла
 ```
 
-### 3. Редактирование и синхронизация (Home → Work)
+### 3. Редактирование и синхронизация (Домой → Работа)
 
 ```mermaid
 sequenceDiagram
-    participant U as User
+    participant U as Пользователь
     participant UI as Frontend
     participant API as Backend API
-    participant R as Repo Manager
-    participant G as Git Server
-    participant W as Work PC
+    participant R as Менеджер репозиториев
+    participant G as Git сервер
+    participant W as Рабочий ПК
     
-    U->>UI: Click "Open in Editor"
+    U->>UI: Клик "Открыть в редакторе"
     UI->>API: POST /api/open
-    API->>API: Open Cursor/VS Code
-    U->>U: Edit files
-    U->>UI: Click "Save & Sync"
+    API->>API: Открытие Cursor/VS Code
+    U->>U: Редактирование файлов
+    U->>UI: Клик "Сохранить и синхронизировать"
     UI->>API: POST /api/git/save-and-sync
-    API->>R: Commit changes
-    R->>G: Push to bare
+    API->>R: Фиксация изменений
+    R->>G: Push в пустой репозиторий
     W->>G: git pull
-    G->>W: Receive changes
+    G->>W: Получение изменений
 ```
 
 ## Компонентная архитектура (Vue.js)
 
-### Dashboard View
+### Представление панели управления
 
 ```
 Dashboard.vue
 ├── StatusBar.vue
 ├── WorkflowBanner.vue
 ├── ActionButtons.vue
-│   ├── Button: Open Cursor
-│   ├── Button: File Browser
-│   └── Button: Save & Sync
+│   ├── Button: Открыть Cursor
+│   ├── Button: Браузер файлов
+│   └── Button: Сохранить и синхронизировать
 ├── GitTerminal.vue
 ├── QuickStats.vue
-│   ├── Files count
-│   ├── Changes count
-│   └── Last commit
-└── SystemLog.vue (optional)
+│   ├── Количество файлов
+│   ├── Количество изменений
+│   └── Последний коммит
+└── SystemLog.vue (опционально)
 ```
 
-### File Browser View
+### Представление браузера файлов
 
 ```
 FileBrowser.vue
 ├── Breadcrumbs.vue
 ├── Toolbar.vue
-│   ├── Button: Open in Editor
-│   ├── Button: Refresh
-│   ├── Button: Copy
-│   └── Button: Download
+│   ├── Button: Открыть в редакторе
+│   ├── Button: Обновить
+│   ├── Button: Копировать
+│   └── Button: Скачать
 ├── Layout (flex)
-│   ├── FileTree.vue (sidebar)
-│   │   ├── Folder items
-│   │   ├── File items
+│   ├── FileTree.vue (боковая панель)
+│   │   ├── Элементы папок
+│   │   ├── Элементы файлов
 │   │   └── SearchBar.vue
-│   └── FileViewer.vue (main)
+│   └── FileViewer.vue (основной)
 │       ├── MarkdownRenderer.vue
 │       ├── CodeViewer.vue
 │       └── PDFViewer.vue
-└── SystemLog.vue (collapsible)
+└── SystemLog.vue (сворачиваемый)
 ```
 
-### Settings View
+### Представление настроек
 
 ```
 Settings.vue
-├── Section: General
-│   ├── Default repo
-│   ├── Default folder
-│   └── Auto sync
-├── Section: Git
-│   ├── Git port
-│   └── Auto start
-├── Section: Editor
-│   ├── Editor type
-│   └── Custom path
-├── Section: UI
-│   ├── Theme
-│   └── Font size
-└── Section: Ollama
+├── Секция: Общие
+│   ├── Репозиторий по умолчанию
+│   ├── Папка по умолчанию
+│   └── Автосинхронизация
+├── Секция: Git
+│   ├── Порт Git
+│   └── Автозапуск
+├── Секция: Редактор
+│   ├── Тип редактора
+│   └── Пользовательский путь
+├── Секция: UI
+│   ├── Тема
+│   └── Размер шрифта
+└── Секция: Ollama
     ├── URL
-    └── Model
+    └── Модель
 ```
 
-## State Management (Pinia)
+## Управление состоянием (Pinia)
 
-### Files Store
+### Хранилище файлов
 
 ```javascript
 {
@@ -319,7 +319,7 @@ Settings.vue
 }
 ```
 
-### Repos Store
+### Хранилище репозиториев
 
 ```javascript
 {
@@ -338,7 +338,7 @@ Settings.vue
 }
 ```
 
-### System Store
+### Системное хранилище
 
 ```javascript
 {
@@ -358,49 +358,50 @@ Settings.vue
 }
 ```
 
-## API Endpoints
+## API endpoints
 
 ### Существующие
 
 ```
-GET  /                          # Dashboard
-GET  /files                     # File Browser
+GET  /                          # Панель управления
+GET  /files                     # Браузер файлов
 GET  /api/status                # Статус системы
 GET  /api/files                 # Список файлов
 GET  /api/file/view             # Просмотр файла
 GET  /api/file/pdf              # Просмотр PDF
 GET  /api/repos                 # Список репозиториев
-POST /api/repos/select          # Выбрать репозиторий
-POST /api/git/start             # Запустить Git сервер
-POST /api/git/stop              # Остановить Git сервер
-POST /api/git/save-and-sync     # Сохранить и синхронизировать
+POST /api/repos/select          # Выбор репозитория
+POST /api/git/start             # Запуск Git сервера
+POST /api/git/stop              # Остановка Git сервера
+POST /api/git/save-and-sync     # Сохранение и синхронизация
 GET  /api/git/changes           # Список изменений
-POST /api/system/open-editor    # Открыть редактор
+POST /api/system/open-editor    # Открытие редактора
 POST /api/chat                  # AI чат
 ```
 
 ### Новые (планируются)
 
 ```
-# Settings
-GET  /api/settings              # Получить настройки
-POST /api/settings              # Сохранить настройки
-GET  /api/settings/defaults     # Дефолтные значения
+# Настройки
+GET  /api/settings              # Получение настроек
+POST /api/settings              # Обновление настроек (частичное)
+PUT  /api/settings              # Замена всех настроек
+GET  /api/settings/defaults     # Значения по умолчанию
 
-# Logs
+# Логи
 GET  /api/logs                  # История логов
-DELETE /api/logs                # Очистить логи
+DELETE /api/logs                # Очистка логов
 WS   /ws/logs                   # WebSocket для логов
 
-# Git Extended
+# Git расширенный
 GET  /api/git/status            # Статус всех файлов
 GET  /api/git/diff              # Diff файла
 GET  /api/git/history           # История коммитов
 GET  /api/git/blame             # Blame файла
 GET  /api/git/branches          # Список веток
-POST /api/git/checkout          # Переключить ветку
+POST /api/git/checkout          # Переключение ветки
 
-# Search
+# Поиск
 GET  /api/search/files          # Поиск файлов
 GET  /api/search/content        # Поиск по содержимому
 POST /api/search/index          # Переиндексация
@@ -412,14 +413,14 @@ POST /api/search/index          # Переиндексация
 - **FastAPI** - веб-фреймворк
 - **Uvicorn** - ASGI сервер
 - **WebSocket** - real-time коммуникация
-- **Git** - версионный контроль
+- **Git** - система контроля версий
 - **Python 3.10+**
 
 ### Frontend
 - **Vue.js 3** - UI фреймворк
 - **Vite** - сборщик
 - **Vue Router** - маршрутизация
-- **Pinia** - state management
+- **Pinia** - управление состоянием
 - **TailwindCSS** - стили
 - **TypeScript** - типизация (опционально)
 
@@ -428,18 +429,18 @@ POST /api/search/index          # Переиндексация
 - **Mermaid.js** - диаграммы
 - **Highlight.js** - подсветка кода
 - **PDF.js** - PDF рендеринг
-- **Fuse.js** - fuzzy search
+- **Fuse.js** - нечёткий поиск
 - **@vscode/codicons** - иконки
 
 ## Безопасность
 
 ```mermaid
 graph LR
-    A[Client] -->|HTTPS| B[Web Server]
-    A -->|Git Protocol| C[Git Server]
-    B -->|Local| D[File System]
-    C -->|Local| D
-    B -->|WebSocket| E[Logger]
+    A[Клиент] -->|HTTPS| B[Веб-сервер]
+    A -->|Git протокол| C[Git сервер]
+    B -->|Локально| D[Файловая система]
+    C -->|Локально| D
+    B -->|WebSocket| E[Логгер]
     
     style A fill:#3b82f6
     style B fill:#10b981
@@ -449,11 +450,11 @@ graph LR
 ```
 
 ### Меры безопасности
-- Локальная сеть (LAN) только
+- Только локальная сеть (LAN)
 - Нет внешнего доступа
-- Файловая система изолирована
+- Изолированная файловая система
 - Git протокол без аутентификации (локально)
-- WebSocket только для логов (read-only)
+- WebSocket только для логов (только чтение)
 
 ## Производительность
 

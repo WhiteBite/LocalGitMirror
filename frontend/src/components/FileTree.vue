@@ -225,7 +225,7 @@ const handleContextMenu = (data) => {
 }
 
 .tree-content {
-  @apply py-2;
+  @apply py-2 px-2;
 }
 
 .empty-state {

@@ -1,101 +1,66 @@
 <template>
   <div class="file-browser">
-    <!-- Browser Toolbar -->
-    <div class="browser-toolbar">
-      <div class="toolbar-left">
-        <div class="mode-tabs">
-          <button 
-            class="mode-tab" 
-            :class="{ active: mode === 'git' }"
-            @click="switchMode('git')"
-          >
-            Git Repos
-          </button>
-          <button 
-            class="mode-tab" 
-            :class="{ active: mode === 'shared' }"
-            @click="switchMode('shared')"
-          >
-            Shared Folders
-          </button>
-        </div>
-        <div class="breadcrumb-nav">
-          <span class="root-label">{{ mode === 'git' ? (reposStore.currentRepo || 'Проект') : 'Shared' }}</span>
-          <span class="separator">/</span>
-          <div v-for="(crumb, index) in currentBreadcrumbs" :key="index" class="crumb-item">
-            <span class="crumb-link" @click="navigateTo(crumb.path)">{{ crumb.name === 'Root' ? 'Корень' : crumb.name }}</span>
-            <span v-if="index < currentBreadcrumbs.length - 1" class="separator">/</span>
-          </div>
-        </div>
-      </div>
-      <div class="toolbar-actions">
-        <input 
-          v-if="mode === 'git'"
-          v-model="searchQuery" 
-          type="text"
-          placeholder="Поиск файлов..."
-          class="search-input" 
-          @input="handleSearch"
-        />
-        <button class="icon-btn" title="Обновить" @click="refreshFiles">
-          <svg viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z" /></svg>
-        </button>
-      </div>
-    </div>
+    <FileBrowserToolbar
+      :mode="mode"
+      :breadcrumbs="currentBreadcrumbs"
+      :root-label="currentRootLabel"
+      :search-query="searchQuery"
+      :search-placeholder="t('fileBrowser.search_files')"
+      :refresh-title="t('fileBrowser.refresh')"
+      :git-mode-label="t('fileBrowser.data_volumes')"
+      :shared-mode-label="t('fileBrowser.shared_folders')"
+      @mode-change="switchMode"
+      @navigate="navigateTo"
+      @search-change="handleSearch"
+      @refresh="refreshFiles"
+    />
 
-    <!-- Main Content Area -->
-    <div class="browser-main">
-      <!-- File Tree (Sidebar) -->
-      <div class="tree-sidebar">
-        <!-- Git Repos Mode -->
-        <template v-if="mode === 'git'">
-          <div v-if="filesStore.loading && !filesStore.files.length" class="sidebar-msg">Загрузка...</div>
-          <div v-else-if="!filesStore.loading && filesStore.files.length === 0" class="sidebar-msg empty-project">
-            Проект пуст
-          </div>
-          <FileTree 
-            v-else
-            :files="filesStore.files"
-            :selected-file="filesStore.currentFile || ''"
-            @file-select="handleFileSelect"
-          />
-        </template>
-        
-        <!-- Shared Folders Mode -->
-        <SharedFolders 
-          v-else
-          @folder-select="handleFolderSelect"
-        />
-      </div>
+    <div
+      class="browser-main"
+      :class="{ 'shared-mode': mode === 'shared', 'git-drag-over': showGitDropHint }"
+      @dragenter="handleMainDragEnter"
+      @dragover="handleMainDragOver"
+      @dragleave="handleMainDragLeave"
+      @drop="handleMainDrop"
+    >
+      <FileBrowserSidebar
+        v-if="mode === 'git'"
+        :files="displayedFiles"
+        :loading="filesStore.loading"
+        :selected-file="filesStore.currentFile || ''"
+        :search-query="searchQuery"
+        :loading-label="t('fileBrowser.loading')"
+        :empty-label="t('fileBrowser.volume_empty')"
+        @file-select="handleFileSelect"
+      />
 
-      <!-- Preview Area -->
-      <div class="preview-area">
-        <div v-if="filesStore.currentFile" class="preview-container">
-          <div class="preview-header">
-            <span class="file-path">{{ filesStore.currentFile }}</span>
-            <div class="actions">
-              <button 
-                class="btn mini" 
-                :class="{ 'active': showDiff }" 
-                title="Показать изменения"
-                @click="toggleDiff"
-              >
-                {{ showDiff ? 'Показать файл' : 'Показать Diff' }}
-              </button>
-              <button class="btn mini" @click="openInExplorer">Открыть в проводнике</button>
-            </div>
-          </div>
-          <div class="preview-body">
-            <div v-if="loadingDiff" class="loading-overlay">Загрузка изменений...</div>
-            <DiffViewer v-else-if="showDiff" :diff="diffContent" />
-            <FileViewer v-else :file-path="filesStore.currentFile" />
-          </div>
-        </div>
-        <div v-else class="empty-preview">
-          <div class="msg">
-            <svg viewBox="0 0 24 24"><path d="M13 9h5.5L13 3.5V9M6 2h8l6 6v12a2 2 0 01-2 2H6a2 2 0 01-2-2V4c0-1.1.9-2 2-2m0 18h12V10h-7V3H6v17z" /></svg>
-            <p>Выберите файл для просмотра</p>
-          </div>
+      <SharedFolders
+        v-if="mode === 'shared'"
+        class="shared-folders-full"
+        @folder-select="handleFolderSelect"
+      />
+
+      <FileBrowserPreview
+        v-if="mode === 'git'"
+        :file-path="filesStore.currentFile || ''"
+        :show-diff="showDiff"
+        :diff-content="diffContent"
+        :loading-diff="loadingDiff"
+        :show-changes-title="t('fileBrowser.show_changes')"
+        :show-file-label="t('fileBrowser.show_file')"
+        :show-diff-label="t('fileBrowser.show_diff')"
+        :open-in-explorer-label="t('fileBrowser.open_in_explorer')"
+        :loading-changes-label="t('fileBrowser.loading_changes')"
+        :select-file-label="t('fileBrowser.select_file_to_view')"
+        @toggle-diff="toggleDiff"
+        @open-in-explorer="openInExplorer"
+      />
+
+      <div v-if="mode === 'git' && showGitDropHint" class="git-drop-hint">
+        <div class="hint-content">
+          <svg viewBox="0 0 24 24"><path d="M14,2H6A2,2 0 0,0 4,4V20A2,2 0 0,0 6,22H18A2,2 0 0,0 20,20V8L14,2M12,18L8,14H10.5V10H13.5V14H16L12,18Z" /></svg>
+          <p>{{ t('fileBrowser.drop_hint_shared') }}</p>
+          <button class="btn btn-primary" @click="switchMode('shared')">{{ t('fileBrowser.open_shared_mode') }}</button>
         </div>
       </div>
     </div>
@@ -104,14 +69,16 @@
 
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { useFilesStore } from '@/stores/files'
 import { useReposStore } from '@/stores/repos'
 import axios from 'axios'
-import FileTree from '@/components/FileTree.vue'
-import FileViewer from '@/components/FileViewer.vue'
-import DiffViewer from '@/components/DiffViewer.vue'
 import SharedFolders from '@/components/SharedFolders.vue'
+import FileBrowserToolbar from '@/components/file-browser/FileBrowserToolbar.vue'
+import FileBrowserSidebar from '@/components/file-browser/FileBrowserSidebar.vue'
+import FileBrowserPreview from '@/components/file-browser/FileBrowserPreview.vue'
 
+const { t } = useI18n()
 const filesStore = useFilesStore()
 const reposStore = useReposStore()
 const mode = ref('git') // 'git' | 'shared'
@@ -121,12 +88,39 @@ const diffContent = ref('')
 const loadingDiff = ref(false)
 const wsConnected = ref(false)
 const sharedBreadcrumbs = ref([])
+const showGitDropHint = ref(false)
+const dragDepth = ref(0)
 let ws = null
 let refreshDebounceTimer = null
 
 const breadcrumbs = computed(() => filesStore.breadcrumbs)
+const currentRootLabel = computed(() => {
+  return mode.value === 'git'
+    ? (reposStore.currentRepo || t('fileBrowser.volume'))
+    : t('fileBrowser.shared')
+})
+
 const currentBreadcrumbs = computed(() => {
-  return mode.value === 'git' ? breadcrumbs.value : sharedBreadcrumbs.value
+  if (mode.value === 'git') {
+    return breadcrumbs.value
+  }
+
+  if (sharedBreadcrumbs.value.length === 0) {
+    return [{ name: 'Root', path: '/' }]
+  }
+
+  return [{ name: 'Root', path: '/' }, ...sharedBreadcrumbs.value]
+})
+
+const displayedFiles = computed(() => {
+  const query = searchQuery.value.trim().toLowerCase()
+  if (!query) return filesStore.files
+
+  return filesStore.files.filter((file) => {
+    const name = (file.name || '').toLowerCase()
+    const path = (file.path || '').toLowerCase()
+    return name.includes(query) || path.includes(query)
+  })
 })
 
 // Load mode from localStorage
@@ -148,8 +142,7 @@ function switchMode(newMode) {
 }
 
 function handleFolderSelect(folderName) {
-  sharedBreadcrumbs.value = [{ name: folderName, path: folderName }]
-  // TODO: Load folder contents
+  sharedBreadcrumbs.value = [{ name: folderName, path: `/${folderName}` }]
 }
 
 watch(() => filesStore.currentFile, () => {
@@ -185,8 +178,7 @@ async function toggleDiff() {
 const connectWebSocket = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.hostname
-  const port = window.location.port
-  const wsUrl = `${protocol}//${host}:${port}/ws/files`
+  const wsUrl = `${protocol}//${host}${window.location.port ? `:${window.location.port}` : ''}/ws/files`
   
   if (ws) ws.close()
   ws = new WebSocket(wsUrl)
@@ -202,7 +194,9 @@ const connectWebSocket = () => {
       if (message.type === 'file_change') {
         handleFileChange(message.data)
       }
-    } catch (error) {}
+    } catch (error) {
+      console.warn('WebSocket parse error:', error)
+    }
   }
   
   ws.onclose = () => {
@@ -249,11 +243,18 @@ function checkAndOpenReadme() {
 }
 
 function refreshFiles() {
-  filesStore.fetchFiles(filesStore.currentFolder)
+  filesStore.fetchFiles(filesStore.currentFolder || '/')
 }
 
 function navigateTo(path) {
-  filesStore.fetchFiles(path)
+  if (mode.value === 'git') {
+    filesStore.fetchFiles(path)
+    return
+  }
+
+  if (path === '/') {
+    sharedBreadcrumbs.value = []
+  }
 }
 
 async function handleFileSelect(path) {
@@ -266,48 +267,113 @@ async function openInExplorer() {
     await axios.post('/api/editor/open', null, {
       params: { file: filesStore.currentFile }
     })
-  } catch (error) {}
+  } catch (error) {
+    console.error('Не удалось открыть файл в проводнике:', error)
+  }
 }
 
-async function handleSearch() {
-  if (searchQuery.value.trim()) {
-    await filesStore.searchFiles(searchQuery.value)
-  } else {
-    refreshFiles()
+function handleSearch(value) {
+  searchQuery.value = value
+}
+
+function isFileDragEvent(event) {
+  const types = Array.from(event?.dataTransfer?.types || [])
+  return types.includes('Files')
+}
+
+function handleMainDragEnter(event) {
+  if (mode.value !== 'git' || !isFileDragEvent(event)) return
+  event.preventDefault()
+  dragDepth.value += 1
+  showGitDropHint.value = true
+}
+
+function handleMainDragOver(event) {
+  if (mode.value !== 'git' || !isFileDragEvent(event)) return
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'none'
   }
+  showGitDropHint.value = true
+}
+
+function handleMainDragLeave(event) {
+  if (mode.value !== 'git' || !isFileDragEvent(event)) return
+  event.preventDefault()
+  dragDepth.value = Math.max(0, dragDepth.value - 1)
+  if (dragDepth.value === 0) {
+    showGitDropHint.value = false
+  }
+}
+
+function handleMainDrop(event) {
+  if (mode.value !== 'git' || !isFileDragEvent(event)) return
+  event.preventDefault()
+  dragDepth.value = 0
+  showGitDropHint.value = false
 }
 </script>
 
 <style scoped>
-.file-browser { display: flex; flex-direction: column; height: 100%; background: var(--bg-primary); }
-.browser-toolbar { height: 35px; display: flex; justify-content: space-between; align-items: center; padding: 0 15px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); }
-.toolbar-left { display: flex; align-items: center; gap: 15px; flex: 1; }
-.mode-tabs { display: flex; gap: 4px; }
-.mode-tab { background: none; border: none; color: #858585; font-size: 11px; padding: 4px 12px; cursor: pointer; border-radius: 3px; transition: all 0.2s; }
-.mode-tab:hover { color: var(--text-bright); background: #3c3c3c; }
-.mode-tab.active { color: var(--text-bright); background: var(--accent); }
-.breadcrumb-nav { display: flex; align-items: center; font-size: 12px; color: #858585; }
-.root-label { font-weight: bold; color: var(--text-bright); }
-.separator { margin: 0 8px; color: #555; }
-.crumb-link { cursor: pointer; }
-.crumb-link:hover { color: var(--text-bright); text-decoration: underline; }
-.toolbar-actions { display: flex; align-items: center; gap: 10px; }
-.search-input { background: #3c3c3c; border: 1px solid var(--border-color); color: white; font-size: 11px; padding: 2px 8px; border-radius: 3px; width: 180px; }
-.icon-btn { background: none; border: none; color: #858585; width: 20px; height: 20px; cursor: pointer; }
-.icon-btn svg { fill: currentColor; }
-.icon-btn:hover { color: white; }
-.browser-main { flex: 1; display: flex; overflow: hidden; }
-.tree-sidebar { width: 280px; border-right: 1px solid var(--border-color); overflow-y: auto; }
-.sidebar-msg { padding: 20px; text-align: center; color: #858585; font-size: 13px; }
-.preview-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-.preview-container { display: flex; flex-direction: column; height: 100%; }
-.preview-header { padding: 8px 15px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
-.preview-header .actions { display: flex; gap: 8px; }
-.btn.mini.active { background: var(--accent); color: white; }
-.loading-overlay { display: flex; align-items: center; justify-content: center; height: 100%; color: #858585; }
-.file-path { font-size: 11px; color: #858585; font-family: monospace; }
-.preview-body { flex: 1; overflow: auto; }
-.empty-preview { flex: 1; display: flex; align-items: center; justify-content: center; color: #3c3c3c; }
-.empty-preview svg { width: 64px; height: 64px; fill: currentColor; margin-bottom: 10px; }
-.btn.mini { font-size: 10px; padding: 2px 8px; background: #3a3d41; color: white; border: none; border-radius: 2px; cursor: pointer; }
+.file-browser {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-primary);
+}
+
+.browser-main {
+  position: relative;
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.browser-main.shared-mode {
+  display: block;
+}
+
+.shared-folders-full {
+  width: 100%;
+  height: 100%;
+}
+
+.git-drop-hint {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+}
+
+.hint-content {
+  width: min(420px, 90%);
+  border: 1px dashed var(--accent);
+  border-radius: 12px;
+  background: var(--bg-card);
+  padding: 22px 18px;
+  text-align: center;
+  box-shadow: 0 12px 35px rgba(0, 0, 0, 0.35);
+}
+
+.hint-content svg {
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 10px;
+  fill: var(--accent);
+}
+
+.hint-content p {
+  color: var(--text-primary);
+  margin: 0 0 14px;
+  font-size: 13px;
+}
+
+.hint-content .btn {
+  margin: 0 auto;
+}
 </style>

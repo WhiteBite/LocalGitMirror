@@ -70,7 +70,7 @@ class RepoManager:
                 # Force apply global settings if they exist
                 subprocess.run(["git", "config", "user.name", global_name], cwd=str(workspace))
                 subprocess.run(["git", "config", "user.email", global_email], cwd=str(workspace))
-                console.print(f"[cyan][i] Enforced Git Identity: {global_name} <{global_email}>[/cyan]")
+                console.print(f"[cyan][i] Применена Git идентификация: {global_name} <{global_email}>[/cyan]")
                 return
 
             # 1. Check if user.name is already configured locally
@@ -95,10 +95,10 @@ class RepoManager:
             if author_name and author_email:
                 subprocess.run(["git", "config", "user.name", author_name], cwd=str(workspace))
                 subprocess.run(["git", "config", "user.email", author_email], cwd=str(workspace))
-                console.print(f"[cyan][i] Auto-detected Git Identity: {author_name} <{author_email}>[/cyan]")
+                console.print(f"[cyan][i] Автоопределена Git идентификация: {author_name} <{author_email}>[/cyan]")
 
         except Exception as e:
-            console.print(f"[red][!] Failed to configure git user: {e}[/red]")
+            console.print(f"[red][!] Не удалось настроить git пользователя: {e}[/red]")
 
     def sync_workspace(self, repo_name: Optional[str] = None, branch: str = "main") -> Dict:
         """Sync workspace from bare repo - perform checkout/reset"""
@@ -113,12 +113,12 @@ class RepoManager:
             "repo": repo_name,
         }
 
-        logger.info("Sync triggered", {"repo": repo_name})
+        logger.info("Инициирована синхронизация", {"repo": repo_name})
 
         is_non_bare = (workspace / ".git").exists()
 
         if not bare_path.exists() and not is_non_bare:
-            result["message"] = f"Repository data for '{repo_name}' not found"
+            result["message"] = f"Данные репозитория '{repo_name}' не найдены"
             return result
 
         try:
@@ -136,8 +136,8 @@ class RepoManager:
                 self._configure_user_from_last_commit(workspace)
 
                 result["success"] = True
-                result["message"] = f"Workspace reset to HEAD ({current_branch})"
-                logger.info("Non-bare sync successful", {"repo": repo_name})
+                result["message"] = f"Workspace сброшен до HEAD ({current_branch})"
+                logger.info("Синхронизация non-bare успешна", {"repo": repo_name})
                 return result
 
             if not (workspace / ".git").exists():
@@ -185,24 +185,24 @@ class RepoManager:
             self._configure_user_from_last_commit(workspace)
 
             result["success"] = True
-            result["message"] = f"Workspace synced to {repo_name}"
-            logger.info("Sync successful", {"repo": repo_name})
+            result["message"] = f"Workspace синхронизирован с {repo_name}"
+            logger.info("Синхронизация успешна", {"repo": repo_name})
         except Exception as e:
-            result["message"] = f"Sync error: {str(e)}"
-            logger.error("Sync failed", {"repo": repo_name, "error": str(e)})
+            result["message"] = f"Ошибка синхронизации: {str(e)}"
+            logger.error("Синхронизация не удалась", {"repo": repo_name, "error": str(e)})
 
         return result
 
     def create_repo(self, repo_name: str) -> Dict:
         """Create a new bare repository and workspace"""
         if not repo_name or not repo_name.replace("-", "").replace("_", "").isalnum():
-            return {"success": False, "message": "Invalid repository name"}
+            return {"success": False, "message": "Неверное имя репозитория"}
 
         bare_path = self._get_bare_path(repo_name)
         workspace = self._get_workspace_path(repo_name)
 
         if bare_path.exists() or workspace.exists():
-            return {"success": False, "message": "Repository already exists"}
+            return {"success": False, "message": "Репозиторий уже существует"}
 
         try:
             bare_path.mkdir(parents=True, exist_ok=True)
@@ -231,14 +231,14 @@ class RepoManager:
             subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=str(workspace), check=True)
             subprocess.run(["git", "push", "origin", "HEAD"], cwd=str(workspace), check=True)
 
-            return {"success": True, "message": f"Repository '{repo_name}' created"}
+            return {"success": True, "message": f"Репозиторий '{repo_name}' создан"}
         except Exception as e:
-            return {"success": False, "message": f"Failed to create repo: {str(e)}"}
+            return {"success": False, "message": f"Не удалось создать репозиторий: {str(e)}"}
 
     def delete_repo(self, repo_name: str) -> Dict:
         """Delete a repository (both bare and workspace)"""
         if repo_name == "default":
-            return {"success": False, "message": "Cannot delete default repository"}
+            return {"success": False, "message": "Невозможно удалить репозиторий по умолчанию"}
 
         bare_path = self._get_bare_path(repo_name)
         workspace = self._get_workspace_path(repo_name)
@@ -258,9 +258,9 @@ class RepoManager:
             if workspace.exists():
                 shutil.rmtree(workspace, onerror=on_rm_error)
 
-            return {"success": True, "message": f"Repository '{repo_name}' deleted"}
+            return {"success": True, "message": f"Репозиторий '{repo_name}' удален"}
         except Exception as e:
-            return {"success": False, "message": f"Failed to delete repo: {str(e)}"}
+            return {"success": False, "message": f"Не удалось удалить репозиторий: {str(e)}"}
 
     def get_file_tree(self, repo_name: Optional[str] = None) -> List[Dict]:
         """Get workspace file tree"""

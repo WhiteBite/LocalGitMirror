@@ -1,122 +1,122 @@
-# 📁 File Viewer Components - Complete Implementation
+# 📁 Компоненты просмотра файлов - Полная реализация
 
-## ✅ Created Components
+## ✅ Созданные компоненты
 
-All file viewer components have been successfully created in `frontend/src/components/`:
+Все компоненты просмотра файлов успешно созданы в `frontend/src/components/`:
 
 ### 1. **MarkdownRenderer.vue** ✨
-Renders Markdown with full GitHub Flavored Markdown support.
+Отображает Markdown с полной поддержкой GitHub Flavored Markdown.
 
-**Features:**
-- ✅ Markdown rendering via marked.js
-- ✅ Mermaid diagram support (```mermaid blocks)
-- ✅ Code syntax highlighting via highlight.js
-- ✅ Styled tables, lists, blockquotes, headings
-- ✅ Dark theme optimized
-- ✅ Auto-initialization of Mermaid on mount
-- ✅ Reactive content updates
+**Функции:**
+- ✅ Рендеринг Markdown через marked.js
+- ✅ Поддержка диаграмм Mermaid (блоки ```mermaid)
+- ✅ Подсветка синтаксиса кода через highlight.js
+- ✅ Стилизованные таблицы, списки, блоки цитат, заголовки
+- ✅ Оптимизировано для тёмной темы
+- ✅ Авто-инициализация Mermaid при монтировании
+- ✅ Реактивные обновления содержимого
 
 **Props:**
-- `content` (String, required) - Markdown content to render
+- `content` (String, обязательный) - Markdown-контент для рендеринга
 
-**Styling:**
-- Custom styles for all markdown elements
-- GitHub-dark theme for code blocks
-- Responsive tables
-- Mermaid diagram containers with error handling
+**Стилизация:**
+- Пользовательские стили для всех элементов markdown
+- Тема GitHub-dark для блоков кода
+- Адаптивные таблицы
+- Контейнеры диаграмм Mermaid с обработкой ошибок
 
 ---
 
 ### 2. **CodeViewer.vue** 💻
-Displays code with syntax highlighting and line numbers.
+Отображает код с подсветкой синтаксиса и номерами строк.
 
-**Features:**
-- ✅ Syntax highlighting via highlight.js (github-dark theme)
-- ✅ Line numbers with proper alignment
-- ✅ Copy to clipboard button with feedback
-- ✅ Auto-detect language if not specified
-- ✅ 40+ language support
-- ✅ Horizontal scrolling for long lines
-- ✅ Language indicator in toolbar
+**Функции:**
+- ✅ Подсветка синтаксиса через highlight.js (тема github-dark)
+- ✅ Номера строк с правильным выравниванием
+- ✅ Кнопка копирования в буфер обмена с обратной связью
+- ✅ Автоопределение языка, если не указан
+- ✅ Поддержка 40+ языков
+- ✅ Горизонтальная прокрутка для длинных строк
+- ✅ Индикатор языка в панели инструментов
 
 **Props:**
-- `content` (String, required) - Code content to display
-- `language` (String, optional) - Language for syntax highlighting
+- `content` (String, обязательный) - Код для отображения
+- `language` (String, опциональный) - Язык для подсветки синтаксиса
 
-**Supported Languages:**
-python, javascript, typescript, java, cpp, c, csharp, php, ruby, go, rust, swift, kotlin, scala, bash, yaml, xml, sql, html, css, json, vue, and many more.
+**Поддерживаемые языки:**
+python, javascript, typescript, java, cpp, c, csharp, php, ruby, go, rust, swift, kotlin, scala, bash, yaml, xml, sql, html, css, json, vue и многие другие.
 
 ---
 
 ### 3. **PDFViewer.vue** 📄
-Renders PDF files with page navigation.
+Отображает PDF-файлы с навигацией по страницам.
 
-**Features:**
-- ✅ PDF rendering via pdfjs-dist
-- ✅ Page navigation (Previous/Next buttons)
-- ✅ Page counter display (current/total)
-- ✅ 1.5x scale for better readability
-- ✅ Canvas-based rendering
-- ✅ Loading state with spinner
-- ✅ Error handling with user-friendly messages
-- ✅ Automatic CDN worker loading
+**Функции:**
+- ✅ Рендеринг PDF через pdfjs-dist
+- ✅ Навигация по страницам (кнопки Предыдущая/Следующая)
+- ✅ Отображение счётчика страниц (текущая/всего)
+- ✅ Масштаб 1.5x для лучшей читаемости
+- ✅ Рендеринг на основе canvas
+- ✅ Состояние загрузки с индикатором загрузки
+- ✅ Обработка ошибок с дружелюбными сообщениями
+- ✅ Автоматическая загрузка worker из CDN
 
 **Props:**
-- `pdfData` (String, required) - Base64 encoded PDF data
+- `pdfData` (String, обязательный) - PDF-данные в формате base64
 
-**Technical:**
-- Uses PDF.js worker from CDN
-- Renders one page at a time for performance
-- Responsive canvas sizing
+**Технические детали:**
+- Использует worker PDF.js из CDN
+- Рендерит одну страницу за раз для производительности
+- Адаптивный размер canvas
 
 ---
 
-### 4. **FileViewer.vue** 🎯 (Main Component)
-The orchestrator component that handles all file types automatically.
+### 4. **FileViewer.vue** 🎯 (Основной компонент)
+Компонент-оркестратор, который автоматически обрабатывает все типы файлов.
 
-**Features:**
-- ✅ Automatic file type detection by extension
-- ✅ Loads content from API endpoints
-- ✅ Renders appropriate viewer based on file type
-- ✅ Toolbar with actions:
-  - Open in Editor button
-  - Copy content button (with feedback)
-  - Download file button
-- ✅ Loading state with spinner
-- ✅ Error handling with retry button
-- ✅ File name and type display
-- ✅ Responsive design
+**Функции:**
+- ✅ Автоматическое определение типа файла по расширению
+- ✅ Загрузка содержимого из API endpoints
+- ✅ Рендеринг соответствующего просмотра на основе типа файла
+- ✅ Панель инструментов с действиями:
+  - Кнопка открытия в редакторе
+  - Кнопка копирования содержимого (с обратной связью)
+  - Кнопка скачивания файла
+- ✅ Состояние загрузки с индикатором загрузки
+- ✅ Обработка ошибок с кнопкой повтора
+- ✅ Отображение имени и типа файла
+- ✅ Адаптивный дизайн
 
 **Props:**
-- `filePath` (String, required) - Path to the file to display
+- `filePath` (String, обязательный) - Путь к файлу для отображения
 
-**File Type Detection:**
+**Определение типа файла:**
 - **Markdown**: `.md`, `.markdown`
-- **Code**: `.py`, `.js`, `.ts`, `.jsx`, `.tsx`, `.json`, `.html`, `.css`, `.vue`, `.java`, `.cpp`, `.c`, `.go`, `.rs`, `.swift`, `.kt`, `.scala`, `.sh`, `.yaml`, `.yml`, `.xml`, `.sql`, `.php`, `.rb`, `.dart`
+- **Код**: `.py`, `.js`, `.ts`, `.jsx`, `.tsx`, `.json`, `.html`, `.css`, `.vue`, `.java`, `.cpp`, `.c`, `.go`, `.rs`, `.swift`, `.kt`, `.scala`, `.sh`, `.yaml`, `.yml`, `.xml`, `.sql`, `.php`, `.rb`, `.dart`
 - **PDF**: `.pdf`
-- **Text**: All other files (fallback)
+- **Текст**: Все остальные файлы (резервный вариант)
 
-**API Endpoints Used:**
-- `GET /api/file/view?file={path}` - For text/code/markdown files
-- `GET /api/file/pdf?file={path}` - For PDF files (returns base64)
-- `POST /api/editor/open` - To open file in external editor
+**Используемые API endpoints:**
+- `GET /api/file/view?file={path}` - Для текстовых/кодовых/markdown файлов
+- `GET /api/file/pdf?file={path}` - Для PDF файлов (возвращает base64)
+- `POST /api/editor/open` - Для открытия файла во внешнем редакторе
 
 ---
 
-## 📦 Dependencies
+## 📦 Зависимости
 
-All required dependencies are already in `package.json`:
+Все необходимые зависимости уже в `package.json`:
 
 ```json
 {
-  "marked": "^11.0.0",        // Markdown parsing
-  "mermaid": "^10.6.0",       // Diagram rendering
-  "highlight.js": "^11.9.0",  // Syntax highlighting
-  "pdfjs-dist": "^3.11.0"     // PDF rendering
+  "marked": "^11.0.0",        # Парсинг Markdown
+  "mermaid": "^10.6.0",       # Рендеринг диаграмм
+  "highlight.js": "^11.9.0",  # Подсветка синтаксиса
+  "pdfjs-dist": "^3.11.0"     # Рендеринг PDF
 }
 ```
 
-**Installation:**
+**Установка:**
 ```bash
 cd frontend
 npm install
@@ -124,11 +124,11 @@ npm install
 
 ---
 
-## 🚀 Usage
+## 🚀 Использование
 
-### Quick Start (Recommended)
+### Быстрый старт (Рекомендуется)
 
-Use `FileViewer` - it handles everything automatically:
+Используйте `FileViewer` - он обрабатывает всё автоматически:
 
 ```vue
 <template>
@@ -140,20 +140,20 @@ import FileViewer from '@/components/FileViewer.vue'
 </script>
 ```
 
-### Integration with FileBrowser
+### Интеграция с FileBrowser
 
-Replace the simple preview modal in `FileBrowser.vue`:
+Замените простой модальный предпросмотр в `FileBrowser.vue`:
 
 ```vue
 <template>
   <div class="file-browser">
-    <!-- ... existing file list ... -->
+    <!-- ... существующий список файлов ... -->
 
-    <!-- Enhanced File Preview Modal -->
+    <!-- Улучшенный модальный предпросмотр файла -->
     <div v-if="filesStore.currentFile" class="modal-overlay">
       <div class="modal-container">
         <div class="modal-header">
-          <h3>File Preview</h3>
+          <h3>Предпросмотр файла</h3>
           <button @click="closePreview">×</button>
         </div>
         <div class="modal-content">
@@ -176,105 +176,105 @@ function closePreview() {
 </script>
 ```
 
-See `INTEGRATION_EXAMPLE.vue` for complete implementation.
+Смотрите `INTEGRATION_EXAMPLE.vue` для полной реализации.
 
 ---
 
-## 📚 Documentation Files
+## 📚 Документация
 
-Created comprehensive documentation:
+Создана полная документация:
 
-1. **README.md** - Complete component documentation
-   - Detailed feature descriptions
-   - Props and usage examples
-   - API endpoint specifications
-   - Customization guide
-   - Troubleshooting section
+1. **README.md** - Полная документация компонентов
+   - Подробное описание функций
+   - Props и примеры использования
+   - Спецификации API endpoints
+   - Руководство по настройке
+   - Раздел устранения неполадок
 
-2. **QUICKSTART_FILEVIEWER.md** - Quick start guide
-   - 5-minute setup
-   - Basic usage examples
-   - Common patterns
-   - Tips and tricks
+2. **QUICKSTART_FILEVIEWER.md** - Руководство по быстрому старту
+   - Настройка за 5 минут
+   - Примеры базового использования
+   - Распространённые паттерны
+   - Советы и лайфхаки
 
-3. **INTEGRATION_EXAMPLE.vue** - Full integration example
-   - Complete FileBrowser.vue with FileViewer
-   - Modal implementation
-   - Styling examples
-   - Usage notes
+3. **INTEGRATION_EXAMPLE.vue** - Пример полной интеграции
+   - Полная реализация FileBrowser.vue с FileViewer
+   - Реализация модального окна
+   - Примеры стилизации
+   - Примечания по использованию
 
 ---
 
-## 🎨 Features Highlights
+## 🎨 Особенности
 
-### Markdown Rendering
+### Рендеринг Markdown
 ```markdown
-# Heading
-**Bold** and *italic* text
+# Заголовок
+**Жирный** и *курсив* текст
 
 ```mermaid
 graph TD
-    A[Start] --> B[Process]
-    B --> C[End]
+    A[Старт] --> B[Процесс]
+    B --> C[Конец]
 ```
 
-| Column 1 | Column 2 |
+| Колонка 1 | Колонка 2 |
 |----------|----------|
-| Data 1   | Data 2   |
+| Данные 1   | Данные 2   |
 ```
 
-### Code Highlighting
-- Automatic language detection
-- 40+ languages supported
-- Line numbers
-- Copy button
-- Dark theme
+### Подсветка кода
+- Автоопределение языка
+- Поддержка 40+ языков
+- Номера строк
+- Кнопка копирования
+- Тёмная тема
 
-### PDF Viewing
-- Page-by-page rendering
-- Navigation controls
-- Page counter
-- High-quality rendering (1.5x scale)
+### Просмотр PDF
+- Рендеринг по страницам
+- Управление навигацией
+- Счётчик страниц
+- Высококачественный рендеринг (масштаб 1.5x)
 
-### File Operations
-- Open in editor (VS Code/Cursor)
-- Copy content to clipboard
-- Download file
-- Loading states
-- Error handling
+### Операции с файлами
+- Открытие в редакторе (VS Code/Cursor)
+- Копирование содержимого в буфер обмена
+- Скачивание файла
+- Состояния загрузки
+- Обработка ошибок
 
 ---
 
-## 🔧 Backend API Requirements
+## 🔧 Требования API бэкенда
 
-Your backend needs to implement these endpoints:
+Ваш бэкенд должен реализовать эти endpoints:
 
-### 1. View Text File
+### 1. Просмотр текстового файла
 ```python
 @app.get("/api/file/view")
 async def view_file(file: str):
     """
-    Returns file content as text.
+    Возвращает содержимое файла как текст.
     
     Query params:
-        file: Path to the file
+        file: Путь к файлу
     
     Returns:
-        {"content": "file content..."}
+        {"content": "содержимое файла..."}
     """
     content = read_file(file)
     return {"content": content}
 ```
 
-### 2. View PDF File
+### 2. Просмотр PDF файла
 ```python
 @app.get("/api/file/pdf")
 async def view_pdf(file: str):
     """
-    Returns PDF file as base64 encoded string.
+    Возвращает PDF файл как base64 закодированную строку.
     
     Query params:
-        file: Path to the PDF file
+        file: Путь к PDF файлу
     
     Returns:
         {"content": "base64_encoded_pdf..."}
@@ -284,12 +284,12 @@ async def view_pdf(file: str):
     return {"content": base64_pdf}
 ```
 
-### 3. Open in Editor (Optional)
+### 3. Открытие в редакторе (Опционально)
 ```python
 @app.post("/api/editor/open")
 async def open_in_editor(request: dict):
     """
-    Opens file in external editor.
+    Открывает файл во внешнем редакторе.
     
     Body:
         {"path": "/path/to/file"}
@@ -298,160 +298,159 @@ async def open_in_editor(request: dict):
         {"success": true}
     """
     path = request["path"]
-    subprocess.run(["code", path])  # or "cursor"
+    subprocess.run(["code", path])  # или "cursor"
     return {"success": True}
 ```
 
 ---
 
-## 🎯 File Type Support
+## 🎯 Поддержка типов файлов
 
-| Extension | Type | Viewer | Features |
-|-----------|------|--------|----------|
-| .md, .markdown | Markdown | MarkdownRenderer | GFM, Mermaid, Code highlighting |
-| .py, .js, .ts | Code | CodeViewer | Syntax highlighting, line numbers |
-| .json, .yaml | Code | CodeViewer | Syntax highlighting, line numbers |
-| .html, .css | Code | CodeViewer | Syntax highlighting, line numbers |
-| .pdf | PDF | PDFViewer | Page navigation, zoom |
-| .txt, .log | Text | Plain text | Simple text display |
-| Others | Text | Plain text | Fallback viewer |
-
----
-
-## 🎨 Styling
-
-All components use:
-- **TailwindCSS** for utility classes
-- **Dark theme** optimized (gray-800/900 backgrounds)
-- **Smooth transitions** and hover effects
-- **Responsive design** for all screen sizes
-- **Custom scrollbars** for better aesthetics
-- **Loading spinners** for async operations
-- **Error states** with retry buttons
+| Расширение | Тип | Просмотр | Функции |
+|-----------|------|----------|----------|
+| .md, .markdown | Markdown | MarkdownRenderer | GFM, Mermaid, Подсветка кода |
+| .py, .js, .ts | Код | CodeViewer | Подсветка синтаксиса, номера строк |
+| .json, .yaml | Код | CodeViewer | Подсветка синтаксиса, номера строк |
+| .html, .css | Код | CodeViewer | Подсветка синтаксиса, номера строк |
+| .pdf | PDF | PDFViewer | Навигация по страницам, масштаб |
+| .txt, .log | Текст | Обычный текст | Простое отображение текста |
+| Другие | Текст | Обычный текст | Резервный просмотр |
 
 ---
 
-## 🐛 Troubleshooting
+## 🎨 Стилизация
 
-### Mermaid Diagrams Not Rendering
-- Check browser console for syntax errors
-- Verify mermaid code block format: ```mermaid
-- Test with simple diagram first
-- Ensure mermaid is initialized
-
-### PDF Not Loading
-- Verify PDF data is valid base64
-- Check PDF.js worker is accessible
-- Look for CORS issues in console
-- Test with small PDF first
-
-### Code Not Highlighting
-- Verify language is supported by highlight.js
-- Try auto-detection (omit language prop)
-- Check file extension mapping
-- Ensure highlight.js CSS is loaded
-
-### API Errors
-- Check network tab in DevTools
-- Verify endpoint URLs are correct
-- Check CORS configuration
-- Verify file paths are correct
+Все компоненты используют:
+- **TailwindCSS** для утилитарных классов
+- **Тёмная тема** оптимизирована (серые фоны 800/900)
+- **Плавные переходы** и эффекты при наведении
+- **Адаптивный дизайн** для всех размеров экрана
+- **Пользовательские скроллбары** для лучшей эстетики
+- **Индикаторы загрузки** для асинхронных операций
+- **Состояния ошибок** с кнопками повтора
 
 ---
 
-## 🚀 Next Steps
+## 🐛 Устранение неполадок
 
-1. **Install dependencies:**
+### Диаграммы Mermaid не отображаются
+- Проверьте консоль браузера на синтаксические ошибки
+- Убедитесь, что формат блока кода mermaid: ```mermaid
+- Протестируйте сначала с простой диаграммой
+- Убедитесь, что mermaid инициализирован
+
+### PDF не загружается
+- Убедитесь, что PDF-данные валидны base64
+- Проверьте, что worker PDF.js доступен
+- Ищите проблемы CORS в консоли
+- Протестируйте сначала с маленьким PDF
+
+### Код не подсвечивается
+- Убедитесь, что язык поддерживается highlight.js
+- Попробуйте автоопределение (опустите prop language)
+- Проверьте сопоставление расширений файлов
+- Убедитесь, что CSS highlight.js загружен
+
+### Ошибки API
+- Проверьте вкладку Network в DevTools
+- Убедитесь, что URL endpoints правильные
+- Проверьте конфигурацию CORS
+- Убедитесь, что пути к файлам правильные
+
+---
+
+## 🚀 Следующие шаги
+
+1. **Установите зависимости:**
    ```bash
    cd frontend
    npm install
    ```
 
-2. **Implement backend API endpoints:**
-   - `/api/file/view` for text files
-   - `/api/file/pdf` for PDF files
-   - `/api/editor/open` for editor integration
+2. **Реализуйте API endpoints бэкенда:**
+   - `/api/file/view` для текстовых файлов
+   - `/api/file/pdf` для PDF файлов
+   - `/api/editor/open` для интеграции редактора
 
-3. **Integrate with FileBrowser:**
-   - Import FileViewer component
-   - Replace simple preview modal
-   - Test with different file types
+3. **Интегрируйте с FileBrowser:**
+   - Импортируйте компонент FileViewer
+   - Замените простой модальный предпросмотр
+   - Протестируйте с разными типами файлов
 
-4. **Test thoroughly:**
-   - Markdown files with Mermaid diagrams
-   - Code files in various languages
-   - PDF files
-   - Large files
-   - Error cases
+4. **Тщательно протестируйте:**
+   - Файлы Markdown с диаграммами Mermaid
+   - Файлы кода на различных языках
+   - PDF файлы
+   - Большие файлы
+   - Случаи ошибок
 
-5. **Customize as needed:**
-   - Change highlight.js theme
-   - Adjust Mermaid theme
-   - Modify toolbar buttons
-   - Add new file type support
+5. **Настройте по необходимости:**
+   - Измените тему highlight.js
+   - Настройте тему Mermaid
+   - Модифицируйте кнопки панели инструментов
+   - Добавьте поддержку новых типов файлов
 
 ---
 
-## 📊 Component Architecture
+## 📊 Архитектура компонентов
 
 ```
-FileViewer.vue (Main Orchestrator)
-├── Detects file type by extension
-├── Loads content from API
-├── Shows toolbar with actions
-└── Renders appropriate viewer:
+FileViewer.vue (Основной оркестратор)
+├── Определяет тип файла по расширению
+├��─ Загружает содержимое из API
+├── Показывает панель инструментов с действиями
+└── Рендерит соответствующий просмотр:
     ├── MarkdownRenderer.vue
-    │   ├── marked.js (Markdown parsing)
-    │   ├── mermaid.js (Diagrams)
-    │   └── highlight.js (Code blocks)
+    │   ├── marked.js (Парсинг Markdown)
+    │   ├── mermaid.js (Диаграммы)
+    │   └── highlight.js (Блоки кода)
     ├── CodeViewer.vue
-    │   ├── highlight.js (Syntax highlighting)
-    │   └── Line numbers + Copy button
+    │   ├── highlight.js (Подсветка синтаксиса)
+    │   └── Номера строк + Кнопка копирования
     ├── PDFViewer.vue
-    │   ├── pdfjs-dist (PDF rendering)
-    │   └── Page navigation
-    └── Plain text viewer (Fallback)
+    │   ├── pdfjs-dist (Рендеринг PDF)
+    │   └── Навигация по страницам
+    └── Просмотр обычного текста (Резервный вариант)
 ```
 
 ---
 
-## ✨ Key Features Summary
+## ✨ Краткое резюме ключевых функций
 
-✅ **Automatic file type detection**
-✅ **Rich Markdown rendering with Mermaid**
-✅ **Syntax highlighting for 40+ languages**
-✅ **PDF viewing with navigation**
-✅ **Copy to clipboard**
-✅ **Download files**
-✅ **Open in editor**
-✅ **Loading states**
-✅ **Error handling**
-✅ **Dark theme optimized**
-✅ **Responsive design**
-✅ **Line numbers for code**
-✅ **Mermaid diagram support**
-✅ **GitHub-dark theme**
+✅ **Автоматическое определение типа файла**
+✅ **Богатый рендеринг Markdown с Mermaid**
+✅ **Подсветка синтаксиса для 40+ языков**
+✅ **Просмотр PDF с навигацией**
+✅ **Копирование в буфер обмена**
+✅ **Скачивание файлов**
+✅ **Открытие в редакторе**
+✅ **Состояния загрузки**
+✅ **Обработка ошибок**
+✅ **Оптимизировано для тёмной темы**
+✅ **Адаптивный дизайн**
+✅ **Номера строк для кода**
+✅ **Поддержка диаграмм Mermaid**
+✅ **Тема GitHub-dark**
 
 ---
 
-## 📝 Files Created
+## 📝 Созданные файлы
 
 ```
 frontend/src/components/
-├── MarkdownRenderer.vue          # Markdown + Mermaid viewer
-├── CodeViewer.vue                # Code with syntax highlighting
-├── PDFViewer.vue                 # PDF viewer with navigation
-├── FileViewer.vue                # Main orchestrator component
-├── README.md                     # Complete documentation
-├── QUICKSTART_FILEVIEWER.md      # Quick start guide
-└── INTEGRATION_EXAMPLE.vue       # Full integration example
+├── MarkdownRenderer.vue          # Просмотр Markdown + Mermaid
+├── CodeViewer.vue                # Код с подсветкой синтаксиса
+├── PDFViewer.vue                 # Просмотр PDF с навигацией
+├── FileViewer.vue                # Основной оркестратор компонентов
+├── README.md                     # Полная документация
+├── QUICKSTART_FILEVIEWER.md      # Руководство по быстрому старту
+└── INTEGRATION_EXAMPLE.vue       # Пример полной интеграции
 ```
 
 ---
 
-## 🎉 Ready to Use!
+## 🎉 Готово к использованию!
 
-All components are production-ready and fully documented. Start with `FileViewer` for the easiest integration, or use individual viewers for more control.
+Все компоненты готовы к продакшену и полностью задокументированы. Начните с `FileViewer` для легчайшей интеграции, или используйте отдельные просмотры для большего контроля.
 
-**Happy coding!** 🚀
-
+**Счастливого кодирования!** 🚀

@@ -6,7 +6,7 @@
         <svg class="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
         </svg>
-        <span class="text-sm text-gray-400">{{ detectedLanguage }}</span>
+        <span class="text-sm text-gray-400">{{ displayLanguage }}</span>
       </div>
       <button 
         class="copy-button" 
@@ -19,26 +19,35 @@
         <svg v-else class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
         </svg>
-        <span class="ml-2">{{ copied ? 'Copied!' : 'Copy' }}</span>
+        <span class="ml-2">{{ copied ? t('codeViewer.copied') : t('codeViewer.copy') }}</span>
       </button>
     </div>
 
-    <!-- Code content -->
-    <div class="code-container">
-      <div class="line-numbers">
-        <div v-for="n in lineCount" :key="n" class="line-number">
-          {{ n }}
-        </div>
-      </div>
-      <pre class="code-content"><code ref="codeRef" :class="`language-${detectedLanguage}`">{{ content }}</code></pre>
+    <!-- VSCode-like code viewer (CodeMirror, read-only) -->
+    <div class="editor-container">
+      <codemirror
+        v-model="code"
+        :style="{ height: '100%' }"
+        :autofocus="false"
+        :indent-with-tab="true"
+        :tab-size="4"
+        :extensions="extensions"
+      />
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
-import hljs from 'highlight.js'
-import 'highlight.js/styles/github-dark.css'
+import { ref, computed, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { Codemirror } from 'vue-codemirror'
+import { EditorState } from '@codemirror/state'
+import { EditorView, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view'
+import { oneDark } from '@codemirror/theme-one-dark'
+import { javascript } from '@codemirror/lang-javascript'
+import { python } from '@codemirror/lang-python'
+
+const { t } = useI18n()
 
 const props = defineProps({
   content: {
@@ -51,52 +60,54 @@ const props = defineProps({
   }
 })
 
-const codeRef = ref(null)
 const copied = ref(false)
+const code = ref(props.content || '')
 
-// Detect language
-const detectedLanguage = computed(() => {
-  if (props.language) {
-    return props.language
-  }
-  
-  // Auto-detect language
-  if (props.content) {
-    const result = hljs.highlightAuto(props.content)
-    return result.language || 'plaintext'
-  }
-  
-  return 'plaintext'
+watch(() => props.content, (newVal) => {
+  code.value = newVal || ''
 })
 
-// Count lines
-const lineCount = computed(() => {
-  if (!props.content) return 1
-  return props.content.split('\n').length
+const displayLanguage = computed(() => {
+  const lang = String(props.language || '').trim()
+  return lang || 'plaintext'
 })
 
-// Highlight code
-function highlightCode() {
-  if (!codeRef.value) return
-  
-  try {
-    if (props.language && hljs.getLanguage(props.language)) {
-      const result = hljs.highlight(props.content, { language: props.language })
-      codeRef.value.innerHTML = result.value
-    } else {
-      const result = hljs.highlightAuto(props.content)
-      codeRef.value.innerHTML = result.value
-    }
-  } catch (err) {
-    console.error('Highlight error:', err)
-    codeRef.value.textContent = props.content
-  }
-}
+const languageExtension = computed(() => {
+  const lang = String(props.language || '').toLowerCase()
+
+  if (lang === 'python') return python()
+
+  // FileViewer maps many to 'javascript'/'typescript'
+  if (lang === 'typescript') return javascript({ typescript: true, jsx: true })
+  if (lang === 'javascript') return javascript({ jsx: true })
+
+  // Common aliases
+  if (lang === 'js') return javascript({ jsx: true })
+  if (lang === 'ts' || lang === 'tsx') return javascript({ typescript: true, jsx: true })
+  if (lang === 'jsx') return javascript({ jsx: true })
+
+  // Reasonable defaults
+  if (lang === 'json') return javascript({ typescript: false })
+
+  return null
+})
+
+const extensions = computed(() => {
+  return [
+    lineNumbers(),
+    highlightActiveLineGutter(),
+    highlightActiveLine(),
+    oneDark,
+    languageExtension.value,
+    EditorState.readOnly.of(true),
+    EditorView.editable.of(false)
+  ].filter(Boolean)
+})
 
 // Copy code to clipboard
 async function copyCode() {
   try {
-    await navigator.clipboard.writeText(props.content)
+    await navigator.clipboard.writeText(code.value)
     copied.value = true
     setTimeout(() => {
       copied.value = false
@@ -105,20 +116,6 @@ async function copyCode() {
     console.error('Copy error:', err)
   }
 }
-
-// Initialize highlighting
-onMounted(() => {
-  highlightCode()
-})
-
-// Re-highlight on content change
-watch(() => props.content, () => {
-  highlightCode()
-})
-
-watch(() => props.language, () => {
-  highlightCode()
-})
 </script>
 
 <style scoped>
@@ -138,51 +135,32 @@ watch(() => props.language, () => {
   @apply text-green-400 bg-green-900 hover:bg-green-900;
 }
 
-.code-container {
-  @apply flex overflow-x-auto;
+.editor-container {
+  height: 100%;
+  min-height: 360px;
 }
 
-.line-numbers {
-  @apply flex-shrink-0 bg-gray-800 text-gray-500 text-right select-none border-r border-gray-700;
-  min-width: 3rem;
-  padding: 1rem 0.5rem;
-  font-family: 'Courier New', monospace;
-  font-size: 0.875rem;
-  line-height: 1.5rem;
+/* Make CodeMirror match our app shell */
+.editor-container :deep(.cm-editor) {
+  height: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 13px;
 }
 
-.line-number {
-  @apply px-2;
-  height: 1.5rem;
+.editor-container :deep(.cm-scroller) {
+  overflow: auto;
 }
 
-.code-content {
-  @apply flex-1 p-4 m-0 bg-transparent overflow-x-auto;
-  font-family: 'Courier New', monospace;
-  font-size: 0.875rem;
-  line-height: 1.5rem;
+.editor-container :deep(.cm-gutters) {
+  background: #1f2937; /* gray-800 */
+  border-right: 1px solid #374151; /* gray-700 */
 }
 
-.code-content code {
-  @apply bg-transparent text-gray-200;
-  display: block;
-  white-space: pre;
+.editor-container :deep(.cm-activeLineGutter) {
+  background: rgba(255, 255, 255, 0.04);
 }
 
-/* Scrollbar styling */
-.code-container::-webkit-scrollbar {
-  height: 8px;
-}
-
-.code-container::-webkit-scrollbar-track {
-  @apply bg-gray-800;
-}
-
-.code-container::-webkit-scrollbar-thumb {
-  @apply bg-gray-600 rounded;
-}
-
-.code-container::-webkit-scrollbar-thumb:hover {
-  @apply bg-gray-500;
+.editor-container :deep(.cm-activeLine) {
+  background: rgba(255, 255, 255, 0.03);
 }
 </style>

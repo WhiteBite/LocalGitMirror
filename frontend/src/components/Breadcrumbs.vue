@@ -1,11 +1,11 @@
 <template>
-  <nav class="breadcrumbs">
+  <nav class="breadcrumbs" :class="{ compact }">
     <div class="flex items-center space-x-1">
       <button
-        v-for="(crumb, index) in crumbs"
+        v-for="(crumb, index) in normalizedCrumbs"
         :key="crumb.path"
         class="breadcrumb-item"
-        :class="{ 'active': index === crumbs.length - 1 }"
+        :class="{ 'active': index === normalizedCrumbs.length - 1 }"
         @click="emit('navigate', crumb.path)"
       >
         <svg v-if="index === 0" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -24,6 +24,18 @@
 import { computed } from 'vue'
 
 const props = defineProps({
+  crumbs: {
+    type: Array,
+    default: null
+  },
+  rootLabel: {
+    type: String,
+    default: 'Root'
+  },
+  compact: {
+    type: Boolean,
+    default: false
+  },
   path: {
     type: String,
     default: '/'
@@ -32,18 +44,30 @@ const props = defineProps({
 
 const emit = defineEmits(['navigate'])
 
-const crumbs = computed(() => {
-  if (props.path === '/') return [{ name: 'Root', path: '/' }]
-  
+const normalizedCrumbs = computed(() => {
+  if (props.crumbs?.length) {
+    return props.crumbs.map((crumb, index) => {
+      if (index === 0) {
+        return {
+          ...crumb,
+          name: props.rootLabel || crumb.name || 'Root'
+        }
+      }
+      return crumb
+    })
+  }
+
+  if (props.path === '/') return [{ name: props.rootLabel, path: '/' }]
+
   const parts = props.path.split('/').filter(Boolean)
-  const result = [{ name: 'Root', path: '/' }]
-  
+  const result = [{ name: props.rootLabel, path: '/' }]
+
   let currentPath = ''
   parts.forEach(part => {
     currentPath += `/${part}`
     result.push({ name: part, path: currentPath })
   })
-  
+
   return result
 })
 </script>
@@ -53,8 +77,16 @@ const crumbs = computed(() => {
   @apply px-4 py-2 bg-gray-800 border-b border-gray-700;
 }
 
+.breadcrumbs.compact {
+  @apply p-0 bg-transparent border-b-0;
+}
+
 .breadcrumb-item {
   @apply flex items-center gap-1 px-2 py-1 text-sm text-gray-400 hover:text-gray-200 hover:bg-gray-700 rounded transition-colors;
+}
+
+.breadcrumbs.compact .breadcrumb-item {
+  @apply py-1 px-1.5 text-xs;
 }
 
 .breadcrumb-item.active {

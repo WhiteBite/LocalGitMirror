@@ -1,130 +1,128 @@
-# LocalGitMirror Documentation Index
+# Индекс документации LocalGitMirror
 
-Welcome to the LocalGitMirror documentation! This index will help you find the information you need.
+Добро пожаловать в документацию LocalGitMirror! Этот индекс поможет вам найти нужную информацию.
 
-## 📚 Quick Start
+## 📚 Быстрый старт
 
-- **[QUICKSTART.md](QUICKSTART.md)** - Get started with LocalGitMirror quickly
-- **[README.md](../README.md)** - Main project overview (in root)
+- **[QUICKSTART.md](QUICKSTART.md)** - Быстрый старт с LocalGitMirror
+- **[README.md](../README.md)** - Основной обзор проекта (в корне)
 
-## 🏗️ Architecture & Design
+## 🏗️ Архитектура и дизайн
 
-- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Complete system architecture with diagrams
-- **[ARCHITECTURE_REVIEW.md](ARCHITECTURE_REVIEW.md)** - Architecture review and analysis
-- **[MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)** - Migration guide for version upgrades
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Полная архитектура системы с диаграммами
+- **[MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)** - Руководство по миграции для обновлений версий
 
-## 🔧 Core Features
+## 🔧 Основные функции
 
-### Logging System
-- **[LOGGING.md](LOGGING.md)** - Complete logging system documentation
-  - Real-time WebSocket streaming
-  - File-based persistence
-  - Vue.js component
-  - API reference
-  - Troubleshooting
+### Система логирования
+- **[LOGGING.md](LOGGING.md)** - Полная документация системы логирования
+  - Потоковая передача WebSocket в реальном времени
+  - Постоянное хранение в файлах
+  - Vue.js компонент
+  - Справочник API
+  - Устранение неполадок
 
-### Settings System
-- **[SETTINGS.md](SETTINGS.md)** - Complete settings system documentation
-  - Backend persistence
+### Система настроек
+- **[SETTINGS.md](SETTINGS.md)** - Полная документация системы настроек
+  - Постоянное хранение бэкенда
   - Vue.js frontend
   - API endpoints
-  - Configuration options
-  - Validation rules
+  - Параметры конфигурации
+  - Правила валидации
 
-### File Browser
-- **[FILE_BROWSER.md](FILE_BROWSER.md)** - File browser documentation
-  - Tree structure navigation
-  - File preview
-  - Markdown rendering
-  - Code highlighting
-  - PDF viewing
+### Браузер файлов
+- **[FILE_BROWSER.md](FILE_BROWSER.md)** - Документация браузера файлов
+  - Навигация по древовидной структуре
+  - Предпросмотр файлов
+  - Рендеринг Markdown
+  - Подсветка кода
+  - Просмотр PDF
 
-## 🎨 Frontend Components
+## 🎨 Frontend компоненты
 
-- **[FILE_VIEWER_COMPONENTS.md](FILE_VIEWER_COMPONENTS.md)** - File viewer components
-- **[FILETREE_INTEGRATION.md](FILETREE_INTEGRATION.md)** - File tree integration
-- **[FILETREE_SUMMARY.md](FILETREE_SUMMARY.md)** - File tree summary
+- **[FILE_VIEWER_COMPONENTS.md](FILE_VIEWER_COMPONENTS.md)** - Компоненты просмотра файлов
+- **[FILETREE_INTEGRATION.md](FILETREE_INTEGRATION.md)** - Интеграция дерева файлов
+- **[FILETREE_SUMMARY.md](FILETREE_SUMMARY.md)** - Резюме дерева файлов
 
-## 📊 Project Information
+## 📊 Информация о проекте
 
-- **[PROJECT_SUMMARY.md](PROJECT_SUMMARY.md)** - Project summary and overview
-- **[SUMMARY.md](SUMMARY.md)** - General summary
+- **[PROJECT_SUMMARY.md](PROJECT_SUMMARY.md)** - Резюме проекта и обзор
+- **[SUMMARY.md](SUMMARY.md)** - Общее резюме
 
-## 📝 Development
+## 📝 Разработка
 
-- **[TODO.md](../TODO.md)** - Development tasks and roadmap (in root)
-- **[CLEANUP_REPORT.md](../CLEANUP_REPORT.md)** - Recent cleanup report (in root)
+- **[TODO.md](../TODO.md)** - Задачи разработки и roadmap (в корне)
+- **[CLEANUP_REPORT.md](../CLEANUP_REPORT.md)** - Отчёт о недавней очистке (в корне)
 
-## 🗂️ Documentation Structure
+## 🗂️ Структура документации
 
 ```
 docs/
-├── INDEX.md                     # This file - Documentation index
-├── QUICKSTART.md                # Quick start guide
-├── ARCHITECTURE.md              # System architecture
-├── ARCHITECTURE_REVIEW.md       # Architecture review
-├── MIGRATION_GUIDE.md           # Migration guide
-├── LOGGING.md                   # Logging system (consolidated)
-├── SETTINGS.md                  # Settings system (consolidated)
-├── FILE_BROWSER.md              # File browser (consolidated)
-├── FILE_VIEWER_COMPONENTS.md    # File viewer components
-├── FILETREE_INTEGRATION.md      # File tree integration
-├── FILETREE_SUMMARY.md          # File tree summary
-├── PROJECT_SUMMARY.md           # Project summary
-└── SUMMARY.md                   # General summary
+├── INDEX.md                     # Этот файл - Индекс документации
+├── QUICKSTART.md                # Руководство по быстрому старту
+├── ARCHITECTURE.md              # Архитектура системы
+├── MIGRATION_GUIDE.md           # Руководство по миграции
+├── LOGGING.md                   # Система логирования (консолидированная)
+├── SETTINGS.md                  # Система настроек (консолидированная)
+├── FILE_BROWSER.md              # Браузер файлов (консолидированная)
+├── FILE_VIEWER_COMPONENTS.md    # Компоненты просмотра файлов
+├── FILETREE_INTEGRATION.md      # Интеграция дерева файлов
+├── FILETREE_SUMMARY.md          # Резюме дерева файлов
+├── PROJECT_SUMMARY.md           # Резюме проекта
+└── SUMMARY.md                   # Общее резюме
 ```
 
-## 🔍 Finding Information
+## 🔍 Поиск информации
 
-### For Users
-1. Start with [QUICKSTART.md](QUICKSTART.md)
-2. Learn about features in [FILE_BROWSER.md](FILE_BROWSER.md)
-3. Configure settings using [SETTINGS.md](SETTINGS.md)
+### Для пользователей
+1. Начните с [QUICKSTART.md](QUICKSTART.md)
+2. Изучите функции в [FILE_BROWSER.md](FILE_BROWSER.md)
+3. Настройте параметры, используя [SETTINGS.md](SETTINGS.md)
 
-### For Developers
-1. Understand architecture in [ARCHITECTURE.md](ARCHITECTURE.md)
-2. Learn about logging in [LOGGING.md](LOGGING.md)
-3. Review components in [FILE_VIEWER_COMPONENTS.md](FILE_VIEWER_COMPONENTS.md)
+### Для разработчиков
+1. Поймите архитектуру в [ARCHITECTURE.md](ARCHITECTURE.md)
+2. Изучите логирование в [LOGGING.md](LOGGING.md)
+3. Просмотрите компоненты в [FILE_VIEWER_COMPONENTS.md](FILE_VIEWER_COMPONENTS.md)
 
-### For System Administrators
-1. Review [ARCHITECTURE.md](ARCHITECTURE.md) for system overview
-2. Check [SETTINGS.md](SETTINGS.md) for configuration
-3. Use [LOGGING.md](LOGGING.md) for monitoring
+### Для системных администраторов
+1. Просмотрите [ARCHITECTURE.md](ARCHITECTURE.md) для обзора системы
+2. Проверьте [SETTINGS.md](SETTINGS.md) для конфигурации
+3. Используйте [LOGGING.md](LOGGING.md) для мониторинга
 
-## 📌 Key Features Documentation
+## 📌 Документация ключевых функций
 
-| Feature | Documentation | Description |
-|---------|---------------|-------------|
-| Logging | [LOGGING.md](LOGGING.md) | Real-time logging with WebSocket |
-| Settings | [SETTINGS.md](SETTINGS.md) | Comprehensive settings management |
-| File Browser | [FILE_BROWSER.md](FILE_BROWSER.md) | VS Code-like file browser |
-| Architecture | [ARCHITECTURE.md](ARCHITECTURE.md) | System design and components |
+| Функция | Документация | Описание |
+|---------|--------------|----------|
+| Логирование | [LOGGING.md](LOGGING.md) | Реальное логирование с WebSocket |
+| Настройки | [SETTINGS.md](SETTINGS.md) | Полное управление настройками |
+| Браузер файлов | [FILE_BROWSER.md](FILE_BROWSER.md) | Браузер файлов как в VS Code |
+| Архитектура | [ARCHITECTURE.md](ARCHITECTURE.md) | Дизайн системы и компоненты |
 
-## 🆘 Getting Help
+## 🆘 Получение помощи
 
-1. Check the relevant documentation file above
-2. Review [QUICKSTART.md](QUICKSTART.md) for common tasks
-3. Check [ARCHITECTURE.md](ARCHITECTURE.md) for system understanding
-4. Review specific feature documentation (LOGGING, SETTINGS, FILE_BROWSER)
+1. Проверьте соответствующую документацию выше
+2. Просмотрите [QUICKSTART.md](QUICKSTART.md) для распространённых задач
+3. Проверьте [ARCHITECTURE.md](ARCHITECTURE.md) для понимания системы
+4. Просмотрите специфическую документацию функции (LOGGING, SETTINGS, FILE_BROWSER)
 
-## 📅 Recent Updates
+## 📅 Недавние обновления
 
-- **2026-01-28**: Major documentation cleanup and consolidation
-  - Consolidated LOGGING documentation (5 files → 1)
-  - Consolidated SETTINGS documentation (3 files → 1)
-  - Consolidated FILE_BROWSER documentation (3 files → 1)
-  - Created this INDEX.md for easy navigation
-  - See [CLEANUP_REPORT.md](../CLEANUP_REPORT.md) for details
+- **2026-01-28**: Крупная очистка и консолидация документации
+  - Консолидирована документация LOGGING (5 файлов → 1)
+  - Консолидирована документация SETTINGS (3 файла → 1)
+  - Консолидирована документация FILE_BROWSER (3 файла → 1)
+  - Создан этот INDEX.md для лёгкой навигации
+  - Смотрите [CLEANUP_REPORT.md](../CLEANUP_REPORT.md) для деталей
 
-## 🔗 External Resources
+## 🔗 Внешние ресурсы
 
 - **Backend**: FastAPI, Python 3.12+
 - **Frontend**: Vue 3, Vite, Tailwind CSS
-- **Git**: Git server integration
-- **Storage**: Local file system
+- **Git**: Интеграция Git-сервера
+- **Хранилище**: Локальная файловая система
 
 ---
 
-**Version:** 3.2.0  
-**Last Updated:** 2026-01-28  
-**Status:** ✅ Active Development
+**Версия:** 3.2.0  
+**Последнее обновление:** 2026-01-28  
+**Статус:** ✅ Активная разработка

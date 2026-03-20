@@ -6,7 +6,7 @@
           ref="searchInput"
           v-model="searchQuery"
           type="text"
-          placeholder="Type a command or search..."
+          :placeholder="t('commandPalette.type_command_or_search')"
           @keydown.down.prevent="navigateResults('down')"
           @keydown.up.prevent="navigateResults('up')"
           @keydown.enter.prevent="executeCommand"
@@ -31,7 +31,7 @@
         </li>
       </ul>
       <div v-else class="no-results">
-        No matching commands found
+        {{ t('commandPalette.no_matching_commands') }}
       </div>
     </div>
   </div>
@@ -40,10 +40,13 @@
 <script setup>
 import { ref, computed, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
+import { useI18n } from 'vue-i18n'
 import { useReposStore } from '@/stores/repos'
 import { useSystemStore } from '@/stores/system'
 import { useFilesStore } from '@/stores/files'
 import axios from 'axios'
+
+const { t } = useI18n()
 
 const props = defineProps({
   modelValue: {
@@ -71,42 +74,42 @@ const isVisible = computed({
 const commands = computed(() => {
   const list = [
     {
-      label: 'Go to Dashboard',
+      label: t('commandPalette.go_to_dashboard'),
       action: () => router.push('/dashboard'),
       icon: '🏠',
-      detail: 'Navigate to dashboard'
+      detail: t('commandPalette.navigate_to_dashboard')
     },
     {
-      label: 'Go to Files',
+      label: t('commandPalette.go_to_files'),
       action: () => router.push('/files'),
       icon: '📂',
-      detail: 'Browse files in current repository'
+      detail: t('commandPalette.browse_files_current_volume')
     },
     {
-      label: 'Go to Settings',
+      label: t('commandPalette.go_to_settings'),
       action: () => router.push('/settings'),
       icon: '⚙️',
-      detail: 'Configure application settings'
+      detail: t('commandPalette.configure_application_settings')
     },
     {
-      label: 'Sync Current Repository',
+      label: t('commandPalette.sync_current_volume'),
       action: async () => {
         if (reposStore.currentRepo) {
            try {
              await reposStore.syncRepo(reposStore.currentRepo)
-             systemStore.addNotification(`Synced ${reposStore.currentRepo}`, 'success')
+             systemStore.addNotification(t('commandPalette.synced', { repo: reposStore.currentRepo }), 'success')
            } catch (e) {
-             systemStore.addNotification('Sync failed', 'error')
+             systemStore.addNotification(t('commandPalette.sync_failed'), 'error')
            }
         } else {
-            systemStore.addNotification('No repository selected', 'warning')
+            systemStore.addNotification(t('commandPalette.no_volume_selected'), 'warning')
         }
       },
       icon: '🔄',
-      detail: 'Pull latest changes and push local commits'
+      detail: t('commandPalette.pull_latest_changes_push_local')
     },
     {
-      label: 'Create New Repository',
+      label: t('commandPalette.create_new_volume'),
       action: () => {
         // We'll need to trigger the modal in App.vue or handle it here.
         // For simplicity, let's emit a custom event or use a global bus if available.
@@ -118,7 +121,7 @@ const commands = computed(() => {
         emit('command', 'create-repo')
       },
       icon: '➕',
-      detail: 'Initialize a new git repository'
+      detail: t('commandPalette.initialize_new_data_volume')
     }
   ]
 
@@ -127,7 +130,7 @@ const commands = computed(() => {
     reposStore.repos.forEach(repo => {
       if (repo !== reposStore.currentRepo) {
         list.push({
-          label: `Switch to ${repo}`,
+          label: t('commandPalette.switch_to', { repo }),
           action: () => {
              // We need to call selectProject which is in App.vue or move that logic to store.
              // Best practice: Move selectProject logic to store or expose it.
@@ -136,7 +139,7 @@ const commands = computed(() => {
              selectProject(repo)
           },
           icon: '🔀',
-          detail: `Switch context to ${repo}`
+          detail: t('commandPalette.switch_context_to', { repo })
         })
       }
     })
@@ -158,10 +161,10 @@ async function selectProject(repo) {
         await axios.post('/api/repos/select', { repo })
         reposStore.currentRepo = repo
         await filesStore.fetchFiles('/')
-        systemStore.addNotification(`Switched to ${repo}`, 'success')
+        systemStore.addNotification(t('commandPalette.switched_to', { repo }), 'success')
     } catch (e) {
         console.error(e)
-        systemStore.addNotification(`Failed to switch to ${repo}`, 'error')
+        systemStore.addNotification(t('commandPalette.failed_to_switch', { repo }), 'error')
     }
 }
 

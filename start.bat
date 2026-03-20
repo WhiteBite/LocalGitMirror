@@ -7,30 +7,30 @@ echo       LOCAL GIT MIRROR - STEALTH BRIDGE
 echo ===================================================
 echo.
 
-:: Check for Python
+:: Проверка Python
 python --version >nul 2>&1
 if %errorlevel% neq 0 (
-    echo [ERROR] Python is not installed or not in PATH.
+    echo [ОШИБКА] Python не установлен или отсутствует в PATH.
     pause
     exit /b
 )
 
-:: Check dependencies
+:: Проверка зависимостей
 if not exist "backend\venv" (
-    echo [INFO] Creating virtual environment...
+    echo [ИНФО] Создание виртуального окружения...
     python -m venv backend\venv
     call backend\venv\Scripts\activate
-    echo [INFO] Installing dependencies...
+    echo [ИНФО] Установка зависимостей...
     pip install -r backend\requirements.txt
 ) else (
     call backend\venv\Scripts\activate
 )
 
-:: Start Server
-echo [INFO] Starting Backend ^& Git Server...
-echo [INFO] UI will be available at http://localhost:8000
+:: Запуск сервера
+echo [ИНФО] Запуск Backend и Git сервера...
+echo [ИНФО] UI будет доступен по адресу http://localhost:8000
 echo.
-echo Press Ctrl+C to stop.
+echo Нажмите Ctrl+C для остановки.
 echo.
 
 python backend/run.py

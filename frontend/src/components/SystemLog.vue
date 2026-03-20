@@ -120,8 +120,7 @@ const filteredLogs = computed(() => {
 const connectWebSocket = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.hostname
-  const port = window.location.port
-  const wsUrl = `${protocol}//${host}:${port}/ws/logs`
+  const wsUrl = `${protocol}//${host}${window.location.port ? `:${window.location.port}` : ''}/ws/logs`
   
   ws = new WebSocket(wsUrl)
 

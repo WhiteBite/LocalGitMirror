@@ -10,12 +10,20 @@ export const useSharedStore = defineStore('shared', () => {
   const files = ref([])
   const loading = ref(false)
   const error = ref(null)
-  const selectedFiles = ref(new Set())
+  const selectedFiles = ref([])
+  const searchQuery = ref('')
+  const uploadProgress = ref(0)
 
   // Computed
   const currentFolderData = computed(() => {
     if (!currentFolder.value) return null
-    return folders.value.find(f => f.id === currentFolder.value)
+    return folders.value.find(f => f.name === currentFolder.value)
+  })
+
+  const filteredFiles = computed(() => {
+    if (!searchQuery.value) return files.value
+    const query = searchQuery.value.toLowerCase()
+    return files.value.filter(f => f.name.toLowerCase().includes(query))
   })
 
   const breadcrumbs = computed(() => {
@@ -30,7 +38,7 @@ export const useSharedStore = defineStore('shared', () => {
   })
 
   const selectedFilesArray = computed(() => {
-    return files.value.filter(f => selectedFiles.value.has(f.id))
+    return files.value.filter(f => selectedFiles.value.includes(f.path))
   })
 
   // Actions
@@ -48,22 +56,24 @@ export const useSharedStore = defineStore('shared', () => {
     }
   }
 
-  async function fetchFiles(folderId, subPath = []) {
+  async function selectFolder(folderName) {
+    currentFolder.value = folderName
+    await fetchFiles(folderName)
+  }
+
+  async function fetchFiles(folderName, subPath = '') {
     loading.value = true
     error.value = null
     try {
-      const response = await axios.get('/api/shared/files', {
-        params: {
-          folder_id: folderId,
-          path: subPath.join('/')
-        }
-      })
+      const params = { folder: folderName }
+      if (subPath) params.path = subPath
+      
+      const response = await axios.get('/api/shared/files', { params })
       files.value = response.data.files || []
-      currentFolder.value = folderId
-      currentPath.value = subPath
     } catch (err) {
       console.error('Failed to fetch files:', err)
       error.value = err.response?.data?.detail || 'Failed to load files'
+      files.value = []
     } finally {
       loading.value = false
     }
@@ -98,47 +108,69 @@ export const useSharedStore = defineStore('shared', () => {
     }
   }
 
-  async function deleteFolder(folderId) {
+  async function deleteFolder(folderName) {
     try {
-      await axios.delete(`/api/shared/folders/${folderId}`)
+      await axios.delete('/api/shared/folders', {
+        params: { folder: folderName }
+      })
       await fetchFolders()
+      if (currentFolder.value === folderName) {
+        currentFolder.value = null
+      }
     } catch (err) {
       console.error('Failed to delete folder:', err)
       throw err
     }
   }
 
-  async function uploadFiles(folderId, path, files) {
+  async function uploadFile(folderName, file, path = '') {
     const formData = new FormData()
-    formData.append('folder_id', folderId)
-    formData.append('path', path.join('/'))
+    formData.append('file', file)
+    formData.append('folder', folderName)
+    if (path) formData.append('subfolder', path)
     
-    for (const file of files) {
-      formData.append('files', file)
-    }
+    uploadProgress.value = 0
 
     try {
       const response = await axios.post('/api/shared/upload', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data'
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (progressEvent) => {
+          uploadProgress.value = Math.round((progressEvent.loaded * 100) / progressEvent.total)
         }
       })
-      await fetchFiles(folderId, path)
+      
+      await fetchFiles(folderName, path)
+      uploadProgress.value = 0
       return response.data
     } catch (err) {
-      console.error('Failed to upload files:', err)
+      console.error('Failed to upload file:', err)
+      uploadProgress.value = 0
       throw err
     }
   }
 
-  async function deleteFiles(fileIds) {
+  async function deleteFile(folderName, filePath) {
     try {
       await axios.delete('/api/shared/files', {
-        data: { file_ids: fileIds }
+        params: { folder: folderName, path: filePath }
       })
-      await fetchFiles(currentFolder.value, currentPath.value)
+      await fetchFiles(folderName)
     } catch (err) {
-      console.error('Failed to delete files:', err)
+      console.error('Failed to delete file:', err)
+      throw err
+    }
+  }
+
+  async function bulkDelete(folderName, filePaths) {
+    try {
+      await axios.post('/api/shared/bulk-delete', {
+        folder: folderName,
+        paths: filePaths
+      })
+      await fetchFiles(folderName)
+      clearSelection()
+    } catch (err) {
+      console.error('Failed to bulk delete:', err)
       throw err
     }
   }
@@ -163,28 +195,21 @@ export const useSharedStore = defineStore('shared', () => {
     }
   }
 
-  function selectFile(fileId) {
-    selectedFiles.value.add(fileId)
-  }
-
-  function deselectFile(fileId) {
-    selectedFiles.value.delete(fileId)
-  }
-
-  function toggleFileSelection(fileId) {
-    if (selectedFiles.value.has(fileId)) {
-      selectedFiles.value.delete(fileId)
+  function toggleFileSelection(filePath) {
+    const index = selectedFiles.value.indexOf(filePath)
+    if (index > -1) {
+      selectedFiles.value.splice(index, 1)
     } else {
-      selectedFiles.value.add(fileId)
+      selectedFiles.value.push(filePath)
     }
   }
 
   function clearSelection() {
-    selectedFiles.value.clear()
+    selectedFiles.value = []
   }
 
   function selectAll() {
-    files.value.forEach(f => selectedFiles.value.add(f.id))
+    selectedFiles.value = files.value.map(f => f.path)
   }
 
   return {
@@ -196,24 +221,27 @@ export const useSharedStore = defineStore('shared', () => {
     loading,
     error,
     selectedFiles,
+    searchQuery,
+    uploadProgress,
     
     // Computed
     currentFolderData,
     breadcrumbs,
     selectedFilesArray,
+    filteredFiles,
     
     // Actions
     fetchFolders,
+    selectFolder,
     fetchFiles,
     createFolder,
     createSubfolder,
     deleteFolder,
-    uploadFiles,
-    deleteFiles,
+    uploadFile,
+    deleteFile,
+    bulkDelete,
     updateFileTags,
     getFileHistory,
-    selectFile,
-    deselectFile,
     toggleFileSelection,
     clearSelection,
     selectAll

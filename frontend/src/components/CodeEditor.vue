@@ -3,7 +3,7 @@
     <div class="editor-toolbar">
       <div class="file-info">
         <span class="file-name">{{ fileName }}</span>
-        <span v-if="isModified" class="modified-dot" title="Unsaved changes">●</span>
+        <span v-if="isModified" class="modified-dot" :title="t('codeEditor.unsaved_changes')">●</span>
       </div>
       <div class="editor-actions">
         <button 
@@ -12,7 +12,7 @@
           :class="{ 'pulse': isModified }"
           @click="saveFile"
         >
-          {{ saving ? 'Saving...' : 'Save & Commit' }}
+          {{ saving ? t('codeEditor.saving') : t('codeEditor.save_and_commit') }}
         </button>
       </div>
     </div>
@@ -20,7 +20,7 @@
     <div class="editor-main">
       <codemirror
         v-model="code"
-        placeholder="Code goes here..."
+        :placeholder="t('codeEditor.placeholder')"
         :style="{ height: '100%' }"
         :autofocus="true"
         :indent-with-tab="true"
@@ -40,6 +40,9 @@ import { python } from '@codemirror/lang-python'
 import { oneDark } from '@codemirror/theme-one-dark'
 import axios from 'axios'
 import { useSystemStore } from '@/stores/system'
+import { useI18n } from 'vue-i18n'
+
+const { t } = useI18n()
 
 const props = defineProps({
   filePath: String,
@@ -54,7 +57,7 @@ const isModified = ref(false)
 const saving = ref(false)
 
 const fileName = computed(() => {
-  if (!props.filePath) return 'Unknown'
+  if (!props.filePath) return t('codeEditor.unknown_file')
   return props.filePath.split('/').pop()
 })
 
@@ -91,11 +94,11 @@ async function saveFile() {
     })
     
     isModified.value = false
-    systemStore.addNotification(`File ${fileName.value} saved and committed`, 'success')
+    systemStore.addNotification(t('codeEditor.saved_and_committed', { name: fileName.value }), 'success')
     emit('saved')
   } catch (err) {
     console.error('Failed to save file', err)
-    systemStore.addNotification('Failed to save file', 'error')
+    systemStore.addNotification(t('codeEditor.save_failed'), 'error')
   } finally {
     saving.value = false
   }

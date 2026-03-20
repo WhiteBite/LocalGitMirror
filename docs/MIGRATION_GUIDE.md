@@ -1,150 +1,150 @@
-# Migration Guide: Old Structure → New Structure
+# Руководство по миграции: Старая структура → Новая структура
 
-## What Changed
+## Что изменилось
 
-### Old Structure (v3.1)
+### Старая структура (v3.1)
 ```
 LocalGitMirror/
-├── core/              # Backend logic
+├── core/              # Логика backend
 ├── routers/           # API endpoints
-├── main.py            # Entry point
-├── frontend/          # Vue app
-└── *.md               # Docs everywhere
+├── main.py            # Точка входа
+├── frontend/          # Vue приложение
+└── *.md               # Документация везде
 ```
 
-### New Structure (v3.2)
+### Новая структура (v3.2)
 ```
 LocalGitMirror/
 ├── backend/
 │   ├── app/
-│   │   ├── core/      # Business logic
+│   │   ├── core/      # Бизнес-логика
 │   │   ├── routers/   # API endpoints
-│   │   └── main.py    # FastAPI app
-│   └── run.py         # Entry point
-├── frontend/          # Vue app
-├── docs/              # All documentation
+│   │   └── main.py    # FastAPI приложение
+│   └── run.py         # Точка входа
+├── frontend/          # Vue приложение
+├── docs/              # Вся документация
 └── README.md
 ```
 
-## Benefits
+## Преимущества
 
-✅ **Clean separation** - Frontend and backend are isolated  
-✅ **Standard Python structure** - Follows best practices  
-✅ **Better imports** - `from app.core.logger import get_logger`  
-✅ **Scalable** - Easy to add new modules  
-✅ **Docker-ready** - Each part can be containerized  
-✅ **Organized docs** - All documentation in `/docs/`
+✅ **Чистое разделение** - Frontend и backend изолированы  
+✅ **Стандартная структура Python** - Следует лучшим практикам  
+✅ **Лучшие импорты** - `from app.core.logger import get_logger`  
+✅ **Масштабируемость** - Легко добавлять новые модули  
+✅ **Готово к Docker** - Каждая часть может быть контейнеризирована  
+✅ **Организованная документация** - Вся документация в `/docs/`
 
-## Migration Steps
+## Шаги миграции
 
-### 1. Update Python Path
+### 1. Обновление пути Python
 
-The backend now runs from `/backend/` directory. The `run.py` script handles this automatically.
+Backend теперь запускается из папки `/backend/`. Скрипт `run.py` обрабатывает это автоматически.
 
-### 2. Running the Application
+### 2. Запуск приложения
 
-**Old way:**
+**Старый способ:**
 ```bash
 python main.py
 ```
 
-**New way:**
+**Новый способ:**
 ```bash
 cd backend
 python run.py
 ```
 
-### 3. Import Changes
+### 3. Изменения импортов
 
-All imports now use `app.` prefix:
+Все импорты теперь используют префикс `app.`:
 
-**Old:**
+**Старый:**
 ```python
 from core.logger import get_logger
 from routers.api import router
 ```
 
-**New:**
+**Новый:**
 ```python
 from app.core.logger import get_logger
 from app.routers.api import router
 ```
 
-### 4. Environment Variables
+### 4. Переменные окружения
 
-`.env` file stays in project root (no changes needed).
+Файл `.env` остаётся в корне проекта (изменения не требуются).
 
-### 5. Storage Path
+### 5. Путь хранилища
 
-Storage path remains relative to project root: `storage/`
+Путь хранилища остаётся относительным к корню проекта: `storage/`
 
-## Testing the Migration
+## Тестирование миграции
 
-1. **Stop old version** (if running)
+1. **Остановите старую версию** (если запущена)
 
-2. **Install dependencies** (if needed)
+2. **Установите зависимости** (если нужно)
    ```bash
    cd backend
    pip install -r requirements.txt
    ```
 
-3. **Run new version**
+3. **Запустите новую версию**
    ```bash
    python run.py
    ```
 
-4. **Verify**
-   - Visit http://localhost:8000
-   - Check Git server starts
-   - Test file browser
-   - Check logs work
+4. **Проверьте**
+   - Откройте http://localhost:8000
+   - Убедитесь, что Git-сервер запускается
+   - Протестируйте браузер файлов
+   - Проверьте работу логов
 
-## Rollback (if needed)
+## Откат (если нужно)
 
-The old structure files are still present. To rollback:
+Файлы старой структуры всё ещё присутствуют. Для отката:
 
-1. Stop new version
-2. Run old version: `python main.py`
+1. Остановите новую версию
+2. Запустите старую версию: `python main.py`
 
-## Cleanup Old Files
+## Очистка старых файлов
 
-Once you've verified everything works, you can remove:
+После проверки работы новой версии можно удалить:
 
 ```bash
-# Old backend files (keep for now as backup)
+# Старые файлы backend (оставьте сейчас как резервную копию)
 # core/
 # routers/
 # main.py
 # test_logging.py
 
-# Old docs (moved to /docs/)
-# *.md files in root (except README.md)
+# Старая документация (перемещена в /docs/)
+# *.md файлы в корне (кроме README.md)
 ```
 
-## Common Issues
+## Распространённые проблемы
 
-### Import Errors
+### Ошибки импортов
 
-**Error:** `ModuleNotFoundError: No module named 'core'`
+**Ошибка:** `ModuleNotFoundError: No module named 'core'`
 
-**Solution:** Make sure you're running from `/backend/` directory:
+**Решение:** Убедитесь, что вы запускаете из папки `/backend/`:
 ```bash
 cd backend
 python run.py
 ```
 
-### Path Issues
+### Проблемы с путями
 
-**Error:** `FileNotFoundError: storage/`
+**Ошибка:** `FileNotFoundError: storage/`
 
-**Solution:** Storage path is relative to project root. The app handles this automatically.
+**Решение:** Путь хранилища относителен к корню проекта. Приложение обрабатывает это автоматически.
 
-### Port Already in Use
+### Порт уже используется
 
-**Error:** `Address already in use`
+**Ошибка:** `Address already in use`
 
-**Solution:** Stop the old version first or change ports in `.env`
+**Решение:** Сначала остановите старую версию или измените порты в `.env`
 
-## Questions?
+## Вопросы?
 
-See `/docs/TODO.md` for development roadmap or check other documentation in `/docs/`.
+Смотрите `/docs/TODO.md` для roadmap разработки или проверьте другую документацию в `/docs/`.
