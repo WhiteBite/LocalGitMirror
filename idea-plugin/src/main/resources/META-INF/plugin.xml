@@ -77,17 +77,17 @@
       <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
     </action>
 
-    <action id="LocalGitMirror.StealthPullBack"
+    <action id="LocalGitMirror.SyncPull"
             class="localgitmirror.idea.actions.StealthPullBackFromMirrorAction"
-            text="LocalGitMirror: Stealth pull back…"
-            description="Pull changes back from Mirror via encrypted dump">
+            text="LocalGitMirror: Sync pull…"
+            description="Pull changes back from Mirror via encrypted sync package">
       <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
     </action>
 
-    <action id="LocalGitMirror.ApplyLocalDump"
+    <action id="LocalGitMirror.ApplyLocalSync"
             class="localgitmirror.idea.actions.ApplyLocalDumpAction"
-            text="LocalGitMirror: Apply local dump…"
-            description="Apply local encrypted dump to current project">
+            text="LocalGitMirror: Apply local sync package…"
+            description="Apply local encrypted sync package to current project">
       <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
     </action>
 

@@ -5,7 +5,7 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
 object NativeStealthApply {
-  private const val SYNC_STATE_PULL = ".last_sync_pull"
+  private const val SYNC_STATE_PULL = "lgm-pull-state"
 
   data class ApplyResult(
     val ok: Boolean,
@@ -16,7 +16,8 @@ object NativeStealthApply {
 
   data class BundleBranchInfo(
     val fetchRef: String,
-    val branchName: String?
+    val cleanName: String,
+    val hash: String
   )
 
   fun applyDump(
@@ -33,22 +34,36 @@ object NativeStealthApply {
       }
 
       val bundleBytes = NativeStealthDump.decryptDumpBytes(dumpFile.readBytes(), password)
-      val tmpDir = File(workDir, ".localgitmirror/tmp")
+      val gitDirRes = ProcessBuilder(listOf("git", "rev-parse", "--git-dir"))
+        .directory(workDir).redirectErrorStream(false).start()
+      val rawGitDir = gitDirRes.inputStream.bufferedReader().readText().trim()
+      gitDirRes.waitFor()
+      val gitDir = if (java.io.File(rawGitDir).isAbsolute) java.io.File(rawGitDir) else File(workDir, rawGitDir)
+      val tmpDir = File(gitDir, "lgm")
       if (!tmpDir.exists()) tmpDir.mkdirs()
-      val bundleFile = File(tmpDir, "apply_${System.currentTimeMillis()}.bundle")
+      val bundleFile = File(tmpDir, "apply_${System.currentTimeMillis()}.tmp")
       bundleFile.writeBytes(bundleBytes)
 
       try {
-        val branchInfo = extractBundleBranchInfo(bundleFile, workDir)
-        val fetch = git(workDir, "fetch", bundleFile.absolutePath, branchInfo.fetchRef)
+        val branchInfos = extractAllBundleBranches(bundleFile, workDir)
+        if (branchInfos.isEmpty()) {
+           return ApplyResult(false, "", "No branches found in bundle", 1)
+        }
+
+        // Fetch ALL refs from the bundle to local repo directly
+        // Syntax: git fetch bundle.bundle +refs/heads/*:refs/remotes/bundle/* (or just direct target hashes)
+        // A simpler way: we just fetch the hashes directly so they are in the object database:
+        val fetchArgs = branchInfos.map { it.hash }.toTypedArray()
+        val fetch = git(workDir, "fetch", bundleFile.absolutePath, *fetchArgs)
         if (fetch.exitCode != 0) {
           return ApplyResult(false, "", fetch.stderr.ifBlank { fetch.stdout }.ifBlank { "Failed to fetch from bundle" }, fetch.exitCode)
         }
 
         val outcome = when (mode) {
-          "auto" -> applyAuto(workDir, branchInfo)
-          "ff-only" -> applyFfOnly(workDir)
-          else -> applyNewBranch(workDir, newBranchName)
+           // We map auto to the new multi-branch logic
+          "auto" -> applyMultiAuto(workDir, branchInfos)
+          "ff-only" -> applyFfOnly(workDir, branchInfos.firstOrNull()?.hash ?: "FETCH_HEAD")
+          else -> applyNewBranch(workDir, newBranchName, branchInfos.firstOrNull()?.hash ?: "FETCH_HEAD")
         }
 
         if (outcome.startsWith("ERROR:")) {
@@ -57,15 +72,13 @@ object NativeStealthApply {
 
         val head = headHash(workDir)
         if (head.isNotBlank()) {
-          File(workDir, SYNC_STATE_PULL).writeText(head + "\n", StandardCharsets.UTF_8)
+          File(gitDir, SYNC_STATE_PULL).writeText(head + "\n", StandardCharsets.UTF_8)
         }
 
         val out = buildString {
-          appendLine("[+] SUCCESS: Stealth dump applied")
-          appendLine("Mode: $outcome")
-          if (branchInfo.branchName != null) {
-            appendLine("Source branch: ${branchInfo.branchName}")
-          }
+          appendLine("[+] Sync import applied")
+          appendLine("Mode: $mode")
+          appendLine("Result:\n$outcome")
           appendLine("After:  ${if (head.isBlank()) "(empty)" else head}")
         }.trim()
         ApplyResult(true, out, "", 0)
@@ -76,69 +89,100 @@ object NativeStealthApply {
         }
       }
     } catch (t: Throwable) {
-      ApplyResult(false, "", t.message ?: "Stealth apply failed", 1)
+      ApplyResult(false, "", t.message ?: "Sync import failed", 1)
     }
   }
 
   /**
-   * AUTO mode: extract branch name from bundle. If local branch exists → ff-only merge.
-   * If not → create new branch from FETCH_HEAD.
+   * Applies all branches found in the bundle securely.
    */
-  private fun applyAuto(workDir: File, branchInfo: BundleBranchInfo): String {
-    val targetBranch = branchInfo.branchName
-    if (targetBranch.isNullOrBlank()) {
-      // Fallback: can't determine branch, use ff-only on current
-      return applyFfOnly(workDir)
-    }
-
+  private fun applyMultiAuto(workDir: File, branchInfos: List<BundleBranchInfo>): String {
     val localBranches = listLocalBranches(workDir)
-    val branchExists = localBranches.contains(targetBranch)
+    val preBranch = currentBranch(workDir)
 
-    if (branchExists) {
-      // Branch exists locally → checkout and ff-only merge
-      val currentBranch = currentBranch(workDir)
-      if (currentBranch != targetBranch) {
-        val co = git(workDir, "checkout", targetBranch)
-        if (co.exitCode != 0) {
-          return "ERROR: Failed to checkout '$targetBranch': ${co.stderr.ifBlank { co.stdout }}"
-        }
-      }
-      val merge = git(workDir, "merge", "--ff-only", "FETCH_HEAD")
-      if (merge.exitCode != 0) {
-        // ff-only failed — probably diverged. Create a suffixed branch.
-        return createSuffixedBranch(workDir, targetBranch)
-      }
-      return "auto(ff) -> $targetBranch"
-    } else {
-      // Branch doesn't exist locally → create it from FETCH_HEAD
-      val co = git(workDir, "checkout", "-b", targetBranch, "FETCH_HEAD")
-      if (co.exitCode != 0) {
-        return "ERROR: Failed to create branch '$targetBranch': ${co.stderr.ifBlank { co.stdout }}"
-      }
-      return "auto(new) -> $targetBranch"
+    val results = mutableListOf<String>()
+    
+    // Sort branches so we apply defaults last (makes UI nicer, preferred feature branch usually first)
+    val sortedBranches = branchInfos.sortedBy { 
+       if (it.cleanName in listOf("main", "master")) 1 else 0 
     }
+
+    for (info in sortedBranches) {
+       val targetBranch = info.cleanName
+       val hash = info.hash
+       
+       if (localBranches.contains(targetBranch)) {
+          val isDescendant = git(workDir, "merge-base", "--is-ancestor", targetBranch, hash).exitCode == 0
+          if (isDescendant) {
+             // Safe to fast-forward
+             val update = git(workDir, "update-ref", "refs/heads/$targetBranch", hash)
+             if (update.exitCode == 0) {
+                results.add("  - auto(ff) -> $targetBranch")
+             } else {
+                results.add("  - ERROR: Failed to update $targetBranch: ${update.stderr.ifBlank { update.stdout }}")
+             }
+          } else {
+             // Diverged: do not destructively update, create a suffixed branch
+             val suffixed = createSuffixedBranch(workDir, targetBranch, hash)
+             results.add("  - auto(diverged) -> $suffixed")
+          }
+       } else {
+          // Doesn't exist locally: create it
+          val create = git(workDir, "branch", targetBranch, hash)
+          if (create.exitCode == 0) {
+             results.add("  - auto(new) -> $targetBranch")
+          } else {
+             results.add("  - ERROR: Failed to create $targetBranch: ${create.stderr.ifBlank { create.stdout }}")
+          }
+       }
+    }
+
+    // Now decide which branch to checkout and stay on
+    // We prefer the feature branch (first non-main/master), then main/master, then pre-branch
+    val preferredBranch = sortedBranches.firstOrNull()?.cleanName ?: preBranch
+    if (preferredBranch != preBranch && preferredBranch.isNotBlank()) {
+        val checkout = git(workDir, "checkout", preferredBranch)
+        if (checkout.exitCode != 0) {
+            results.add("  - WARN: Failed to auto-checkout $preferredBranch")
+        } else {
+            // Because we did update-ref, if we checked out the branch we need to reset hard to the working tree
+            // Actually, if we're currently ON preferredBranch and we updated its tip via update-ref, 
+            // the working directory doesn't reflect the new tip!
+            // Wait, if preBranch == preferredBranch, we did NOT checkout.
+            // If we did NOT checkout, we need to ensure the working tree matches the updated ref!
+        }
+    }
+
+    // CRITICAL: if the current branch was updated via update-ref, the working tree is out of sync.
+    // Since we verified the tree is clean at the start, we can safely reset --hard HEAD to sync the working tree.
+    val currentNow = currentBranch(workDir)
+    git(workDir, "reset", "--hard", "HEAD")
+    git(workDir, "clean", "-fd")
+
+    results.add("\nChecked out: $currentNow")
+    return results.joinToString("\n")
   }
 
-  private fun applyFfOnly(workDir: File): String {
+  private fun applyFfOnly(workDir: File, hash: String): String {
     val branch = currentBranch(workDir)
     if (branch.isBlank()) {
       return "ERROR: Cannot determine current branch"
     }
-    val merge = git(workDir, "merge", "--ff-only", "FETCH_HEAD")
+    val merge = git(workDir, "merge", "--ff-only", hash)
     if (merge.exitCode != 0) {
       return "ERROR: ${merge.stderr.ifBlank { merge.stdout }.ifBlank { "Fast-forward failed" }}"
     }
     return "ff-only -> $branch"
   }
 
-  private fun applyNewBranch(workDir: File, newBranchName: String?): String {
-    val baseName = (newBranchName ?: "stealth-pull-${System.currentTimeMillis()}").trim()
+  private fun applyNewBranch(workDir: File, newBranchName: String?, hash: String): String {
+    val baseName = (newBranchName ?: "sync-import-${System.currentTimeMillis()}").trim()
     var finalName = baseName
-    var co = git(workDir, "checkout", "-b", finalName, "FETCH_HEAD")
+    var co = git(workDir, "checkout", "-b", finalName, hash)
     if (co.exitCode != 0 && co.stderr.contains("already exists", ignoreCase = true)) {
       for (i in 1..9) {
         finalName = "$baseName-$i"
-        co = git(workDir, "checkout", "-b", finalName, "FETCH_HEAD")
+        co = git(workDir, "checkout", "-b", finalName, hash)
         if (co.exitCode == 0) break
       }
     }
@@ -148,54 +192,43 @@ object NativeStealthApply {
     return "new-branch -> $finalName"
   }
 
-  private fun createSuffixedBranch(workDir: File, baseName: String): String {
-    for (i in 1..9) {
+  private fun createSuffixedBranch(workDir: File, baseName: String, hash: String): String {
+    for (i in 1..99) {
       val name = "$baseName-$i"
-      val co = git(workDir, "checkout", "-b", name, "FETCH_HEAD")
-      if (co.exitCode == 0) return "auto(diverged) -> $name"
+      val co = git(workDir, "branch", name, hash)
+      if (co.exitCode == 0) return name
     }
-    return "ERROR: Cannot create branch based on '$baseName' (all suffixed names taken)"
+    return "ERROR: suffix taken"
   }
 
   /**
-   * Extract branch info from a bundle file.
-   * Returns the ref to fetch AND the clean branch name for auto mode.
-   * Prefers non-main/non-master branches (the actual feature branch).
+   * Extract ALL branch info from a bundle file.
    */
-  fun extractBundleBranchInfo(bundlePath: File, workDir: File): BundleBranchInfo {
+  fun extractAllBundleBranches(bundlePath: File, workDir: File): List<BundleBranchInfo> {
     val r = git(workDir, "bundle", "list-heads", bundlePath.absolutePath)
-    if (r.exitCode != 0) return BundleBranchInfo("HEAD", null)
+    if (r.exitCode != 0) return emptyList()
 
     // Parse refs: each line is "<hash> <ref>"
-    val refs = r.stdout.lines()
-      .mapNotNull { line ->
+    val list = mutableListOf<BundleBranchInfo>()
+    for (line in r.stdout.lines()) {
         val parts = line.trim().split(" ", limit = 2)
-        if (parts.size == 2 && parts[1].isNotBlank()) parts[1] else null
-      }
-      .filter { it.isNotBlank() }
-
-    if (refs.isEmpty()) return BundleBranchInfo("HEAD", null)
-
-    // Extract clean branch names from refs/heads/xxx
-    val branchRefs = refs.filter { it.startsWith("refs/heads/") }
-    val defaultRefs = setOf("refs/heads/main", "refs/heads/master")
-
-    // Prefer feature branches (non-main, non-master) over defaults
-    val featureBranch = branchRefs.firstOrNull { it !in defaultRefs }
-    if (featureBranch != null) {
-      val cleanName = featureBranch.removePrefix("refs/heads/")
-      return BundleBranchInfo(featureBranch, cleanName)
+        if (parts.size == 2 && parts[1].isNotBlank()) {
+            val hash = parts[0]
+            val ref = parts[1]
+            if (ref.startsWith("refs/heads/")) {
+                list.add(BundleBranchInfo(ref, ref.removePrefix("refs/heads/"), hash))
+            }
+        }
     }
+    return list
+  }
 
-    // Fallback to any branch ref
-    val anyBranch = branchRefs.firstOrNull()
-    if (anyBranch != null) {
-      val cleanName = anyBranch.removePrefix("refs/heads/")
-      return BundleBranchInfo(anyBranch, cleanName)
-    }
-
-    // Last resort: first ref
-    return BundleBranchInfo(refs.first(), null)
+  // Legacy method kept for backwards compatibility if needed elsewhere
+  fun extractBundleBranchInfo(bundlePath: File, workDir: File): BundleBranchInfo {
+    val all = extractAllBundleBranches(bundlePath, workDir)
+    return all.firstOrNull { it.cleanName !in setOf("main", "master") } 
+        ?: all.firstOrNull() 
+        ?: BundleBranchInfo("HEAD", "unknown", "HEAD")
   }
 
   private fun ensureGitRepo(workDir: File) {

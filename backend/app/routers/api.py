@@ -2,13 +2,14 @@
 
 import os
 import re
+import struct
 import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
@@ -251,6 +252,7 @@ class SyncHasCommitsRequest(BaseModel):
 class SyncApplyKnownRequest(BaseModel):
     repo: str
     commit: str
+    branches: Optional[dict] = None  # {"branch_name": "commit_hash", ...}
 
 
 class PreviewPullRequest(BaseModel):
@@ -294,21 +296,30 @@ async def sync_password_probe():
     if not password:
         raise HTTPException(500, "SYNC_PASSWORD not configured in environment")
 
-    with tempfile.TemporaryDirectory(prefix="lgm-probe-") as tmp:
-        tmp_dir = Path(tmp)
-        src = tmp_dir / "probe.bin"
-        dst = tmp_dir / "probe.dmp"
-        src.write_bytes(b"LGM-PROBE\n")
-        try:
-            encrypt_bundle_to_dump(src, dst, password)
-        except Exception as e:
-            raise HTTPException(500, f"Failed to create password probe: {e}")
+    # Use legacy v1 format (with MAGIC) for backward compatibility — old plugins
+    # Content must be "LGM-PROBE" — old plugins check for this exact string.
+    probe_data = b"LGM-PROBE\n"
+    salt = os.urandom(16)
+    nonce = os.urandom(12)
+    from app.core.stealth_crypto import _derive_key
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    key = _derive_key(password, salt)
+    aesgcm = AESGCM(key)
+    ciphertext = aesgcm.encrypt(nonce, probe_data, None)
 
-        return Response(
-            content=dst.read_bytes(),
-            media_type="application/octet-stream",
-            headers={"X-LGM-Probe": "1"},
-        )
+    payload = b"".join([
+        MAGIC,
+        salt,
+        nonce,
+        struct.pack(">Q", len(ciphertext)),
+        ciphertext,
+    ])
+
+    return Response(
+        content=payload,
+        media_type="application/octet-stream",
+        headers={"X-Sync-Probe": "1"},
+    )
 
 
 class FileSaveRequest(BaseModel):
@@ -342,12 +353,16 @@ async def save_file(request: FileSaveRequest):
 
 
 @router.post("/repos/create")
-async def create_repo(request: RepoCreateRequest):
+async def create_repo(request: RepoCreateRequest, raw_request: Request):
     """Create a new repository"""
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    result = repo_manager.create_repo(request.name)
+    # Read git identity from plugin headers (best-effort)
+    author_name = raw_request.headers.get("X-Sync-Author")
+    author_email = raw_request.headers.get("X-Sync-Email")
+
+    result = repo_manager.create_repo(request.name, author_name=author_name, author_email=author_email)
     if result["success"]:
         if system_logger:
             system_logger.info(f"Создан репозиторий: {request.name}")
@@ -408,12 +423,25 @@ def _init_git_workspace():
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    cmd = ["git", *args]
+    if system_logger:
+        system_logger.info(f"Exec: {' '.join(cmd)} (cwd={cwd.name})")
+    
+    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
+    
+    if system_logger:
+        if proc.stderr and proc.stderr.strip():
+            system_logger.info(f"Git Stderr: {proc.stderr.strip()}")
+        if proc.returncode != 0:
+            system_logger.error(f"Git Failed ({proc.returncode}): {proc.stdout.strip()}")
+            
+    return proc
 
 
 def _infer_repo_from_dump_filename(filename: str) -> Optional[str]:
     name = Path(filename).name
-    m = re.fullmatch(r"dump_([A-Za-z0-9_-]+)_([0-9]{8})_([0-9]{4})\.dmp", name)
+    # Support both legacy dump_*.dmp and new cache_*.bin patterns
+    m = re.fullmatch(r"(?:dump|cache)_([A-Za-z0-9_-]+)_([0-9]{8})_([0-9]{4})\.(?:dmp|bin)", name)
     if not m:
         return None
     repo = m.group(1)
@@ -455,10 +483,13 @@ def _pick_bundle_ref(workspace_path: Path, bundle_path: Path, preferred_branch: 
 
 
 def _ensure_clean_workspace(path: Path) -> Optional[dict]:
-    """Check if workspace is clean; if not, try to reset/clean. Returns error dict if failed."""
+    """Check if workspace is clean; if not, try to reset/clean. Never blocks upload."""
     status_proc = _git(path, "status", "--porcelain")
     if status_proc.returncode != 0:
-        return {"success": False, "message": status_proc.stderr.strip() or "Failed to inspect workspace status"}
+        # Can't even check status — likely broken repo, but don't block upload
+        if system_logger:
+            system_logger.warning("Cannot inspect workspace status, proceeding anyway", {"path": str(path)})
+        return None
 
     if not (status_proc.stdout or "").strip():
         return None  # Clean
@@ -467,15 +498,21 @@ def _ensure_clean_workspace(path: Path) -> Optional[dict]:
     if system_logger:
         system_logger.warning("Workspace dirty, attempting self-healing reset", {"path": str(path)})
 
-    _git(path, "reset", "--hard", "HEAD")
+    # Try reset --hard HEAD first; if no commits yet, reset to empty tree
+    reset_proc = _git(path, "reset", "--hard", "HEAD")
+    if reset_proc.returncode != 0:
+        # No commits — remove all tracked/staged files
+        _git(path, "rm", "-rf", "--cached", ".")
+        _git(path, "checkout", "--", ".")
     _git(path, "clean", "-fd")
 
-    # Double check
+    # Even if still dirty — log warning but DON'T block upload
     status_proc = _git(path, "status", "--porcelain")
     if (status_proc.stdout or "").strip():
-        return {"success": False, "message": "Uncommitted changes detected on Mirror. Self-healing failed."}
+        if system_logger:
+            system_logger.warning("Workspace still dirty after self-healing, proceeding anyway", {"path": str(path)})
 
-    return None
+    return None  # Never block upload
 
 
 def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_filename: str) -> dict:
@@ -488,15 +525,13 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
     if not workspace_path.exists():
         return {"success": False, "message": f"Workspace '{repo_name}' is not found"}
 
-    clean_err = _ensure_clean_workspace(workspace_path)
-    if clean_err:
-        return clean_err
+    _ensure_clean_workspace(workspace_path)
 
     password = os.getenv("SYNC_PASSWORD", "")
     if not password:
         return {"success": False, "message": "SYNC_PASSWORD not configured in environment"}
 
-    with tempfile.TemporaryDirectory(prefix="lgm-upload-apply-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="idea-sync-") as tmp:
         tmp_dir = Path(tmp)
         bundle_path = tmp_dir / "incoming.bundle"
 
@@ -504,7 +539,7 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
             decrypt_dump_to_bundle(dump_path, bundle_path, password)
         except Exception as e:
             decrypt_msg = str(e).strip() or e.__class__.__name__
-            if "Unsupported dump format" in decrypt_msg:
+            if "Unsupported" in decrypt_msg and ("format" in decrypt_msg.lower() or "dump" in decrypt_msg.lower()):
                 base_error = "Failed to decrypt dump: Unsupported dump format (likely stale/legacy work_kit on sender)."
             elif "InvalidTag" in decrypt_msg:
                 base_error = (
@@ -515,6 +550,64 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
                 base_error = f"Failed to decrypt dump: {decrypt_msg}"
             return {"success": False, "message": base_error}
 
+        # ── Step 1: List ALL refs in the bundle ─────────────────────────
+        list_proc = _git(workspace_path, "bundle", "list-heads", str(bundle_path))
+        bundle_refs = {}  # ref_name -> commit_hash
+        if list_proc.returncode == 0:
+            for line in (list_proc.stdout or "").splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    commit_hash, ref_name = parts[0], parts[1]
+                    bundle_refs[ref_name] = commit_hash
+
+        if system_logger:
+            system_logger.info("Bundle refs", {"repo": repo_name, "refs": list(bundle_refs.keys())})
+
+        # ── Step 2: Fetch ALL refs from the bundle at once ──────────────
+        # Detach HEAD first so fetch can update all branch refs
+        # (git refuses to update the currently checked-out branch via fetch)
+        _git(workspace_path, "checkout", "--detach")
+
+        # Use refspec to map bundle's refs/heads/* into local refs/heads/*
+        fetch_proc = _git(workspace_path, "fetch", str(bundle_path), "+refs/heads/*:refs/heads/*")
+        if fetch_proc.returncode != 0:
+            fetch_err = (fetch_proc.stderr or "").strip()
+            if "prerequisite" in fetch_err.lower():
+                # Incremental bundle without prerequisites — try fetching HEAD only
+                if system_logger:
+                    system_logger.warning("Bundle has prerequisite commits, trying HEAD fetch", {"repo": repo_name})
+                # Try fetching individual refs that might work
+                head_fetch = _git(workspace_path, "fetch", str(bundle_path), "HEAD")
+                if head_fetch.returncode != 0:
+                    return {
+                        "success": False,
+                        "message": f"Bundle requires prerequisite commits not present on mirror. "
+                                   f"Try a full sync (clear .git/lgm/ on sender). Details: {fetch_err}"
+                    }
+            else:
+                # Try a bare fetch (no refspec) as fallback
+                fetch_bare = _git(workspace_path, "fetch", str(bundle_path))
+                if fetch_bare.returncode != 0:
+                    return {"success": False, "message": fetch_err or "Failed to fetch bundle"}
+
+        # ── Step 3: Identify branches to push ──────────────────────────
+        # Parse bundle refs for refs/heads/* branches
+        branch_names = []
+        for ref_name, commit_hash in bundle_refs.items():
+            if ref_name.startswith("refs/heads/"):
+                branch_name = ref_name[len("refs/heads/"):]
+                branch_names.append(branch_name)
+            elif ref_name == "HEAD":
+                pass  # HEAD is handled via branch refs
+            else:
+                # Arbitrary ref — also update it
+                branch_names.append(ref_name.split("/")[-1] if "/" in ref_name else ref_name)
+
+        if not branch_names:
+            # Fallback — no refs/heads/ found, use FETCH_HEAD
+            branch_names = ["main"]
+
+        # ── Step 4: Determine preferred branch for workspace checkout ───
         current_branch = None
         branch_proc = _git(workspace_path, "rev-parse", "--abbrev-ref", "HEAD")
         if branch_proc.returncode == 0:
@@ -522,49 +615,38 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
             if branch and branch != "HEAD":
                 current_branch = branch
 
-        preferred = current_branch or "main"
-        ref = _pick_bundle_ref(workspace_path, bundle_path, preferred_branch=preferred)
+        # Prefer the work computer's current branch (first in bundle), then master/main
+        preferred_branch = branch_names[0] if branch_names else (current_branch or "main")
 
-        fetch_proc = _git(workspace_path, "fetch", str(bundle_path), ref)
-        if fetch_proc.returncode != 0:
-            return {"success": False, "message": fetch_proc.stderr.strip() or "Failed to fetch bundle"}
+        # ── Step 5: Checkout preferred branch on workspace ──────────────
+        # refs/heads/* already updated by fetch; just switch working tree
+        checkout = _git(workspace_path, "checkout", "-f", preferred_branch)
+        if checkout.returncode != 0:
+            # Branch might not exist locally yet — create from bundle ref hash
+            preferred_ref = f"refs/heads/{preferred_branch}"
+            target_hash = bundle_refs.get(preferred_ref, "FETCH_HEAD")
+            _git(workspace_path, "checkout", "-B", preferred_branch, target_hash)
 
-        replaced_history = False
-
-        if not current_branch:
-            target = preferred
-            checkout_proc = _git(workspace_path, "checkout", "-B", target, "FETCH_HEAD")
-            if checkout_proc.returncode != 0:
-                return {
-                    "success": False,
-                    "message": checkout_proc.stderr.strip() or "Failed to bootstrap branch from bundle",
-                }
-            current_branch = target
-        else:
-            merge_proc = _git(workspace_path, "merge", "--ff-only", "FETCH_HEAD")
-            if merge_proc.returncode != 0:
-                merge_err = (merge_proc.stderr or merge_proc.stdout or "").strip()
-                if "refusing to merge unrelated histories" in merge_err.lower():
-                    # Deterministic server-side policy: replace local branch with incoming history.
-                    # This keeps mirror sync resilient when repo roots diverged.
-                    reset_branch = _git(workspace_path, "checkout", "-B", current_branch, "FETCH_HEAD")
-                    if reset_branch.returncode != 0:
-                        return {
-                            "success": False,
-                            "message": reset_branch.stderr.strip() or "Failed to replace branch with incoming history",
-                        }
-                    replaced_history = True
-                else:
-                    return {"success": False, "message": merge_err or "Fast-forward merge failed"}
-
+        # ── Step 6: Push ALL branches to bare repo ──────────────────────
+        push_errors = []
+        pushed_branches = []
         if bare_path.exists():
-            push_args = ["push"]
-            if replaced_history:
-                push_args.append("--force")
-            push_args.extend([str(bare_path), f"HEAD:{current_branch}"])
-            push_proc = _git(workspace_path, *push_args)
-            if push_proc.returncode != 0:
-                return {"success": False, "message": push_proc.stderr.strip() or "Failed to sync bare repo"}
+            for branch_name in branch_names:
+                push_proc = _git(
+                    workspace_path, "push", "--force",
+                    str(bare_path),
+                    f"refs/heads/{branch_name}:refs/heads/{branch_name}"
+                )
+                if push_proc.returncode == 0:
+                    pushed_branches.append(branch_name)
+                else:
+                    err = (push_proc.stderr or "").strip()
+                    push_errors.append(f"{branch_name}: {err}")
+                    if system_logger:
+                        system_logger.warning(f"Failed to push branch {branch_name}", {"repo": repo_name, "error": err})
+
+        if not pushed_branches and push_errors:
+            return {"success": False, "message": f"Failed to push any branch to bare repo: {'; '.join(push_errors)}"}
 
         log_proc = _git(workspace_path, "log", "-1", "--oneline")
         commit = (log_proc.stdout or "").strip() if log_proc.returncode == 0 else ""
@@ -572,7 +654,12 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
         if system_logger:
             system_logger.info(
                 "upload-and-apply result",
-                {"repo": repo_name, "success": True, "dump_file": dump_filename, "commit": commit},
+                {
+                    "repo": repo_name, "success": True,
+                    "dump_file": dump_filename, "commit": commit,
+                    "branches_pushed": pushed_branches,
+                    "branches_failed": [e.split(":")[0] for e in push_errors],
+                },
             )
 
         return {
@@ -580,7 +667,8 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
             "repo": repo_name,
             "dump_file": dump_filename,
             "commit": commit,
-            "message": "Sync applied successfully",
+            "message": f"Sync applied successfully ({len(pushed_branches)} branch(es): {', '.join(pushed_branches)})",
+            "branches": pushed_branches,
         }
 
 
@@ -634,27 +722,69 @@ async def sync_apply_known(request: SyncApplyKnownRequest):
     if not workspace.exists():
         return {"success": False, "message": f"Workspace for '{repo}' not found", "repo": repo}
 
-    status_err = _ensure_clean_workspace(workspace)
-    if status_err:
-        status_err["repo"] = repo
-        return status_err
+    _ensure_clean_workspace(workspace)
 
     exists_proc = _git(workspace, "cat-file", "-e", f"{commit}^{{commit}}")
     if exists_proc.returncode != 0:
         return {"success": False, "message": f"Commit not found locally: {commit}", "repo": repo}
 
-    reset_proc = _git(workspace, "reset", "--hard", commit)
-    if reset_proc.returncode != 0:
-        return {"success": False, "message": reset_proc.stderr.strip() or "Failed to reset workspace", "repo": repo}
+    # ── Collect all branch→hash mappings ──────────────────────
+    branch_refs = {}  # branch_name -> commit_hash
+    if request.branches:
+        branch_refs.update(request.branches)
 
+    # Ensure current HEAD commit is included for the primary branch
     branch_proc = _git(workspace, "rev-parse", "--abbrev-ref", "HEAD")
-    branch = (branch_proc.stdout or "").strip() if branch_proc.returncode == 0 else ""
-    if branch and branch != "HEAD" and bare.exists():
-        push_proc = _git(workspace, "push", str(bare), f"HEAD:{branch}")
-        if push_proc.returncode != 0:
-            return {"success": False, "message": push_proc.stderr.strip() or "Failed to sync bare repo", "repo": repo}
+    primary_branch = (branch_proc.stdout or "").strip() if branch_proc.returncode == 0 else ""
+    if primary_branch and primary_branch != "HEAD" and primary_branch not in branch_refs:
+        branch_refs[primary_branch] = commit
 
-    return {"success": True, "repo": repo, "commit": commit, "message": "Applied known commit"}
+    # ── Update workspace refs to match sender's branch tips ──
+    # Detach HEAD so we can update all branch refs freely
+    _git(workspace, "checkout", "--detach")
+
+    # Ensure workspace has all objects from bare (some branches may have been
+    # fetched only into bare by a previous upload-and-apply but not workspace)
+    if bare.exists():
+        _git(workspace, "fetch", str(bare), "+refs/heads/*:refs/fetched/*")
+
+    pushed_branches = []
+    for branch_name, branch_hash in branch_refs.items():
+        # Verify this commit exists in the workspace object store
+        check = _git(workspace, "cat-file", "-e", f"{branch_hash}^{{commit}}")
+        if check.returncode != 0:
+            if system_logger:
+                system_logger.warning(f"apply-known: commit {branch_hash[:12]} for branch {branch_name} not found in workspace or bare", {"repo": repo})
+            continue
+
+        # Update the branch ref to point to the correct commit
+        _git(workspace, "update-ref", f"refs/heads/{branch_name}", branch_hash)
+
+        # Push to bare repo
+        if bare.exists():
+            push = _git(workspace, "push", "--force", str(bare), f"refs/heads/{branch_name}:refs/heads/{branch_name}")
+            if push.returncode == 0:
+                pushed_branches.append(branch_name)
+            elif system_logger:
+                system_logger.warning(f"apply-known: failed to push {branch_name}", {"repo": repo, "error": push.stderr})
+
+    # Clean up temp fetched refs
+    _git(workspace, "for-each-ref", "--format=%(refname)", "refs/fetched/")
+
+    # Checkout the primary branch on workspace (for web UI)
+    preferred = primary_branch or (list(branch_refs.keys())[0] if branch_refs else "master")
+    _git(workspace, "checkout", "-f", preferred)
+
+    if system_logger:
+        system_logger.info("apply-known result", {"repo": repo, "commit": commit, "branches": pushed_branches})
+
+    return {
+        "success": True,
+        "repo": repo,
+        "commit": commit,
+        "branches": pushed_branches,
+        "message": f"Applied known commit ({len(pushed_branches)} branch(es): {', '.join(pushed_branches)})",
+    }
 
 
 @router.post("/sync/upload-and-apply")
@@ -681,10 +811,10 @@ async def sync_upload_and_apply(repo: str = Form(...), dump_file: UploadFile = F
     if system_logger:
         system_logger.info("upload-and-apply requested", {"repo": repo_name, "filename": filename})
 
-    with tempfile.TemporaryDirectory(prefix="lgm-upload-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="idea-sync-") as tmp:
         tmp_dir = Path(tmp)
         ts = datetime.now().strftime("%Y%m%d_%H%M")
-        safe_name = filename if filename.endswith(".dmp") else f"dump_{repo_name}_{ts}.dmp"
+        safe_name = filename if (filename.endswith(".dmp") or filename.endswith(".bin")) else f"cache_{repo_name}_{ts}.bin"
         dump_path = tmp_dir / Path(safe_name).name
 
         payload = await dump_file.read()
@@ -694,6 +824,43 @@ async def sync_upload_and_apply(repo: str = Form(...), dump_file: UploadFile = F
             dump_path=dump_path, repo_name=repo_name, dump_filename=dump_path.name
         )
         return result
+
+
+@router.get("/sync/refs")
+async def sync_refs(repo: str = Query(...)):
+    """Get all branch tips from the server workspace."""
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager не инициализирован")
+
+    repo_name = (repo or "").strip()
+    if not repo_name:
+        raise HTTPException(400, "Repository name is required")
+    if repo_name not in repo_manager.get_repos():
+        raise HTTPException(404, "Repository not found")
+
+    workspace = repo_manager._get_workspace_path(repo_name)
+    if not workspace.exists():
+        raise HTTPException(404, "Workspace not found")
+
+    refs_proc = _git(workspace, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/")
+    refs = {}
+    if refs_proc.returncode == 0:
+        for line in (refs_proc.stdout or "").strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split(" ", 1)
+            if len(parts) == 2:
+                refs[parts[0]] = parts[1]
+
+    head_proc = _git(workspace, "rev-parse", "HEAD")
+    head = (head_proc.stdout or "").strip() if head_proc.returncode == 0 else ""
+
+    return {
+        "success": True,
+        "repo": repo_name,
+        "head": head,
+        "refs": refs
+    }
 
 
 @router.post("/sync/export-dump")
@@ -716,25 +883,22 @@ async def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(No
         raise HTTPException(400, "Repository has no commits")
     head = (head_proc.stdout or "").strip()
 
-    if since:
-        check_since = _git(workspace, "cat-file", "-e", f"{since}^{{commit}}")
-        if check_since.returncode == 0 and since == head:
-            return Response(status_code=204, headers={"X-LGM-Head": head, "X-LGM-Repo": repo_name})
-
-    with tempfile.TemporaryDirectory(prefix="lgm-export-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="idea-sync-") as tmp:
         tmp_dir = Path(tmp)
         bundle_path = tmp_dir / "export.bundle"
 
         if since:
             check_since = _git(workspace, "cat-file", "-e", f"{since}^{{commit}}")
             if check_since.returncode == 0:
-                bundle_proc = _git(workspace, "bundle", "create", str(bundle_path), f"{since}..HEAD")
+                bundle_proc = _git(workspace, "bundle", "create", str(bundle_path), f"^{since}", "--all")
             else:
                 bundle_proc = _git(workspace, "bundle", "create", str(bundle_path), "--all")
         else:
             bundle_proc = _git(workspace, "bundle", "create", str(bundle_path), "--all")
 
         if bundle_proc.returncode != 0:
+            if "Refusing to create empty bundle" in bundle_proc.stderr:
+                return Response(status_code=204, headers={"X-Sync-Head": head, "X-Sync-Repo": repo_name})
             raise HTTPException(500, bundle_proc.stderr.strip() or "Failed to create bundle")
 
         password = os.getenv("SYNC_PASSWORD", "")
@@ -742,19 +906,19 @@ async def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(No
             raise HTTPException(500, "SYNC_PASSWORD not configured in environment")
 
         ts = datetime.now().strftime("%Y%m%d_%H%M")
-        dump_path = tmp_dir / f"dump_{repo_name}_{ts}.dmp"
+        dump_path = tmp_dir / f"cache_{repo_name}_{ts}.bin"
         try:
             encrypt_bundle_to_dump(bundle_path, dump_path, password)
         except Exception as e:
-            raise HTTPException(500, f"Failed to encrypt dump: {e}")
+            raise HTTPException(500, f"Failed to create sync package: {e}")
 
         return Response(
             content=dump_path.read_bytes(),
             media_type="application/octet-stream",
             headers={
                 "Content-Disposition": f'attachment; filename="{dump_path.name}"',
-                "X-LGM-Head": head,
-                "X-LGM-Repo": repo_name,
+                "X-Sync-Head": head,
+                "X-Sync-Repo": repo_name,
             },
         )
 

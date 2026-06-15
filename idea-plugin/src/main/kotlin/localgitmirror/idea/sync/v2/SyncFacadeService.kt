@@ -30,8 +30,8 @@ class SyncFacadeService(private val project: Project) {
     return engine.ensureRemoteRepo(baseUrl, apiKey, repo, insecureTls)
   }
 
-  fun runFullSync(projectDir: File, settings: MirrorSettingsService.State): SyncEngine.FullSyncResult {
-    return engine.runFullSync(project, projectDir, settings)
+  fun runFullSync(projectDir: File, settings: MirrorSettingsService.State, additionalBranches: List<String> = emptyList()): SyncEngine.FullSyncResult {
+    return engine.runFullSync(project, projectDir, settings, additionalBranches)
   }
 
   fun describeRepoTarget(projectDir: File, settings: MirrorSettingsService.State): String {
@@ -89,7 +89,7 @@ class SyncFacadeService(private val project: Project) {
           if (probe.code in 200..299 && probe.bytes != null) {
             try {
               val plain = NativeStealthDump.decryptDumpBytes(probe.bytes, SecretsStore.syncPassword)
-              if (String(plain).trim() == "LGM-PROBE") {
+              if (String(plain).trim().let { it == "LGM-PROBE" || it == "SYNC-PROBE" }) {
                 diags += Diagnostic(Severity.INFO, "PASSWORD_MATCH", "Password probe: OK")
               } else {
                 diags += Diagnostic(Severity.ERROR, "PASSWORD_MISMATCH", "Password probe failed", "Re-enter Sync Password in plugin and backend")

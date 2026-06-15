@@ -1,58 +1,94 @@
 package localgitmirror.idea.workkit
 
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
 object NativeBundleBuilder {
-  private const val SYNC_STATE = ".last_sync"
 
   data class BundleBuildResult(
     val mode: String,
-    val bundleFile: File,
+    val bundleBytes: ByteArray,
     val head: String
   )
 
-  fun createBundle(workDir: File, baseCommit: String? = null): BundleBuildResult {
+  /** Resolve the actual .git directory (handles worktrees). */
+  private fun gitDir(workDir: File): File {
+    val res = git(workDir, "rev-parse", "--git-dir")
+    if (res.exitCode != 0) throw RuntimeException("Not a valid git repository.")
+    val raw = res.stdout.trim()
+    val f = File(raw)
+    return if (f.isAbsolute) f else File(workDir, raw)
+  }
+
+  private fun syncStateFile(workDir: File): File = File(gitDir(workDir), "lgm-sync-state")
+
+  /**
+   * Creates a git bundle entirely in memory — no plaintext touches disk.
+   * Uses `git bundle create -` which writes to stdout.
+   */
+  fun createBundle(
+    workDir: File,
+    excludeBases: List<String> = emptyList(),
+    additionalBranches: List<String> = emptyList(),
+    negotiationUsed: Boolean = false
+  ): BundleBuildResult {
     ensureGitRepo(workDir)
 
-    val bundleFile = File(workDir, "debug_info.tmp")
-    val syncStateFile = File(workDir, SYNC_STATE)
-    val forcedBase = baseCommit?.trim().orEmpty()
+    val stateFile = syncStateFile(workDir)
+
+    val validExcludes = mutableListOf<String>()
+    excludeBases.filter { it.isNotBlank() }.forEach {
+      ensureCommitReachable(workDir, it)
+      validExcludes.add(it)
+    }
 
     val branch = currentBranch(workDir).ifBlank { "HEAD" }
-    val mode = when {
-      forcedBase.isNotBlank() -> {
-        ensureCommitReachable(workDir, forcedBase)
-        val res = git(workDir, "bundle", "create", bundleFile.absolutePath, branch, "^$forcedBase")
-        if (res.exitCode != 0) throw RuntimeException("No new changes to sync")
-        "incremental(base)"
+    val refsToPack = mutableListOf(branch)
+    refsToPack.addAll(additionalBranches.filter { it.isNotBlank() && it != branch })
+
+    val mode: String
+    val bundleBytes: ByteArray
+
+    when {
+      validExcludes.isNotEmpty() -> {
+        val exclusions = validExcludes.map { "^$it" }
+        val allArgs = listOf("bundle", "create", "-") + refsToPack + exclusions
+        bundleBytes = gitToStdout(workDir, allArgs)
+          ?: throw RuntimeException("No new changes to sync")
+        mode = "incremental(bases=${validExcludes.size})"
       }
-      syncStateFile.exists() -> {
-        val lastHash = syncStateFile.readText().trim()
+      // Only use state file when negotiation was NOT used.
+      // If negotiation ran and returned empty excludeBases, it means
+      // the mirror has none of our commits → must send full bundle.
+      !negotiationUsed && stateFile.exists() -> {
+        val lastHash = stateFile.readText().trim()
         ensureCommitReachable(workDir, lastHash)
-        val res = git(workDir, "bundle", "create", bundleFile.absolutePath, branch, "^$lastHash")
-        if (res.exitCode != 0) throw RuntimeException("No new changes to sync")
-        "incremental"
+        val allArgs = listOf("bundle", "create", "-") + refsToPack + listOf("^$lastHash")
+        bundleBytes = gitToStdout(workDir, allArgs)
+          ?: throw RuntimeException("No new changes to sync")
+        mode = "incremental"
       }
       else -> {
-        val res = git(workDir, "bundle", "create", bundleFile.absolutePath, "--all")
-        if (res.exitCode != 0) throw RuntimeException("Failed to create bundle: ${res.stderr.ifBlank { res.stdout }}")
-        "full"
+        val allArgs = listOf("bundle", "create", "-") + refsToPack
+        bundleBytes = gitToStdout(workDir, allArgs)
+          ?: throw RuntimeException("Failed to create bundle")
+        mode = "full"
       }
     }
 
     val head = currentHead(workDir)
-    syncStateFile.writeText(head + "\n")
+    stateFile.writeText(head + "\n")
 
-    return BundleBuildResult(mode = mode, bundleFile = bundleFile, head = head)
+    return BundleBuildResult(mode = mode, bundleBytes = bundleBytes, head = head)
   }
 
-  fun makeDumpFile(workDir: File, repoName: String): File {
+  fun makeSyncFile(workDir: File, repoName: String): File {
     val ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmm"))
-    val outDir = File(workDir, ".localgitmirror/tmp")
+    val outDir = File(gitDir(workDir), "lgm")
     if (!outDir.exists()) outDir.mkdirs()
-    return File(outDir, "dump_${repoName}_$ts.dmp")
+    return File(outDir, "cache_${repoName}_$ts.bin")
   }
 
   private fun ensureGitRepo(workDir: File) {
@@ -93,5 +129,22 @@ object NativeBundleBuilder {
     val stdout = p.inputStream.bufferedReader().readText().trim()
     val stderr = p.errorStream.bufferedReader().readText().trim()
     return CmdResult(p.waitFor(), stdout, stderr)
+  }
+
+  /**
+   * Runs git with stdout captured as raw bytes (for binary bundle output).
+   * Returns null if the command fails.
+   */
+  private fun gitToStdout(workDir: File, args: List<String>): ByteArray? {
+    val pb = ProcessBuilder(listOf("git") + args)
+      .directory(workDir)
+      .redirectErrorStream(false)
+    val p = pb.start()
+    val baos = ByteArrayOutputStream()
+    p.inputStream.use { it.copyTo(baos) }
+    val stderr = p.errorStream.bufferedReader().readText().trim()
+    val exit = p.waitFor()
+    if (exit != 0 || baos.size() == 0) return null
+    return baos.toByteArray()
   }
 }

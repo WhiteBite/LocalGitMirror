@@ -193,7 +193,7 @@ class RepoManager:
 
         return result
 
-    def create_repo(self, repo_name: str) -> Dict:
+    def create_repo(self, repo_name: str, author_name: str = None, author_email: str = None) -> Dict:
         """Create a new bare repository and workspace"""
         if not repo_name or not repo_name.replace("-", "").replace("_", "").isalnum():
             return {"success": False, "message": "Неверное имя репозитория"}
@@ -220,10 +220,10 @@ class RepoManager:
 
             subprocess.run(["git", "add", "."], cwd=str(workspace), check=True)
 
-            # Use settings if available immediately for creation
+            # Priority: 1) HTTP headers from plugin, 2) global settings, 3) defaults
             settings = self.settings_manager.get_all()
-            name = settings.get("git", {}).get("user_name", "LocalGitMirror")
-            email = settings.get("git", {}).get("user_email", "mirror@local")
+            name = author_name or settings.get("git", {}).get("user_name", "LocalGitMirror")
+            email = author_email or settings.get("git", {}).get("user_email", "mirror@local")
 
             subprocess.run(["git", "config", "user.email", email], cwd=str(workspace), check=True)
             subprocess.run(["git", "config", "user.name", name], cwd=str(workspace), check=True)
@@ -231,6 +231,7 @@ class RepoManager:
             subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=str(workspace), check=True)
             subprocess.run(["git", "push", "origin", "HEAD"], cwd=str(workspace), check=True)
 
+            console.print(f"[cyan][i] Repo '{repo_name}' created with identity: {name} <{email}>[/cyan]")
             return {"success": True, "message": f"Репозиторий '{repo_name}' создан"}
         except Exception as e:
             return {"success": False, "message": f"Не удалось создать репозиторий: {str(e)}"}

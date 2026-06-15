@@ -12,7 +12,8 @@ class NativeStealthDumpTest {
     val payload = "hello-native-stealth".toByteArray()
     val dump = NativeStealthDump.encryptBundleBytes(payload, password = "dandan")
 
-    assertTrue(dump.copyOfRange(0, 8).contentEquals(NativeStealthDump.MAGIC))
+    // v2 format: first byte is version 0x01 (no magic bytes)
+    assertTrue(dump[0] == 0x01.toByte(), "First byte should be format version 0x01")
 
     val plain = NativeStealthDump.decryptDumpBytes(dump, password = "dandan")
     assertContentEquals(payload, plain)
@@ -29,7 +30,7 @@ class NativeStealthDumpTest {
   }
 
   @Test
-  fun `decrypt rejects non-native magic`() {
+  fun `decrypt rejects garbage data`() {
     val bad = "not-native-dump".toByteArray()
     assertFailsWith<IllegalArgumentException> {
       NativeStealthDump.decryptDumpBytes(bad, password = "dandan")

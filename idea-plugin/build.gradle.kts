@@ -1,6 +1,3 @@
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
-
 plugins {
   id("java")
   id("org.jetbrains.intellij") version "1.17.4"
@@ -8,10 +5,13 @@ plugins {
 }
 
 group = "localgitmirror"
-val baseVersion = (findProperty("pluginVersion") as String?) ?: "0.1.0"
-val buildSuffix = (findProperty("buildSuffix") as String?)
-  ?: LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmm"))
-version = "$baseVersion-$buildSuffix"
+
+// Auto-incrementing version: reads .build_number, bumps only on buildPlugin
+val buildNumberFile = file(".build_number")
+val buildNumber: Int = if (buildNumberFile.exists()) {
+  buildNumberFile.readText().trim().toIntOrNull() ?: 0
+} else 0
+version = "0.${buildNumber + 1}.0"
 
 repositories {
   mavenCentral()
@@ -45,6 +45,15 @@ tasks {
   }
   named("jarSearchableOptions") {
     enabled = false
+  }
+
+  named("buildPlugin") {
+    doLast {
+      val f = file(".build_number")
+      val cur = if (f.exists()) f.readText().trim().toIntOrNull() ?: 0 else 0
+      f.writeText((cur + 1).toString())
+      println("==> Built plugin version: $version  (next build will be 0.${cur + 2}.0)")
+    }
   }
 
   patchPluginXml {

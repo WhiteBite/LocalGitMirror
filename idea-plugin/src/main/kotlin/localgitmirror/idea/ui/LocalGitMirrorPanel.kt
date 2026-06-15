@@ -45,6 +45,9 @@ class LocalGitMirrorPanel(private val project: Project) : JPanel(BorderLayout())
   private val historyService = service<OperationsHistoryService>()
   private val syncFacade = project.getService(SyncFacadeService::class.java)
 
+  private val includeBaseBranchCheck = JCheckBox("Include base branch:")
+  private val baseBranchCombo = com.intellij.openapi.ui.ComboBox<String>()
+
   private var isSyncing = false
     set(value) {
       field = value
@@ -116,6 +119,16 @@ class LocalGitMirrorPanel(private val project: Project) : JPanel(BorderLayout())
 
     // --- SECTION: SYNC (SEND) ---
     val syncSection = createSection("Sync (Send)")
+    
+    val multiBranchPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+    multiBranchPanel.alignmentX = LEFT_ALIGNMENT
+    baseBranchCombo.isEditable = true
+    baseBranchCombo.prototypeDisplayValue = "a-very-long-branch-name-indeed"
+    multiBranchPanel.add(includeBaseBranchCheck)
+    multiBranchPanel.add(baseBranchCombo)
+    syncSection.add(multiBranchPanel)
+    syncSection.add(Box.createVerticalStrut(4))
+
     val sendCurrent = btn(LocalGitMirrorBundle.message("toolwindow.sendCurrent"), AllIcons.Actions.Upload) { syncCurrentBranch() }
     sendCurrent.font = sendCurrent.font.deriveFont(Font.BOLD)
     syncSection.add(sendCurrent)
@@ -263,6 +276,17 @@ class LocalGitMirrorPanel(private val project: Project) : JPanel(BorderLayout())
     val gitLabConfigured = s.gitLabBaseUrl.isNotBlank() && s.gitLabProject.isNotBlank() && SecretsStore.gitLabToken.isNotBlank()
     gitLabBadge.text = if (gitLabConfigured) LocalGitMirrorBundle.message("toolwindow.badge.gitlabConnected") else LocalGitMirrorBundle.message("toolwindow.badge.gitlabNotConfigured")
     gitLabBadge.status = if (gitLabConfigured) BadgeLabel.Status.GOOD else BadgeLabel.Status.BAD
+
+    val localBranches = GitLocal.listBranches(project, dir)
+    val currentCombo = baseBranchCombo.selectedItem as? String
+    baseBranchCombo.removeAllItems()
+    val preselect = currentCombo ?: "master"
+    localBranches.forEach { baseBranchCombo.addItem(it) }
+    if (localBranches.contains(preselect)) {
+      baseBranchCombo.selectedItem = preselect
+    } else if (localBranches.contains("main")) {
+      baseBranchCombo.selectedItem = "main"
+    }
   }
 
   private fun ensureConfigured(settings: MirrorSettingsService.State): String? {
@@ -283,13 +307,20 @@ class LocalGitMirrorPanel(private val project: Project) : JPanel(BorderLayout())
     }
 
     val branch = GitLocal.currentBranch(project, dir) ?: "(unknown)"
+
+    val additionalBranches = if (includeBaseBranchCheck.isSelected) {
+        val selected = baseBranchCombo.selectedItem as? String
+        if (!selected.isNullOrBlank()) listOf(selected.trim()) else emptyList()
+    } else emptyList()
+
     isSyncing = true
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send current", false) {
       override fun run(indicator: ProgressIndicator) {
         try {
           append("Send current: $branch")
+          if (additionalBranches.isNotEmpty()) append("Send additional: ${additionalBranches.joinToString()}")
           append("Target: ${syncFacade.describeRepoTarget(dir, settings)}")
-          val syncRes = syncFacade.runFullSync(dir, settings)
+          val syncRes = syncFacade.runFullSync(dir, settings, additionalBranches)
           val res = syncRes.step
           if (!res.ok) {
             append("Failed: ${res.message} ${res.details}")

@@ -47,6 +47,7 @@ object HttpClient {
 
   fun open(url: URL, insecureTls: Boolean): HttpURLConnection {
     val conn = openWithIdeProxy(url)
+    conn.setRequestProperty("User-Agent", "JetBrains-IDE/2024.1")
     if (insecureTls && conn is HttpsURLConnection) {
       conn.sslSocketFactory = trustAllSslSocketFactory()
       conn.hostnameVerifier = trustAllHostnameVerifier
@@ -62,7 +63,7 @@ object HttpClient {
       null
     }
     if (stream == null) return ""
-    return stream.bufferedReader().readText()
+    return stream.bufferedReader(Charsets.UTF_8).readText()
   }
 
   fun classifyError(t: Throwable): ErrorInfo {

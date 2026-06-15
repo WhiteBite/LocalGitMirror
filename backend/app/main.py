@@ -164,6 +164,13 @@ async def lifespan(app: FastAPI):
             if item.is_dir() and (item / ".git").exists():
                 ensure_post_receive_hook(item.name, actual_storage_path)
 
+    # Auto-start git server
+    try:
+        git_handler.start()
+        console.print(f"[green]Git сервер запущен на порту {CONFIG['git_port']}[/green]")
+    except Exception as e:
+        console.print(f"[red][!] Не удалось запустить Git сервер: {e}[/red]")
+
     console.print("[bold green]LocalGitMirror is ready![/bold green]")
     console.print(f"[blue]Storage: {actual_storage_path.absolute()}[/blue]")
 
@@ -179,18 +186,28 @@ async def lifespan(app: FastAPI):
             pass
 
 
-# Security
+# Security: accept both Authorization: Bearer and legacy X-Session-ID
 API_KEY_NAME = "X-Session-ID"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+auth_bearer_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 
-async def get_api_key(api_key_header: str = Security(api_key_header)):
+async def get_api_key(
+    legacy_key: str = Security(api_key_header),
+    auth_header: str = Security(auth_bearer_header),
+):
     expected_key = os.getenv("API_KEY")
     # Allow requests without API key (for development/local use)
     if not expected_key:
-        return api_key_header
-    if api_key_header == expected_key:
-        return api_key_header
+        return legacy_key or auth_header
+    # Check Authorization: Bearer <key>
+    if auth_header:
+        token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else auth_header
+        if token == expected_key:
+            return token
+    # Check legacy X-Session-ID
+    if legacy_key == expected_key:
+        return legacy_key
     # Return 404 instead of 403 to hide server existence from scanners
     raise HTTPException(status_code=404, detail="Not Found")
 

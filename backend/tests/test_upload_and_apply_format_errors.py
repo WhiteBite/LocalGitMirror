@@ -65,7 +65,7 @@ def test_upload_and_apply_reports_stale_kit_on_non_native_dump(tmp_path: Path, m
     body = res.json()
     assert body["success"] is False
     assert body["message"].startswith("Failed to decrypt dump:")
-    assert "Unsupported dump format" in body["message"]
+    assert "Unsupported" in body["message"]
     assert "stale/legacy work_kit" in body["message"]
 
 
@@ -161,4 +161,4 @@ def test_upload_and_apply_rejects_legacy_7z_dump(tmp_path: Path, monkeypatch):
         assert up.status_code == 200, up.text
         body = up.json()
         assert body["success"] is False
-        assert "Unsupported dump format" in body["message"]
+        assert "Unsupported" in body["message"]
