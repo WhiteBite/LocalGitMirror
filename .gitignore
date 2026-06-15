@@ -57,6 +57,8 @@ fix_firewall.bat
 .ruff_cache/
 .kiro/
 .sisyphus/
+.tmp/
+temp_git_test/
 
 # Test outputs
 .pytest_cache/
