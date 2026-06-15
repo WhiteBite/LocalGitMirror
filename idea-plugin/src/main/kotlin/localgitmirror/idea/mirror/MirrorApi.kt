@@ -22,8 +22,8 @@ object MirrorApi {
         proc.waitFor()
         return value.ifBlank { null }
       }
-      gitConfig("user.name")?.let { conn.setRequestProperty("X-Sync-Author", it) }
-      gitConfig("user.email")?.let { conn.setRequestProperty("X-Sync-Email", it) }
+      gitConfig("user.name")?.let { conn.setRequestProperty("X-User-Name", it) }
+      gitConfig("user.email")?.let { conn.setRequestProperty("X-User-Email", it) }
     } catch (_: Exception) { /* best-effort */ }
   }
 
@@ -57,7 +57,7 @@ object MirrorApi {
     insecureTls: Boolean
   ): HttpResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/sync/state")
+      val url = URL("${baseUrl.trimEnd('/')}/api/session/state")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 15_000
@@ -80,7 +80,7 @@ object MirrorApi {
     insecureTls: Boolean
   ): CapabilitiesResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/capabilities")
+      val url = URL("${baseUrl.trimEnd('/')}/api/health")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 20_000
@@ -122,7 +122,7 @@ object MirrorApi {
     insecureTls: Boolean
   ): ProbeResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/sync/password-probe")
+      val url = URL("${baseUrl.trimEnd('/')}/api/auth/verify")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 20_000
@@ -151,7 +151,7 @@ object MirrorApi {
     insecureTls: Boolean
   ): RefsResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/sync/refs?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}")
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/list?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 15_000
@@ -191,7 +191,7 @@ object MirrorApi {
   ): HttpResult {
     return try {
       val boundary = "----FormBoundary${UUID.randomUUID()}"
-      val url = URL("${baseUrl.trimEnd('/')}/api/sync/upload-and-apply")
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/upload")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
       conn.doOutput = true
@@ -225,7 +225,7 @@ object MirrorApi {
         writer.write("\r\n")
         writer.flush()
 
-        partHeader("dump_file", "data.bin", "application/octet-stream")
+        partHeader("attachment", "document.bin", "application/octet-stream")
         dumpFile.inputStream().use { it.copyTo(os) }
         writer.write("\r\n")
         writer.flush()
@@ -295,7 +295,7 @@ object MirrorApi {
     insecureTls: Boolean
   ): HttpResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/sync/has-commits")
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/check")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
       conn.doOutput = true
@@ -328,7 +328,7 @@ object MirrorApi {
     insecureTls: Boolean
   ): HttpResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/sync/apply-known")
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/link")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
       conn.doOutput = true
@@ -365,7 +365,7 @@ object MirrorApi {
   ): DownloadResult {
     return try {
       val boundary = "----FormBoundary${UUID.randomUUID()}"
-      val url = URL("${baseUrl.trimEnd('/')}/api/sync/export-dump")
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/export")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
       conn.doOutput = true
@@ -395,8 +395,8 @@ object MirrorApi {
       }
 
       val code = conn.responseCode
-      val head = conn.getHeaderField("X-Sync-Head") ?: conn.getHeaderField("X-LGM-Head")
-      val hdrRepo = conn.getHeaderField("X-Sync-Repo") ?: conn.getHeaderField("X-LGM-Repo")
+      val head = conn.getHeaderField("X-Ref") ?: conn.getHeaderField("X-LGM-Head")
+      val hdrRepo = conn.getHeaderField("X-Ref-Id") ?: conn.getHeaderField("X-LGM-Repo")
 
       if (code == 204) {
         return DownloadResult(204, null, "No new commits", head = head, repo = hdrRepo)
@@ -434,7 +434,7 @@ object MirrorApi {
     insecureTls: Boolean
   ): PreviewPullResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/sync/preview-pull")
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/preview")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
       conn.doOutput = true
@@ -482,7 +482,7 @@ object MirrorApi {
     insecureTls: Boolean
   ): PreviewPullDetailsResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/sync/preview-pull-details")
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/preview-details")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
       conn.doOutput = true

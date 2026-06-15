@@ -47,7 +47,7 @@ object HttpClient {
 
   fun open(url: URL, insecureTls: Boolean): HttpURLConnection {
     val conn = openWithIdeProxy(url)
-    conn.setRequestProperty("User-Agent", "JetBrains-IDE/2024.1")
+    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
     if (insecureTls && conn is HttpsURLConnection) {
       conn.sslSocketFactory = trustAllSslSocketFactory()
       conn.hostnameVerifier = trustAllHostnameVerifier

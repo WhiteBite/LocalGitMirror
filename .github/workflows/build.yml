@@ -1,0 +1,113 @@
+name: Build & Package
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  # ─── Backend: run tests ───────────────────────────────────────────
+  backend:
+    name: Backend Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements*.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-root.txt || true
+          pip install pytest pytest-asyncio
+
+      - name: Run unit tests
+        run: python -m pytest backend/tests/ -q --tb=short --ignore=backend/tests/test_api.py --ignore=backend/tests/test_integration.py --ignore=backend/tests/test_e2e_workflow.py
+
+  # ─── Frontend: build dist ────────────────────────────────────────
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install & build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          retention-days: 30
+
+  # ─── IDEA Plugin: build plugin zip ───────────────────────────────
+  idea-plugin:
+    name: IDEA Plugin Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Build plugin
+        working-directory: idea-plugin
+        run: gradle buildPlugin --no-daemon
+
+      - name: Upload plugin zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: idea-plugin
+          path: idea-plugin/build/distributions/*.zip
+          retention-days: 30
+
+  # ─── Create GitHub Release with artifacts ────────────────────────
+  release:
+    name: Create Release
+    needs: [backend, frontend, idea-plugin]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Package frontend dist as zip
+        working-directory: artifacts/frontend-dist
+        run: zip -r ../../frontend-dist.zip .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Build #${{ github.run_number }}
+          body: |
+            Auto-build from commit `${{ github.sha }}`
+
+            **Artifacts:**
+            - `frontend-dist.zip` — built frontend (Vite)
+            - IDEA plugin `.zip` — installable plugin distribution
+          files: |
+            frontend-dist.zip
+            artifacts/idea-plugin/*.zip
+          draft: false
+          prerelease: false

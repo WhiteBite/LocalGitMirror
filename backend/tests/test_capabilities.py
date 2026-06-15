@@ -16,7 +16,7 @@ def test_capabilities_endpoint_shape():
     app.include_router(api_router.router)
     client = TestClient(app)
 
-    res = client.get("/api/capabilities")
+    res = client.get("/api/health")
     assert res.status_code == 200, res.text
     body = res.json()
 

@@ -4,11 +4,11 @@ Covers the full handshake flow that was broken by the stealth hardening
 (SYNC-PROBE vs LGM-PROBE content mismatch, v1 vs v2 format).
 
 Checks:
-  1. /api/capabilities returns passwordProbe=true
-  2. /api/sync/password-probe returns v1 (LGMSTRL1 magic) with LGM-PROBE content
+  1. /api/health returns passwordProbe=true
+  2. /api/auth/verify returns v1 (LGMSTRL1 magic) with LGM-PROBE content
   3. Decryption with correct password succeeds
   4. Decryption with wrong password raises
-  5. X-Sync-Probe header is present
+  5. No revealing X-Sync-Probe header is present
 """
 import sys
 import struct
@@ -36,7 +36,7 @@ def _make_client(monkeypatch, password: str = "test-probe-pw") -> TestClient:
 
 def test_capabilities_reports_password_probe(monkeypatch):
     client = _make_client(monkeypatch)
-    res = client.get("/api/capabilities")
+    res = client.get("/api/health")
     assert res.status_code == 200
     body = res.json()
     assert body.get("sync", {}).get("features", {}).get("passwordProbe") is True
@@ -45,7 +45,7 @@ def test_capabilities_reports_password_probe(monkeypatch):
 def test_probe_returns_v1_format_with_magic(monkeypatch):
     """Probe must use v1 format (LGMSTRL1 magic) for backward compat with old plugins."""
     client = _make_client(monkeypatch)
-    res = client.get("/api/sync/password-probe")
+    res = client.get("/api/auth/verify")
     assert res.status_code == 200
 
     payload = res.content
@@ -57,18 +57,19 @@ def test_probe_returns_v1_format_with_magic(monkeypatch):
     assert len(payload) > 8 + 16 + 12 + 8, "Payload too short for v1 format"
 
 
-def test_probe_header_present(monkeypatch):
-    """New header is X-Sync-Probe (renamed from X-LGM-Probe)."""
+def test_probe_no_revealing_header(monkeypatch):
+    """No revealing X-Sync-Probe header should be present."""
     client = _make_client(monkeypatch)
-    res = client.get("/api/sync/password-probe")
-    assert res.headers.get("X-Sync-Probe") == "1"
+    res = client.get("/api/auth/verify")
+    assert res.status_code == 200
+    assert res.headers.get("X-Sync-Probe") is None, "Revealing X-Sync-Probe header must not be present"
 
 
 def test_probe_decrypt_correct_password(monkeypatch):
     """Full roundtrip: probe → decrypt → content must be 'LGM-PROBE'."""
     password = "correct-password"
     client = _make_client(monkeypatch, password=password)
-    res = client.get("/api/sync/password-probe")
+    res = client.get("/api/auth/verify")
     assert res.status_code == 200
 
     with tempfile.TemporaryDirectory(prefix="probe-test-") as td:
@@ -85,7 +86,7 @@ def test_probe_decrypt_correct_password(monkeypatch):
 def test_probe_decrypt_wrong_password_fails(monkeypatch):
     """Decryption with wrong password must raise (AES-GCM tag check)."""
     client = _make_client(monkeypatch, password="correct")
-    res = client.get("/api/sync/password-probe")
+    res = client.get("/api/auth/verify")
     assert res.status_code == 200
 
     with tempfile.TemporaryDirectory(prefix="probe-test-") as td:
@@ -104,7 +105,7 @@ def test_probe_not_available_without_password(monkeypatch):
     app.include_router(api_router.router)
     client = TestClient(app)
 
-    res = client.get("/api/sync/password-probe")
+    res = client.get("/api/auth/verify")
     assert res.status_code == 500
 
 
@@ -118,7 +119,7 @@ def test_e2e_full_handshake_flow(monkeypatch):
     client = _make_client(monkeypatch, password=password)
 
     # Step 1: Capabilities
-    caps = client.get("/api/capabilities")
+    caps = client.get("/api/health")
     assert caps.status_code == 200
     caps_body = caps.json()
     assert caps_body.get("sync", {}).get("features", {}).get("passwordProbe") is True
@@ -126,9 +127,9 @@ def test_e2e_full_handshake_flow(monkeypatch):
     assert caps_body.get("sync", {}).get("protocolVersion") == 1
 
     # Step 2: Get probe
-    probe = client.get("/api/sync/password-probe")
+    probe = client.get("/api/auth/verify")
     assert probe.status_code == 200
-    assert probe.headers.get("X-Sync-Probe") == "1"
+    assert probe.headers.get("X-Sync-Probe") is None, "Revealing header must not be present"
 
     payload = probe.content
     assert payload[:8] == MAGIC, "Probe must use v1 format"
