@@ -74,7 +74,7 @@ class SyncEngine(
 
     return try {
       val plain = NativeStealthDump.decryptDumpBytes(probe.bytes, settings.syncPassword)
-      val ok = String(plain).trim() == "LGM-PROBE"
+      val ok = String(plain).trim().let { it == "LGM-PROBE" || it == "SYNC-PROBE" }
       if (!ok) {
         StepResult(false, "Sync password mismatch", "Re-enter Sync Password in plugin/backend")
       } else {
@@ -99,8 +99,8 @@ class SyncEngine(
     return resolver.resolve(project, projectDir, settings.repo).sanitized
   }
 
-  fun ensureRemoteRepo(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): StepResult {
-    val res = mirror.ensureRepoExists(baseUrl, apiKey, repo, insecureTls)
+  fun ensureRemoteRepo(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File? = null): StepResult {
+    val res = mirror.ensureRepoExists(baseUrl, apiKey, repo, insecureTls, projectDir)
     if (res.code !in 200..299) {
       return StepResult(false, "Failed to ensure mirror repo '$repo'", "HTTP ${res.code}: ${res.body.take(300)}")
     }
@@ -119,37 +119,29 @@ class SyncEngine(
     projectDir: File,
     settings: SettingsSnapshot,
     repoName: String,
-    preferredBase: String? = null
+    excludeBases: List<String> = emptyList(),
+    additionalBranches: List<String> = emptyList()
   ): StepResult {
-    val head = git.headHash(project, projectDir)
-    val lastSent = state.readLastSent(projectDir)
-    val branch = git.currentBranch(project, projectDir)
-    val byBranch = state.readLastByBranch(projectDir)
-    val lastForBranch = if (!branch.isNullOrBlank()) byBranch[branch] else null
-
-    val baseCandidate = (lastForBranch ?: lastSent).orEmpty()
-    val localBase = if (!head.isNullOrBlank() && baseCandidate.isNotBlank() && git.isAncestor(project, projectDir, baseCandidate, head)) {
-      baseCandidate
-    } else null
-
-    val base = preferredBase?.takeIf {
-      !head.isNullOrBlank() && it.isNotBlank() && git.isAncestor(project, projectDir, it, head)
-    } ?: localBase
-
+    // negotiationUsed=true tells bundle builder to trust excludeBases from negotiation
+    // and NOT fall back to stale .git/lgm-sync-state when excludeBases is empty.
     val kitRes = workKit.runBackupWorkStealth(
       workDir = projectDir,
       password = settings.syncPassword,
       repoName = repoName,
-      baseCommit = base
+      excludeBases = excludeBases,
+      additionalBranches = additionalBranches,
+      negotiationUsed = true
     )
     if (!kitRes.ok() && isNoChangesToSync(kitRes)) {
-      // If incremental base leads to no-op, retry full dump once to avoid false failures.
-      if (!base.isNullOrBlank()) {
+      // If incremental bases lead to no-op, retry full dump once to avoid false failures.
+      if (excludeBases.isNotEmpty()) {
         val full = workKit.runBackupWorkStealth(
           workDir = projectDir,
           password = settings.syncPassword,
           repoName = repoName,
-          baseCommit = null
+          excludeBases = emptyList(),
+          additionalBranches = additionalBranches,
+          negotiationUsed = true
         )
         if (full.ok()) {
           return StepResult(true, "Dump generated", full.stdout)
@@ -236,41 +228,102 @@ class SyncEngine(
     return NegotiationResult(null, null)
   }
 
+  data class MultiBranchNegotiation(
+    val pointerCommit: String?,           // non-null if current HEAD already on Mirror
+    val excludeBases: List<String>         // best known bases for ALL branches
+  )
+
+  fun negotiateMultiBranch(
+    project: Project,
+    projectDir: File,
+    settings: SettingsSnapshot,
+    repo: String,
+    additionalBranches: List<String>
+  ): MultiBranchNegotiation {
+    val head = git.headHash(project, projectDir) ?: return MultiBranchNegotiation(null, emptyList())
+    val currentBranch = git.currentBranch(project, projectDir).orEmpty()
+
+    // Collect candidate hashes for all branches
+    data class BranchInfo(val name: String, val tip: String, val candidates: List<String>)
+    val branchInfos = mutableListOf<BranchInfo>()
+
+    // Current branch
+    val currentCandidates = buildNegotiationCandidates(project, projectDir, head)
+    branchInfos.add(BranchInfo(currentBranch.ifBlank { "HEAD" }, head, currentCandidates))
+
+    // Additional branches
+    for (br in additionalBranches) {
+      if (br.isBlank() || br == currentBranch) continue
+      val tip = git.branchHash(project, projectDir, br) ?: continue
+      // For additional branches we collect: tip + last synced hash for that branch
+      val extras = mutableListOf(tip)
+      val byBranch = state.readLastByBranch(projectDir)
+      val lastForBr = byBranch[br]
+      if (!lastForBr.isNullOrBlank()) extras.add(lastForBr)
+      branchInfos.add(BranchInfo(br, tip, extras))
+    }
+
+    // Merge all candidates into one list for a single has-commits call
+    val allCandidates = branchInfos.flatMap { it.candidates }.distinct().take(200)
+    if (allCandidates.isEmpty()) return MultiBranchNegotiation(null, emptyList())
+
+    val has = mirror.hasCommits(settings.baseUrl, settings.mirrorApiKey, repo, allCandidates, settings.mirrorInsecureTls)
+    if (has.code !in 200..299) return MultiBranchNegotiation(null, emptyList())
+
+    val known = parseKnownCommitHashes(has.body)
+
+    // Check if Mirror already has current HEAD (pointer-only)
+    if (known.contains(head.lowercase()) && additionalBranches.all { br ->
+        val tip = git.branchHash(project, projectDir, br)
+        tip == null || known.contains(tip.lowercase())
+      }) {
+      return MultiBranchNegotiation(pointerCommit = head, excludeBases = emptyList())
+    }
+
+    // Find best known base for each branch
+    val excludeBases = mutableListOf<String>()
+    for (info in branchInfos) {
+      val best = pickBestKnownBase(info.tip, info.candidates, known)
+      if (!best.isNullOrBlank() && git.isAncestor(project, projectDir, best, info.tip)) {
+        excludeBases.add(best)
+      }
+    }
+
+    return MultiBranchNegotiation(pointerCommit = null, excludeBases = excludeBases.distinct())
+  }
+
   fun findLatestDump(projectDir: File, repoName: String): Pair<StepResult, File?> {
     return findLatestDump(projectDir, repoName, generationOutput = null)
   }
 
   fun findLatestDump(projectDir: File, repoName: String, generationOutput: String?): Pair<StepResult, File?> {
-    val fromOutput = findDumpFromGeneratorOutput(projectDir, generationOutput)
+    val fromOutput = findSyncFileFromGeneratorOutput(projectDir, generationOutput)
     if (fromOutput != null) {
-      return StepResult(true, "Found dump from generator output", fromOutput.name) to fromOutput
+      return StepResult(true, "Found sync package from generator output", fromOutput.name) to fromOutput
     }
 
     val dump = workKit.findLatestDump(projectDir, repoName)
     if (dump != null) {
-      return StepResult(true, "Found dump", dump.name) to dump
+      return StepResult(true, "Found sync package", dump.name) to dump
     }
 
-    val fallback = findLatestAnyDump(projectDir)
+    val fallback = findLatestAnySyncFile(projectDir)
     if (fallback != null) {
-      return StepResult(true, "Found fallback dump", fallback.name) to fallback
+      return StepResult(true, "Found fallback sync package", fallback.name) to fallback
     }
 
-    return StepResult(false, "No dump_*.dmp found after generation") to null
+    return StepResult(false, "No sync package found after generation") to null
   }
 
-  private fun findDumpFromGeneratorOutput(projectDir: File, output: String?): File? {
+  private fun findSyncFileFromGeneratorOutput(projectDir: File, output: String?): File? {
     if (output.isNullOrBlank()) return null
 
-    val m = Regex("(?im)^\\s*File:\\s*(.+?\\.dmp)\\b").find(output) ?: return null
+    val m = Regex("(?im)^\\s*File:\\s*(.+?\\.bin)\\b").find(output) ?: return null
     val raw = m.groupValues.getOrNull(1)?.trim()?.trim('"') ?: return null
     if (raw.isBlank()) return null
 
     val fromRaw = File(raw)
     if (fromRaw.isAbsolute && fromRaw.exists() && fromRaw.isFile) return fromRaw
-
-    val tmpCandidate = File(File(projectDir, ".localgitmirror/tmp"), raw)
-    if (tmpCandidate.exists() && tmpCandidate.isFile) return tmpCandidate
 
     val rootCandidate = File(projectDir, raw)
     if (rootCandidate.exists() && rootCandidate.isFile) return rootCandidate
@@ -278,24 +331,32 @@ class SyncEngine(
     return null
   }
 
-  private fun findLatestAnyDump(projectDir: File): File? {
-    val dirs = listOf(File(projectDir, ".localgitmirror/tmp"), projectDir)
-    val dumps = mutableListOf<File>()
+  private fun findLatestAnySyncFile(projectDir: File): File? {
+    // Resolve .git/lgm/ directory for sync files
+    val proc = ProcessBuilder(listOf("git", "rev-parse", "--git-dir"))
+      .directory(projectDir).redirectErrorStream(false).start()
+    val rawGitDir = proc.inputStream.bufferedReader().readText().trim()
+    proc.waitFor()
+    val gitDir = if (File(rawGitDir).isAbsolute) File(rawGitDir) else File(projectDir, rawGitDir)
+    val syncDir = File(gitDir, "lgm")
+    val dirs = listOf(syncDir, projectDir)
+    val files = mutableListOf<File>()
     for (dir in dirs) {
       if (!dir.exists() || !dir.isDirectory) continue
-      val local = dir.listFiles { f -> f.isFile && f.name.startsWith("dump_") && f.name.endsWith(".dmp") } ?: continue
-      dumps.addAll(local)
+      val local = dir.listFiles { f -> f.isFile && f.name.startsWith("cache_") && f.name.endsWith(".bin") } ?: continue
+      files.addAll(local)
     }
-    return dumps.maxByOrNull { it.lastModified() }
+    return files.maxByOrNull { it.lastModified() }
   }
 
-  fun uploadAndApply(settings: SettingsSnapshot, repoName: String, dump: File): Pair<StepResult, MirrorApi.HttpResult> {
+  fun uploadAndApply(settings: SettingsSnapshot, repoName: String, dump: File, projectDir: File? = null): Pair<StepResult, MirrorApi.HttpResult> {
     val res = mirror.uploadAndApply(
       baseUrl = settings.baseUrl,
       apiKey = settings.mirrorApiKey,
       repo = repoName,
       dumpFile = dump,
-      insecureTls = settings.mirrorInsecureTls
+      insecureTls = settings.mirrorInsecureTls,
+      projectDir = projectDir
     )
     if (res.code !in 200..299) {
       return StepResult(false, "Mirror error HTTP ${res.code}", res.body.take(500)) to res
@@ -325,21 +386,32 @@ class SyncEngine(
   }
 
   private fun diag(
+    projectDir: java.io.File?,
     diagnostics: SyncDiagnostics,
     id: String,
     outcome: SyncStepOutcome,
     message: String,
     fields: Map<String, String> = emptyMap()
   ) {
+    if (projectDir != null) {
+      val msg = "[$id] [${outcome.name}] $message" + if (fields.isNotEmpty()) " $fields" else ""
+      localgitmirror.idea.sync.SyncLogger.log(projectDir, msg)
+    }
     diagnostics.add(SyncStep(id = id, outcome = outcome, message = message, fields = fields))
   }
 
-  fun runFullSyncWithSnapshot(project: Project, projectDir: File, snapshot: SettingsSnapshot): FullSyncResult {
+  fun runFullSyncWithSnapshot(
+    project: Project,
+    projectDir: File,
+    snapshot: SettingsSnapshot,
+    additionalBranches: List<String> = emptyList()
+  ): FullSyncResult {
     val diagnostics = SyncDiagnostics()
     val traceId = diagnostics.traceId
     return try {
       state.migrateLegacyIfPresent(projectDir)
       diag(
+        projectDir,
         diagnostics,
         id = "snapshot",
         outcome = SyncStepOutcome.OK,
@@ -354,16 +426,17 @@ class SyncEngine(
       val repoResolution = resolver.resolve(project, projectDir, snapshot.repoConfigured)
       if (!repoResolution.error.isNullOrBlank()) {
         val step = StepResult(false, repoResolution.error)
-        diag(diagnostics, "resolve-repo", SyncStepOutcome.FAIL, step.message, mapOf("repoConfigured" to snapshot.repoConfigured))
+        diag(projectDir, diagnostics, "resolve-repo", SyncStepOutcome.FAIL, step.message, mapOf("repoConfigured" to snapshot.repoConfigured))
         return FullSyncResult(step, null, null, null, traceId, diagnostics.steps)
       }
       val repoName = repoResolution.sanitized
       if (repoName.isBlank()) {
         val step = StepResult(false, "Unable to infer repository name")
-        diag(diagnostics, "resolve-repo", SyncStepOutcome.FAIL, step.message)
+        diag(projectDir, diagnostics, "resolve-repo", SyncStepOutcome.FAIL, step.message)
         return FullSyncResult(step, null, null, null, traceId, diagnostics.steps)
       }
       diag(
+        projectDir,
         diagnostics,
         id = "resolve-repo",
         outcome = SyncStepOutcome.OK,
@@ -373,60 +446,75 @@ class SyncEngine(
 
       val cfg = validateSettings(snapshot)
       if (!cfg.ok) {
-        diag(diagnostics, "validate-settings", SyncStepOutcome.FAIL, cfg.message)
+        diag(projectDir, diagnostics, "validate-settings", SyncStepOutcome.FAIL, cfg.message)
         return FullSyncResult(cfg, null, null, repoName, traceId, diagnostics.steps)
       }
-      diag(diagnostics, "validate-settings", SyncStepOutcome.OK, cfg.message)
+      diag(projectDir, diagnostics, "validate-settings", SyncStepOutcome.OK, cfg.message)
 
       val hs = verifyBackendHandshake(snapshot)
       if (!hs.ok) {
-        diag(diagnostics, "handshake", SyncStepOutcome.FAIL, hs.message, mapOf("details" to hs.details))
+        diag(projectDir, diagnostics, "handshake", SyncStepOutcome.FAIL, hs.message, mapOf("details" to hs.details))
         return FullSyncResult(hs, null, null, repoName, traceId, diagnostics.steps)
       }
-      diag(diagnostics, "handshake", SyncStepOutcome.OK, hs.message)
+      diag(projectDir, diagnostics, "handshake", SyncStepOutcome.OK, hs.message)
 
-      val ensureRepo = ensureRemoteRepo(snapshot.baseUrl, snapshot.mirrorApiKey, repoName, snapshot.mirrorInsecureTls)
+      val ensureRepo = ensureRemoteRepo(snapshot.baseUrl, snapshot.mirrorApiKey, repoName, snapshot.mirrorInsecureTls, projectDir)
       if (!ensureRepo.ok) {
-        diag(diagnostics, "ensure-remote-repo", SyncStepOutcome.FAIL, ensureRepo.message, mapOf("repo" to repoName))
+        diag(projectDir, diagnostics, "ensure-remote-repo", SyncStepOutcome.FAIL, ensureRepo.message, mapOf("repo" to repoName))
         return FullSyncResult(ensureRepo, null, null, repoName, traceId, diagnostics.steps)
       }
-      diag(diagnostics, "ensure-remote-repo", SyncStepOutcome.OK, ensureRepo.message, mapOf("repo" to repoName))
+      diag(projectDir, diagnostics, "ensure-remote-repo", SyncStepOutcome.OK, ensureRepo.message, mapOf("repo" to repoName))
 
       val clean = ensureWorkTreeClean(project, projectDir)
       if (!clean.ok) {
-        diag(diagnostics, "ensure-work-tree-clean", SyncStepOutcome.FAIL, clean.message)
+        diag(projectDir, diagnostics, "ensure-work-tree-clean", SyncStepOutcome.FAIL, clean.message)
         return FullSyncResult(clean, null, null, repoName, traceId, diagnostics.steps)
       }
-      diag(diagnostics, "ensure-work-tree-clean", SyncStepOutcome.OK, clean.message)
+      diag(projectDir, diagnostics, "ensure-work-tree-clean", SyncStepOutcome.OK, clean.message)
 
-      val negotiation = negotiateWithMirror(project, projectDir, snapshot, repoName)
+      val negotiation = negotiateMultiBranch(project, projectDir, snapshot, repoName, additionalBranches)
       diag(
+        projectDir,
         diagnostics,
         id = "negotiate",
         outcome = SyncStepOutcome.OK,
-        message = "Negotiation completed",
+        message = "Multi-branch negotiation completed",
         fields = mapOf(
           "pointerCommit" to (negotiation.pointerCommit ?: ""),
-          "baseCommit" to (negotiation.baseCommit ?: "")
+          "excludeBases" to negotiation.excludeBases.joinToString(",")
         )
       )
 
       val pointerHead = negotiation.pointerCommit
       if (!pointerHead.isNullOrBlank()) {
-        val applied = mirror.applyKnown(snapshot.baseUrl, snapshot.mirrorApiKey, repoName, pointerHead, snapshot.mirrorInsecureTls)
+        // Build branch→hash map for all branches the sender has
+        val branchMap = mutableMapOf<String, String>()
+        val currentBranch = git.currentBranch(project, projectDir).orEmpty()
+        if (currentBranch.isNotBlank()) {
+          branchMap[currentBranch] = pointerHead
+        }
+        for (br in additionalBranches) {
+          if (br.isBlank()) continue
+          val tip = git.branchHash(project, projectDir, br)
+          if (!tip.isNullOrBlank()) {
+            branchMap[br] = tip
+          }
+        }
+
+        val applied = mirror.applyKnown(snapshot.baseUrl, snapshot.mirrorApiKey, repoName, pointerHead, branches = branchMap, insecureTls = snapshot.mirrorInsecureTls)
         if (applied.code in 200..299) {
-          val branchName = git.currentBranch(project, projectDir).orEmpty()
+          val branchName = currentBranch
           state.updateAfterSend(projectDir, branchName, pointerHead)
-          val okStep = StepResult(true, "Mirror already had commit; applied pointer-only", applied.body.take(500))
-          diag(diagnostics, "apply-known", SyncStepOutcome.OK, okStep.message, mapOf("repo" to repoName, "commit" to pointerHead))
+          val okStep = StepResult(true, "Mirror already had all commits; applied pointer-only (${branchMap.size} branch(es))", applied.body.take(500))
+          diag(projectDir, diagnostics, "apply-known", SyncStepOutcome.OK, okStep.message, mapOf("repo" to repoName, "commit" to pointerHead, "branches" to branchMap.keys.joinToString(",")))
           return FullSyncResult(okStep, applied, null, repoName, traceId, diagnostics.steps)
         }
-        diag(diagnostics, "apply-known", SyncStepOutcome.FAIL, "Pointer-only apply failed", mapOf("repo" to repoName, "httpCode" to applied.code.toString()))
+        diag(projectDir, diagnostics, "apply-known", SyncStepOutcome.FAIL, "Pointer-only apply failed", mapOf("repo" to repoName, "httpCode" to applied.code.toString()))
       }
 
-      val dumpGen = generateDump(project, projectDir, snapshot, repoName, preferredBase = negotiation.baseCommit)
+      val dumpGen = generateDump(project, projectDir, snapshot, repoName, excludeBases = negotiation.excludeBases, additionalBranches = additionalBranches)
       if (!dumpGen.ok) {
-        diag(diagnostics, "generate-dump", SyncStepOutcome.FAIL, dumpGen.message, mapOf("repo" to repoName))
+        diag(projectDir, diagnostics, "generate-dump", SyncStepOutcome.FAIL, dumpGen.message, mapOf("repo" to repoName))
         return FullSyncResult(dumpGen, null, null, repoName, traceId, diagnostics.steps)
       }
 
@@ -437,21 +525,21 @@ class SyncEngine(
           state.updateAfterSend(projectDir, branchName, headNow)
         }
         val okNoop = StepResult(true, "No new changes to sync; skipped upload", dumpGen.details)
-        diag(diagnostics, "generate-dump", SyncStepOutcome.SKIP, okNoop.message, mapOf("repo" to repoName, "branch" to branchName, "head" to (headNow ?: "")))
+        diag(projectDir, diagnostics, "generate-dump", SyncStepOutcome.SKIP, okNoop.message, mapOf("repo" to repoName, "branch" to branchName, "head" to (headNow ?: "")))
         return FullSyncResult(okNoop, null, null, repoName, traceId, diagnostics.steps)
       }
 
-      diag(diagnostics, "generate-dump", SyncStepOutcome.OK, dumpGen.message, mapOf("repo" to repoName))
+      diag(projectDir, diagnostics, "generate-dump", SyncStepOutcome.OK, dumpGen.message, mapOf("repo" to repoName))
 
       val (findRes, dump) = findLatestDump(projectDir, repoName, generationOutput = dumpGen.details)
       if (!findRes.ok || dump == null) {
-        diag(diagnostics, "find-dump", SyncStepOutcome.FAIL, findRes.message, mapOf("repo" to repoName))
+        diag(projectDir, diagnostics, "find-dump", SyncStepOutcome.FAIL, findRes.message, mapOf("repo" to repoName))
         return FullSyncResult(findRes, null, null, repoName, traceId, diagnostics.steps)
       }
-      diag(diagnostics, "find-dump", SyncStepOutcome.OK, findRes.message, mapOf("dump" to dump.absolutePath))
+      diag(projectDir, diagnostics, "find-dump", SyncStepOutcome.OK, findRes.message, mapOf("dump" to dump.absolutePath))
 
       if (snapshot.offlineGenerateOnly) {
-        diag(diagnostics, "offline-mode", SyncStepOutcome.SKIP, "Skipping upload-and-apply due to offline mode", mapOf("repo" to repoName))
+        diag(projectDir, diagnostics, "offline-mode", SyncStepOutcome.SKIP, "Skipping upload-and-apply due to offline mode", mapOf("repo" to repoName))
         return FullSyncResult(
           StepResult(true, "Dump generated (offline mode)", dump.absolutePath),
           null,
@@ -462,30 +550,35 @@ class SyncEngine(
         )
       }
 
-      val (uploadRes, http) = uploadAndApply(snapshot, repoName, dump)
+      val (uploadRes, http) = uploadAndApply(snapshot, repoName, dump, projectDir)
       if (!uploadRes.ok) {
-        diag(diagnostics, "upload-and-apply", SyncStepOutcome.FAIL, uploadRes.message, mapOf("repo" to repoName, "httpCode" to http.code.toString()))
+        diag(projectDir, diagnostics, "upload-and-apply", SyncStepOutcome.FAIL, uploadRes.message, mapOf("repo" to repoName, "httpCode" to http.code.toString()))
         return FullSyncResult(uploadRes, http, dump, repoName, traceId, diagnostics.steps)
       }
-      diag(diagnostics, "upload-and-apply", SyncStepOutcome.OK, uploadRes.message, mapOf("repo" to repoName, "httpCode" to http.code.toString()))
+      diag(projectDir, diagnostics, "upload-and-apply", SyncStepOutcome.OK, uploadRes.message, mapOf("repo" to repoName, "httpCode" to http.code.toString()))
 
       val branchName = git.currentBranch(project, projectDir).orEmpty()
       val headNow = git.headHash(project, projectDir)
       if (!headNow.isNullOrBlank()) {
         state.updateAfterSend(projectDir, branchName, headNow)
       }
-      state.cleanupOldDumps(projectDir)
-      diag(diagnostics, "update-state", SyncStepOutcome.OK, "State updated", mapOf("branch" to branchName, "head" to (headNow ?: "")))
+      state.cleanupOldSyncFiles(projectDir)
+      diag(projectDir, diagnostics, "update-state", SyncStepOutcome.OK, "State updated", mapOf("branch" to branchName, "head" to (headNow ?: "")))
 
       FullSyncResult(StepResult(true, "Sync completed", uploadRes.details), http, dump, repoName, traceId, diagnostics.steps)
     } catch (t: Throwable) {
-      diag(diagnostics, "unexpected-error", SyncStepOutcome.FAIL, "Sync failed", mapOf("error" to (t.message ?: "Unexpected error")))
+      diag(projectDir, diagnostics, "unexpected-error", SyncStepOutcome.FAIL, "Sync failed", mapOf("error" to (t.message ?: "Unexpected error")))
       FullSyncResult(StepResult(false, "Sync failed", t.message ?: "Unexpected error"), null, null, null, traceId, diagnostics.steps)
     }
   }
 
-  fun runFullSync(project: Project, projectDir: File, settings: MirrorSettingsService.State): FullSyncResult {
+  fun runFullSync(
+    project: Project,
+    projectDir: File,
+    settings: MirrorSettingsService.State,
+    additionalBranches: List<String> = emptyList()
+  ): FullSyncResult {
     val snapshot = SettingsSnapshot.from(settings, SecretsStore.mirrorApiKey, SecretsStore.syncPassword)
-    return runFullSyncWithSnapshot(project, projectDir, snapshot)
+    return runFullSyncWithSnapshot(project, projectDir, snapshot, additionalBranches)
   }
 }

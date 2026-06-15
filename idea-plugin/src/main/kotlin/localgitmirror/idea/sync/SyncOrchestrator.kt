@@ -58,7 +58,8 @@ object SyncOrchestrator {
     repoName: String,
     preferredBase: String? = null
   ): StepResult {
-    return engine.generateDump(project, projectDir, settings, repoName, preferredBase).toLegacy()
+    val bases = if (!preferredBase.isNullOrBlank()) listOf(preferredBase) else emptyList()
+    return engine.generateDump(project, projectDir, settings, repoName, excludeBases = bases).toLegacy()
   }
 
   fun parseKnownCommitHashes(body: String): Set<String> {

@@ -12,6 +12,21 @@ import localgitmirror.idea.net.HttpClient
 object MirrorApi {
   data class HttpResult(val code: Int, val body: String)
 
+  /** Read git user.name / user.email from projectDir and set as HTTP headers. */
+  private fun setGitIdentityHeaders(conn: HttpURLConnection, projectDir: File) {
+    try {
+      fun gitConfig(key: String): String? {
+        val proc = ProcessBuilder(listOf("git", "config", key))
+          .directory(projectDir).redirectErrorStream(false).start()
+        val value = proc.inputStream.bufferedReader(Charsets.UTF_8).readText().trim()
+        proc.waitFor()
+        return value.ifBlank { null }
+      }
+      gitConfig("user.name")?.let { conn.setRequestProperty("X-Sync-Author", it) }
+      gitConfig("user.email")?.let { conn.setRequestProperty("X-Sync-Email", it) }
+    } catch (_: Exception) { /* best-effort */ }
+  }
+
   data class CapabilitiesResult(
     val code: Int,
     val body: String,
@@ -48,7 +63,7 @@ object MirrorApi {
       conn.connectTimeout = 15_000
       conn.readTimeout = 15_000
       if (apiKey.isNotBlank()) {
-        conn.setRequestProperty("X-Session-ID", apiKey)
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
       val code = conn.responseCode
       val body = HttpClient.readBody(conn)
@@ -71,7 +86,7 @@ object MirrorApi {
       conn.connectTimeout = 20_000
       conn.readTimeout = 20_000
       if (apiKey.isNotBlank()) {
-        conn.setRequestProperty("X-Session-ID", apiKey)
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
       val code = conn.responseCode
       val body = HttpClient.readBody(conn)
@@ -113,7 +128,7 @@ object MirrorApi {
       conn.connectTimeout = 20_000
       conn.readTimeout = 20_000
       if (apiKey.isNotBlank()) {
-        conn.setRequestProperty("X-Session-ID", apiKey)
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
       val code = conn.responseCode
       if (code !in 200..299) {
@@ -127,15 +142,55 @@ object MirrorApi {
     }
   }
 
+  data class RefsResult(val code: Int, val message: String, val head: String?, val refs: Map<String, String>?)
+
+  fun getRefs(
+    baseUrl: String,
+    apiKey: String,
+    repo: String,
+    insecureTls: Boolean
+  ): RefsResult {
+    return try {
+      val url = URL("${baseUrl.trimEnd('/')}/api/sync/refs?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "GET"
+      conn.connectTimeout = 15_000
+      conn.readTimeout = 15_000
+      if (apiKey.isNotBlank()) {
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      }
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+
+      if (code in 200..299) {
+        val root = com.google.gson.JsonParser.parseString(body).asJsonObject
+        val head = if (root.has("head") && !root.get("head").isJsonNull) root.get("head").asString else null
+        val refsMap = mutableMapOf<String, String>()
+        if (root.has("refs") && root.get("refs").isJsonObject) {
+          val refsObj = root.getAsJsonObject("refs")
+          for (entry in refsObj.entrySet()) {
+            refsMap[entry.key] = entry.value.asString
+          }
+        }
+        RefsResult(code, "OK", head, refsMap)
+      } else {
+        RefsResult(code, body.take(500), null, null)
+      }
+    } catch (e: Exception) {
+      RefsResult(0, e.message ?: "Network error", null, null)
+    }
+  }
+
   fun uploadAndApply(
     baseUrl: String,
     apiKey: String,
     repo: String,
     dumpFile: File,
-    insecureTls: Boolean
+    insecureTls: Boolean,
+    projectDir: File? = null
   ): HttpResult {
     return try {
-      val boundary = "----lgm-${UUID.randomUUID()}"
+      val boundary = "----FormBoundary${UUID.randomUUID()}"
       val url = URL("${baseUrl.trimEnd('/')}/api/sync/upload-and-apply")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
@@ -144,8 +199,9 @@ object MirrorApi {
       conn.readTimeout = 60_000
       conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
       if (apiKey.isNotBlank()) {
-        conn.setRequestProperty("X-Session-ID", apiKey)
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
+      projectDir?.let { setGitIdentityHeaders(conn, it) }
 
       conn.outputStream.use { os ->
         val writer = OutputStreamWriter(os, StandardCharsets.UTF_8)
@@ -169,7 +225,7 @@ object MirrorApi {
         writer.write("\r\n")
         writer.flush()
 
-        partHeader("dump_file", dumpFile.name, "application/octet-stream")
+        partHeader("dump_file", "data.bin", "application/octet-stream")
         dumpFile.inputStream().use { it.copyTo(os) }
         writer.write("\r\n")
         writer.flush()
@@ -195,7 +251,8 @@ object MirrorApi {
     baseUrl: String,
     apiKey: String,
     repo: String,
-    insecureTls: Boolean
+    insecureTls: Boolean,
+    projectDir: File? = null
   ): HttpResult {
     return try {
       val url = URL("${baseUrl.trimEnd('/')}/api/repos/create")
@@ -206,8 +263,9 @@ object MirrorApi {
       conn.readTimeout = 30_000
       conn.setRequestProperty("Content-Type", "application/json")
       if (apiKey.isNotBlank()) {
-        conn.setRequestProperty("X-Session-ID", apiKey)
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
+      projectDir?.let { setGitIdentityHeaders(conn, it) }
 
       val payload = "{\"name\":\"$repo\"}"
       conn.outputStream.use { os ->
@@ -245,7 +303,7 @@ object MirrorApi {
       conn.readTimeout = 30_000
       conn.setRequestProperty("Content-Type", "application/json")
       if (apiKey.isNotBlank()) {
-        conn.setRequestProperty("X-Session-ID", apiKey)
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
 
       val commitsJson = commits.joinToString(",") { "\"${it}\"" }
@@ -266,6 +324,7 @@ object MirrorApi {
     apiKey: String,
     repo: String,
     commit: String,
+    branches: Map<String, String> = emptyMap(),
     insecureTls: Boolean
   ): HttpResult {
     return try {
@@ -277,10 +336,14 @@ object MirrorApi {
       conn.readTimeout = 60_000
       conn.setRequestProperty("Content-Type", "application/json")
       if (apiKey.isNotBlank()) {
-        conn.setRequestProperty("X-Session-ID", apiKey)
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
 
-      val payload = "{\"repo\":\"$repo\",\"commit\":\"$commit\"}"
+      val branchesJson = if (branches.isNotEmpty()) {
+        val entries = branches.entries.joinToString(",") { (k, v) -> "\"$k\":\"$v\"" }
+        ",\"branches\":{$entries}"
+      } else ""
+      val payload = "{\"repo\":\"$repo\",\"commit\":\"$commit\"$branchesJson}"
       conn.outputStream.use { os ->
         os.write(payload.toByteArray(StandardCharsets.UTF_8))
       }
@@ -301,7 +364,7 @@ object MirrorApi {
     outFile: File
   ): DownloadResult {
     return try {
-      val boundary = "----lgm-${UUID.randomUUID()}"
+      val boundary = "----FormBoundary${UUID.randomUUID()}"
       val url = URL("${baseUrl.trimEnd('/')}/api/sync/export-dump")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
@@ -310,7 +373,7 @@ object MirrorApi {
       conn.readTimeout = 120_000
       conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
       if (apiKey.isNotBlank()) {
-        conn.setRequestProperty("X-Session-ID", apiKey)
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
 
       conn.outputStream.use { os ->
@@ -332,8 +395,8 @@ object MirrorApi {
       }
 
       val code = conn.responseCode
-      val head = conn.getHeaderField("X-LGM-Head")
-      val hdrRepo = conn.getHeaderField("X-LGM-Repo")
+      val head = conn.getHeaderField("X-Sync-Head") ?: conn.getHeaderField("X-LGM-Head")
+      val hdrRepo = conn.getHeaderField("X-Sync-Repo") ?: conn.getHeaderField("X-LGM-Repo")
 
       if (code == 204) {
         return DownloadResult(204, null, "No new commits", head = head, repo = hdrRepo)
@@ -379,7 +442,7 @@ object MirrorApi {
       conn.readTimeout = 30_000
       conn.setRequestProperty("Content-Type", "application/json")
       if (apiKey.isNotBlank()) {
-        conn.setRequestProperty("X-Session-ID", apiKey)
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
 
       val sinceJson = if (!since.isNullOrBlank()) "\"$since\"" else "null"
@@ -425,7 +488,7 @@ object MirrorApi {
       conn.doOutput = true
       conn.setRequestProperty("Content-Type", "application/json")
       if (apiKey.isNotBlank()) {
-        conn.setRequestProperty("X-Session-ID", apiKey)
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
 
       val sinceJson = if (!since.isNullOrBlank()) "\"$since\"" else "null"

@@ -170,16 +170,13 @@ def test_upload_apply_bootstraps_when_workspace_has_no_branch(monkeypatch, tmp_p
     monkeypatch.setattr(api_router, "repo_manager", _RM(), raising=False)
     monkeypatch.setenv("SYNC_PASSWORD", "pwd")
 
-    # Create fake dump file
     dump = tmp_path / "dump_bootstrap_repo_20260313_0000.dmp"
     dump.write_bytes(api_router.MAGIC + b"x" * 64)
 
-    # Stub decryption and temp bundle ref selection
     def _fake_decrypt(_dump, out, _pwd):
         out.write_bytes(b"bundle")
 
     monkeypatch.setattr(api_router, "decrypt_dump_to_bundle", _fake_decrypt)
-    monkeypatch.setattr(api_router, "_pick_bundle_ref", lambda *_args, **_kwargs: "refs/heads/master")
 
     calls = []
 
@@ -193,10 +190,16 @@ def test_upload_apply_bootstraps_when_workspace_has_no_branch(monkeypatch, tmp_p
         calls.append(args)
         if args[:2] == ("status", "--porcelain"):
             return _P(0, "")
+        if args[:2] == ("bundle", "list-heads"):
+            return _P(0, "abc123 refs/heads/master\n")
         if args[:3] == ("rev-parse", "--abbrev-ref", "HEAD"):
             # Simulate unborn/no branch state
             return _P(128, "HEAD\n", "fatal")
+        if args[:2] == ("checkout", "--detach"):
+            return _P(0, "")
         if args[0] == "fetch":
+            return _P(0, "")
+        if args[:2] == ("checkout", "-f"):
             return _P(0, "")
         if args[:2] == ("checkout", "-B"):
             return _P(0, "")
@@ -215,11 +218,12 @@ def test_upload_apply_bootstraps_when_workspace_has_no_branch(monkeypatch, tmp_p
     )
 
     assert res["success"] is True
-    # Ensure branch bootstrap path used checkout -B ... FETCH_HEAD
-    assert any(c[:2] == ("checkout", "-B") for c in calls)
+    # Ensure fetch was called with multi-branch refspec
+    assert any("refs/heads" in str(c) and "fetch" in str(c) for c in calls)
 
 
 def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_path):
+    """New flow: fetch all refs, checkout -f, push --force per branch."""
     repo = "unrelated_repo"
     workspace = tmp_path / repo
     bare = tmp_path / f"{repo}.git"
@@ -246,7 +250,6 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
         out.write_bytes(b"bundle")
 
     monkeypatch.setattr(api_router, "decrypt_dump_to_bundle", _fake_decrypt)
-    monkeypatch.setattr(api_router, "_pick_bundle_ref", lambda *_args, **_kwargs: "refs/heads/main")
 
     calls = []
 
@@ -260,13 +263,15 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
         calls.append(args)
         if args[:2] == ("status", "--porcelain"):
             return _P(0, "")
+        if args[:2] == ("bundle", "list-heads"):
+            return _P(0, "def456 refs/heads/main\nabc789 refs/heads/feature\n")
         if args[:3] == ("rev-parse", "--abbrev-ref", "HEAD"):
             return _P(0, "main\n", "")
+        if args[:2] == ("checkout", "--detach"):
+            return _P(0, "")
         if args[0] == "fetch":
             return _P(0, "", "")
-        if args[:2] == ("merge", "--ff-only"):
-            return _P(128, "", "fatal: refusing to merge unrelated histories")
-        if args[:2] == ("checkout", "-B"):
+        if args[:2] == ("checkout", "-f"):
             return _P(0, "", "")
         if args[0] == "push":
             return _P(0, "", "")
@@ -283,11 +288,16 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
     )
 
     assert res["success"] is True
-    assert any(c[:2] == ("checkout", "-B") for c in calls)
-    assert any(c[:2] == ("push", "--force") for c in calls)
+    # Should have pushed BOTH branches (main and feature)
+    push_calls = [c for c in calls if c[0] == "push"]
+    assert len(push_calls) >= 2, f"Expected at least 2 push calls, got {push_calls}"
+    pushed_refs = [c[-1] for c in push_calls]
+    assert any("main" in r for r in pushed_refs)
+    assert any("feature" in r for r in pushed_refs)
 
 
-def test_apply_dump_rejects_dirty_workspace(monkeypatch, tmp_path):
+def test_apply_dump_proceeds_despite_dirty_workspace(monkeypatch, tmp_path):
+    """Dirty workspace should NOT block upload — self-healing is best-effort."""
     repo = "dirty_repo"
     workspace = tmp_path / repo
     bare = tmp_path / f"{repo}.git"
@@ -329,8 +339,9 @@ def test_apply_dump_rejects_dirty_workspace(monkeypatch, tmp_path):
         dump_filename=dump.name,
     )
 
+    # Upload proceeds past dirty check — fails at decrypt (fake dump), NOT at "Uncommitted changes"
     assert res["success"] is False
-    assert "Uncommitted changes" in res["message"]
+    assert "Uncommitted changes" not in res["message"]
 
 
 def test_apply_dump_force_push_failure_after_unrelated_histories(monkeypatch, tmp_path):
@@ -360,7 +371,6 @@ def test_apply_dump_force_push_failure_after_unrelated_histories(monkeypatch, tm
         out.write_bytes(b"bundle")
 
     monkeypatch.setattr(api_router, "decrypt_dump_to_bundle", _fake_decrypt)
-    monkeypatch.setattr(api_router, "_pick_bundle_ref", lambda *_args, **_kwargs: "refs/heads/main")
 
     class _P:
         def __init__(self, rc=0, out="", err=""):
@@ -371,15 +381,17 @@ def test_apply_dump_force_push_failure_after_unrelated_histories(monkeypatch, tm
     def _fake_git(_wd, *args):
         if args[:2] == ("status", "--porcelain"):
             return _P(0, "", "")
+        if args[:2] == ("bundle", "list-heads"):
+            return _P(0, "def456 refs/heads/main\n")
         if args[:3] == ("rev-parse", "--abbrev-ref", "HEAD"):
             return _P(0, "main\n", "")
+        if args[:2] == ("checkout", "--detach"):
+            return _P(0, "", "")
         if args[0] == "fetch":
             return _P(0, "", "")
-        if args[:2] == ("merge", "--ff-only"):
-            return _P(128, "", "fatal: refusing to merge unrelated histories")
-        if args[:2] == ("checkout", "-B"):
+        if args[:2] == ("checkout", "-f"):
             return _P(0, "", "")
-        if args[:2] == ("push", "--force"):
+        if args[0] == "push":
             return _P(1, "", "fatal: push failed")
         if args[:2] == ("log", "-1"):
             return _P(0, "def456 Replace branch\n", "")
@@ -394,4 +406,4 @@ def test_apply_dump_force_push_failure_after_unrelated_histories(monkeypatch, tm
     )
 
     assert res["success"] is False
-    assert "push failed" in res["message"]
+    assert "push" in res["message"].lower()

@@ -20,6 +20,19 @@ object GitLocal {
     fun ok(): Boolean = exitCode == 0
   }
 
+  fun listBranches(project: Project, workDir: File): List<String> {
+    val res = run(project, workDir, 30L, "for-each-ref", "--format=%(refname:short)", "refs/heads")
+    if (!res.ok()) return emptyList()
+    return res.stdout.trim().lines().filter { it.isNotBlank() }
+  }
+
+  fun branchHash(project: Project, workDir: File, branchName: String): String? {
+    val res = run(project, workDir, 30L, "rev-parse", "refs/heads/$branchName")
+    if (!res.ok()) return null
+    val h = res.stdout.trim()
+    return if (h.length >= 7) h else null
+  }
+
   fun run(project: Project, workDir: File, timeoutSeconds: Long, vararg args: String): Result {
     val cmd = mutableListOf("git")
     cmd.addAll(args)

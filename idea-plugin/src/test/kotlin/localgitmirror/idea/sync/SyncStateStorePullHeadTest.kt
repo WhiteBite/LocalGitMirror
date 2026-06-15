@@ -11,6 +11,9 @@ class SyncStateStorePullHeadTest {
   fun `read write last pulled head`() {
     val root = createTempDir(prefix = "lgm-sync-pull-")
     try {
+      // Initialize a bare git repo so SyncStateStore can resolve .git/
+      ProcessBuilder(listOf("git", "init")).directory(root).start().waitFor()
+
       assertNull(SyncStateStore.readLastPulledHead(root))
 
       SyncStateStore.writeLastPulledHead(root, "abc1234")
@@ -19,7 +22,7 @@ class SyncStateStorePullHeadTest {
       SyncStateStore.writeLastPulledHead(root, "def5678")
       assertEquals("def5678", SyncStateStore.readLastPulledHead(root))
 
-      val file = File(root, ".localgitmirror/state/last_pulled_head.txt")
+      val file = File(root, ".git/lgm/state/last_pulled_head.txt")
       assertEquals(true, file.exists())
     } finally {
       root.deleteRecursively()

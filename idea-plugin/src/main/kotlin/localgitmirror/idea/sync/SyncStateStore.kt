@@ -4,19 +4,55 @@ import java.io.File
 
 /**
  * Lightweight state store to pick best incremental bases across branches.
- * Stored per-project under .localgitmirror/state.
+ * Stored per-project under .git/lgm/state (hidden inside git directory).
  */
 object SyncStateStore {
-  private const val STATE_DIR = ".localgitmirror/state"
+  private const val STATE_SUBDIR = "lgm/state"
   private const val LAST_SENT_FILE = "last_sent.txt"
   private const val LAST_BY_BRANCH_FILE = "last_by_branch.txt"
   private const val LEGACY_LAST_SYNC = ".last_sync"
   private const val LAST_PULLED_HEAD_FILE = "last_pulled_head.txt"
-  private const val TMP_DIR = ".localgitmirror/tmp"
+  private const val LEGACY_STATE_DIR = ".localgitmirror/state"
+  private const val LEGACY_TMP_DIR = ".localgitmirror/tmp"
 
-  private fun stateDir(projectDir: File): File = File(projectDir, STATE_DIR)
+  /** Resolve .git dir via git rev-parse (handles worktrees). */
+  private fun gitDir(projectDir: File): File {
+    val proc = ProcessBuilder(listOf("git", "rev-parse", "--git-dir"))
+      .directory(projectDir).redirectErrorStream(false).start()
+    val raw = proc.inputStream.bufferedReader().readText().trim()
+    proc.waitFor()
+    val f = File(raw)
+    return if (f.isAbsolute) f else File(projectDir, raw)
+  }
+
+  private fun stateDir(projectDir: File): File = File(gitDir(projectDir), STATE_SUBDIR)
+
+  /** Migrate state files from legacy .localgitmirror/state/ to .git/lgm/state/ */
+  private fun migrateLegacyStateDir(projectDir: File) {
+    val legacyDir = File(projectDir, LEGACY_STATE_DIR)
+    if (!legacyDir.exists()) return
+    val newDir = stateDir(projectDir)
+    if (!newDir.exists()) newDir.mkdirs()
+    for (f in legacyDir.listFiles() ?: emptyArray()) {
+      if (!f.isFile) continue
+      val target = File(newDir, f.name)
+      if (!target.exists()) {
+        try { f.copyTo(target) } catch (_: Exception) {}
+      }
+      try { f.delete() } catch (_: Exception) {}
+    }
+    try { legacyDir.delete() } catch (_: Exception) {}
+    // Also clean parent .localgitmirror/ if empty
+    try {
+      val parent = legacyDir.parentFile
+      if (parent != null && parent.name == ".localgitmirror" && (parent.listFiles()?.isEmpty() != false)) {
+        parent.delete()
+      }
+    } catch (_: Exception) {}
+  }
 
   fun readLastSent(projectDir: File): String? {
+    migrateLegacyStateDir(projectDir)
     val f = File(stateDir(projectDir), LAST_SENT_FILE)
     if (!f.exists()) return null
     return f.readText().trim().ifBlank { null }
@@ -75,6 +111,7 @@ object SyncStateStore {
   }
 
   fun migrateLegacyIfPresent(projectDir: File) {
+    migrateLegacyStateDir(projectDir)
     val legacy = File(projectDir, LEGACY_LAST_SYNC)
     if (!legacy.exists()) return
     val hash = legacy.readText().trim().ifBlank { null } ?: return
@@ -87,31 +124,39 @@ object SyncStateStore {
     }
   }
 
-  fun cleanupOldDumps(projectDir: File, keepPerRepo: Int = 5) {
-    val dir = File(projectDir, TMP_DIR)
-    if (!dir.exists()) return
+  fun cleanupOldSyncFiles(projectDir: File, keepPerRepo: Int = 5) {
+    val gitDir = gitDir(projectDir)
+    val newDir = File(gitDir, "lgm")
 
-    val dumps = dir.listFiles { f ->
-      f.isFile && f.name.startsWith("dump_") && f.name.endsWith(".dmp")
-    }?.toList() ?: return
+    // Also clean legacy location
+    val legacyDir = File(projectDir, LEGACY_TMP_DIR)
 
-    val grouped = dumps.groupBy { file ->
-      // dump_<repo>_YYYYMMDD_HHMM.dmp -> repo part between first and last two '_' parts.
-      val name = file.name.removePrefix("dump_").removeSuffix(".dmp")
-      val parts = name.split("_")
-      if (parts.size < 3) "__unknown__" else parts.dropLast(2).joinToString("_")
-    }
+    for (dir in listOf(newDir, legacyDir)) {
+      if (!dir.exists()) continue
+      val files = dir.listFiles { f ->
+        f.isFile && (
+          (f.name.startsWith("cache_") && f.name.endsWith(".bin")) ||
+          (f.name.startsWith("dump_") && f.name.endsWith(".dmp"))
+        )
+      }?.toList() ?: continue
 
-    for ((_, files) in grouped) {
-      val sorted = files.sortedByDescending { it.lastModified() }
-      val toDelete = sorted.drop(keepPerRepo)
-      for (f in toDelete) {
-        try {
-          f.delete()
-        } catch (_: Exception) {
-          // best effort
+      val grouped = files.groupBy { file ->
+        val name = file.name
+          .removePrefix("cache_").removePrefix("dump_")
+          .removeSuffix(".bin").removeSuffix(".dmp")
+        val parts = name.split("_")
+        if (parts.size < 3) "__unknown__" else parts.dropLast(2).joinToString("_")
+      }
+
+      for ((_, group) in grouped) {
+        val sorted = group.sortedByDescending { it.lastModified() }
+        for (f in sorted.drop(keepPerRepo)) {
+          try { f.delete() } catch (_: Exception) {}
         }
       }
     }
   }
+
+  /** @deprecated Use [cleanupOldSyncFiles] instead. */
+  fun cleanupOldDumps(projectDir: File, keepPerRepo: Int = 5) = cleanupOldSyncFiles(projectDir, keepPerRepo)
 }

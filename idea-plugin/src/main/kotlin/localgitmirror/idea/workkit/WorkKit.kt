@@ -12,43 +12,47 @@ object WorkKit {
     workDir: File,
     password: String,
     repoName: String? = null,
-    baseCommit: String? = null,
+    excludeBases: List<String> = emptyList(),
     timeoutSeconds: Long = 300,
-    kitDir: File? = null
+    kitDir: File? = null,
+    additionalBranches: List<String> = emptyList(),
+    negotiationUsed: Boolean = false
   ): Result {
     return try {
       val resolvedRepo = repoName?.trim().takeUnless { it.isNullOrBlank() } ?: workDir.name
-      val bundle = NativeBundleBuilder.createBundle(workDir, baseCommit = baseCommit)
-      val dumpFile = NativeBundleBuilder.makeDumpFile(workDir, resolvedRepo)
+      val bundle = NativeBundleBuilder.createBundle(workDir, excludeBases = excludeBases, additionalBranches = additionalBranches, negotiationUsed = negotiationUsed)
+      val syncFile = NativeBundleBuilder.makeSyncFile(workDir, resolvedRepo)
 
-      val bundleBytes = bundle.bundleFile.readBytes()
-      val dumpBytes = NativeStealthDump.encryptBundleBytes(bundleBytes, password)
-      dumpFile.writeBytes(dumpBytes)
-      try {
-        bundle.bundleFile.delete()
-      } catch (_: Exception) {
-      }
+      val encryptedBytes = NativeStealthDump.encryptBundleBytes(bundle.bundleBytes, password)
+      syncFile.writeBytes(encryptedBytes)
 
       val stdout = buildString {
-        appendLine("[+] SUCCESS: Memory dump generated")
+        appendLine("[+] Sync package ready")
         appendLine("Mode: ${bundle.mode}")
-        appendLine("File: ${dumpFile.absolutePath} (${dumpFile.length()} bytes)")
+        appendLine("File: ${syncFile.absolutePath} (${syncFile.length()} bytes)")
       }.trim()
       Result(0, stdout, "")
     } catch (t: Throwable) {
-      Result(1, "", t.message ?: "Native stealth dump failed")
+      Result(1, "", t.message ?: "Sync export failed")
     }
   }
 
-  fun dumpDir(projectDir: File): File = File(projectDir, ".localgitmirror/tmp")
+  fun syncDir(projectDir: File): File {
+    val gitDirRes = ProcessBuilder(listOf("git", "rev-parse", "--git-dir"))
+      .directory(projectDir).redirectErrorStream(false).start()
+    val raw = gitDirRes.inputStream.bufferedReader().readText().trim()
+    gitDirRes.waitFor()
+    val gitDir = if (File(raw).isAbsolute) File(raw) else File(projectDir, raw)
+    return File(gitDir, "lgm")
+  }
 
   fun findLatestDump(projectDir: File, repoName: String): File? {
-    val dir = dumpDir(projectDir)
+    val dir = syncDir(projectDir)
     if (!dir.exists()) return null
-    val dumps = dir.listFiles { f ->
-      f.isFile && f.name.startsWith("dump_${repoName}_") && f.name.endsWith(".dmp")
+    val files = dir.listFiles { f ->
+      f.isFile && f.name.startsWith("cache_${repoName}_") && f.name.endsWith(".bin")
     } ?: return null
-    return dumps.maxByOrNull { it.lastModified() }
+    return files.maxByOrNull { it.lastModified() }
   }
 
   fun runStealthApply(

@@ -133,7 +133,7 @@ class SyncEngineFlowTest {
     try {
       val res = engine.runFullSyncWithSnapshot(project = dummyProject(), projectDir = projectDir, snapshot = defaultSnapshot().copy(repoConfigured = "onyx-platform-v1"))
       assertEquals(false, res.step.ok)
-      assertEquals("No dump_*.dmp found after generation", res.step.message)
+      assertEquals("No sync package found after generation", res.step.message)
       assertNull(res.dump)
       assertEquals(0, mirror.uploadCalls)
     } finally {
@@ -142,17 +142,17 @@ class SyncEngineFlowTest {
   }
 
   @Test
-  fun `findLatestDump uses dump path from generator output`() {
+  fun `findLatestDump uses sync file path from generator output`() {
     val engine = SyncEngine(workKit = FakeWorkKitPort(createDump = false))
     val projectDir = createTempDir(prefix = "lgm-engine-output-path-")
     try {
-      val dumpDir = File(projectDir, ".localgitmirror/tmp")
+      val dumpDir = File(projectDir, ".git/lgm")
       dumpDir.mkdirs()
-      val dump = File(dumpDir, "dump_dirname_20260313_1200.dmp")
+      val dump = File(dumpDir, "cache_dirname_20260313_1200.bin")
       dump.writeText("x")
 
       val genOut = """
-        [+] SUCCESS: Memory dump generated
+        [+] Sync package ready
         File: ${dump.absolutePath} (1 bytes)
       """.trimIndent()
 
@@ -204,7 +204,7 @@ class SyncEngineFlowTest {
     var applyKnownCalls: Int = 0
     var uploadCalls: Int = 0
 
-    override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): MirrorApi.HttpResult {
+    override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File?): MirrorApi.HttpResult {
       return MirrorApi.HttpResult(200, "ok")
     }
 
@@ -221,12 +221,12 @@ class SyncEngineFlowTest {
       return MirrorApi.HttpResult(200, hasCommitsBody)
     }
 
-    override fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, insecureTls: Boolean): MirrorApi.HttpResult {
+    override fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, branches: Map<String, String>, insecureTls: Boolean): MirrorApi.HttpResult {
       applyKnownCalls += 1
       return applyKnownResult
     }
 
-    override fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, insecureTls: Boolean): MirrorApi.HttpResult {
+    override fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, insecureTls: Boolean, projectDir: File?): MirrorApi.HttpResult {
       uploadCalls += 1
       return MirrorApi.HttpResult(200, """{"success":true}""")
     }
@@ -240,28 +240,29 @@ class SyncEngineFlowTest {
     override fun recentCommits(project: Project, projectDir: File, limit: Int): List<GitLocal.CommitSummary> {
       return listOf(GitLocal.CommitSummary(hash = head, subject = "msg"))
     }
+    override fun branchHash(project: Project, projectDir: File, branchName: String): String? = head
   }
 
   private class FakeWorkKitPort(private val createDump: Boolean = false, private val noChanges: Boolean = false) : WorkKitPort {
     var runBackupCalls: Int = 0
 
-    override fun runBackupWorkStealth(workDir: File, password: String, repoName: String, baseCommit: String?): WorkKit.Result {
+    override fun runBackupWorkStealth(workDir: File, password: String, repoName: String, excludeBases: List<String>, additionalBranches: List<String>, negotiationUsed: Boolean): WorkKit.Result {
       runBackupCalls += 1
       if (noChanges) {
         return WorkKit.Result(1, "", "No new changes to sync")
       }
       if (createDump) {
-        val tmp = File(workDir, ".localgitmirror/tmp")
+        val tmp = File(workDir, ".git/lgm")
         if (!tmp.exists()) tmp.mkdirs()
-        File(tmp, "dump_${repoName}_20260313_0315.dmp").writeText("x")
+        File(tmp, "cache_${repoName}_20260313_0315.bin").writeText("x")
       }
       return WorkKit.Result(0, "ok", "")
     }
 
     override fun findLatestDump(projectDir: File, repoName: String): File? {
-      val tmp = File(projectDir, ".localgitmirror/tmp")
+      val tmp = File(projectDir, ".git/lgm")
       if (!tmp.exists()) return null
-      return tmp.listFiles { f -> f.name.startsWith("dump_${repoName}_") && f.name.endsWith(".dmp") }?.maxByOrNull { it.lastModified() }
+      return tmp.listFiles { f -> f.name.startsWith("cache_${repoName}_") && f.name.endsWith(".bin") }?.maxByOrNull { it.lastModified() }
     }
   }
 
@@ -274,6 +275,6 @@ class SyncEngineFlowTest {
       updateCalls += 1
     }
     override fun migrateLegacyIfPresent(projectDir: File) {}
-    override fun cleanupOldDumps(projectDir: File) {}
+    override fun cleanupOldSyncFiles(projectDir: File) {}
   }
 }

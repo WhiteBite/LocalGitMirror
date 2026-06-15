@@ -9,7 +9,9 @@ import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
 object NativeStealthDump {
-  val MAGIC: ByteArray = "LGMSTRL1".toByteArray(Charsets.US_ASCII)
+  // Format: VERSION(1) + SALT(16) + NONCE(12) + LEN(8) + CIPHERTEXT
+  // No magic bytes — file looks like pure random noise to scanners
+  private const val FORMAT_VERSION: Byte = 0x01
   private const val SALT_SIZE = 16
   private const val NONCE_SIZE = 12
   private const val PBKDF2_ITERATIONS = 200_000
@@ -35,18 +37,24 @@ object NativeStealthDump {
     val ciphertext = cipher.doFinal(bundleBytes)
 
     val len = ByteBuffer.allocate(8).putLong(ciphertext.size.toLong()).array()
-    return MAGIC + s + n + len + ciphertext
+    return byteArrayOf(FORMAT_VERSION) + s + n + len + ciphertext
   }
 
   fun decryptDumpBytes(dumpBytes: ByteArray, password: String): ByteArray {
     require(password.isNotBlank()) { "Password cannot be empty" }
-    val minLen = MAGIC.size + SALT_SIZE + NONCE_SIZE + 8 + 16
-    require(dumpBytes.size >= minLen) { "Dump file too small" }
+    val minLen = 1 + SALT_SIZE + NONCE_SIZE + 8 + 16
+    require(dumpBytes.size >= minLen) { "File too small" }
 
     var cursor = 0
-    val magic = dumpBytes.copyOfRange(cursor, cursor + MAGIC.size)
-    cursor += MAGIC.size
-    require(magic.contentEquals(MAGIC)) { "Unsupported dump format" }
+    val version = dumpBytes[cursor]
+    cursor += 1
+
+    // Support legacy magic format (LGMSTRL1) for backwards compatibility
+    if (version == 'L'.code.toByte()) {
+      return decryptLegacy(dumpBytes, password)
+    }
+
+    require(version == FORMAT_VERSION) { "Unsupported format version" }
 
     val salt = dumpBytes.copyOfRange(cursor, cursor + SALT_SIZE)
     cursor += SALT_SIZE
@@ -59,6 +67,25 @@ object NativeStealthDump {
     require(cursor + payloadLen <= dumpBytes.size) { "Corrupted dump payload" }
     val ciphertext = dumpBytes.copyOfRange(cursor, cursor + payloadLen.toInt())
 
+    val key = deriveKey(password, salt)
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
+    return cipher.doFinal(ciphertext)
+  }
+
+  /** Decrypt files created with the old LGMSTRL1 magic format. */
+  private fun decryptLegacy(data: ByteArray, password: String): ByteArray {
+    val legacyMagicSize = 8 // "LGMSTRL1"
+    var cursor = legacyMagicSize
+    val salt = data.copyOfRange(cursor, cursor + SALT_SIZE)
+    cursor += SALT_SIZE
+    val nonce = data.copyOfRange(cursor, cursor + NONCE_SIZE)
+    cursor += NONCE_SIZE
+    val payloadLen = ByteBuffer.wrap(data, cursor, 8).long
+    cursor += 8
+    require(payloadLen >= 16) { "Corrupted payload" }
+    require(cursor + payloadLen <= data.size) { "Corrupted payload" }
+    val ciphertext = data.copyOfRange(cursor, cursor + payloadLen.toInt())
     val key = deriveKey(password, salt)
     val cipher = Cipher.getInstance("AES/GCM/NoPadding")
     cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))

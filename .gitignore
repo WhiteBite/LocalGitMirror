@@ -85,3 +85,10 @@ dist/
 *_DONE.md
 REPORT_*.md
 SUMMARY_*.md
+_tmp/
+tmp/
+nul
+backend/nul
+idea-plugin/.gradle/
+idea-plugin/build/
+idea-plugin/bin/

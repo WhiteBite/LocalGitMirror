@@ -8,17 +8,18 @@ import localgitmirror.idea.workkit.WorkKit
 import java.io.File
 
 interface MirrorPort {
-  fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): MirrorApi.HttpResult
+  fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File? = null): MirrorApi.HttpResult
   fun capabilities(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorApi.CapabilitiesResult
   fun passwordProbe(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorApi.ProbeResult
+  fun getRefs(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): MirrorApi.RefsResult
   fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, insecureTls: Boolean): MirrorApi.HttpResult
-  fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, insecureTls: Boolean): MirrorApi.HttpResult
-  fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, insecureTls: Boolean): MirrorApi.HttpResult
+  fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, branches: Map<String, String> = emptyMap(), insecureTls: Boolean): MirrorApi.HttpResult
+  fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, insecureTls: Boolean, projectDir: File? = null): MirrorApi.HttpResult
 }
 
 object DefaultMirrorPort : MirrorPort {
-  override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): MirrorApi.HttpResult {
-    return MirrorApi.ensureRepoExists(baseUrl, apiKey, repo, insecureTls)
+  override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File?): MirrorApi.HttpResult {
+    return MirrorApi.ensureRepoExists(baseUrl, apiKey, repo, insecureTls, projectDir)
   }
 
   override fun capabilities(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorApi.CapabilitiesResult {
@@ -29,16 +30,20 @@ object DefaultMirrorPort : MirrorPort {
     return MirrorApi.passwordProbe(baseUrl, apiKey, insecureTls)
   }
 
+  override fun getRefs(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): MirrorApi.RefsResult {
+    return MirrorApi.getRefs(baseUrl, apiKey, repo, insecureTls)
+  }
+
   override fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, insecureTls: Boolean): MirrorApi.HttpResult {
     return MirrorApi.hasCommits(baseUrl, apiKey, repo, commits, insecureTls)
   }
 
-  override fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, insecureTls: Boolean): MirrorApi.HttpResult {
-    return MirrorApi.applyKnown(baseUrl, apiKey, repo, commit, insecureTls)
+  override fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, branches: Map<String, String>, insecureTls: Boolean): MirrorApi.HttpResult {
+    return MirrorApi.applyKnown(baseUrl, apiKey, repo, commit, branches, insecureTls)
   }
 
-  override fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, insecureTls: Boolean): MirrorApi.HttpResult {
-    return MirrorApi.uploadAndApply(baseUrl, apiKey, repo, dumpFile, insecureTls)
+  override fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, insecureTls: Boolean, projectDir: File?): MirrorApi.HttpResult {
+    return MirrorApi.uploadAndApply(baseUrl, apiKey, repo, dumpFile, insecureTls, projectDir)
   }
 }
 
@@ -48,6 +53,7 @@ interface GitPort {
   fun currentBranch(project: Project, projectDir: File): String?
   fun isAncestor(project: Project, projectDir: File, ancestor: String, descendant: String): Boolean
   fun recentCommits(project: Project, projectDir: File, limit: Int): List<GitLocal.CommitSummary>
+  fun branchHash(project: Project, projectDir: File, branchName: String): String?
 }
 
 object DefaultGitPort : GitPort {
@@ -60,6 +66,9 @@ object DefaultGitPort : GitPort {
   override fun recentCommits(project: Project, projectDir: File, limit: Int): List<GitLocal.CommitSummary> {
     return GitLocal.recentCommits(project, projectDir, limit)
   }
+  override fun branchHash(project: Project, projectDir: File, branchName: String): String? {
+    return GitLocal.branchHash(project, projectDir, branchName)
+  }
 }
 
 interface WorkKitPort {
@@ -67,18 +76,22 @@ interface WorkKitPort {
     workDir: File,
     password: String,
     repoName: String,
-    baseCommit: String?
+    excludeBases: List<String> = emptyList(),
+    additionalBranches: List<String> = emptyList(),
+    negotiationUsed: Boolean = false
   ): WorkKit.Result
   fun findLatestDump(projectDir: File, repoName: String): File?
 }
 
 object DefaultWorkKitPort : WorkKitPort {
-  override fun runBackupWorkStealth(workDir: File, password: String, repoName: String, baseCommit: String?): WorkKit.Result {
+  override fun runBackupWorkStealth(workDir: File, password: String, repoName: String, excludeBases: List<String>, additionalBranches: List<String>, negotiationUsed: Boolean): WorkKit.Result {
     return WorkKit.runBackupWorkStealth(
       workDir = workDir,
       password = password,
       repoName = repoName,
-      baseCommit = baseCommit
+      excludeBases = excludeBases,
+      additionalBranches = additionalBranches,
+      negotiationUsed = negotiationUsed
     )
   }
 
@@ -90,7 +103,7 @@ interface SyncStatePort {
   fun readLastByBranch(projectDir: File): Map<String, String>
   fun updateAfterSend(projectDir: File, branch: String, head: String)
   fun migrateLegacyIfPresent(projectDir: File)
-  fun cleanupOldDumps(projectDir: File)
+  fun cleanupOldSyncFiles(projectDir: File)
 }
 
 object DefaultSyncStatePort : SyncStatePort {
@@ -98,7 +111,7 @@ object DefaultSyncStatePort : SyncStatePort {
   override fun readLastByBranch(projectDir: File): Map<String, String> = SyncStateStore.readLastByBranch(projectDir)
   override fun updateAfterSend(projectDir: File, branch: String, head: String) = SyncStateStore.updateAfterSend(projectDir, branch, head)
   override fun migrateLegacyIfPresent(projectDir: File) = SyncStateStore.migrateLegacyIfPresent(projectDir)
-  override fun cleanupOldDumps(projectDir: File) = SyncStateStore.cleanupOldDumps(projectDir)
+  override fun cleanupOldSyncFiles(projectDir: File) = SyncStateStore.cleanupOldSyncFiles(projectDir)
 }
 
 interface RepoResolverPort {
