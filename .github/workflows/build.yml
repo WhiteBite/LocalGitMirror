@@ -23,7 +23,7 @@ jobs:
         run: |
           pip install -r backend/requirements.txt
           pip install -r backend/requirements-root.txt || true
-          pip install pytest pytest-asyncio
+          pip install pytest pytest-asyncio requests
 
       - name: Run unit tests
         run: python -m pytest backend/tests/ -q --tb=short --ignore=backend/tests/test_api.py --ignore=backend/tests/test_integration.py --ignore=backend/tests/test_e2e_workflow.py
@@ -67,6 +67,8 @@ jobs:
           java-version: 17
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.10'
 
       - name: Build plugin
         working-directory: idea-plugin

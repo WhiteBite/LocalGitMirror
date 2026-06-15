@@ -176,6 +176,19 @@ async def lifespan(app: FastAPI):
     console.print(f"[blue]Storage: {actual_storage_path.absolute()}[/blue]")
 
     protocol = "https" if (Path("cert.pem").exists() and Path("key.pem").exists()) else "http"
+
+    # Auto-generate self-signed TLS certificate if missing
+    if not Path("cert.pem").exists() or not Path("key.pem").exists():
+        try:
+            import sys as _sys
+            _sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+            from generate_cert import generate_self_signed_cert
+            generate_self_signed_cert()
+            console.print("[green]Auto-generated self-signed TLS certificate (cert.pem + key.pem)[/green]")
+            protocol = "https"
+        except Exception as e:
+            console.print(f"[yellow][!] Failed to auto-generate TLS cert: {e}[/yellow]")
+            console.print("[yellow]    Run 'python generate_cert.py' manually for HTTPS support[/yellow]")
     console.print(f"[blue]Web UI:  {protocol}://0.0.0.0:{CONFIG['web_port']}[/blue]")
 
     # Auto-start LAN beacon for plugin auto-discovery

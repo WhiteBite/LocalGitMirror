@@ -9,3 +9,6 @@ ignore = ["E501", "E402"]  # Line too long, module level import not at top
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
