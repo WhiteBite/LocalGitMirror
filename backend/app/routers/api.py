@@ -438,7 +438,8 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def _infer_repo_from_dump_filename(filename: str) -> Optional[str]:
-    name = Path(filename).name
+    # Normalize both / and \ separators so Windows paths work on Linux too
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
     # Support both legacy dump_*.dmp and new cache_*.bin patterns
     m = re.fullmatch(r"(?:dump|cache)_([A-Za-z0-9_-]+)_([0-9]{8})_([0-9]{4})\.(?:dmp|bin)", name)
     if not m:
