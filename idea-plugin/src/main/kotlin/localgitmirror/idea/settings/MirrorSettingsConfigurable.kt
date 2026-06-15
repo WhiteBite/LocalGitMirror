@@ -2,14 +2,19 @@ package localgitmirror.idea.settings
 
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.components.service
+import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.net.LanDiscovery
+import java.awt.BorderLayout
 import javax.swing.BoxLayout
+import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.JPasswordField
 import javax.swing.JTextField
+import javax.swing.SwingUtilities
 
 class MirrorSettingsConfigurable : Configurable {
   private var panel: JPanel? = null
@@ -47,7 +52,19 @@ class MirrorSettingsConfigurable : Configurable {
       root.add(r)
     }
 
-    row(LocalGitMirrorBundle.message("settings.mirror.baseUrl"), mirrorBaseUrl)
+    // Mirror URL with Discover button
+    val urlRow = JPanel()
+    urlRow.layout = BoxLayout(urlRow, BoxLayout.Y_AXIS)
+    urlRow.add(JLabel(LocalGitMirrorBundle.message("settings.mirror.baseUrl")))
+    val urlInput = JPanel(BorderLayout(4, 0))
+    urlInput.add(mirrorBaseUrl, BorderLayout.CENTER)
+    discoverBtn = JButton("Discover")
+    discoverBtn?.toolTipText = "Search for LocalGitMirror server on LAN"
+    discoverBtn?.addActionListener { onDiscoverClicked() }
+    urlInput.add(discoverBtn, BorderLayout.EAST)
+    urlRow.add(urlInput)
+    root.add(urlRow)
+
     row(LocalGitMirrorBundle.message("settings.mirror.apiKey"), mirrorApiKey)
     row(LocalGitMirrorBundle.message("settings.mirror.repo"), mirrorRepo)
     row(LocalGitMirrorBundle.message("settings.ui.language"), uiLanguage)
@@ -74,6 +91,55 @@ class MirrorSettingsConfigurable : Configurable {
     reset()
     return root
   }
+
+  private fun onDiscoverClicked() {
+    discoverBtn?.isEnabled = false
+    discoverBtn?.text = "Searching..."
+
+    Thread({
+      val servers = try {
+        LanDiscovery.discover(timeoutMs = 6000)
+      } catch (_: Exception) {
+        emptyList()
+      }
+
+      SwingUtilities.invokeLater {
+        discoverBtn?.isEnabled = true
+        discoverBtn?.text = "Discover"
+
+        when {
+          servers.isEmpty() -> {
+            Messages.showInfoMessage(
+              "No LocalGitMirror servers found on LAN.\n\nMake sure the server is running on the same network.",
+              "LAN Discovery"
+            )
+          }
+          servers.size == 1 -> {
+            mirrorBaseUrl.text = servers.first().toUrl()
+          }
+          else -> {
+            val options = servers.map { "${it.toUrl()} (${it.ip})" }.toTypedArray()
+            val chosen = Messages.showEditableChooseDialog(
+              "Multiple servers found:",
+              "LAN Discovery",
+              null,
+              options,
+              options.first(),
+              null
+            )
+            if (chosen != null) {
+              val idx = options.indexOf(chosen)
+              if (idx >= 0) {
+                mirrorBaseUrl.text = servers[idx].toUrl()
+              }
+            }
+          }
+        }
+      }
+    }, "LGM-LAN-Discovery").start()
+  }
+
+  private var discoverBtn: JButton? = null
 
   private fun state(): MirrorSettingsService.State = service<MirrorSettingsService>().state
 
@@ -143,5 +209,6 @@ class MirrorSettingsConfigurable : Configurable {
 
   override fun disposeUIResources() {
     panel = null
+    discoverBtn = null
   }
 }

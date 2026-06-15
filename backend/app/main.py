@@ -45,6 +45,7 @@ git_workspace = None
 settings_manager = None
 shared_manager = None
 system_logger = None
+lan_beacon = None
 
 
 def ensure_post_receive_hook(repo_name: str, storage_path: Path):
@@ -132,7 +133,7 @@ def on_repo_receive(repo_name: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global git_handler, repo_manager, git_workspace, settings_manager, shared_manager, system_logger
+    global git_handler, repo_manager, git_workspace, settings_manager, shared_manager, system_logger, lan_beacon
 
     # 1. Initialize core managers
     base_storage = Path(CONFIG["storage_path"])
@@ -177,8 +178,23 @@ async def lifespan(app: FastAPI):
     protocol = "https" if (Path("cert.pem").exists() and Path("key.pem").exists()) else "http"
     console.print(f"[blue]Web UI:  {protocol}://0.0.0.0:{CONFIG['web_port']}[/blue]")
 
+    # Auto-start LAN beacon for plugin auto-discovery
+    from app.core.lan_beacon import LanBeacon
+    tls_enabled = Path("cert.pem").exists() and Path("key.pem").exists()
+    lan_beacon = LanBeacon(web_port=CONFIG["web_port"], tls=tls_enabled)
+    try:
+        lan_beacon.start()
+        console.print(f"[green]LAN beacon started (broadcast on UDP 37020)[/green]")
+    except Exception as e:
+        console.print(f"[yellow][!] LAN beacon failed to start: {e}[/yellow]")
+
     yield
     # Non-blocking shutdown
+    if lan_beacon:
+        try:
+            lan_beacon.stop()
+        except Exception:
+            pass
     if git_handler:
         try:
             git_handler.stop()

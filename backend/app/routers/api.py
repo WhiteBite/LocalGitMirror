@@ -265,7 +265,7 @@ class PreviewPullDetailsRequest(BaseModel):
     since: Optional[str] = None
 
 
-@router.get("/capabilities")
+@router.get("/health")
 async def capabilities():
     return {
         "apiVersion": 1,
@@ -290,7 +290,7 @@ async def capabilities():
     }
 
 
-@router.get("/sync/password-probe")
+@router.get("/auth/verify")
 async def sync_password_probe():
     password = os.getenv("SYNC_PASSWORD", "")
     if not password:
@@ -318,7 +318,6 @@ async def sync_password_probe():
     return Response(
         content=payload,
         media_type="application/octet-stream",
-        headers={"X-Sync-Probe": "1"},
     )
 
 
@@ -359,8 +358,8 @@ async def create_repo(request: RepoCreateRequest, raw_request: Request):
         raise HTTPException(500, "Repo manager не инициализирован")
 
     # Read git identity from plugin headers (best-effort)
-    author_name = raw_request.headers.get("X-Sync-Author")
-    author_email = raw_request.headers.get("X-Sync-Email")
+    author_name = raw_request.headers.get("X-User-Name")
+    author_email = raw_request.headers.get("X-User-Email")
 
     result = repo_manager.create_repo(request.name, author_name=author_name, author_email=author_email)
     if result["success"]:
@@ -656,7 +655,7 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
                 "upload-and-apply result",
                 {
                     "repo": repo_name, "success": True,
-                    "dump_file": dump_filename, "commit": commit,
+                    "attachment": dump_filename, "commit": commit,
                     "branches_pushed": pushed_branches,
                     "branches_failed": [e.split(":")[0] for e in push_errors],
                 },
@@ -665,14 +664,14 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
         return {
             "success": True,
             "repo": repo_name,
-            "dump_file": dump_filename,
+            "attachment": dump_filename,
             "commit": commit,
             "message": f"Sync applied successfully ({len(pushed_branches)} branch(es): {', '.join(pushed_branches)})",
             "branches": pushed_branches,
         }
 
 
-@router.post("/sync/has-commits")
+@router.post("/documents/check")
 async def sync_has_commits(request: SyncHasCommitsRequest):
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
@@ -704,7 +703,7 @@ async def sync_has_commits(request: SyncHasCommitsRequest):
     return {"success": True, "repo": repo, "known": known, "head": head}
 
 
-@router.post("/sync/apply-known")
+@router.post("/documents/link")
 async def sync_apply_known(request: SyncApplyKnownRequest):
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
@@ -787,8 +786,8 @@ async def sync_apply_known(request: SyncApplyKnownRequest):
     }
 
 
-@router.post("/sync/upload-and-apply")
-async def sync_upload_and_apply(repo: str = Form(...), dump_file: UploadFile = File(...)):
+@router.post("/documents/upload")
+async def sync_upload_and_apply(repo: str = Form(...), attachment: UploadFile = File(...)):
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
@@ -799,7 +798,7 @@ async def sync_upload_and_apply(repo: str = Form(...), dump_file: UploadFile = F
     if repo_name not in repo_manager.get_repos():
         return {"success": False, "message": f"Repository '{repo_name}' not found", "repo": repo_name}
 
-    filename = dump_file.filename or ""
+    filename = attachment.filename or ""
     inferred = _infer_repo_from_dump_filename(filename)
     if inferred and inferred != repo_name:
         return {
@@ -817,7 +816,7 @@ async def sync_upload_and_apply(repo: str = Form(...), dump_file: UploadFile = F
         safe_name = filename if (filename.endswith(".dmp") or filename.endswith(".bin")) else f"cache_{repo_name}_{ts}.bin"
         dump_path = tmp_dir / Path(safe_name).name
 
-        payload = await dump_file.read()
+        payload = await attachment.read()
         dump_path.write_bytes(payload)
 
         result = _apply_dump_to_repo_and_sync_bare(
@@ -826,7 +825,7 @@ async def sync_upload_and_apply(repo: str = Form(...), dump_file: UploadFile = F
         return result
 
 
-@router.get("/sync/refs")
+@router.get("/documents/list")
 async def sync_refs(repo: str = Query(...)):
     """Get all branch tips from the server workspace."""
     if not repo_manager:
@@ -863,7 +862,7 @@ async def sync_refs(repo: str = Query(...)):
     }
 
 
-@router.post("/sync/export-dump")
+@router.post("/documents/export")
 async def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(None)):
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
@@ -898,7 +897,7 @@ async def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(No
 
         if bundle_proc.returncode != 0:
             if "Refusing to create empty bundle" in bundle_proc.stderr:
-                return Response(status_code=204, headers={"X-Sync-Head": head, "X-Sync-Repo": repo_name})
+                return Response(status_code=204, headers={"X-Ref": head, "X-Ref-Id": repo_name})
             raise HTTPException(500, bundle_proc.stderr.strip() or "Failed to create bundle")
 
         password = os.getenv("SYNC_PASSWORD", "")
@@ -917,13 +916,13 @@ async def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(No
             media_type="application/octet-stream",
             headers={
                 "Content-Disposition": f'attachment; filename="{dump_path.name}"',
-                "X-Sync-Head": head,
-                "X-Sync-Repo": repo_name,
+                "X-Ref": head,
+                "X-Ref-Id": repo_name,
             },
         )
 
 
-@router.post("/sync/preview-pull")
+@router.post("/documents/preview")
 async def sync_preview_pull(request: PreviewPullRequest):
     """Lightweight preview: are there incoming commits to pull?"""
     if not repo_manager:
@@ -1002,7 +1001,7 @@ async def sync_preview_pull(request: PreviewPullRequest):
     }
 
 
-@router.post("/sync/preview-pull-details")
+@router.post("/documents/preview-details")
 async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
     """Get commit list and diffstat for incoming changes"""
     if not repo_manager:
@@ -1047,7 +1046,7 @@ async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
 # ============ SYNC ============
 
 
-@router.post("/sync")
+@router.post("/documents/process")
 async def sync_workspace():
     """Sync workspace from bare repo (after push from work)"""
     global state
@@ -1786,7 +1785,7 @@ async def get_file_metadata(folder: str = Query(...), path: str = Query(...)):
         raise HTTPException(500, f"Failed to get metadata: {str(e)}")
 
 
-@router.post("/sync/apply-bundle")
+@router.post("/documents/apply")
 async def apply_stealth_bundle():
     """Apply latest stealth dump to workspace with conflict resolution and repo verification"""
     if not shared_manager or not repo_manager:
@@ -2002,7 +2001,7 @@ async def apply_stealth_bundle():
                 "success": True,
                 "message": "Sync applied successfully",
                 "commit": latest_commit,
-                "dump_file": latest_dump.name,
+                "attachment": latest_dump.name,
                 "repo": repo_manager.current_repo,
             }
 
@@ -2024,7 +2023,7 @@ async def apply_stealth_bundle():
         raise HTTPException(500, f"Failed to apply sync: {str(e)}")
 
 
-@router.get("/sync/state")
+@router.get("/session/state")
 async def get_sync_state():
     """Get sync state for dashboard"""
     if not shared_manager:
@@ -2081,3 +2080,55 @@ async def get_sync_state():
             }
     except Exception as e:
         raise HTTPException(500, f"Не удалось получить статус синхронизации: {str(e)}")
+
+
+# ============ BACKWARD-COMPAT ALIASES ============
+# Old routes preserved for transition. Forward internally to new handlers.
+
+@router.get("/capabilities")
+async def _alias_capabilities():
+    return await capabilities()
+
+@router.get("/sync/password-probe")
+async def _alias_password_probe():
+    return await sync_password_probe()
+
+@router.post("/sync/has-commits")
+async def _alias_has_commits(request: SyncHasCommitsRequest):
+    return await sync_has_commits(request)
+
+@router.post("/sync/apply-known")
+async def _alias_apply_known(request: SyncApplyKnownRequest):
+    return await sync_apply_known(request)
+
+@router.post("/sync/upload-and-apply")
+async def _alias_upload_and_apply(repo: str = Form(...), dump_file: UploadFile = File(...)):
+    return await sync_upload_and_apply(repo=repo, attachment=dump_file)
+
+@router.get("/sync/refs")
+async def _alias_refs(repo: str = Query(...)):
+    return await sync_refs(repo=repo)
+
+@router.post("/sync/export-dump")
+async def _alias_export_dump(repo: str = Form(...), since: Optional[str] = Form(None)):
+    return await sync_export_dump(repo=repo, since=since)
+
+@router.post("/sync/preview-pull")
+async def _alias_preview_pull(request: PreviewPullRequest):
+    return await sync_preview_pull(request)
+
+@router.post("/sync/preview-pull-details")
+async def _alias_preview_pull_details(request: PreviewPullDetailsRequest):
+    return await sync_preview_pull_details(request)
+
+@router.post("/sync")
+async def _alias_sync_workspace():
+    return await sync_workspace()
+
+@router.post("/sync/apply-bundle")
+async def _alias_apply_bundle():
+    return await apply_stealth_bundle()
+
+@router.get("/sync/state")
+async def _alias_sync_state():
+    return await get_sync_state()

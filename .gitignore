@@ -86,6 +86,16 @@ dist/
 REPORT_*.md
 SUMMARY_*.md
 _tmp/
+
+# Runtime / artifacts
+server.pid
+*.bundle
+backend/dummy/
+idea-plugin/.build_number
+idea-plugin/out.txt
+idea-plugin/refactor.py
+nul
+*.dmp
 tmp/
 nul
 backend/nul

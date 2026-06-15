@@ -182,7 +182,7 @@ onMounted(async () => {
 
 async function fetchSyncState() {
   try {
-    const response = await axios.get('/api/sync/state')
+    const response = await axios.get('/api/session/state')
     if (response.data.success) {
       syncState.value = response.data.state
     }
@@ -229,7 +229,7 @@ async function applyStealthSync() {
   }
   
   try {
-    const response = await axios.post('/api/sync/apply-bundle')
+    const response = await axios.post('/api/documents/apply')
     syncResult.value = response.data
     
     if (response.data.success) {

@@ -43,7 +43,7 @@ def _build_client(monkeypatch, repos, captured_apply_kwargs):
         return {
             "success": True,
             "repo": kwargs["repo_name"],
-            "dump_file": kwargs["dump_filename"],
+            "attachment": kwargs["dump_filename"],
             "commit": "abc123 Test commit",
             "message": "Sync applied successfully",
         }
@@ -58,10 +58,10 @@ def test_upload_and_apply_accepts_repo_names_with_underscores(monkeypatch):
     client = _build_client(monkeypatch, ["upload_apply_smoke_repo"], captured)
 
     response = client.post(
-        "/api/sync/upload-and-apply",
+        "/api/documents/upload",
         data={"repo": "upload_apply_smoke_repo"},
         files={
-            "dump_file": (
+            "attachment": (
                 "dump_upload_apply_smoke_repo_20260306_1200.dmp",
                 MAGIC + b"stub-encrypted-content",
                 "application/octet-stream",
@@ -73,7 +73,7 @@ def test_upload_and_apply_accepts_repo_names_with_underscores(monkeypatch):
     payload = response.json()
     assert payload["success"] is True
     assert payload["repo"] == "upload_apply_smoke_repo"
-    assert payload["dump_file"] == "dump_upload_apply_smoke_repo_20260306_1200.dmp"
+    assert payload["attachment"] == "dump_upload_apply_smoke_repo_20260306_1200.dmp"
 
     # Critical regression check: inferred repo must keep full underscore name.
     assert captured["repo_name"] == "upload_apply_smoke_repo"
@@ -85,10 +85,10 @@ def test_upload_and_apply_rejects_real_repo_mismatch(monkeypatch):
     client = _build_client(monkeypatch, ["other_repo"], captured)
 
     response = client.post(
-        "/api/sync/upload-and-apply",
+        "/api/documents/upload",
         data={"repo": "other_repo"},
         files={
-            "dump_file": (
+            "attachment": (
                 "dump_upload_apply_smoke_repo_20260306_1200.dmp",
                 MAGIC + b"stub-encrypted-content",
                 "application/octet-stream",
