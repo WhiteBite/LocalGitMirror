@@ -1,0 +1,95 @@
+# Detekt configuration for LocalGitMirror IntelliJ plugin
+# Custom rules from :detekt-rules subproject
+
+build:
+  maxIssues: -1
+  excludeCorrectable: false
+  weights:
+    complexity: 0
+    style: 0
+    naming: 0
+    exceptions: 0
+    potential-bugs: 0
+    empty-blocks: 0
+
+localgitmirror:
+  active: true
+  HttpCallOnEdt:
+    active: true
+  HardcodedStringInAction:
+    active: true
+  SettingsLookupByDisplayName:
+    active: true
+  StaleInitState:
+    active: true
+
+# Disable some noisy default rules
+style:
+  active: true
+  WildcardImport:
+    active: false
+  MaxLineLength:
+    active: false
+  MagicNumber:
+    active: false
+  ReturnCount:
+    active: false
+  ForbiddenComment:
+    active: false
+  UnusedPrivateMember:
+    active: false
+  UnusedPrivateProperty:
+    active: false
+  FunctionOnlyReturningConstant:
+    active: false
+  NewLineAtEndOfFile:
+    active: false
+  LoopWithTooManyJumpStatements:
+    active: false
+  ThrowsCount:
+    active: false
+  MayBeConst:
+    active: false
+
+complexity:
+  active: true
+  LongMethod:
+    active: false
+  LongParameterList:
+    active: false
+  TooManyFunctions:
+    active: false
+  CyclomaticComplexMethod:
+    active: false
+  NestedBlockDepth:
+    active: false
+  ComplexCondition:
+    active: false
+
+naming:
+  active: true
+  FunctionNaming:
+    active: false
+  VariableNaming:
+    active: false
+  MatchingDeclarationName:
+    active: false
+  TopLevelPropertyNaming:
+    active: false
+
+exceptions:
+  active: true
+  TooGenericExceptionCaught:
+    active: false
+  SwallowedException:
+    active: false
+  ThrowingExceptionsWithoutMessageOrCause:
+    active: false
+
+potential-bugs:
+  active: true
+
+empty-blocks:
+  active: true
+  EmptyFunctionBlock:
+    active: false

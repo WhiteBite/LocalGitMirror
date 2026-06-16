@@ -86,8 +86,6 @@ class PushAsAction : AnAction() {
       return
     }
 
-    val repoInfo = syncFacade.describeRepoTarget(projectDir, settings)
-
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Push as '$targetBranch'", false) {
       override fun run(indicator: ProgressIndicator) {
         indicator.text = "Creating temporary branch '$targetBranch'"
