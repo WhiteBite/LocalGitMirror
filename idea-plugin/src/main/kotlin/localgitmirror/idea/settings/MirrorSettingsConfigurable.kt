@@ -37,6 +37,7 @@ class MirrorSettingsConfigurable : Configurable {
   private val offlineGenerateOnly = JCheckBox(LocalGitMirrorBundle.message("settings.sync.offlineMode"))
   private val autoCheckPullOnStartup = JCheckBox(LocalGitMirrorBundle.message("settings.sync.autoCheck"))
   private val simpleUiMode = JCheckBox(LocalGitMirrorBundle.message("settings.ui.simpleMode"))
+  private val workModeCombo = javax.swing.JComboBox(arrayOf("auto", "work", "home"))
 
   override fun getDisplayName(): String = "LocalGitMirror"
 
@@ -58,8 +59,8 @@ class MirrorSettingsConfigurable : Configurable {
     urlRow.add(JLabel(LocalGitMirrorBundle.message("settings.mirror.baseUrl")))
     val urlInput = JPanel(BorderLayout(4, 0))
     urlInput.add(mirrorBaseUrl, BorderLayout.CENTER)
-    discoverBtn = JButton("Discover")
-    discoverBtn?.toolTipText = "Search for LocalGitMirror server on LAN"
+    discoverBtn = JButton(LocalGitMirrorBundle.message("settings.discover"))
+    discoverBtn?.toolTipText = LocalGitMirrorBundle.message("settings.discover.tooltip")
     discoverBtn?.addActionListener { onDiscoverClicked() }
     urlInput.add(discoverBtn, BorderLayout.EAST)
     urlRow.add(urlInput)
@@ -87,6 +88,10 @@ class MirrorSettingsConfigurable : Configurable {
     root.add(autoCheckPullOnStartup)
     root.add(simpleUiMode)
 
+    root.add(JLabel(" "))
+    root.add(JLabel(LocalGitMirrorBundle.message("settings.workMode.title")))
+    row(LocalGitMirrorBundle.message("settings.workMode"), workModeCombo)
+
     panel = root
     reset()
     return root
@@ -94,7 +99,7 @@ class MirrorSettingsConfigurable : Configurable {
 
   private fun onDiscoverClicked() {
     discoverBtn?.isEnabled = false
-    discoverBtn?.text = "Searching..."
+    discoverBtn?.text = LocalGitMirrorBundle.message("settings.discover.searching")
 
     Thread({
       val servers = try {
@@ -105,13 +110,13 @@ class MirrorSettingsConfigurable : Configurable {
 
       SwingUtilities.invokeLater {
         discoverBtn?.isEnabled = true
-        discoverBtn?.text = "Discover"
+        discoverBtn?.text = LocalGitMirrorBundle.message("settings.discover")
 
         when {
           servers.isEmpty() -> {
             Messages.showInfoMessage(
-              "No LocalGitMirror servers found on LAN.\n\nMake sure the server is running on the same network.",
-              "LAN Discovery"
+              LocalGitMirrorBundle.message("settings.discover.none"),
+              LocalGitMirrorBundle.message("settings.discover.title")
             )
           }
           servers.size == 1 -> {
@@ -120,8 +125,8 @@ class MirrorSettingsConfigurable : Configurable {
           else -> {
             val options = servers.map { "${it.toUrl()} (${it.ip})" }.toTypedArray()
             val chosen = Messages.showEditableChooseDialog(
-              "Multiple servers found:",
-              "LAN Discovery",
+              LocalGitMirrorBundle.message("settings.discover.multiple"),
+              LocalGitMirrorBundle.message("settings.discover.title"),
               null,
               options,
               options.first(),
@@ -160,7 +165,8 @@ class MirrorSettingsConfigurable : Configurable {
       pullBackDefaultMode.text != state.pullBackDefaultMode ||
       offlineGenerateOnly.isSelected != state.offlineGenerateOnly ||
       autoCheckPullOnStartup.isSelected != state.autoCheckPullOnStartup ||
-      simpleUiMode.isSelected != state.simpleUiMode
+      simpleUiMode.isSelected != state.simpleUiMode ||
+      (workModeCombo.selectedItem?.toString() ?: "auto") != state.workMode
   }
 
   override fun apply() {
@@ -183,6 +189,7 @@ class MirrorSettingsConfigurable : Configurable {
     s.offlineGenerateOnly = offlineGenerateOnly.isSelected
     s.autoCheckPullOnStartup = autoCheckPullOnStartup.isSelected
     s.simpleUiMode = simpleUiMode.isSelected
+    s.workMode = (workModeCombo.selectedItem?.toString() ?: "auto").lowercase()
   }
 
   override fun reset() {
@@ -205,6 +212,7 @@ class MirrorSettingsConfigurable : Configurable {
     offlineGenerateOnly.isSelected = state.offlineGenerateOnly
     autoCheckPullOnStartup.isSelected = state.autoCheckPullOnStartup
     simpleUiMode.isSelected = state.simpleUiMode
+    workModeCombo.selectedItem = state.workMode.ifBlank { "auto" }
   }
 
   override fun disposeUIResources() {

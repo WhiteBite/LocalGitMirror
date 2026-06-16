@@ -9,7 +9,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.core.stealth_crypto import MAGIC
+from app.core.bundle_crypto import MAGIC
 from app.routers import api as api_router
 
 

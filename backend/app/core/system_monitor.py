@@ -88,12 +88,13 @@ class SystemMonitor:
                         if ip.startswith("192.168.") or ip.startswith("10."):
                             return ip
 
-            # Method 3: Socket trick (may return virtual IP)
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
+            # Method 3: Fallback - any non-loopback address
+            for iface_name, iface_addrs in psutil.net_if_addrs().items():
+                for addr in iface_addrs:
+                    if addr.family == socket.AF_INET and not addr.address.startswith("127."):
+                        return addr.address
+
+            return "127.0.0.1"
 
         except Exception:
             return "127.0.0.1"

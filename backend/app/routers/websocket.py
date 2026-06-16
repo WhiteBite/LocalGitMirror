@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from app.core.logger import get_logger
@@ -9,9 +11,21 @@ active_connections = []
 file_watch_connections = []
 
 
+def _validate_ws_token(websocket: WebSocket) -> bool:
+    """Validate API key from query param before accepting WS connection."""
+    expected = os.getenv("API_KEY", "")
+    if not expected:
+        return True  # No auth configured — allow all
+    token = websocket.query_params.get("key", "")
+    return token == expected
+
+
 @router.websocket("/ws/files")
 async def websocket_files(websocket: WebSocket):
     """WebSocket endpoint for real-time file system updates"""
+    if not _validate_ws_token(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     file_watch_connections.append(websocket)
 
@@ -47,6 +61,9 @@ async def notify_file_change(event_data):
 @router.websocket("/ws/logs")
 async def websocket_logs(websocket: WebSocket):
     """WebSocket endpoint for real-time log streaming"""
+    if not _validate_ws_token(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
 
     logger = get_logger()

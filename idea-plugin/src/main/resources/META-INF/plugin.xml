@@ -34,82 +34,87 @@
   </extensions>
 
   <actions>
-    <group id="LocalGitMirror.Group" text="LocalGitMirror" description="LocalGitMirror actions">
+    <!-- Main group: shown as submenu in ToolsMenu, VCS menu, ProjectView -->
+    <group id="LocalGitMirror.Group" text="LocalGitMirror" description="LocalGitMirror actions" popup="true">
       <add-to-group group-id="ToolsMenu" anchor="last"/>
       <add-to-group group-id="VcsGroup" anchor="last"/>
       <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
+    </group>
+
+    <!-- Compact group: shown in VCS log context menus (only essentials) -->
+    <group id="LocalGitMirror.ContextGroup" text="LocalGitMirror" description="LocalGitMirror actions" popup="true">
       <add-to-group group-id="Vcs.Log.ContextMenu" anchor="last"/>
       <add-to-group group-id="Vcs.FileHistory.ContextMenu" anchor="last"/>
     </group>
 
+    <!-- ── Sync actions ── -->
     <action id="LocalGitMirror.SyncCurrentBranch"
             class="localgitmirror.idea.actions.SyncCurrentBranchToMirrorAction"
-            text="LocalGitMirror: Send current"
-            description="Send current branch to Mirror">
-      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-    </action>
+            text="Send current" description="Send current branch to Mirror"/>
 
     <action id="LocalGitMirror.SyncBranch"
             class="localgitmirror.idea.actions.SyncBranchToMirrorAction"
-            text="LocalGitMirror: Send branch…"
-            description="Send selected branch to Mirror">
-      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-    </action>
+            text="Send branch…" description="Send selected branch to Mirror"/>
 
     <action id="LocalGitMirror.SyncGitLabMR"
             class="localgitmirror.idea.actions.SyncGitLabMrToMirrorAction"
-            text="LocalGitMirror: Send MR/PR…"
-            description="Send MR/PR source branch to Mirror">
-      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-    </action>
+            text="Send MR/PR…" description="Send MR/PR source branch to Mirror"/>
 
     <action id="LocalGitMirror.SendSelectedCommits"
             class="localgitmirror.idea.actions.SendSelectedCommitsToMirrorAction"
-            text="LocalGitMirror: Send commits…"
-            description="Send selected commits to Mirror">
-      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-    </action>
+            text="Send commits…" description="Send selected commits to Mirror"/>
+
+    <!-- ── Pull actions ── -->
+    <action id="LocalGitMirror.SyncPull"
+            class="localgitmirror.idea.actions.PullFromMirrorAction"
+            text="Sync pull…" description="Pull changes from Mirror via encrypted sync"/>
 
     <action id="LocalGitMirror.PullBack"
             class="localgitmirror.idea.actions.PullBackFromRemoteAction"
-            text="LocalGitMirror: Pull back…"
-            description="Pull changes back from remote">
-      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-    </action>
-
-    <action id="LocalGitMirror.SyncPull"
-            class="localgitmirror.idea.actions.StealthPullBackFromMirrorAction"
-            text="LocalGitMirror: Sync pull…"
-            description="Pull changes back from Mirror via encrypted sync package">
-      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-    </action>
+            text="Pull back…" description="Pull changes back from remote"/>
 
     <action id="LocalGitMirror.ApplyLocalSync"
             class="localgitmirror.idea.actions.ApplyLocalDumpAction"
-            text="LocalGitMirror: Apply local sync package…"
-            description="Apply local encrypted sync package to current project">
-      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-    </action>
+            text="Apply local sync package…" description="Apply local encrypted sync package"/>
 
+    <!-- ── Diagnostics ── -->
     <action id="LocalGitMirror.Preflight"
             class="localgitmirror.idea.actions.PreflightCheckAction"
-            text="LocalGitMirror: Preflight"
-            description="Run preflight diagnostics before sync">
-      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-    </action>
+            text="Preflight" description="Run preflight diagnostics before sync"/>
 
     <action id="LocalGitMirror.DryRun"
             class="localgitmirror.idea.actions.DryRunSyncAction"
-            text="LocalGitMirror: Dry-run (send)"
-            description="Preview send plan without upload">
-      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-    </action>
+            text="Dry-run (send)" description="Preview send plan without upload"/>
 
     <action id="LocalGitMirror.DryRunPull"
             class="localgitmirror.idea.actions.DryRunPullSyncAction"
-            text="LocalGitMirror: Dry-run (pull)"
-            description="Preview incoming changes from Mirror">
+            text="Dry-run (pull)" description="Preview incoming changes from Mirror"/>
+
+    <!-- Main menu: all actions with separators -->
+    <group id="LocalGitMirror.FullGroup">
       <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-    </action>
+      <reference ref="LocalGitMirror.SyncCurrentBranch"/>
+      <reference ref="LocalGitMirror.SyncBranch"/>
+      <reference ref="LocalGitMirror.SyncGitLabMR"/>
+      <reference ref="LocalGitMirror.SendSelectedCommits"/>
+      <separator/>
+      <reference ref="LocalGitMirror.SyncPull"/>
+      <reference ref="LocalGitMirror.PullBack"/>
+      <reference ref="LocalGitMirror.ApplyLocalSync"/>
+      <separator/>
+      <reference ref="LocalGitMirror.Preflight"/>
+      <reference ref="LocalGitMirror.DryRun"/>
+      <reference ref="LocalGitMirror.DryRunPull"/>
+    </group>
+
+    <!-- Context menu: only essentials -->
+    <group id="LocalGitMirror.ContextInner">
+      <add-to-group group-id="LocalGitMirror.ContextGroup" anchor="last"/>
+      <reference ref="LocalGitMirror.SyncCurrentBranch"/>
+      <reference ref="LocalGitMirror.SyncBranch"/>
+      <separator/>
+      <reference ref="LocalGitMirror.SyncPull"/>
+      <reference ref="LocalGitMirror.PullBack"/>
+    </group>
   </actions>
 </idea-plugin>

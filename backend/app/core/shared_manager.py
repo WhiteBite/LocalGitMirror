@@ -253,9 +253,9 @@ class SharedManager:
             if target_file.name == "sys_log_chunk.bin":
                 self._rotate_backup_file(folder_path, target_file)
             
-            # Auto-rotate stealth sync dumps
+            # Auto-rotate sync dumps
             if target_file.name == "core_dump_report.dmp":
-                self._rotate_stealth_dump(folder_path, target_file)
+                self._rotate_sync_dump(folder_path, target_file)
 
             # Save metadata
             if tags or description:
@@ -323,8 +323,8 @@ class SharedManager:
             if not self.silent_mode:
                 self.logger.error("Не удалось очистить старые бэкапы", {"error": str(e)})
     
-    def _rotate_stealth_dump(self, folder_path: Path, dmp_file: Path):
-        """Rotate stealth dump file with timestamp"""
+    def _rotate_sync_dump(self, folder_path: Path, dmp_file: Path):
+        """Rotate sync dump file with timestamp"""
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             new_name = f"dump_{timestamp}.dmp"
@@ -333,7 +333,7 @@ class SharedManager:
             dmp_file.rename(new_path)
             
             if not self.silent_mode:
-                self.logger.info("Stealth dump ротирован", {"old": dmp_file.name, "new": new_name})
+                self.logger.info("Sync dump ротирован", {"old": dmp_file.name, "new": new_name})
             
             # Cleanup old dumps (keep last 7 days)
             self._cleanup_old_dumps(folder_path)
@@ -363,8 +363,8 @@ class SharedManager:
             if not self.silent_mode:
                 self.logger.error("Не удалось очистить старые dumps", {"error": str(e)})
     
-    def get_latest_stealth_dump(self, folder: str) -> Optional[Path]:
-        """Get latest stealth dump file"""
+    def get_latest_sync_dump(self, folder: str) -> Optional[Path]:
+        """Get latest sync dump file"""
         folder_path = self._get_folder_path(folder)
         if not folder_path.exists():
             return None

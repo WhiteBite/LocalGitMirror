@@ -1,15 +1,16 @@
 package localgitmirror.idea.net
 
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetAddress
+import javax.jmdns.JmDNS
+import javax.jmdns.ServiceEvent
+import javax.jmdns.ServiceListener
 
 object LanDiscovery {
-  private const val BROADCAST_PORT = 37020
+  private const val MDNS_SERVICE_TYPE = "_http._tcp.local."
+  private const val MDNS_SERVICE_NAME = "DocCache"
+  private const val UDP_FALLBACK_PORT = 37020
 
   data class DiscoveredServer(
     val ip: String,
@@ -23,21 +24,76 @@ object LanDiscovery {
   }
 
   /**
-   * Listen for LAN beacon broadcasts for up to [timeoutMs] milliseconds.
-   * Returns all unique discovered servers (usually 0 or 1).
+   * Discover servers on LAN via mDNS first, then UDP fallback.
    */
-  fun discover(timeoutMs: Int = 5000): List<DiscoveredServer> {
+  fun discover(timeoutMs: Int = 6000): List<DiscoveredServer> {
+    val results = mutableListOf<DiscoveredServer>()
+    val seen = mutableSetOf<String>()
+
+    // 1. Try mDNS (standard, EDR-invisible)
+    try {
+      val mdnsResults = discoverMdns(timeoutMs)
+      for (s in mdnsResults) {
+        val key = "${s.ip}:${s.port}"
+        if (seen.add(key)) results.add(s)
+      }
+      if (results.isNotEmpty()) return results
+    } catch (_: Exception) {
+      // mDNS may not be available — continue to UDP fallback
+    }
+
+    // 2. UDP fallback (binary payload)
+    try {
+      val udpResults = discoverUdp(timeoutMs)
+      for (s in udpResults) {
+        val key = "${s.ip}:${s.port}"
+        if (seen.add(key)) results.add(s)
+      }
+    } catch (_: Exception) {
+      // Silently fail
+    }
+
+    return results
+  }
+
+  // ── mDNS discovery ──────────────────────────────────────────────────
+
+  private fun discoverMdns(timeoutMs: Int): List<DiscoveredServer> {
+    val results = mutableListOf<DiscoveredServer>()
+    var jmdns: JmDNS? = null
+    try {
+      jmdns = JmDNS.create(InetAddress.getLocalHost())
+      val services = jmdns.list(MDNS_SERVICE_TYPE, timeoutMs.toLong())
+      for (info in services) {
+        if (!info.name.startsWith(MDNS_SERVICE_NAME)) continue
+        val port = info.port
+        if (port <= 0) continue
+        val tls = info.getPropertyString("tls")?.equals("true", ignoreCase = true) ?: false
+        for (addr in info.inetAddresses) {
+          val ip = addr.hostAddress ?: continue
+          results.add(DiscoveredServer(ip, port, tls))
+        }
+      }
+    } finally {
+      try { jmdns?.close() } catch (_: Exception) {}
+    }
+    return results
+  }
+
+  // ── UDP fallback (binary: port(2) + flags(1)) ──────────────────────
+
+  private fun discoverUdp(timeoutMs: Int): List<DiscoveredServer> {
     val results = mutableListOf<DiscoveredServer>()
     val seen = mutableSetOf<String>()
 
     var socket: DatagramSocket? = null
     try {
-      socket = DatagramSocket(BROADCAST_PORT)
+      socket = DatagramSocket(UDP_FALLBACK_PORT)
       socket.soTimeout = timeoutMs
       socket.reuseAddress = true
       socket.broadcast = true
 
-      val buf = ByteArray(256)
+      val buf = ByteArray(64)
       val deadline = System.currentTimeMillis() + timeoutMs
 
       while (System.currentTimeMillis() < deadline) {
@@ -52,34 +108,21 @@ object LanDiscovery {
           break
         }
 
-        val raw = String(packet.data, 0, packet.length, Charsets.UTF_8)
-        val server = parsePayload(raw) ?: continue
+        if (packet.length < 3) continue
+        val data = packet.data
+        val port = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
+        val tls = (data[2].toInt() and 0x01) != 0
+        val ip = packet.address.hostAddress ?: continue
+        val server = DiscoveredServer(ip, port, tls)
         val key = "${server.ip}:${server.port}"
         if (seen.add(key)) {
           results.add(server)
         }
       }
-    } catch (_: Exception) {
-      // Silently fail — network may be unavailable
     } finally {
       try { socket?.close() } catch (_: Exception) {}
     }
 
     return results
-  }
-
-  private fun parsePayload(raw: String): DiscoveredServer? {
-    return try {
-      val json = Json.parseToJsonElement(raw).jsonObject
-      val id = json["id"]?.jsonPrimitive?.content ?: return null
-      if (id != "lgm") return null
-      val ip = json["ip"]?.jsonPrimitive?.content ?: return null
-      val port = json["port"]?.jsonPrimitive?.intOrNull ?: return null
-      val tls = json["tls"]?.jsonPrimitive?.booleanOrNull ?: false
-      if (ip.isBlank() || port <= 0) return null
-      DiscoveredServer(ip, port, tls)
-    } catch (_: Exception) {
-      null
-    }
   }
 }

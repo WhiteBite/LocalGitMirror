@@ -4,7 +4,7 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
-object NativeStealthApply {
+object BundleImporter {
   private const val SYNC_STATE_PULL = "lgm-pull-state"
 
   data class ApplyResult(
@@ -33,15 +33,15 @@ object NativeStealthApply {
         return ApplyResult(false, "", "Uncommitted changes detected. Commit or stash before applying.", 1)
       }
 
-      val bundleBytes = NativeStealthDump.decryptDumpBytes(dumpFile.readBytes(), password)
+      val bundleBytes = BundleCrypto.decryptDumpBytes(dumpFile.readBytes(), password)
       val gitDirRes = ProcessBuilder(listOf("git", "rev-parse", "--git-dir"))
         .directory(workDir).redirectErrorStream(false).start()
       val rawGitDir = gitDirRes.inputStream.bufferedReader().readText().trim()
       gitDirRes.waitFor()
       val gitDir = if (java.io.File(rawGitDir).isAbsolute) java.io.File(rawGitDir) else File(workDir, rawGitDir)
-      val tmpDir = File(gitDir, "lgm")
+      val tmpDir = File(gitDir, ".cache")
       if (!tmpDir.exists()) tmpDir.mkdirs()
-      val bundleFile = File(tmpDir, "apply_${System.currentTimeMillis()}.tmp")
+      val bundleFile = File(tmpDir, ".tmp_${java.util.UUID.randomUUID().toString().take(8)}")
       bundleFile.writeBytes(bundleBytes)
 
       try {

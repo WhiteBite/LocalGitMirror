@@ -37,7 +37,7 @@ def _target_https_port() -> int:
         return 443
 
 
-app = FastAPI(title="LocalGitMirror Redirect", version="1.0.0")
+app = FastAPI(title="Redirect Service", version="1.0.0")
 
 
 @app.api_route("/{path:path}", methods=["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"])

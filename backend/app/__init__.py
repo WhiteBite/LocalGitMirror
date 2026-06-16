@@ -1,5 +1,5 @@
 """
-LocalGitMirror Backend Application
+DocCache Backend Application
 Version: 3.2.0
 """
 

@@ -13,7 +13,7 @@ import localgitmirror.idea.sync.v2.SyncEngine
 import localgitmirror.idea.sync.v2.SyncStatePort
 import localgitmirror.idea.sync.v2.WorkKitPort
 import localgitmirror.idea.workkit.WorkKit
-import localgitmirror.idea.workkit.NativeStealthDump
+import localgitmirror.idea.workkit.BundleCrypto
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -213,7 +213,7 @@ class SyncEngineFlowTest {
     }
 
     override fun passwordProbe(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorApi.ProbeResult {
-      val dump = NativeStealthDump.encryptBundleBytes("LGM-PROBE\n".toByteArray(), password = "p")
+      val dump = BundleCrypto.encryptBundleBytes("LGM-PROBE\n".toByteArray(), password = "p")
       return MirrorApi.ProbeResult(200, dump, "OK")
     }
 
@@ -246,7 +246,7 @@ class SyncEngineFlowTest {
   private class FakeWorkKitPort(private val createDump: Boolean = false, private val noChanges: Boolean = false) : WorkKitPort {
     var runBackupCalls: Int = 0
 
-    override fun runBackupWorkStealth(workDir: File, password: String, repoName: String, excludeBases: List<String>, additionalBranches: List<String>, negotiationUsed: Boolean): WorkKit.Result {
+    override fun createSyncPackage(workDir: File, password: String, repoName: String, excludeBases: List<String>, additionalBranches: List<String>, negotiationUsed: Boolean): WorkKit.Result {
       runBackupCalls += 1
       if (noChanges) {
         return WorkKit.Result(1, "", "No new changes to sync")

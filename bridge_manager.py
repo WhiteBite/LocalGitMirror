@@ -45,10 +45,10 @@ def start_server():
 
     print("[INFO] Starting server...")
 
-    # Windows specific flags to run in background
+    # Windows specific flags to run in background (no visible console)
     creation_flags = 0
     if os.name == "nt":
-        creation_flags = subprocess.CREATE_NEW_CONSOLE
+        creation_flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
 
     with open(LOG_FILE, "a") as log:
         # Use sys.executable to ensure we use the same python env
@@ -149,7 +149,7 @@ def tail_logs(lines=20):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="LocalGitMirror Manager")
+    parser = argparse.ArgumentParser(description="Server Manager")
     parser.add_argument(
         "action",
         choices=["start", "stop", "restart", "status", "logs"],

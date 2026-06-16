@@ -41,15 +41,15 @@ def generate_self_signed_cert(cert_path="cert.pem", key_path="key.pem", custom_i
             x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
             x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "California"),
             x509.NameAttribute(NameOID.LOCALITY_NAME, "San Francisco"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "LocalGitMirror"),
-            x509.NameAttribute(NameOID.COMMON_NAME, "storage.local"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "LAN Services"),
+            x509.NameAttribute(NameOID.COMMON_NAME, hostname),
         ]
     )
 
     # Build SAN list
     san_list = [
         x509.DNSName("localhost"),
-        x509.DNSName("storage.local"),
+        x509.DNSName(hostname),
         x509.IPAddress(ipaddress.ip_address("127.0.0.1")),
         x509.IPAddress(ipaddress.ip_address("0.0.0.0")),
     ]

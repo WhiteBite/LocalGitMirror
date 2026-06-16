@@ -21,7 +21,7 @@ import localgitmirror.idea.workkit.WorkKit
 import java.io.File
 import java.util.UUID
 
-class StealthPullBackFromMirrorAction : AnAction() {
+class PullFromMirrorAction : AnAction() {
 
   override fun update(e: AnActionEvent) {
     val project = e.project
@@ -87,9 +87,9 @@ class StealthPullBackFromMirrorAction : AnAction() {
 
         if (needsBundle) {
             indicator.text = "Downloading objects from Mirror"
-            val tmpDir = File(gitDir, "lgm")
+            val tmpDir = File(gitDir, ".cache")
             if (!tmpDir.exists()) tmpDir.mkdirs()
-            val dumpOut = File(tmpDir, "${UUID.randomUUID()}.bin")
+            val dumpOut = File(tmpDir, ".tmp_${UUID.randomUUID().toString().take(8)}")
 
             val dl = MirrorApi.exportDump(
               baseUrl = settings.baseUrl,
@@ -107,17 +107,24 @@ class StealthPullBackFromMirrorAction : AnAction() {
               return
             } else {
               indicator.text = "Unpacking and fetching objects"
-              val decryptedPath = File(tmpDir, "decrypted_${UUID.randomUUID()}.bundle")
               try {
-                  val decryptedBytes = localgitmirror.idea.workkit.NativeStealthDump.decryptDumpBytes(dl.file.readBytes(), SecretsStore.syncPassword)
-                  decryptedPath.writeBytes(decryptedBytes)
-                  val fetch = git(dir, "fetch", decryptedPath.absolutePath, "+refs/heads/*:refs/fetched/mirror/*")
-                  if (fetch.exitCode != 0) {
-                      notify(project, "[trace=$traceId] Failed to fetch from bundle: ${fetch.stderr}", NotificationType.ERROR, dir)
+                  // Decrypt in memory — no plaintext bundle touches disk
+                  val decryptedBytes = localgitmirror.idea.workkit.BundleCrypto.decryptDumpBytes(dl.file.readBytes(), SecretsStore.syncPassword)
+
+                  // Pipe decrypted bundle directly to git fetch via stdin
+                  val pb = ProcessBuilder(listOf("git", "fetch", "-", "+refs/heads/*:refs/fetched/mirror/*"))
+                    .directory(dir)
+                    .redirectErrorStream(false)
+                  val proc = pb.start()
+                  proc.outputStream.use { it.write(decryptedBytes); it.flush() }
+                  val fetchStdout = proc.inputStream.bufferedReader().readText()
+                  val fetchStderr = proc.errorStream.bufferedReader().readText()
+                  val exitCode = proc.waitFor()
+                  if (exitCode != 0) {
+                      notify(project, "[trace=$traceId] Failed to fetch from bundle: $fetchStderr", NotificationType.ERROR, dir)
                       return
                   }
               } finally {
-                  try { decryptedPath.delete() } catch (_: Exception) {}
                   try { dl.file.delete() } catch (_: Exception) {}
               }
             }

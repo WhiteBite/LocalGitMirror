@@ -1,3 +1,4 @@
+import base64
 import json
 import subprocess
 import time
@@ -7,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
-from app.core.stealth_crypto import encrypt_bundle_to_dump
+from app.core.bundle_crypto import encrypt_bundle_to_dump
 from app.routers import api as api_router
 
 
@@ -77,16 +78,22 @@ def test_plugin_sync_contract_e2e(tmp_path: Path, monkeypatch):
     assert head in payload.get("known", [])
     assert payload.get("head") == head
 
-    # 4) export-dump should produce a .dmp and set headers
+    # 4) export-dump should produce JSON with base64 data
     export = client.post(
         "/api/documents/export",
         data={"repo": repo_name, "since": ""},
     )
     assert export.status_code == 200, export.text
-    assert export.headers.get("X-Ref-Id") == repo_name
-    export_head = export.headers.get("X-Ref")
+    export_json = export.json()
+    assert export_json.get("status") == "ok"
+    assert export_json.get("repo") == repo_name
+    export_head = export_json.get("head")
     assert export_head and len(export_head) >= 7
-    assert export.content[0:1] == b"\x01", "Exported dump must be v2 format (version byte 0x01)"
+    assert export_json.get("data"), "Exported dump must contain base64 data"
+
+    # Decode base64 data and verify it's encrypted (v2 format, version byte 0x01)
+    raw_data = base64.b64decode(export_json["data"])
+    assert raw_data[0:1] == b"\x01", "Exported dump must be v2 format (version byte 0x01)"
 
     # 5) upload-and-apply should accept dump and succeed (idempotent apply)
     # Create an independent bundle and encrypted dump to simulate plugin upload
@@ -113,14 +120,16 @@ def test_plugin_sync_contract_e2e(tmp_path: Path, monkeypatch):
     assert ak.get("repo") == repo_name
     assert ak.get("commit") == head
 
-    # 7) export-dump since=head should return 204
+    # 7) export-dump since=head should return no_content
     export2 = client.post(
         "/api/documents/export",
         data={"repo": repo_name, "since": head},
     )
-    assert export2.status_code == 204
-    assert export2.headers.get("X-Ref-Id") == repo_name
-    assert export2.headers.get("X-Ref") == head
+    assert export2.status_code == 200, export2.text
+    exp2_json = export2.json()
+    assert exp2_json.get("status") == "no_content"
+    assert exp2_json.get("repo") == repo_name
+    assert exp2_json.get("head") == head
 
 
 def test_upload_and_apply_unrelated_histories_replaces_branch(tmp_path: Path, monkeypatch):
@@ -279,5 +288,8 @@ def test_export_dump_unknown_since_falls_back_to_full_dump(tmp_path: Path, monke
 
     ex = client.post("/api/documents/export", data={"repo": repo_name, "since": "deadbeef"})
     assert ex.status_code == 200, ex.text
-    assert ex.headers.get("X-Ref-Id") == repo_name
-    assert ex.content[0:1] == b"\x01", "Exported dump must be v2 format"
+    ex_json = ex.json()
+    assert ex_json.get("repo") == repo_name
+    assert ex_json.get("data"), "Export must contain base64 data"
+    raw_data = base64.b64decode(ex_json["data"])
+    assert raw_data[0:1] == b"\x01", "Exported dump must be v2 format"

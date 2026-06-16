@@ -5,8 +5,13 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import java.util.Base64 as JavaBase64
 import java.util.UUID
 
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import localgitmirror.idea.net.HttpClient
 
 object MirrorApi {
@@ -395,22 +400,26 @@ object MirrorApi {
       }
 
       val code = conn.responseCode
-      val head = conn.getHeaderField("X-Ref") ?: conn.getHeaderField("X-LGM-Head")
-      val hdrRepo = conn.getHeaderField("X-Ref-Id") ?: conn.getHeaderField("X-LGM-Repo")
-
-      if (code == 204) {
-        return DownloadResult(204, null, "No new commits", head = head, repo = hdrRepo)
-      }
       if (code !in 200..299) {
         val body = HttpClient.readBody(conn)
-        return DownloadResult(code, null, body.take(500), head = head, repo = hdrRepo)
+        return DownloadResult(code, null, body.take(500))
       }
 
-      outFile.outputStream().use { out ->
-        conn.inputStream.use { input ->
-          input.copyTo(out)
-        }
+      // Response is JSON: {"status", "head", "repo", "data" (base64), "filename"}
+      val body = HttpClient.readBody(conn)
+      val json = Json.parseToJsonElement(body).jsonObject
+      val status = json["status"]?.jsonPrimitive?.contentOrNull ?: ""
+      val head = json["head"]?.jsonPrimitive?.contentOrNull
+      val hdrRepo = json["repo"]?.jsonPrimitive?.contentOrNull
+
+      if (status == "no_content") {
+        return DownloadResult(204, null, "No new commits", head = head, repo = hdrRepo)
       }
+
+      val b64data = json["data"]?.jsonPrimitive?.contentOrNull
+        ?: return DownloadResult(500, null, "Missing data in response", head = head, repo = hdrRepo)
+
+      outFile.writeBytes(JavaBase64.getDecoder().decode(b64data))
       DownloadResult(code, outFile, "OK", head = head, repo = hdrRepo)
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)

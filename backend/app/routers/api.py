@@ -1,4 +1,4 @@
-"""LocalGitMirror API Router."""
+"""API Router."""
 
 import os
 import re
@@ -13,7 +13,7 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, Request, Upload
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
-from app.core.stealth_crypto import decrypt_dump_to_bundle, encrypt_bundle_to_dump, MAGIC
+from app.core.bundle_crypto import decrypt_dump_to_bundle, encrypt_bundle_to_dump, MAGIC
 
 router = APIRouter(prefix="/api", tags=["api"])
 
@@ -270,7 +270,7 @@ async def capabilities():
     return {
         "apiVersion": 1,
         "server": {
-            "name": "LocalGitMirror",
+            "name": "DocCache",
             "version": "2026.03",
             "build": "dev",
         },
@@ -296,12 +296,11 @@ async def sync_password_probe():
     if not password:
         raise HTTPException(500, "SYNC_PASSWORD not configured in environment")
 
-    # Use legacy v1 format (with MAGIC) for backward compatibility — old plugins
-    # Content must be "LGM-PROBE" — old plugins check for this exact string.
-    probe_data = b"LGM-PROBE\n"
+    # Probe content — plugins check for "SYNC-PROBE" or legacy "LGM-PROBE"
+    probe_data = b"SYNC-PROBE\n"
     salt = os.urandom(16)
     nonce = os.urandom(12)
-    from app.core.stealth_crypto import _derive_key
+    from app.core.bundle_crypto import _derive_key
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     key = _derive_key(password, salt)
     aesgcm = AESGCM(key)
@@ -582,7 +581,7 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
                     return {
                         "success": False,
                         "message": f"Bundle requires prerequisite commits not present on mirror. "
-                                   f"Try a full sync (clear .git/lgm/ on sender). Details: {fetch_err}"
+                                   f"Try a full sync (clear .git/.cache/ on sender). Details: {fetch_err}"
                     }
             else:
                 # Try a bare fetch (no refspec) as fallback
@@ -898,7 +897,7 @@ async def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(No
 
         if bundle_proc.returncode != 0:
             if "Refusing to create empty bundle" in bundle_proc.stderr:
-                return Response(status_code=204, headers={"X-Ref": head, "X-Ref-Id": repo_name})
+                return {"status": "no_content", "head": head, "repo": repo_name}
             raise HTTPException(500, bundle_proc.stderr.strip() or "Failed to create bundle")
 
         password = os.getenv("SYNC_PASSWORD", "")
@@ -906,21 +905,21 @@ async def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(No
             raise HTTPException(500, "SYNC_PASSWORD not configured in environment")
 
         ts = datetime.now().strftime("%Y%m%d_%H%M")
-        dump_path = tmp_dir / f"cache_{repo_name}_{ts}.bin"
+        import uuid as _uuid
+        dump_path = tmp_dir / f".tmp_{_uuid.uuid4().hex[:8]}"
         try:
             encrypt_bundle_to_dump(bundle_path, dump_path, password)
         except Exception as e:
             raise HTTPException(500, f"Failed to create sync package: {e}")
 
-        return Response(
-            content=dump_path.read_bytes(),
-            media_type="application/octet-stream",
-            headers={
-                "Content-Disposition": f'attachment; filename="{dump_path.name}"',
-                "X-Ref": head,
-                "X-Ref-Id": repo_name,
-            },
-        )
+        import base64
+        return {
+            "status": "ok",
+            "head": head,
+            "repo": repo_name,
+            "filename": dump_path.name,
+            "data": base64.b64encode(dump_path.read_bytes()).decode("ascii"),
+        }
 
 
 @router.post("/documents/preview")
@@ -1412,24 +1411,6 @@ async def get_context_status():
     return {"indexed": False, "size": 0}
 
 
-@router.post("/system/panic")
-async def panic_mode():
-    """Emergency shutdown"""
-    if system_logger:
-        system_logger.critical("PANIC BUTTON PRESSED. TERMINATING.")
-
-    import os
-    import threading
-    import time
-
-    def kill_self():
-        time.sleep(0.5)
-        os._exit(0)
-
-    threading.Thread(target=kill_self, daemon=True).start()
-    return {"message": "Terminating..."}
-
-
 # ============ GLOBAL SEARCH ============
 
 
@@ -1787,8 +1768,8 @@ async def get_file_metadata(folder: str = Query(...), path: str = Query(...)):
 
 
 @router.post("/documents/apply")
-async def apply_stealth_bundle():
-    """Apply latest stealth dump to workspace with conflict resolution and repo verification"""
+async def apply_sync_bundle():
+    """Apply latest sync dump to workspace with conflict resolution and repo verification"""
     if not shared_manager or not repo_manager:
         raise HTTPException(500, "Managers не инициализированы")
 
@@ -1859,7 +1840,7 @@ async def apply_stealth_bundle():
         if not latest_dump:
             return {
                 "success": False,
-                "message": "No stealth dumps found",
+                "message": "No sync dumps found",
                 "scanned_folders": scanned,
                 "expected_pattern": "dump_*.dmp",
                 "current_repo": current_repo_name,
@@ -1914,7 +1895,7 @@ async def apply_stealth_bundle():
 
         # Decrypt dump (native LGMSTRL1 only)
         temp_bundle = None
-        temp_dir = Path(tempfile.mkdtemp(prefix="lgm-stealth-", dir=str(latest_dump.parent)))
+        temp_dir = Path(tempfile.mkdtemp(prefix="sync-tmp-", dir=str(latest_dump.parent)))
         bundle_candidate = temp_dir / "debug_info.tmp"
         try:
             with latest_dump.open("rb") as fh:
@@ -1989,7 +1970,7 @@ async def apply_stealth_bundle():
 
             if system_logger:
                 system_logger.info(
-                    "Stealth sync applied",
+                    "Sync applied",
                     {
                         "dump": latest_dump.name,
                         "repo": repo_manager.current_repo,
@@ -2020,7 +2001,7 @@ async def apply_stealth_bundle():
 
     except Exception as e:
         if system_logger:
-            system_logger.error("Failed to apply stealth sync", {"error": str(e)})
+            system_logger.error("Failed to apply sync", {"error": str(e)})
         raise HTTPException(500, f"Failed to apply sync: {str(e)}")
 
 
@@ -2128,7 +2109,7 @@ async def _alias_sync_workspace():
 
 @router.post("/sync/apply-bundle")
 async def _alias_apply_bundle():
-    return await apply_stealth_bundle()
+    return await apply_sync_bundle()
 
 @router.get("/sync/state")
 async def _alias_sync_state():

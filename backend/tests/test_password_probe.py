@@ -1,11 +1,11 @@
 """E2E test for password-probe handshake.
 
-Covers the full handshake flow that was broken by the stealth hardening
+Covers the full handshake flow that was broken by the crypto hardening
 (SYNC-PROBE vs LGM-PROBE content mismatch, v1 vs v2 format).
 
 Checks:
   1. /api/health returns passwordProbe=true
-  2. /api/auth/verify returns v1 (LGMSTRL1 magic) with LGM-PROBE content
+  2. /api/auth/verify returns v1 (LGMSTRL1 magic) with SYNC-PROBE content
   3. Decryption with correct password succeeds
   4. Decryption with wrong password raises
   5. No revealing X-Sync-Probe header is present
@@ -22,7 +22,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.core.stealth_crypto import decrypt_dump_to_bundle, MAGIC
+from app.core.bundle_crypto import decrypt_dump_to_bundle, MAGIC
 from app.routers import api as api_router
 import pytest
 
@@ -66,7 +66,7 @@ def test_probe_no_revealing_header(monkeypatch):
 
 
 def test_probe_decrypt_correct_password(monkeypatch):
-    """Full roundtrip: probe → decrypt → content must be 'LGM-PROBE'."""
+    """Full roundtrip: probe → decrypt → content must be 'SYNC-PROBE'."""
     password = "correct-password"
     client = _make_client(monkeypatch, password=password)
     res = client.get("/api/auth/verify")
@@ -80,7 +80,7 @@ def test_probe_decrypt_correct_password(monkeypatch):
         decrypt_dump_to_bundle(dump, out, password)
 
         content = out.read_bytes()
-        assert content == b"LGM-PROBE\n", f"Expected 'LGM-PROBE\\n', got {content!r}"
+        assert content == b"SYNC-PROBE\n", f"Expected 'SYNC-PROBE\\n', got {content!r}"
 
 
 def test_probe_decrypt_wrong_password_fails(monkeypatch):
@@ -113,7 +113,7 @@ def test_e2e_full_handshake_flow(monkeypatch):
     """
     Full plugin handshake simulation:
       capabilities → password-probe → decrypt → validate content
-    This is the exact flow that was broken by the stealth hardening changes.
+    This is the exact flow that was broken by the crypto hardening changes.
     """
     password = "e2e-handshake"
     client = _make_client(monkeypatch, password=password)
@@ -134,7 +134,7 @@ def test_e2e_full_handshake_flow(monkeypatch):
     payload = probe.content
     assert payload[:8] == MAGIC, "Probe must use v1 format"
 
-    # Step 3: Decrypt (simulates NativeStealthDump.decryptDumpBytes on plugin side)
+    # Step 3: Decrypt (simulates BundleCrypto.decryptDumpBytes on plugin side)
     with tempfile.TemporaryDirectory(prefix="e2e-hs-") as td:
         td_path = Path(td)
         dump_file = td_path / "probe.bin"
@@ -144,7 +144,7 @@ def test_e2e_full_handshake_flow(monkeypatch):
 
         content = out_file.read_text(encoding="utf-8").strip()
 
-    # Step 4: Validate — plugin checks for "LGM-PROBE" OR "SYNC-PROBE"
+    # Step 4: Validate — plugin checks for "SYNC-PROBE" (or legacy "LGM-PROBE")
     assert content in ("LGM-PROBE", "SYNC-PROBE"), f"Unexpected probe content: {content!r}"
-    # Current backend must send "LGM-PROBE" for backward compat
-    assert content == "LGM-PROBE", "Backend probe must send LGM-PROBE for old plugin compat"
+    # Current backend sends "SYNC-PROBE"
+    assert content == "SYNC-PROBE", "Backend probe must send SYNC-PROBE"

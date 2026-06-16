@@ -12,6 +12,7 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.gitlab.GitLabApi
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
@@ -22,7 +23,7 @@ class SyncGitLabMrToMirrorAction : AnAction() {
     val project: Project = e.project ?: return
     val baseDir = project.basePath
     if (baseDir.isNullOrBlank()) {
-      notify(project, "Cannot determine project directory", NotificationType.ERROR)
+      notify(project, LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
       return
     }
     val projectDir = File(baseDir)
@@ -30,13 +31,13 @@ class SyncGitLabMrToMirrorAction : AnAction() {
     val syncFacade = project.getService(SyncFacadeService::class.java)
 
     if (s.baseUrl.isBlank() || SecretsStore.syncPassword.isBlank()) {
-      notify(project, "Configure Mirror URL/password in settings", NotificationType.WARNING)
+      notify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
       return
     }
 
     val repoName = syncFacade.inferRepoName(projectDir, s)
     if (repoName.isBlank()) {
-      notify(project, "Configured Mirror Repo is invalid after sanitization", NotificationType.ERROR)
+      notify(project, LocalGitMirrorBundle.message("action.mr.invalidRepo"), NotificationType.ERROR)
       return
     }
     val repoInfo = syncFacade.describeRepoTarget(projectDir, s)
@@ -47,25 +48,25 @@ class SyncGitLabMrToMirrorAction : AnAction() {
       return
     }
     if (s.gitLabBaseUrl.isBlank() || SecretsStore.gitLabToken.isBlank() || s.gitLabProject.isBlank()) {
-      notify(project, "Configure GitLab Base URL/Token/Project in settings", NotificationType.WARNING)
+      notify(project, LocalGitMirrorBundle.message("notify.gitlab.missing"), NotificationType.WARNING)
       return
     }
     if (!GitLocal.isCleanWorkTree(project, projectDir)) {
-      notify(project, "Working tree has uncommitted changes. Commit/stash before syncing.", NotificationType.WARNING)
+      notify(project, LocalGitMirrorBundle.message("notify.worktree.dirty"), NotificationType.WARNING)
       return
     }
 
-    val mrIidRaw = Messages.showInputDialog(project, "Enter GitLab MR IID", "LocalGitMirror: Sync MR", null)
+    val mrIidRaw = Messages.showInputDialog(project, LocalGitMirrorBundle.message("action.mr.inputPrompt"), LocalGitMirrorBundle.message("action.mr.title"), null)
     val mrIid = mrIidRaw?.trim()?.removePrefix("!")
     if (mrIid.isNullOrBlank()) return
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Sync GitLab MR !${mrIid}", false) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("action.mr.progress", mrIid), false) {
       override fun run(indicator: ProgressIndicator) {
-        notify(project, "Starting sync: $repoInfo", NotificationType.INFORMATION)
+        notify(project, LocalGitMirrorBundle.message("action.mr.starting", repoInfo), NotificationType.INFORMATION)
         val originalBranch = GitLocal.currentBranch(project, projectDir)
         var createdBranch: String? = null
 
-        indicator.text = "Fetching MR metadata"
+        indicator.text = LocalGitMirrorBundle.message("action.mr.fetchingMetadata")
         val (mr, sourceBranch) = GitLabApi.getMergeRequestSourceBranch(
           s.gitLabBaseUrl,
           SecretsStore.gitLabToken,
@@ -74,30 +75,30 @@ class SyncGitLabMrToMirrorAction : AnAction() {
           s.gitLabInsecureTls
         )
         if (mr.code !in 200..299) {
-          notify(project, "GitLab error HTTP ${mr.code}: ${mr.body.take(500)}", NotificationType.ERROR)
+          notify(project, LocalGitMirrorBundle.message("action.mr.gitlabError", mr.code.toString(), mr.body.take(500)), NotificationType.ERROR)
           return
         }
 
         if (sourceBranch.isNullOrBlank()) {
-          notify(project, "Failed to parse source_branch from GitLab response", NotificationType.ERROR)
+          notify(project, LocalGitMirrorBundle.message("action.mr.noSourceBranch"), NotificationType.ERROR)
           return
         }
 
-        indicator.text = "Fetching source branch '$sourceBranch'"
+        indicator.text = LocalGitMirrorBundle.message("action.mr.fetchingBranch", sourceBranch)
         val fetch = GitLocal.fetch(project, projectDir, s.gitRemoteName, sourceBranch)
         if (!fetch.ok()) {
-          notify(project, "git fetch failed: ${fetch.stderr}", NotificationType.ERROR)
+          notify(project, LocalGitMirrorBundle.message("notify.gitFetchFailed", fetch.stderr), NotificationType.ERROR)
           return
         }
 
-        indicator.text = "Checking out '$sourceBranch'"
+        indicator.text = LocalGitMirrorBundle.message("action.mr.checkingOut", sourceBranch)
         val co = GitLocal.checkout(project, projectDir, sourceBranch)
         if (!co.ok()) {
           // If checkout fails because branch does not exist locally, create tracking branch.
           val localTemp = "lgm-mr-${mrIid}-${System.currentTimeMillis()}"
           val co2 = GitLocal.checkoutNew(project, projectDir, localTemp, "FETCH_HEAD")
           if (!co2.ok()) {
-            notify(project, "git checkout failed: ${co.stderr}\n${co2.stderr}", NotificationType.ERROR)
+            notify(project, LocalGitMirrorBundle.message("notify.checkoutFailed", "${co.stderr}\n${co2.stderr}"), NotificationType.ERROR)
             return
           }
           createdBranch = localTemp
@@ -109,7 +110,7 @@ class SyncGitLabMrToMirrorAction : AnAction() {
           if (!originalBranch.isNullOrBlank()) {
             val restore = GitLocal.checkout(project, projectDir, originalBranch)
             if (!restore.ok()) {
-              notify(project, "Synced, but failed to restore branch '$originalBranch': ${restore.stderr}", NotificationType.WARNING)
+              notify(project, LocalGitMirrorBundle.message("action.mr.restoreBranchFailed", originalBranch, restore.stderr), NotificationType.WARNING)
             }
           }
           if (!createdBranch.isNullOrBlank()) {

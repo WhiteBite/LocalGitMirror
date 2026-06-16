@@ -6,7 +6,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-class NativeStealthApplyTest {
+class BundleImporterTest {
 
   @Test
   fun `apply dump ff-only advances head`() {
@@ -35,9 +35,9 @@ class NativeStealthApplyTest {
       val bundle = File(root, "x.bundle")
       git(source, "bundle", "create", bundle.absolutePath, "--all")
       val dump = File(root, "x.dmp")
-      dump.writeBytes(NativeStealthDump.encryptBundleBytes(bundle.readBytes(), "***REMOVED***"))
+      dump.writeBytes(BundleCrypto.encryptBundleBytes(bundle.readBytes(), "***REMOVED***"))
 
-      val res = NativeStealthApply.applyDump(
+      val res = BundleImporter.applyDump(
         workDir = target,
         password = "***REMOVED***",
         dumpFile = dump,
@@ -65,9 +65,9 @@ class NativeStealthApplyTest {
       val bundle = File(root, "x.bundle")
       git(repo, "bundle", "create", bundle.absolutePath, "--all")
       val dump = File(root, "x.dmp")
-      dump.writeBytes(NativeStealthDump.encryptBundleBytes(bundle.readBytes(), "***REMOVED***"))
+      dump.writeBytes(BundleCrypto.encryptBundleBytes(bundle.readBytes(), "***REMOVED***"))
 
-      val res = NativeStealthApply.applyDump(
+      val res = BundleImporter.applyDump(
         workDir = repo,
         password = "wrong",
         dumpFile = dump,
@@ -95,9 +95,9 @@ class NativeStealthApplyTest {
       val bundle = File(root, "x.bundle")
       git(repo, "bundle", "create", bundle.absolutePath, "--all")
       val dump = File(root, "x.dmp")
-      dump.writeBytes(NativeStealthDump.encryptBundleBytes(bundle.readBytes(), "***REMOVED***"))
+      dump.writeBytes(BundleCrypto.encryptBundleBytes(bundle.readBytes(), "***REMOVED***"))
 
-      val res = NativeStealthApply.applyDump(
+      val res = BundleImporter.applyDump(
         workDir = repo,
         password = "***REMOVED***",
         dumpFile = dump,
@@ -131,9 +131,9 @@ class NativeStealthApplyTest {
       val bundle = File(root, "x.bundle")
       git(repo, "bundle", "create", bundle.absolutePath, "--all")
       val dump = File(root, "x.dmp")
-      dump.writeBytes(NativeStealthDump.encryptBundleBytes(bundle.readBytes(), "***REMOVED***"))
+      dump.writeBytes(BundleCrypto.encryptBundleBytes(bundle.readBytes(), "***REMOVED***"))
 
-      val res = NativeStealthApply.applyDump(
+      val res = BundleImporter.applyDump(
         workDir = repo,
         password = "***REMOVED***",
         dumpFile = dump,
