@@ -141,7 +141,7 @@ class MirrorSettingsConfigurable : Configurable {
           }
         }
       }
-    }, "LGM-LAN-Discovery").start()
+    }, "LAN-Discovery").start()
   }
 
   private var discoverBtn: JButton? = null

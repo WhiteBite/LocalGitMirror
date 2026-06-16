@@ -54,7 +54,7 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
       override fun run(indicator: ProgressIndicator) {
         notify(project, "Starting sync: $repoInfo", NotificationType.INFORMATION)
         val original = GitLocal.currentBranch(project, projectDir)
-        val tempBranch = "lgm-send-commits-${System.currentTimeMillis()}"
+        val tempBranch = "sync-tmp-${System.currentTimeMillis()}"
 
         val create = GitLocal.checkoutNew(project, projectDir, tempBranch, "HEAD")
         if (!create.ok()) {

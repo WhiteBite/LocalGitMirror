@@ -5,7 +5,7 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 
 object BundleImporter {
-  private const val SYNC_STATE_PULL = "lgm-pull-state"
+  private const val SYNC_STATE_PULL = ".pull-state"
 
   data class ApplyResult(
     val ok: Boolean,

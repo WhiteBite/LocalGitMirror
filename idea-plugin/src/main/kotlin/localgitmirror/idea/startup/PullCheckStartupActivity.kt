@@ -62,7 +62,7 @@ class PullCheckStartupActivity : ProjectActivity {
             try {
               checkForUpdates(project, dir, s, repo)
             } catch (_: Exception) {}
-          }, "LGM-focus-check").start()
+          }, "sync-focus-check").start()
         }
       })
     }
@@ -103,7 +103,7 @@ class PullCheckStartupActivity : ProjectActivity {
       .addAction(NotificationAction.createSimpleExpiring("Pull from Mirror") {
         localgitmirror.idea.actions.PullFromMirrorAction().actionPerformed(
           com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
-            "LGMFocusCheck",
+            "SyncFocusCheck",
             null,
             com.intellij.openapi.actionSystem.DataContext { dataId ->
               if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null

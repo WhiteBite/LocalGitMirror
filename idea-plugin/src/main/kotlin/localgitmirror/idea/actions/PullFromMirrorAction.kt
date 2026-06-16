@@ -117,11 +117,16 @@ class PullFromMirrorAction : AnAction() {
                     .redirectErrorStream(false)
                   val proc = pb.start()
                   proc.outputStream.use { it.write(decryptedBytes); it.flush() }
-                  val fetchStdout = proc.inputStream.bufferedReader().readText()
-                  val fetchStderr = proc.errorStream.bufferedReader().readText()
+                  // Read stdout and stderr concurrently to avoid pipe deadlock
+                  val stdoutStr = StringBuilder()
+                  val stderrStr = StringBuilder()
+                  val t1 = Thread { stdoutStr.append(proc.inputStream.bufferedReader().readText()) }
+                  val t2 = Thread { stderrStr.append(proc.errorStream.bufferedReader().readText()) }
+                  t1.start(); t2.start()
                   val exitCode = proc.waitFor()
+                  t1.join(); t2.join()
                   if (exitCode != 0) {
-                      notify(project, "[trace=$traceId] Failed to fetch from bundle: $fetchStderr", NotificationType.ERROR, dir)
+                      notify(project, "[trace=$traceId] Failed to fetch from bundle: ${stderrStr}", NotificationType.ERROR, dir)
                       return
                   }
               } finally {
