@@ -21,6 +21,8 @@ import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import javax.swing.*
+import javax.swing.event.PopupMenuEvent
+import javax.swing.event.PopupMenuListener
 
 class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal val log = JTextArea()
@@ -38,6 +40,16 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
   internal val branchChipPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
   internal val selectedAdditionalBranches = mutableSetOf<String>()
+
+  // Dynamic UI containers — rebuilt when mode changes
+  internal val badgesPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply { isOpaque = false }
+  internal val actionsBox = JPanel().apply {
+    layout = BoxLayout(this, BoxLayout.Y_AXIS)
+    isOpaque = false
+    alignmentX = LEFT_ALIGNMENT
+  }
+  internal val moreMenu = JPopupMenu()
+  internal val autoPullItem = JCheckBoxMenuItem(LocalGitMirrorBundle.message("settings.sync.autoCheck"))
 
   internal fun isWorkMode(): Boolean = service<MirrorSettingsService>().state.isWorkMode()
 
@@ -147,90 +159,75 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     branchChipPanel.add(moreBtn)
   }
 
-  init {
-    layout = BorderLayout()
+  // ── Helper to create gear menu items ──
+  private fun gearMenuItem(title: String, icon: Icon? = null, action: () -> Unit): JMenuItem {
+    val mi = JMenuItem(title, icon)
+    mi.addActionListener { action() }
+    return mi
+  }
 
+  // ── Helper to create a single row of action buttons ──
+  private fun actionRow(vararg buttons: JButton): JPanel {
+    val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
+    row.isOpaque = false
+    row.alignmentX = LEFT_ALIGNMENT
+    row.maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(28))
+    buttons.forEach { row.add(it) }
+    return row
+  }
+
+  /**
+   * Rebuild the gear popup menu based on current mode.
+   */
+  internal fun rebuildGearMenu() {
+    val workMode = isWorkMode()
     val settingsState = service<MirrorSettingsService>().state
+    moreMenu.removeAll()
+
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.preflight"), AllIcons.General.InspectionsOK) { runPreflight() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.dryRunSend"), AllIcons.Actions.Preview) { runDryRun() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.dryRunPull"), AllIcons.Actions.Preview) { runPullDryRun() })
+    moreMenu.addSeparator()
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.applyLocalDump"), AllIcons.Actions.OpenNewTab) { applyLocalDump() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.testMirror"), AllIcons.Actions.Checked) { testMirror() })
+    if (workMode) {
+      moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.testGitLab"), AllIcons.Actions.Checked) { testGitLab() })
+    }
+    moreMenu.addSeparator()
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.copyConfig"), AllIcons.Actions.Copy) { copyConfigLine() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.pasteConfig"), AllIcons.Actions.Upload) { pasteConfigLine() })
+    moreMenu.addSeparator()
+    autoPullItem.isSelected = settingsState.autoCheckPullOnStartup
+    moreMenu.add(autoPullItem)
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.settings"), AllIcons.General.Settings) {
+      ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
+      refreshStatus()
+    })
+  }
+
+  /**
+   * Rebuild the action buttons and badge visibility based on current mode.
+   */
+  internal fun rebuildActions() {
     val workMode = isWorkMode()
 
-    // Update modeBadge with current state
-    modeBadge.text = if (workMode) LocalGitMirrorBundle.message("badge.mode.work") else LocalGitMirrorBundle.message("badge.mode.home")
+    // Update mode badge text and icon
     modeBadge.workMode = workMode
+    modeBadge.text = if (workMode) LocalGitMirrorBundle.message("badge.mode.work") else LocalGitMirrorBundle.message("badge.mode.home")
 
-    // ── topContainer: packs all controls tightly to the top ──
-    val topContainer = JPanel()
-    topContainer.layout = BoxLayout(topContainer, BoxLayout.Y_AXIS)
-    topContainer.border = JBUI.Borders.empty(JBUI.scale(4), JBUI.scale(8))
-
-    // Row 1: Header — badges LEFT, gear RIGHT (compact!)
-    val headerRow = JPanel(BorderLayout(JBUI.scale(4), 0))
-    headerRow.isOpaque = false
-    headerRow.alignmentX = LEFT_ALIGNMENT
-
-    val badges = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
-    badges.isOpaque = false
-    badges.add(modeBadge)
-    badges.add(mirrorBadge)
-    if (workMode) badges.add(gitLabBadge)
-    badges.add(lastSyncBadge)
-    headerRow.add(badges, BorderLayout.CENTER)
-
-    val moreMenu = JPopupMenu()
-    fun menuItem(title: String, icon: Icon? = null, action: () -> Unit): JMenuItem {
-      val mi = JMenuItem(title, icon); mi.addActionListener { action() }; return mi
-    }
-    moreMenu.add(menuItem(LocalGitMirrorBundle.message("toolwindow.preflight"), AllIcons.General.InspectionsOK) { runPreflight() })
-    moreMenu.add(menuItem(LocalGitMirrorBundle.message("toolwindow.dryRunSend"), AllIcons.Actions.Preview) { runDryRun() })
-    moreMenu.add(menuItem(LocalGitMirrorBundle.message("toolwindow.dryRunPull"), AllIcons.Actions.Preview) { runPullDryRun() })
-    moreMenu.addSeparator()
-    moreMenu.add(menuItem(LocalGitMirrorBundle.message("toolwindow.menu.applyLocalDump"), AllIcons.Actions.OpenNewTab) { applyLocalDump() })
-    moreMenu.add(menuItem(LocalGitMirrorBundle.message("toolwindow.menu.testMirror"), AllIcons.Actions.Checked) { testMirror() })
-    if (workMode) moreMenu.add(menuItem(LocalGitMirrorBundle.message("toolwindow.menu.testGitLab"), AllIcons.Actions.Checked) { testGitLab() })
-    moreMenu.addSeparator()
-    moreMenu.add(menuItem(LocalGitMirrorBundle.message("toolwindow.menu.copyConfig"), AllIcons.Actions.Copy) { copyConfigLine() })
-    moreMenu.add(menuItem(LocalGitMirrorBundle.message("toolwindow.menu.pasteConfig"), AllIcons.Actions.Upload) { pasteConfigLine() })
-    moreMenu.addSeparator()
-    val autoPullItem = JCheckBoxMenuItem(LocalGitMirrorBundle.message("settings.sync.autoCheck"))
-    autoPullItem.isSelected = settingsState.autoCheckPullOnStartup
-    autoPullItem.addActionListener { settingsState.autoCheckPullOnStartup = autoPullItem.isSelected }
-    moreMenu.add(autoPullItem)
-    moreMenu.add(menuItem(LocalGitMirrorBundle.message("toolwindow.menu.settings"), AllIcons.General.Settings) {
-      ShowSettingsUtil.getInstance().showSettingsDialog(project, "LocalGitMirror"); refreshStatus()
-    })
-
-    val gearBtn = JButton(AllIcons.General.Settings)
-    gearBtn.margin = JBUI.insets(1)
-    gearBtn.isFocusPainted = false
-    gearBtn.isBorderPainted = false
-    gearBtn.isContentAreaFilled = false
-    gearBtn.toolTipText = LocalGitMirrorBundle.message("toolwindow.menu.settings")
-    gearBtn.addActionListener { moreMenu.show(gearBtn, 0, gearBtn.height) }
-    headerRow.add(gearBtn, BorderLayout.EAST)
-    topContainer.add(headerRow)
-
-    // Status line (branch info, compact)
-    status.font = JBUI.Fonts.smallFont()
-    status.foreground = UIUtil.getContextHelpForeground()
-    status.alignmentX = LEFT_ALIGNMENT
-    status.border = JBUI.Borders.empty(2, 0)
-    topContainer.add(status)
-
-    topContainer.add(Box.createVerticalStrut(JBUI.scale(4)))
-
-    // Row 2: Action buttons — two BoxLayout rows, buttons take natural size
-    val actionsBox = JPanel()
-    actionsBox.layout = BoxLayout(actionsBox, BoxLayout.Y_AXIS)
-    actionsBox.isOpaque = false
-    actionsBox.alignmentX = LEFT_ALIGNMENT
-    fun actionRow(vararg buttons: JButton): JPanel {
-      val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
-      row.isOpaque = false
-      row.alignmentX = LEFT_ALIGNMENT
-      row.maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(28))
-      buttons.forEach { row.add(it) }
-      return row
+    // Manage GitLab badge visibility
+    if (workMode) {
+      if (gitLabBadge.parent == null) {
+        // Insert before lastSyncBadge
+        val idx = badgesPanel.components.indexOf(lastSyncBadge).coerceAtLeast(0)
+        badgesPanel.add(gitLabBadge, idx)
+      }
+    } else {
+      badgesPanel.remove(gitLabBadge)
     }
 
+    // Rebuild action buttons
+    actionsBox.removeAll()
     if (workMode) {
       actionsBox.add(actionRow(
         primaryBtn(LocalGitMirrorBundle.message("toolwindow.sendCurrent"), AllIcons.Actions.Upload) { syncCurrentBranch() },
@@ -255,6 +252,74 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         btn(LocalGitMirrorBundle.message("toolwindow.pullBack"), AllIcons.Actions.Diff) { pullBack() }
       ))
     }
+
+    // Rebuild gear menu
+    rebuildGearMenu()
+
+    revalidate()
+    repaint()
+  }
+
+  init {
+    layout = BorderLayout()
+
+    val settingsState = service<MirrorSettingsService>().state
+    val workMode = isWorkMode()
+
+    // Seed modeBadge
+    modeBadge.text = if (workMode) LocalGitMirrorBundle.message("badge.mode.work") else LocalGitMirrorBundle.message("badge.mode.home")
+    modeBadge.workMode = workMode
+
+    // ── topContainer: packs all controls tightly to the top ──
+    val topContainer = JPanel()
+    topContainer.layout = BoxLayout(topContainer, BoxLayout.Y_AXIS)
+    topContainer.border = JBUI.Borders.empty(JBUI.scale(4), JBUI.scale(8))
+
+    // Row 1: Header — badges LEFT, gear RIGHT (compact!)
+    val headerRow = JPanel(BorderLayout(JBUI.scale(4), 0))
+    headerRow.isOpaque = false
+    headerRow.alignmentX = LEFT_ALIGNMENT
+
+    badgesPanel.add(modeBadge)
+    badgesPanel.add(mirrorBadge)
+    if (workMode) badgesPanel.add(gitLabBadge)
+    badgesPanel.add(lastSyncBadge)
+    headerRow.add(badgesPanel, BorderLayout.CENTER)
+
+    // Wire autoPullItem toggle + refresh on menu open
+    autoPullItem.addActionListener { settingsState.autoCheckPullOnStartup = autoPullItem.isSelected }
+    moreMenu.addPopupMenuListener(object : PopupMenuListener {
+      override fun popupMenuWillBecomeVisible(e: PopupMenuEvent) {
+        autoPullItem.isSelected = service<MirrorSettingsService>().state.autoCheckPullOnStartup
+      }
+      override fun popupMenuWillBecomeInvisible(e: PopupMenuEvent) {}
+      override fun popupMenuCanceled(e: PopupMenuEvent) {}
+    })
+
+    // Build gear menu
+    rebuildGearMenu()
+
+    val gearBtn = JButton(AllIcons.General.Settings)
+    gearBtn.margin = JBUI.insets(1)
+    gearBtn.isFocusPainted = false
+    gearBtn.isBorderPainted = false
+    gearBtn.isContentAreaFilled = false
+    gearBtn.toolTipText = LocalGitMirrorBundle.message("toolwindow.menu.settings")
+    gearBtn.addActionListener { moreMenu.show(gearBtn, 0, gearBtn.height) }
+    headerRow.add(gearBtn, BorderLayout.EAST)
+    topContainer.add(headerRow)
+
+    // Status line (branch info, compact)
+    status.font = JBUI.Fonts.smallFont()
+    status.foreground = UIUtil.getContextHelpForeground()
+    status.alignmentX = LEFT_ALIGNMENT
+    status.border = JBUI.Borders.empty(2, 0)
+    topContainer.add(status)
+
+    topContainer.add(Box.createVerticalStrut(JBUI.scale(4)))
+
+    // Row 2: Action buttons (dynamic — rebuilt by rebuildActions)
+    rebuildActions()
     topContainer.add(actionsBox)
 
     // Row 3: Branch chips
@@ -345,10 +410,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val s = service<MirrorSettingsService>().state
     status.text = LocalGitMirrorBundle.message("toolwindow.status.branchClean", branch, clean.toString())
 
-    // Update mode badge
-    val workMode = isWorkMode()
-    modeBadge.workMode = workMode
-    modeBadge.text = if (workMode) LocalGitMirrorBundle.message("badge.mode.work") else LocalGitMirrorBundle.message("badge.mode.home")
+    // Rebuild buttons/badges/menu if mode changed
+    rebuildActions()
 
     val mirrorConfigured = s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
     mirrorBadge.text = if (mirrorConfigured) LocalGitMirrorBundle.message("toolwindow.badge.mirrorConnected") else LocalGitMirrorBundle.message("toolwindow.badge.mirrorNotConfigured")
