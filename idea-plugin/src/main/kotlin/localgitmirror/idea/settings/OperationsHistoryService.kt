@@ -52,4 +52,8 @@ class OperationsHistoryService : PersistentStateComponent<OperationsHistoryServi
     if (all.isEmpty()) return emptyList()
     return all.takeLast(limit).asReversed()
   }
+
+  fun clear() {
+    state.entries.clear()
+  }
 }

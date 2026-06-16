@@ -241,6 +241,101 @@ internal fun LocalGitMirrorPanel.syncSelectedCommits() {
   })
 }
 
+internal fun LocalGitMirrorPanel.pushAs() {
+  val dir = baseDir() ?: run {
+    notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
+    return
+  }
+  val settings = service<MirrorSettingsService>().state
+  val err = ensureConfigured(settings)
+  if (err != null) {
+    notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
+    return
+  }
+
+  val currentBranch = GitLocal.currentBranch(project, dir)
+  if (currentBranch.isNullOrBlank()) {
+    notify(LocalGitMirrorBundle.message("notify.currentBranch.missing"), NotificationType.WARNING)
+    return
+  }
+
+  val targetBranch = Messages.showInputDialog(
+    project,
+    LocalGitMirrorBundle.message("dialog.pushAs.prompt", currentBranch),
+    LocalGitMirrorBundle.message("dialog.pushAs.title"),
+    null, "", null
+  )
+  if (targetBranch.isNullOrBlank()) return
+
+  // Basic branch name validation
+  if (targetBranch.startsWith(".") || targetBranch.startsWith("-") ||
+    targetBranch.contains("..") || targetBranch.contains("@{") ||
+    targetBranch.any { it in setOf(' ', '~', '^', ':', '?', '*', '[', '\\') } ||
+    targetBranch.endsWith(".lock") || targetBranch.endsWith("/") ||
+    targetBranch.contains("//")
+  ) {
+    notify("Invalid branch name: '$targetBranch'", NotificationType.ERROR)
+    return
+  }
+
+  val localBranches = GitLocal.localBranches(project, dir)
+  if (localBranches.contains(targetBranch)) {
+    notify(LocalGitMirrorBundle.message("notify.send.branch.alreadyExists", targetBranch), NotificationType.WARNING)
+    return
+  }
+
+  isSyncing = true
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Push as '$targetBranch'", false) {
+    override fun run(indicator: ProgressIndicator) {
+      try {
+        append("Push as: $currentBranch -> $targetBranch")
+        append("Target: ${syncFacade.describeRepoTarget(dir, settings)}")
+
+        val create = GitLocal.checkoutNew(project, dir, targetBranch, "HEAD")
+        if (!create.ok()) {
+          notify("Failed to create branch '$targetBranch': ${create.stderr}", NotificationType.ERROR)
+          markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
+          return
+        }
+
+        val syncRes = try {
+          syncFacade.runFullSync(dir, settings)
+        } finally {
+          if (!currentBranch.isNullOrBlank()) GitLocal.checkout(project, dir, currentBranch)
+          GitLocal.deleteLocalBranch(project, dir, targetBranch, force = true)
+        }
+
+        val res = syncRes.step
+        if (!res.ok) {
+          append("Failed: ${res.message} ${res.details}")
+          historyService.add("Push as", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}")
+          notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}", NotificationType.ERROR)
+          markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
+          refreshHistoryLog()
+          return
+        }
+        if (settings.offlineGenerateOnly) {
+          append("Offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
+          historyService.add("Push as", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
+          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: settings.repo}'", NotificationType.INFORMATION)
+        } else {
+          append("OK: ${syncRes.http?.code} ${syncRes.http?.body?.take(400) ?: ""}")
+          historyService.add("Push as", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${syncRes.http?.body ?: "OK"}")
+          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.pushAs.ok", targetBranch, syncRes.repo ?: settings.repo)}", NotificationType.INFORMATION)
+        }
+        markLastSyncOk()
+        refreshHistoryLog()
+      } finally {
+        isSyncing = false
+      }
+    }
+
+    override fun onFinished() {
+      isSyncing = false
+    }
+  })
+}
+
 internal fun LocalGitMirrorPanel.syncMr() {
   val dir = baseDir() ?: run {
     notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
