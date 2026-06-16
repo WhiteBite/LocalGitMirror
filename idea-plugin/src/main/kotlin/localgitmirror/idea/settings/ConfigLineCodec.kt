@@ -53,10 +53,17 @@ object ConfigLineCodec {
   private fun sanitize(text: String): String = stripAnsi(stripZeroWidth(text))
 
   /** Derive a 256-bit AES key from the machine hostname via PBKDF2. */
+  private val FIXED_SALT = byteArrayOf(
+    0x4a.toByte(), 0xf3.toByte(), 0x8b.toByte(), 0xc2.toByte(),
+    0x91.toByte(), 0xe5.toByte(), 0x17.toByte(), 0xd4.toByte(),
+    0xa0.toByte(), 0x6c.toByte(), 0x33.toByte(), 0x7e.toByte(),
+    0xb8.toByte(), 0x05.toByte(), 0xdc.toByte(), 0x49.toByte()
+  )
+
   private fun deriveKey(): SecretKeySpec {
     val hostname = runCatching { InetAddress.getLocalHost().hostName }.getOrDefault("localhost")
     val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
-    val spec = PBEKeySpec(hostname.toCharArray(), hostname.toByteArray(StandardCharsets.UTF_8), 10_000, 256)
+    val spec = PBEKeySpec(hostname.toCharArray(), FIXED_SALT, 10_000, 256)
     val secret = factory.generateSecret(spec)
     return SecretKeySpec(secret.encoded, "AES")
   }

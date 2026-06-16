@@ -174,7 +174,7 @@ internal fun LocalGitMirrorPanel.syncSelectedCommits() {
     override fun run(indicator: ProgressIndicator) {
       try {
         val original = GitLocal.currentBranch(project, dir)
-        val tempBranch = "lgm-send-commits-${System.currentTimeMillis()}"
+        val tempBranch = "sync-tmp-${System.currentTimeMillis()}"
         append("Send commits: ${selectedHashes.joinToString(" ")}")
         append("Target: ${syncFacade.describeRepoTarget(dir, settings)}")
 
@@ -289,7 +289,7 @@ internal fun LocalGitMirrorPanel.syncMr() {
 
         val co = GitLocal.checkout(project, dir, sourceBranch)
         if (!co.ok()) {
-          val localTemp = "lgm-mr-$mrIid-${System.currentTimeMillis()}"
+          val localTemp = "mr-tmp-$mrIid-${System.currentTimeMillis()}"
           val co2 = GitLocal.checkoutNew(project, dir, localTemp, "FETCH_HEAD")
           if (!co2.ok()) {
             notify(LocalGitMirrorBundle.message("notify.checkoutFailed", "${co.stderr}\n${co2.stderr}"), NotificationType.ERROR)

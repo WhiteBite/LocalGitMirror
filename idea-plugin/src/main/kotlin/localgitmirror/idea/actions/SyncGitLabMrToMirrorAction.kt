@@ -95,7 +95,7 @@ class SyncGitLabMrToMirrorAction : AnAction() {
         val co = GitLocal.checkout(project, projectDir, sourceBranch)
         if (!co.ok()) {
           // If checkout fails because branch does not exist locally, create tracking branch.
-          val localTemp = "lgm-mr-${mrIid}-${System.currentTimeMillis()}"
+          val localTemp = "mr-tmp-${mrIid}-${System.currentTimeMillis()}"
           val co2 = GitLocal.checkoutNew(project, projectDir, localTemp, "FETCH_HEAD")
           if (!co2.ok()) {
             notify(project, LocalGitMirrorBundle.message("notify.checkoutFailed", "${co.stderr}\n${co2.stderr}"), NotificationType.ERROR)
