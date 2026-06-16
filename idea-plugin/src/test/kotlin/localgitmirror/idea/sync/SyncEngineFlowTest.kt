@@ -230,6 +230,10 @@ class SyncEngineFlowTest {
       uploadCalls += 1
       return MirrorApi.HttpResult(200, """{"success":true}""")
     }
+
+    override fun getRefs(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): MirrorApi.RefsResult {
+      return MirrorApi.RefsResult(200, "ok", refs = emptyMap(), head = null)
+    }
   }
 
   private class FakeGitPort(private val head: String = "abc1234") : GitPort {

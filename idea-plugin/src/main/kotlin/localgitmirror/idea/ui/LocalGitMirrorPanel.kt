@@ -234,10 +234,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       actionsBox.add(actionRow(
         primaryBtn(LocalGitMirrorBundle.message("toolwindow.sendCurrent"), AllIcons.Actions.Upload) { syncCurrentBranch() },
         btn(LocalGitMirrorBundle.message("toolwindow.menu.sendBranch"), AllIcons.Vcs.Branch) { syncBranch() },
-        btn(LocalGitMirrorBundle.message("toolwindow.sendCommits"), AllIcons.Vcs.History) { syncSelectedCommits() }
+        btn(LocalGitMirrorBundle.message("toolwindow.menu.sendAs"), AllIcons.Actions.Copy) { pushAs() }
       ))
       actionsBox.add(Box.createVerticalStrut(JBUI.scale(2)))
       actionsBox.add(actionRow(
+        btn(LocalGitMirrorBundle.message("toolwindow.sendCommits"), AllIcons.Vcs.History) { syncSelectedCommits() },
         btn(LocalGitMirrorBundle.message("toolwindow.menu.sendMr"), AllIcons.Vcs.Merge) { syncMr() },
         btn(LocalGitMirrorBundle.message("toolwindow.pullFromMirror"), AllIcons.Actions.Download) { pullFromMirror() },
         btn(LocalGitMirrorBundle.message("toolwindow.pullBack"), AllIcons.Actions.Diff) { pullBack() }
@@ -263,7 +264,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
     topContainer.add(Box.createVerticalStrut(JBUI.scale(2)))
 
-    // Row 4: History toggle (compact)
+    // Row 4: History toggle + clear button (compact)
     val historyToggleRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
     historyToggleRow.isOpaque = false
     historyToggleRow.alignmentX = LEFT_ALIGNMENT
@@ -272,6 +273,19 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     historyToggle.font = JBUI.Fonts.smallFont()
     historyToggle.isFocusPainted = false
     historyToggleRow.add(historyToggle)
+
+    val clearBtn = JButton(AllIcons.Actions.GC)
+    clearBtn.margin = JBUI.insets(1, 2)
+    clearBtn.isFocusPainted = false
+    clearBtn.isBorderPainted = false
+    clearBtn.isContentAreaFilled = false
+    clearBtn.toolTipText = LocalGitMirrorBundle.message("toolwindow.history.clear")
+    clearBtn.addActionListener {
+      historyService.clear()
+      refreshHistoryLog()
+      log.text = ""
+    }
+    historyToggleRow.add(clearBtn)
     topContainer.add(historyToggleRow)
 
     // Pack topContainer to NORTH — no vertical gap

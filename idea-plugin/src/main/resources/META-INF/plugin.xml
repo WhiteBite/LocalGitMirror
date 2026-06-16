@@ -64,6 +64,10 @@
             class="localgitmirror.idea.actions.SendSelectedCommitsToMirrorAction"
             text="Send commits…" description="Send selected commits to Mirror"/>
 
+    <action id="LocalGitMirror.PushAs"
+            class="localgitmirror.idea.actions.PushAsAction"
+            text="Send as…" description="Send current HEAD to Mirror under a different branch name"/>
+
     <!-- ── Pull actions ── -->
     <action id="LocalGitMirror.SyncPull"
             class="localgitmirror.idea.actions.PullFromMirrorAction"
@@ -97,6 +101,7 @@
       <reference ref="LocalGitMirror.SyncBranch"/>
       <reference ref="LocalGitMirror.SyncGitLabMR"/>
       <reference ref="LocalGitMirror.SendSelectedCommits"/>
+      <reference ref="LocalGitMirror.PushAs"/>
       <separator/>
       <reference ref="LocalGitMirror.SyncPull"/>
       <reference ref="LocalGitMirror.PullBack"/>
@@ -112,6 +117,7 @@
       <add-to-group group-id="LocalGitMirror.ContextGroup" anchor="last"/>
       <reference ref="LocalGitMirror.SyncCurrentBranch"/>
       <reference ref="LocalGitMirror.SyncBranch"/>
+      <reference ref="LocalGitMirror.PushAs"/>
       <separator/>
       <reference ref="LocalGitMirror.SyncPull"/>
       <reference ref="LocalGitMirror.PullBack"/>
