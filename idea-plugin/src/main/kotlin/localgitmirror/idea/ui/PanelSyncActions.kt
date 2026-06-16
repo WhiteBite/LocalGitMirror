@@ -92,15 +92,11 @@ internal fun LocalGitMirrorPanel.syncBranch() {
   ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send branch", false) {
     override fun run(indicator: ProgressIndicator) {
       try {
-        val selectTitle = LocalGitMirrorBundle.message("dialog.selectBranch.title")
-        val selectPrompt = LocalGitMirrorBundle.message("dialog.selectBranch.prompt")
-        val chosen2 = Messages.showEditableChooseDialog(selectPrompt, selectTitle, null, branches.toTypedArray(), current, null) ?: return
-
         val original = GitLocal.currentBranch(project, dir)
-        append("Send branch: $chosen2")
+        append("Send branch: $chosen")
         append("Target: ${syncFacade.describeRepoTarget(dir, settings)}")
 
-        val co = GitLocal.checkout(project, dir, chosen2)
+        val co = GitLocal.checkout(project, dir, chosen)
         if (!co.ok()) {
           append(LocalGitMirrorBundle.message("notify.checkoutFailed", co.stderr))
           notify(LocalGitMirrorBundle.message("notify.checkoutFailed", co.stderr), NotificationType.ERROR)
@@ -110,7 +106,7 @@ internal fun LocalGitMirrorPanel.syncBranch() {
         val syncRes = try {
           syncFacade.runFullSync(dir, settings)
         } finally {
-          if (!original.isNullOrBlank() && original != chosen2) {
+          if (!original.isNullOrBlank() && original != chosen) {
             val back = GitLocal.checkout(project, dir, original)
             if (!back.ok()) {
               notify(LocalGitMirrorBundle.message("notify.restoreBranchFailed", original, back.stderr), NotificationType.WARNING)
@@ -134,7 +130,7 @@ internal fun LocalGitMirrorPanel.syncBranch() {
         } else {
           append("OK: ${syncRes.http?.code} ${syncRes.http?.body?.take(400) ?: ""}")
           historyService.add("Send branch", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${syncRes.http?.body ?: "OK"}")
-          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.branch.ok", chosen2, syncRes.repo ?: settings.repo)}", NotificationType.INFORMATION)
+          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.branch.ok", chosen, syncRes.repo ?: settings.repo)}", NotificationType.INFORMATION)
         }
         markLastSyncOk()
         refreshHistoryLog()
@@ -274,7 +270,7 @@ internal fun LocalGitMirrorPanel.pushAs() {
     targetBranch.endsWith(".lock") || targetBranch.endsWith("/") ||
     targetBranch.contains("//")
   ) {
-    notify("Invalid branch name: '$targetBranch'", NotificationType.ERROR)
+    notify(LocalGitMirrorBundle.message("action.pushAs.invalidBranch", targetBranch), NotificationType.ERROR)
     return
   }
 
@@ -352,11 +348,11 @@ internal fun LocalGitMirrorPanel.syncMr() {
     return
   }
 
-  val mrIid = pickMrIid(s) ?: return
   isSyncing = true
   ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send MR/PR", false) {
     override fun run(indicator: ProgressIndicator) {
       try {
+        val mrIid = pickMrIid(s) ?: return
         val original = GitLocal.currentBranch(project, dir)
         var createdBranch: String? = null
         append("Send MR: !$mrIid")
