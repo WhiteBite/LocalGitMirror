@@ -7,7 +7,7 @@ import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.SyncStateStore
-import localgitmirror.idea.workkit.NativeStealthDump
+import localgitmirror.idea.workkit.BundleCrypto
 import java.io.File
 
 @Service(Service.Level.PROJECT)
@@ -88,7 +88,7 @@ class SyncFacadeService(private val project: Project) {
           val probe = MirrorApi.passwordProbe(settings.baseUrl, SecretsStore.mirrorApiKey, settings.mirrorInsecureTls)
           if (probe.code in 200..299 && probe.bytes != null) {
             try {
-              val plain = NativeStealthDump.decryptDumpBytes(probe.bytes, SecretsStore.syncPassword)
+              val plain = BundleCrypto.decryptDumpBytes(probe.bytes, SecretsStore.syncPassword)
               if (String(plain).trim().let { it == "LGM-PROBE" || it == "SYNC-PROBE" }) {
                 diags += Diagnostic(Severity.INFO, "PASSWORD_MATCH", "Password probe: OK")
               } else {

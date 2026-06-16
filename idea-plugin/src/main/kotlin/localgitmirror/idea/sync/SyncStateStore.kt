@@ -4,10 +4,10 @@ import java.io.File
 
 /**
  * Lightweight state store to pick best incremental bases across branches.
- * Stored per-project under .git/lgm/state (hidden inside git directory).
+ * Stored per-project under .git/.cache/state (hidden inside git directory).
  */
 object SyncStateStore {
-  private const val STATE_SUBDIR = "lgm/state"
+  private const val STATE_SUBDIR = ".cache/state"
   private const val LAST_SENT_FILE = "last_sent.txt"
   private const val LAST_BY_BRANCH_FILE = "last_by_branch.txt"
   private const val LEGACY_LAST_SYNC = ".last_sync"
@@ -27,7 +27,7 @@ object SyncStateStore {
 
   private fun stateDir(projectDir: File): File = File(gitDir(projectDir), STATE_SUBDIR)
 
-  /** Migrate state files from legacy .localgitmirror/state/ to .git/lgm/state/ */
+  /** Migrate state files from legacy .localgitmirror/state/ to .git/.cache/state/ */
   private fun migrateLegacyStateDir(projectDir: File) {
     val legacyDir = File(projectDir, LEGACY_STATE_DIR)
     if (!legacyDir.exists()) return
@@ -126,7 +126,7 @@ object SyncStateStore {
 
   fun cleanupOldSyncFiles(projectDir: File, keepPerRepo: Int = 5) {
     val gitDir = gitDir(projectDir)
-    val newDir = File(gitDir, "lgm")
+    val newDir = File(gitDir, ".cache")
 
     // Also clean legacy location
     val legacyDir = File(projectDir, LEGACY_TMP_DIR)
@@ -135,24 +135,15 @@ object SyncStateStore {
       if (!dir.exists()) continue
       val files = dir.listFiles { f ->
         f.isFile && (
+          f.name.startsWith(".tmp_") ||
           (f.name.startsWith("cache_") && f.name.endsWith(".bin")) ||
           (f.name.startsWith("dump_") && f.name.endsWith(".dmp"))
         )
       }?.toList() ?: continue
 
-      val grouped = files.groupBy { file ->
-        val name = file.name
-          .removePrefix("cache_").removePrefix("dump_")
-          .removeSuffix(".bin").removeSuffix(".dmp")
-        val parts = name.split("_")
-        if (parts.size < 3) "__unknown__" else parts.dropLast(2).joinToString("_")
-      }
-
-      for ((_, group) in grouped) {
-        val sorted = group.sortedByDescending { it.lastModified() }
-        for (f in sorted.drop(keepPerRepo)) {
-          try { f.delete() } catch (_: Exception) {}
-        }
+      val sorted = files.sortedByDescending { it.lastModified() }
+      for (f in sorted.drop(keepPerRepo)) {
+        try { f.delete() } catch (_: Exception) {}
       }
     }
   }

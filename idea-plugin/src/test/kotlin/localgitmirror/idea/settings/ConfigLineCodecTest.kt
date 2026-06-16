@@ -66,7 +66,7 @@ class ConfigLineCodecTest {
       gitLabToken=
     """.trimIndent()
 
-    val token = ConfigLineCodec.PREFIX + java.util.Base64.getEncoder().encodeToString(raw.toByteArray())
+    val token = "LGM_CONFIG_V1:" + java.util.Base64.getEncoder().encodeToString(raw.toByteArray())
     val decoded = ConfigLineCodec.decode(token)
 
     assertNotNull(decoded)
@@ -94,7 +94,7 @@ class ConfigLineCodecTest {
     )
 
     val token = ConfigLineCodec.encode(snapshot)
-    val lower = token.replace("LGM_CONFIG_V1:", "lgm_config_v1:")
+    val lower = token.replace("LGM_CONFIG_V2:", "lgm_config_v2:")
     val noisy = """
       Some intro text
       ```text
@@ -188,7 +188,7 @@ class ConfigLineCodecTest {
         gitLabToken = ""
       )
     )
-    val payloadOnly = token.removePrefix(ConfigLineCodec.PREFIX)
+    val payloadOnly = token.replaceFirst(":", "=")
     val extracted = ConfigLineCodec.extractOrNull(payloadOnly)
     assertNotNull(extracted)
     val decoded = ConfigLineCodec.decode(extracted)

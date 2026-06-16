@@ -72,7 +72,7 @@ object DefaultGitPort : GitPort {
 }
 
 interface WorkKitPort {
-  fun runBackupWorkStealth(
+  fun createSyncPackage(
     workDir: File,
     password: String,
     repoName: String,
@@ -84,8 +84,8 @@ interface WorkKitPort {
 }
 
 object DefaultWorkKitPort : WorkKitPort {
-  override fun runBackupWorkStealth(workDir: File, password: String, repoName: String, excludeBases: List<String>, additionalBranches: List<String>, negotiationUsed: Boolean): WorkKit.Result {
-    return WorkKit.runBackupWorkStealth(
+  override fun createSyncPackage(workDir: File, password: String, repoName: String, excludeBases: List<String>, additionalBranches: List<String>, negotiationUsed: Boolean): WorkKit.Result {
+    return WorkKit.createSyncPackage(
       workDir = workDir,
       password = password,
       repoName = repoName,

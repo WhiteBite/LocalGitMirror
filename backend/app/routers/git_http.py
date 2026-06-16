@@ -2,6 +2,7 @@
 Git-over-HTTP Router and WSGI Integration
 """
 
+import base64
 import os
 from pathlib import Path
 import threading
@@ -96,6 +97,49 @@ class WSGIFixMiddleware:
             yield output_buffer.pop(0)
 
 
+class BasicAuthMiddleware:
+    """HTTP Basic Auth wrapper for Git WSGI app.
+
+    Only active when GIT_USER and GIT_PASS env vars are set.
+    If not configured, passes all requests through (backward-compatible).
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self._user = os.getenv("GIT_USER", "")
+        self._pass = os.getenv("GIT_PASS", "")
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._user and self._pass)
+
+    def _check_auth(self, environ) -> bool:
+        if not self.enabled:
+            return True
+
+        auth_header = environ.get("HTTP_AUTHORIZATION", "")
+        if not auth_header.startswith("Basic "):
+            return False
+
+        try:
+            decoded = base64.b64decode(auth_header[6:]).decode("utf-8")
+            user, password = decoded.split(":", 1)
+            return user == self._user and password == self._pass
+        except Exception:
+            return False
+
+    def __call__(self, environ, start_response):
+        if self._check_auth(environ):
+            return self.app(environ, start_response)
+
+        # Return 401 Unauthorized
+        start_response(
+            "401 Unauthorized",
+            [("WWW-Authenticate", 'Basic realm="Git Access"'), ("Content-Type", "text/plain")],
+        )
+        return [b"Authentication required"]
+
+
 def init_git_http(app, storage_path: Path):
     """Mount Git WSGI app into FastAPI"""
     root_dir = str(storage_path.absolute()).replace("\\", "/")
@@ -111,4 +155,5 @@ def init_git_http(app, storage_path: Path):
         pass
 
     wrapped_app = WSGIFixMiddleware(git_wsgi_app, on_receive_callback=on_receive)
-    app.mount("/git", WSGIMiddleware(wrapped_app))
+    authed_app = BasicAuthMiddleware(wrapped_app)
+    app.mount("/git", WSGIMiddleware(authed_app))

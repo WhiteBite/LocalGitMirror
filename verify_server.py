@@ -1,19 +1,22 @@
+import os
 import requests
 import socket
 import urllib3
 import sys
 import argparse
+from dotenv import load_dotenv
 
 # Disable warnings for self-signed certs
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+load_dotenv()
 
 
 def check_server(target_ip="127.0.0.1"):
-    print(f"\n=== LocalGitMirror Diagnostic [Target: {target_ip}] ===")
+    print(f"\n=== Server Diagnostic [Target: {target_ip}] ===")
 
-    target_port = 8443
-    api_key = "stealth-bridge-token-2026"
-    headers = {"X-API-Key": api_key}
+    target_port = int(os.getenv("WEB_PORT", 8443))
+    api_key = os.getenv("API_KEY", "")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     # 1. Check port
     print(f"1. Checking TCP connection to {target_ip}:{target_port}...")

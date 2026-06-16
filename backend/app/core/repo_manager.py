@@ -216,14 +216,14 @@ class RepoManager:
                 check=True,
             )
 
-            (workspace / "README.md").write_text(f"# {repo_name}\nInitial commit via LocalGitMirror")
+            (workspace / "README.md").write_text(f"# {repo_name}\nInitial commit")
 
             subprocess.run(["git", "add", "."], cwd=str(workspace), check=True)
 
             # Priority: 1) HTTP headers from plugin, 2) global settings, 3) defaults
             settings = self.settings_manager.get_all()
-            name = author_name or settings.get("git", {}).get("user_name", "LocalGitMirror")
-            email = author_email or settings.get("git", {}).get("user_email", "mirror@local")
+            name = author_name or settings.get("git", {}).get("user_name", "dev")
+            email = author_email or settings.get("git", {}).get("user_email", "dev@local")
 
             subprocess.run(["git", "config", "user.email", email], cwd=str(workspace), check=True)
             subprocess.run(["git", "config", "user.name", name], cwd=str(workspace), check=True)

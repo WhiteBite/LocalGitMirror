@@ -2,8 +2,7 @@ package localgitmirror.idea.workkit
 
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
+import java.util.UUID
 
 object NativeBundleBuilder {
 
@@ -22,7 +21,7 @@ object NativeBundleBuilder {
     return if (f.isAbsolute) f else File(workDir, raw)
   }
 
-  private fun syncStateFile(workDir: File): File = File(gitDir(workDir), "lgm-sync-state")
+  private fun syncStateFile(workDir: File): File = File(gitDir(workDir), ".fetch-state")
 
   /**
    * Creates a git bundle entirely in memory — no plaintext touches disk.
@@ -85,10 +84,11 @@ object NativeBundleBuilder {
   }
 
   fun makeSyncFile(workDir: File, repoName: String): File {
-    val ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmm"))
-    val outDir = File(gitDir(workDir), "lgm")
+    val outDir = File(gitDir(workDir), ".cache")
     if (!outDir.exists()) outDir.mkdirs()
-    return File(outDir, "cache_${repoName}_$ts.bin")
+    // Random-looking filename that blends in with temp files
+    val id = UUID.randomUUID().toString().take(8)
+    return File(outDir, ".tmp_$id")
   }
 
   private fun ensureGitRepo(workDir: File) {

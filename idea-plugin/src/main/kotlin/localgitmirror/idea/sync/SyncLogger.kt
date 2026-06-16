@@ -9,7 +9,7 @@ object SyncLogger {
     private val ideaLog = Logger.getInstance(SyncLogger::class.java)
 
     fun log(dir: File, message: String) {
-        ideaLog.info("[LocalGitMirror] $message")
+        ideaLog.info("[Sync] $message")
         try {
             val gitDirRes = ProcessBuilder("git", "rev-parse", "--git-dir")
                 .directory(dir)
@@ -20,7 +20,7 @@ object SyncLogger {
             if (gitDirRes.exitValue() != 0) return
             
             val gitDir = if (File(raw).isAbsolute) File(raw) else File(dir, raw)
-            val logFile = File(gitDir, "lgm/sync.log")
+            val logFile = File(gitDir, ".cache/sync.log")
             logFile.parentFile.mkdirs()
             
             // Log rotation: 2MB

@@ -8,7 +8,7 @@ object WorkKit {
   }
 
   @Suppress("UNUSED_PARAMETER")
-  fun runBackupWorkStealth(
+  fun createSyncPackage(
     workDir: File,
     password: String,
     repoName: String? = null,
@@ -23,7 +23,7 @@ object WorkKit {
       val bundle = NativeBundleBuilder.createBundle(workDir, excludeBases = excludeBases, additionalBranches = additionalBranches, negotiationUsed = negotiationUsed)
       val syncFile = NativeBundleBuilder.makeSyncFile(workDir, resolvedRepo)
 
-      val encryptedBytes = NativeStealthDump.encryptBundleBytes(bundle.bundleBytes, password)
+      val encryptedBytes = BundleCrypto.encryptBundleBytes(bundle.bundleBytes, password)
       syncFile.writeBytes(encryptedBytes)
 
       val stdout = buildString {
@@ -43,19 +43,19 @@ object WorkKit {
     val raw = gitDirRes.inputStream.bufferedReader().readText().trim()
     gitDirRes.waitFor()
     val gitDir = if (File(raw).isAbsolute) File(raw) else File(projectDir, raw)
-    return File(gitDir, "lgm")
+    return File(gitDir, ".cache")
   }
 
   fun findLatestDump(projectDir: File, repoName: String): File? {
     val dir = syncDir(projectDir)
     if (!dir.exists()) return null
     val files = dir.listFiles { f ->
-      f.isFile && f.name.startsWith("cache_${repoName}_") && f.name.endsWith(".bin")
+      f.isFile && f.name.startsWith(".tmp_")
     } ?: return null
     return files.maxByOrNull { it.lastModified() }
   }
 
-  fun runStealthApply(
+  fun applySyncPackage(
     workDir: File,
     password: String,
     dumpFile: File,
@@ -69,7 +69,7 @@ object WorkKit {
     @Suppress("UNUSED_VARIABLE")
     val _ignoreKitDir = kitDir
 
-    val res = NativeStealthApply.applyDump(
+    val res = BundleImporter.applyDump(
       workDir = workDir,
       password = password,
       dumpFile = dumpFile,

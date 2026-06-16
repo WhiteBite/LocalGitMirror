@@ -8,7 +8,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import localgitmirror.idea.workkit.NativeStealthDump
+import localgitmirror.idea.workkit.BundleCrypto
 import java.io.File
 
 class SyncEngine(
@@ -73,7 +73,7 @@ class SyncEngine(
     }
 
     return try {
-      val plain = NativeStealthDump.decryptDumpBytes(probe.bytes, settings.syncPassword)
+      val plain = BundleCrypto.decryptDumpBytes(probe.bytes, settings.syncPassword)
       val ok = String(plain).trim().let { it == "LGM-PROBE" || it == "SYNC-PROBE" }
       if (!ok) {
         StepResult(false, "Sync password mismatch", "Re-enter Sync Password in plugin/backend")
@@ -124,7 +124,7 @@ class SyncEngine(
   ): StepResult {
     // negotiationUsed=true tells bundle builder to trust excludeBases from negotiation
     // and NOT fall back to stale .git/lgm-sync-state when excludeBases is empty.
-    val kitRes = workKit.runBackupWorkStealth(
+    val kitRes = workKit.createSyncPackage(
       workDir = projectDir,
       password = settings.syncPassword,
       repoName = repoName,
@@ -135,7 +135,7 @@ class SyncEngine(
     if (!kitRes.ok() && isNoChangesToSync(kitRes)) {
       // If incremental bases lead to no-op, retry full dump once to avoid false failures.
       if (excludeBases.isNotEmpty()) {
-        val full = workKit.runBackupWorkStealth(
+        val full = workKit.createSyncPackage(
           workDir = projectDir,
           password = settings.syncPassword,
           repoName = repoName,
@@ -332,24 +332,28 @@ class SyncEngine(
   }
 
   private fun findLatestAnySyncFile(projectDir: File): File? {
-    // Resolve .git/lgm/ directory for sync files
+    // Resolve .git/.cache/ directory for sync files
     val proc = ProcessBuilder(listOf("git", "rev-parse", "--git-dir"))
       .directory(projectDir).redirectErrorStream(false).start()
     val rawGitDir = proc.inputStream.bufferedReader().readText().trim()
     proc.waitFor()
     val gitDir = if (File(rawGitDir).isAbsolute) File(rawGitDir) else File(projectDir, rawGitDir)
-    val syncDir = File(gitDir, "lgm")
+    val syncDir = File(gitDir, ".cache")
     val dirs = listOf(syncDir, projectDir)
     val files = mutableListOf<File>()
     for (dir in dirs) {
       if (!dir.exists() || !dir.isDirectory) continue
-      val local = dir.listFiles { f -> f.isFile && f.name.startsWith("cache_") && f.name.endsWith(".bin") } ?: continue
+      val local = dir.listFiles { f -> f.isFile && (f.name.startsWith(".tmp_") || (f.name.startsWith("cache_") && f.name.endsWith(".bin"))) } ?: continue
       files.addAll(local)
     }
     return files.maxByOrNull { it.lastModified() }
   }
 
   fun uploadAndApply(settings: SettingsSnapshot, repoName: String, dump: File, projectDir: File? = null): Pair<StepResult, MirrorApi.HttpResult> {
+    // Random jitter (0-15s) to avoid predictable traffic patterns
+    val jitterMs = (0..15_000).random()
+    Thread.sleep(jitterMs.toLong())
+
     val res = mirror.uploadAndApply(
       baseUrl = settings.baseUrl,
       apiKey = settings.mirrorApiKey,

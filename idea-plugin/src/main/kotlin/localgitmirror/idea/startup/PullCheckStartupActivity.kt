@@ -101,7 +101,7 @@ class PullCheckStartupActivity : ProjectActivity {
         NotificationType.INFORMATION
       )
       .addAction(NotificationAction.createSimpleExpiring("Pull from Mirror") {
-        localgitmirror.idea.actions.StealthPullBackFromMirrorAction().actionPerformed(
+        localgitmirror.idea.actions.PullFromMirrorAction().actionPerformed(
           com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
             "LGMFocusCheck",
             null,

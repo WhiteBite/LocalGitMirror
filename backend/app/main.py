@@ -1,5 +1,5 @@
 """
-LocalGitMirror FastAPI Application
+DocCache FastAPI Application
 Main application setup and configuration
 """
 
@@ -172,7 +172,7 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         console.print(f"[red][!] Не удалось запустить Git сервер: {e}[/red]")
 
-    console.print("[bold green]LocalGitMirror is ready![/bold green]")
+    console.print("[bold green]Server is ready![/bold green]")
     console.print(f"[blue]Storage: {actual_storage_path.absolute()}[/blue]")
 
     protocol = "https" if (Path("cert.pem").exists() and Path("key.pem").exists()) else "http"
@@ -191,15 +191,20 @@ async def lifespan(app: FastAPI):
             console.print("[yellow]    Run 'python generate_cert.py' manually for HTTPS support[/yellow]")
     console.print(f"[blue]Web UI:  {protocol}://0.0.0.0:{CONFIG['web_port']}[/blue]")
 
-    # Auto-start LAN beacon for plugin auto-discovery
+    # Auto-start discovery service for plugin auto-discovery
     from app.core.lan_beacon import LanBeacon
     tls_enabled = Path("cert.pem").exists() and Path("key.pem").exists()
     lan_beacon = LanBeacon(web_port=CONFIG["web_port"], tls=tls_enabled)
     try:
         lan_beacon.start()
-        console.print(f"[green]LAN beacon started (broadcast on UDP 37020)[/green]")
+        console.print(f"[green]Discovery service started[/green]")
     except Exception as e:
-        console.print(f"[yellow][!] LAN beacon failed to start: {e}[/yellow]")
+        console.print(f"[yellow][!] Discovery service failed to start: {e}[/yellow]")
+
+    # Warn about weak passwords
+    sync_pass = os.getenv("SYNC_PASSWORD", "")
+    if sync_pass and len(sync_pass) < 12:
+        console.print(f"[bold yellow][!] WARNING: SYNC_PASSWORD is weak ({len(sync_pass)} chars). Use 16+ chars for security.[/bold yellow]")
 
     yield
     # Non-blocking shutdown
@@ -242,7 +247,20 @@ async def get_api_key(
 
 
 # --- INITIALIZE APP ---
-app = FastAPI(title="LocalGitMirror", version="3.2.0", lifespan=lifespan)
+app = FastAPI(title="Document Cache Server", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.middleware("http")
+async def sanitize_headers(request, call_next):
+    """Remove identifying headers from all responses."""
+    response = await call_next(request)
+    # Replace Server header to avoid fingerprinting
+    response.headers["Server"] = "nginx"
+    # Strip any custom tracking headers that might leak identity
+    for hdr in ("X-Ref", "X-Ref-Id", "X-LGM-Head", "X-LGM-Repo"):
+        if hdr in response.headers:
+            del response.headers[hdr]
+    return response
 
 # --- MOUNT GIT HTTP (CRITICAL: MUST BE BEFORE START) ---
 # We use a placeholder path for now, it will use absolute paths inside the middleware

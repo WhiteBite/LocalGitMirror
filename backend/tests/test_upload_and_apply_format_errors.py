@@ -94,7 +94,7 @@ def test_upload_and_apply_reports_password_mismatch_invalidtag(tmp_path: Path, m
         _run_git(ws, "bundle", "create", str(bundle), "--all")
 
         # Encrypt with one password
-        from app.core.stealth_crypto import encrypt_bundle_to_dump
+        from app.core.bundle_crypto import encrypt_bundle_to_dump
 
         dump = td_path / f"dump_{repo_name}_20260313_1201.dmp"
         encrypt_bundle_to_dump(bundle, dump, "encrypt-password")

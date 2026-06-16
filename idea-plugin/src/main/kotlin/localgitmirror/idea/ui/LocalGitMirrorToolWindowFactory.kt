@@ -11,4 +11,6 @@ class LocalGitMirrorToolWindowFactory : ToolWindowFactory {
     val content = ContentFactory.getInstance().createContent(panel, "", false)
     toolWindow.contentManager.addContent(content)
   }
+
+  override fun shouldBeAvailable(project: Project): Boolean = true
 }

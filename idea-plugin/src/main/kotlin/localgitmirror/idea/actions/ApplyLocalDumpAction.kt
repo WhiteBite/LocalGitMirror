@@ -69,7 +69,7 @@ class ApplyLocalDumpAction : AnAction() {
       override fun run(indicator: ProgressIndicator) {
         indicator.text = "Preparing local apply"
         indicator.text = "Applying sync package"
-        val res = WorkKit.runStealthApply(
+        val res = WorkKit.applySyncPackage(
           workDir = projectDir,
           password = SecretsStore.syncPassword,
           dumpFile = dumpFile,

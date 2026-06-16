@@ -8,7 +8,7 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.PBEKeySpec
 import javax.crypto.spec.SecretKeySpec
 
-object NativeStealthDump {
+object BundleCrypto {
   // Format: VERSION(1) + SALT(16) + NONCE(12) + LEN(8) + CIPHERTEXT
   // No magic bytes — file looks like pure random noise to scanners
   private const val FORMAT_VERSION: Byte = 0x01

@@ -39,7 +39,7 @@ class SystemLogger:
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
         # Create Python logger
-        self.logger = logging.getLogger("LocalGitMirror")
+        self.logger = logging.getLogger("DocCache")
         self.logger.setLevel(logging.INFO)
         self.logger.handlers.clear()
 

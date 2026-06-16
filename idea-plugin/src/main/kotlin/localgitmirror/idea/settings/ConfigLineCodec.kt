@@ -2,6 +2,13 @@ package localgitmirror.idea.settings
 
 import java.nio.charset.StandardCharsets
 import java.util.Base64
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.PBEKeySpec
+import java.net.InetAddress
+import java.security.SecureRandom
 
 data class ConfigSnapshot(
   val baseUrl: String,
@@ -16,15 +23,18 @@ data class ConfigSnapshot(
   val pullBackDefaultMode: String,
   val mirrorApiKey: String,
   val syncPassword: String,
-  val gitLabToken: String
+  val gitLabToken: String,
+  val workMode: String = "auto"
 )
 
 object ConfigLineCodec {
-  const val PREFIX = "LGM_CONFIG_V1:"
-  private const val PREFIX_MARKER = "LGM_CONFIG_V1"
+  const val PREFIX = "LGM_CONFIG_V2:"
+  private const val PREFIX_MARKER_V2 = "LGM_CONFIG_V2"
+  private const val PREFIX_MARKER_V1 = "LGM_CONFIG_V1"
+  private val V1_PREFIX = "LGM_CONFIG_V1:"
 
   private val TOKEN_REGEX = Regex(
-    pattern = """(?is)\bLGM_CONFIG_V1\s*[:=]\s*""",
+    pattern = """(?is)\bLGM_CONFIG_V[12]\s*[:=]\s*""",
     options = setOf(RegexOption.IGNORE_CASE)
   )
 
@@ -42,6 +52,39 @@ object ConfigLineCodec {
 
   private fun sanitize(text: String): String = stripAnsi(stripZeroWidth(text))
 
+  /** Derive a 256-bit AES key from the machine hostname via PBKDF2. */
+  private fun deriveKey(): SecretKeySpec {
+    val hostname = runCatching { InetAddress.getLocalHost().hostName }.getOrDefault("localhost")
+    val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+    val spec = PBEKeySpec(hostname.toCharArray(), hostname.toByteArray(StandardCharsets.UTF_8), 10_000, 256)
+    val secret = factory.generateSecret(spec)
+    return SecretKeySpec(secret.encoded, "AES")
+  }
+
+  private fun encrypt(plaintext: String): String {
+    val key = deriveKey()
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    val iv = ByteArray(12)
+    SecureRandom().nextBytes(iv)
+    cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(128, iv))
+    val ciphertext = cipher.doFinal(plaintext.toByteArray(StandardCharsets.UTF_8))
+    // iv (12 bytes) + ciphertext appended
+    val combined = iv + ciphertext
+    return Base64.getEncoder().encodeToString(combined)
+  }
+
+  private fun decrypt(encoded: String): String? {
+    return runCatching {
+      val key = deriveKey()
+      val combined = Base64.getDecoder().decode(encoded)
+      val iv = combined.copyOfRange(0, 12)
+      val ciphertext = combined.copyOfRange(12, combined.size)
+      val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+      cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, iv))
+      String(cipher.doFinal(ciphertext), StandardCharsets.UTF_8)
+    }.getOrNull()
+  }
+
   fun encode(snapshot: ConfigSnapshot): String {
     val raw = listOf(
       "baseUrl=${snapshot.baseUrl}",
@@ -56,11 +99,12 @@ object ConfigLineCodec {
       "pullBackDefaultMode=${snapshot.pullBackDefaultMode}",
       "mirrorApiKey=${snapshot.mirrorApiKey}",
       "syncPassword=${snapshot.syncPassword}",
-      "gitLabToken=${snapshot.gitLabToken}"
+      "gitLabToken=${snapshot.gitLabToken}",
+      "workMode=${snapshot.workMode}"
     ).joinToString("\n")
 
-    val encoded = Base64.getEncoder().encodeToString(raw.toByteArray(StandardCharsets.UTF_8))
-    return "$PREFIX$encoded"
+    val encrypted = encrypt(raw)
+    return "$PREFIX$encrypted"
   }
 
   fun decode(token: String): ConfigSnapshot? {
@@ -73,11 +117,20 @@ object ConfigLineCodec {
     }
 
     val normalized = extractToken(line) ?: return null
-    val payload = normalized.removePrefix(PREFIX).trim()
+
+    // V2: encrypted payload
+    if (normalized.startsWith("$PREFIX_MARKER_V2")) {
+      val payload = normalized.removePrefix("$PREFIX_MARKER_V2").trim().removePrefix(":").trim()
+      if (payload.isBlank()) return null
+      val decrypted = decrypt(payload.filterNot { it.isWhitespace() }) ?: return null
+      return parseRawPayload(decrypted)
+    }
+
+    // V1 backward compat: plain Base64
+    val payload = normalized.removePrefix(V1_PREFIX).trim()
     if (payload.isBlank()) return null
 
     val decoded = decodePayloadToRaw(payload) ?: return null
-
     return parseRawPayload(decoded)
   }
 
@@ -144,7 +197,8 @@ object ConfigLineCodec {
       pullBackDefaultMode = map["pullBackDefaultMode"].orEmpty().ifBlank { "new-branch" },
       mirrorApiKey = map["mirrorApiKey"].orEmpty(),
       syncPassword = map["syncPassword"].orEmpty(),
-      gitLabToken = map["gitLabToken"].orEmpty()
+      gitLabToken = map["gitLabToken"].orEmpty(),
+      workMode = map["workMode"].orEmpty().ifBlank { "auto" }
     )
   }
 
@@ -153,7 +207,11 @@ object ConfigLineCodec {
     if (trimmed.isBlank()) return null
 
     val match = TOKEN_REGEX.find(trimmed) ?: return null
+    val matchedPrefix = match.value.trim()
     val tail = trimmed.substring(match.range.last + 1)
+
+    // Determine which version prefix was matched
+    val isV2 = matchedPrefix.contains("V2", ignoreCase = true)
 
     // Primary strategy: token usually sits on one line after prefix.
     val firstLine = tail.lineSequence().firstOrNull().orEmpty().trim()
@@ -161,9 +219,13 @@ object ConfigLineCodec {
       it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' || it == '-' || it == '_'
     }
     if (firstLineCompact.isNotBlank()) {
+      if (isV2) {
+        // V2 tokens are encrypted — just return as-is
+        return PREFIX_MARKER_V2 + ":" + firstLineCompact
+      }
       val payload = findValidPayloadPrefix(firstLineCompact)
       if (!payload.isNullOrBlank()) {
-        return PREFIX + payload
+        return V1_PREFIX + payload
       }
     }
 
@@ -173,8 +235,12 @@ object ConfigLineCodec {
     val compact = payloadLike.filterNot { it.isWhitespace() }
     if (compact.isBlank()) return null
 
+    if (isV2) {
+      return PREFIX_MARKER_V2 + ":" + compact
+    }
+
     val payload = findValidPayloadPrefix(compact) ?: return null
-    return PREFIX + payload
+    return V1_PREFIX + payload
   }
 
   /**
@@ -187,17 +253,34 @@ object ConfigLineCodec {
 
     val sanitized = sanitize(text)
     val compact = sanitized.replace("\r", "").replace("\n", "").replace("\t", "").replace(" ", "")
-    val idx = compact.indexOf(PREFIX_MARKER, ignoreCase = true)
-    if (idx >= 0) {
-      // Support both ':' and '=' after marker.
-      val after = compact.substring(idx + PREFIX_MARKER.length)
+
+    // Try V2 first
+    val idx2 = compact.indexOf(PREFIX_MARKER_V2, ignoreCase = true)
+    if (idx2 >= 0) {
+      val after = compact.substring(idx2 + PREFIX_MARKER_V2.length)
       if (after.isNotEmpty() && (after[0] == ':' || after[0] == '=')) {
         val payloadRaw = after.substring(1)
         val payload = payloadRaw.takeWhile {
           it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' || it == '-' || it == '_'
         }
         if (payload.isNotBlank()) {
-          val normalized = PREFIX + payload
+          val normalized = PREFIX_MARKER_V2 + ":" + payload
+          if (decode(normalized) != null) return normalized
+        }
+      }
+    }
+
+    // V1 fallback
+    val idx = compact.indexOf(PREFIX_MARKER_V1, ignoreCase = true)
+    if (idx >= 0) {
+      val after = compact.substring(idx + PREFIX_MARKER_V1.length)
+      if (after.isNotEmpty() && (after[0] == ':' || after[0] == '=')) {
+        val payloadRaw = after.substring(1)
+        val payload = payloadRaw.takeWhile {
+          it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' || it == '-' || it == '_'
+        }
+        if (payload.isNotBlank()) {
+          val normalized = V1_PREFIX + payload
           if (decode(normalized) != null) return normalized
         }
       }
@@ -206,7 +289,7 @@ object ConfigLineCodec {
     // Last fallback: try to detect standalone payload chunks (copied without prefix).
     val candidates = Regex("""[A-Za-z0-9+/=_-]{80,}""").findAll(compact).map { it.value }
     for (c in candidates) {
-      val normalized = PREFIX + c
+      val normalized = V1_PREFIX + c
       if (decode(normalized) != null) return normalized
     }
     return null

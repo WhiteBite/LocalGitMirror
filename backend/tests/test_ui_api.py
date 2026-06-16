@@ -1,8 +1,9 @@
+import os
 import requests
 import time
 
 BASE_URL = "https://127.0.0.1:8443"
-API_KEY = "stealth-bridge-token-2026"
+API_KEY = os.getenv("API_KEY", "test-api-key")
 HEADERS = {"X-API-Key": API_KEY}
 
 

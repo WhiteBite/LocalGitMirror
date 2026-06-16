@@ -11,6 +11,7 @@ Scenario:
   7) Home machine calls export-dump → receives bundle with BOTH branches
   8) Home machine applies the bundle → gets BOTH branches locally
 """
+import base64
 import json
 import subprocess
 import time
@@ -23,7 +24,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
-from app.core.stealth_crypto import encrypt_bundle_to_dump, decrypt_dump_to_bundle
+from app.core.bundle_crypto import encrypt_bundle_to_dump, decrypt_dump_to_bundle
 from app.routers import api as api_router
 
 
@@ -169,8 +170,10 @@ def test_multi_branch_roundtrip_work_to_home(tmp_path: Path, monkeypatch):
     )
     assert export_res.status_code == 200, f"Export failed: {export_res.status_code} {export_res.text}"
 
+    export_json = export_res.json()
+    assert export_json.get("status") == "ok", f"Export status: {export_json}"
     exported_dump = tmp_path / "home_exported.dmp"
-    exported_dump.write_bytes(export_res.content)
+    exported_dump.write_bytes(base64.b64decode(export_json["data"]))
 
     # Decrypt the export dump to a bundle
     exported_bundle = tmp_path / "home_exported.bundle"

@@ -21,7 +21,7 @@ def test_capabilities_endpoint_shape():
     body = res.json()
 
     assert body["apiVersion"] == 1
-    assert body["server"]["name"] == "LocalGitMirror"
+    assert body["server"]["name"] == "DocCache"
     assert isinstance(body["server"]["version"], str)
     assert body["sync"]["protocolVersion"] == 1
     assert body["sync"]["features"]["preflight"] is True
