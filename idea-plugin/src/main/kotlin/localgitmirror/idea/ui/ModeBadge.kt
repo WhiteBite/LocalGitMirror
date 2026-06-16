@@ -9,7 +9,14 @@ import javax.swing.JLabel
 /**
  * Compact WORK/HOME mode indicator with an icon.
  */
-class ModeBadge(text: String, private val isWork: Boolean) : JLabel(text) {
+class ModeBadge(text: String, isWork: Boolean) : JLabel(text) {
+
+  var workMode: Boolean = isWork
+    set(value) {
+      field = value
+      icon = if (value) AllIcons.Nodes.Deploy else AllIcons.Actions.ProjectWideAnalysisOff
+      repaint()
+    }
 
   init {
     isOpaque = false
@@ -21,7 +28,7 @@ class ModeBadge(text: String, private val isWork: Boolean) : JLabel(text) {
   }
 
   private val accentColor: Color
-    get() = if (isWork)
+    get() = if (workMode)
       JBColor(Color(0x3574F0), Color(0x589DF6))
     else
       JBColor(Color(0x307D4C), Color(0x4CAF50))
