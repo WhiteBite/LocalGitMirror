@@ -2,6 +2,7 @@ plugins {
   id("java")
   id("org.jetbrains.intellij") version "1.17.4"
   kotlin("jvm") version "1.9.24"
+  id("io.gitlab.arturbosch.detekt") version "1.23.7"
 }
 
 group = "localgitmirror"
@@ -79,4 +80,12 @@ dependencies {
   implementation("org.jmdns:jmdns:3.5.9")
   testImplementation(kotlin("test"))
   testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+  detekt(project(":detekt-rules"))
+  detekt("io.gitlab.arturbosch.detekt:detekt-cli:1.23.7")
+}
+
+detekt {
+  config.setFrom(file("detekt.yml"))
+  buildUponDefaultConfig = true
+  allRules = false
 }
