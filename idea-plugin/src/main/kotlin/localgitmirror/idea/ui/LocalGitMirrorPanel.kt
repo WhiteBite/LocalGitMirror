@@ -28,6 +28,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal val mirrorBadge = BadgeLabel("Mirror: ?")
   internal val gitLabBadge = BadgeLabel("GitLab: ?")
   internal val lastSyncBadge = BadgeLabel("Last sync: \u2014")
+  internal val modeBadge = ModeBadge(LocalGitMirrorBundle.message("badge.mode.home"), false)
   internal val progressBar = JProgressBar().apply { isVisible = false; isIndeterminate = true }
 
   internal lateinit var historyScroll: JScrollPane
@@ -152,6 +153,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val settingsState = service<MirrorSettingsService>().state
     val workMode = isWorkMode()
 
+    // Update modeBadge with current state
+    modeBadge.text = if (workMode) LocalGitMirrorBundle.message("badge.mode.work") else LocalGitMirrorBundle.message("badge.mode.home")
+    modeBadge.workMode = workMode
+
     // ── topContainer: packs all controls tightly to the top ──
     val topContainer = JPanel()
     topContainer.layout = BoxLayout(topContainer, BoxLayout.Y_AXIS)
@@ -164,10 +169,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
     val badges = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
     badges.isOpaque = false
-    val modeBadge = ModeBadge(
-      if (workMode) LocalGitMirrorBundle.message("badge.mode.work") else LocalGitMirrorBundle.message("badge.mode.home"),
-      workMode
-    )
     badges.add(modeBadge)
     badges.add(mirrorBadge)
     if (workMode) badges.add(gitLabBadge)
@@ -343,6 +344,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val clean = GitLocal.isCleanWorkTree(project, dir)
     val s = service<MirrorSettingsService>().state
     status.text = LocalGitMirrorBundle.message("toolwindow.status.branchClean", branch, clean.toString())
+
+    // Update mode badge
+    val workMode = isWorkMode()
+    modeBadge.workMode = workMode
+    modeBadge.text = if (workMode) LocalGitMirrorBundle.message("badge.mode.work") else LocalGitMirrorBundle.message("badge.mode.home")
 
     val mirrorConfigured = s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
     mirrorBadge.text = if (mirrorConfigured) LocalGitMirrorBundle.message("toolwindow.badge.mirrorConnected") else LocalGitMirrorBundle.message("toolwindow.badge.mirrorNotConfigured")
