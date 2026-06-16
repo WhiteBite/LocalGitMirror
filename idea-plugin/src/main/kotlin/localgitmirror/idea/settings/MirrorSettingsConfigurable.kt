@@ -1,106 +1,189 @@
 package localgitmirror.idea.settings
 
-import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.components.service
+import com.intellij.openapi.options.Configurable
+import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.Messages
+import com.intellij.ui.dsl.builder.*
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.net.LanDiscovery
-import java.awt.BorderLayout
-import javax.swing.BoxLayout
-import javax.swing.JButton
-import javax.swing.JCheckBox
 import javax.swing.JComponent
-import javax.swing.JLabel
-import javax.swing.JPanel
-import javax.swing.JPasswordField
-import javax.swing.JTextField
 import javax.swing.SwingUtilities
 
 class MirrorSettingsConfigurable : Configurable {
-  private var panel: JPanel? = null
 
-  private val mirrorBaseUrl = JTextField()
-  private val mirrorApiKey = JPasswordField()
-  private val mirrorRepo = JTextField()
-  private val uiLanguage = javax.swing.JComboBox(arrayOf("auto", "en", "ru"))
-  private val syncPassword = JPasswordField()
-  private val mirrorInsecureTls = JCheckBox(LocalGitMirrorBundle.message("settings.insecureTls"))
+  private val state: MirrorSettingsService.State get() = service<MirrorSettingsService>().state
+  private var dialogPanel: DialogPanel? = null
 
-  private val gitLabBaseUrl = JTextField()
-  private val gitLabToken = JPasswordField()
-  private val gitLabProject = JTextField()
-  private val gitLabTargetBranch = JTextField()
-  private val gitLabInsecureTls = JCheckBox(LocalGitMirrorBundle.message("settings.insecureTls"))
-
-  private val gitRemoteName = JTextField()
-  private val pullBackDefaultMode = JTextField()
-  private val offlineGenerateOnly = JCheckBox(LocalGitMirrorBundle.message("settings.sync.offlineMode"))
-  private val autoCheckPullOnStartup = JCheckBox(LocalGitMirrorBundle.message("settings.sync.autoCheck"))
-  private val simpleUiMode = JCheckBox(LocalGitMirrorBundle.message("settings.ui.simpleMode"))
-  private val workModeCombo = javax.swing.JComboBox(arrayOf("auto", "work", "home"))
+  // Mutable copies for DSL binding (synced with SecretsStore on apply/reset)
+  private var mirrorApiKeyLocal = ""
+  private var syncPasswordLocal = ""
+  private var gitLabTokenLocal = ""
 
   override fun getDisplayName(): String = "LocalGitMirror"
 
   override fun createComponent(): JComponent {
-    val root = JPanel()
-    root.layout = BoxLayout(root, BoxLayout.Y_AXIS)
+    // Seed local copies from SecretsStore
+    mirrorApiKeyLocal = SecretsStore.mirrorApiKey
+    syncPasswordLocal = SecretsStore.syncPassword
+    gitLabTokenLocal = SecretsStore.gitLabToken
 
-    fun row(label: String, comp: JComponent) {
-      val r = JPanel()
-      r.layout = BoxLayout(r, BoxLayout.Y_AXIS)
-      r.add(JLabel(label))
-      r.add(comp)
-      root.add(r)
+    val panel = panel {
+      // ── Group 1: Mirror Server ──
+      group(LocalGitMirrorBundle.message("settings.mirror.title", "Mirror Server")) {
+        row(LocalGitMirrorBundle.message("settings.mirror.baseUrl")) {
+          textField()
+            .bindText(state::baseUrl)
+            .gap(RightGap.SMALL)
+            .comment("e.g. https://192.168.1.50")
+          button(LocalGitMirrorBundle.message("settings.discover")) { onDiscoverClicked() }
+            .gap(RightGap.SMALL)
+            .comment(LocalGitMirrorBundle.message("settings.discover.tooltip"))
+        }
+        row(LocalGitMirrorBundle.message("settings.mirror.apiKey")) {
+          passwordField()
+            .bindText(::mirrorApiKeyLocal)
+            .comment("Optional, for API authentication")
+        }
+        row(LocalGitMirrorBundle.message("settings.mirror.syncPassword")) {
+          passwordField()
+            .bindText(::syncPasswordLocal)
+            .comment("Used to encrypt/decrypt sync bundles")
+        }
+        row(LocalGitMirrorBundle.message("settings.mirror.repo")) {
+          textField()
+            .bindText(state::repo)
+            .comment("Auto by project name if empty")
+        }
+        row {
+          checkBox(LocalGitMirrorBundle.message("settings.insecureTls"))
+            .bindSelected(state::mirrorInsecureTls)
+            .comment("For self-signed certificates")
+        }
+      }
+
+      // ── Group 2: GitLab Integration (collapsible) ──
+      collapsibleGroup(LocalGitMirrorBundle.message("settings.gitlab.title")) {
+        row(LocalGitMirrorBundle.message("settings.gitlab.baseUrl")) {
+          textField()
+            .bindText(state::gitLabBaseUrl)
+            .comment("e.g. https://gitlab.example.com")
+        }
+        row(LocalGitMirrorBundle.message("settings.gitlab.token")) {
+          passwordField()
+            .bindText(::gitLabTokenLocal)
+            .comment("PRIVATE-TOKEN header value")
+        }
+        row(LocalGitMirrorBundle.message("settings.gitlab.project")) {
+          textField()
+            .bindText(state::gitLabProject)
+            .comment("Project ID or group/name")
+        }
+        row(LocalGitMirrorBundle.message("settings.gitlab.defaultTarget")) {
+          textField()
+            .bindText(state::gitLabDefaultTargetBranch)
+            .comment("Default: main")
+        }
+        row {
+          checkBox(LocalGitMirrorBundle.message("settings.insecureTls"))
+            .bindSelected(state::gitLabInsecureTls)
+        }
+      }
+
+      // ── Group 3: Behavior & Git ──
+      group(LocalGitMirrorBundle.message("settings.behavior.title", "Behavior")) {
+        row(LocalGitMirrorBundle.message("settings.git.remote")) {
+          textField()
+            .bindText(state::gitRemoteName)
+            .comment("Default: origin")
+        }
+        row(LocalGitMirrorBundle.message("settings.git.pullMode")) {
+          comboBox(listOf("new-branch", "ff-only"))
+            .bindItem(
+              { state.pullBackDefaultMode },
+              { state.pullBackDefaultMode = it ?: "new-branch" }
+            )
+        }
+        row {
+          checkBox(LocalGitMirrorBundle.message("settings.sync.autoCheck"))
+            .bindSelected(state::autoCheckPullOnStartup)
+        }
+        row {
+          checkBox(LocalGitMirrorBundle.message("settings.sync.offlineMode"))
+            .bindSelected(state::offlineGenerateOnly)
+            .comment("Generate bundle locally without uploading")
+        }
+      }
+
+      // ── Group 4: User Interface ──
+      group(LocalGitMirrorBundle.message("settings.ui.title", "Interface")) {
+        row(LocalGitMirrorBundle.message("settings.ui.language")) {
+          comboBox(listOf("auto", "en", "ru"))
+            .bindItem(
+              { state.uiLanguage },
+              { state.uiLanguage = it ?: "auto" }
+            )
+        }
+        row(LocalGitMirrorBundle.message("settings.workMode")) {
+          comboBox(listOf("auto", "work", "home"))
+            .bindItem(
+              { state.workMode },
+              { state.workMode = it ?: "auto" }
+            )
+            .comment("auto = work if GitLab configured, home otherwise")
+        }
+        row {
+          checkBox(LocalGitMirrorBundle.message("settings.ui.simpleMode"))
+            .bindSelected(state::simpleUiMode)
+            .comment("Show only essential actions in tool window")
+        }
+      }
     }
 
-    // Mirror URL with Discover button
-    val urlRow = JPanel()
-    urlRow.layout = BoxLayout(urlRow, BoxLayout.Y_AXIS)
-    urlRow.add(JLabel(LocalGitMirrorBundle.message("settings.mirror.baseUrl")))
-    val urlInput = JPanel(BorderLayout(4, 0))
-    urlInput.add(mirrorBaseUrl, BorderLayout.CENTER)
-    discoverBtn = JButton(LocalGitMirrorBundle.message("settings.discover"))
-    discoverBtn?.toolTipText = LocalGitMirrorBundle.message("settings.discover.tooltip")
-    discoverBtn?.addActionListener { onDiscoverClicked() }
-    urlInput.add(discoverBtn, BorderLayout.EAST)
-    urlRow.add(urlInput)
-    root.add(urlRow)
+    dialogPanel = panel
+    return panel
+  }
 
-    row(LocalGitMirrorBundle.message("settings.mirror.apiKey"), mirrorApiKey)
-    row(LocalGitMirrorBundle.message("settings.mirror.repo"), mirrorRepo)
-    row(LocalGitMirrorBundle.message("settings.ui.language"), uiLanguage)
-    row(LocalGitMirrorBundle.message("settings.mirror.syncPassword"), syncPassword)
-    root.add(mirrorInsecureTls)
+  override fun isModified(): Boolean {
+    val panel = dialogPanel ?: return false
+    // Check if DSL panel fields changed
+    if (panel.isModified()) return true
+    // Check SecretsStore-backed fields
+    if (mirrorApiKeyLocal != SecretsStore.mirrorApiKey) return true
+    if (syncPasswordLocal != SecretsStore.syncPassword) return true
+    if (gitLabTokenLocal != SecretsStore.gitLabToken) return true
+    return false
+  }
 
-    root.add(JLabel(" "))
-    root.add(JLabel(LocalGitMirrorBundle.message("settings.gitlab.title")))
-    row(LocalGitMirrorBundle.message("settings.gitlab.baseUrl"), gitLabBaseUrl)
-    row(LocalGitMirrorBundle.message("settings.gitlab.token"), gitLabToken)
-    row(LocalGitMirrorBundle.message("settings.gitlab.project"), gitLabProject)
-    row(LocalGitMirrorBundle.message("settings.gitlab.defaultTarget"), gitLabTargetBranch)
-    root.add(gitLabInsecureTls)
+  override fun apply() {
+    val panel = dialogPanel ?: return
+    // Apply DSL-bound fields (state:: properties are updated automatically)
+    panel.apply()
+    // Apply SecretsStore-backed fields
+    SecretsStore.mirrorApiKey = mirrorApiKeyLocal
+    SecretsStore.syncPassword = syncPasswordLocal
+    SecretsStore.gitLabToken = gitLabTokenLocal
+    // Normalize defaults
+    if (state.gitRemoteName.isBlank()) state.gitRemoteName = "origin"
+    if (state.pullBackDefaultMode.isBlank()) state.pullBackDefaultMode = "new-branch"
+    if (state.gitLabDefaultTargetBranch.isBlank()) state.gitLabDefaultTargetBranch = "main"
+  }
 
-    root.add(JLabel(" "))
-    root.add(JLabel(LocalGitMirrorBundle.message("settings.git.title")))
-    row(LocalGitMirrorBundle.message("settings.git.remote"), gitRemoteName)
-    row(LocalGitMirrorBundle.message("settings.git.pullMode"), pullBackDefaultMode)
-    root.add(offlineGenerateOnly)
-    root.add(autoCheckPullOnStartup)
-    root.add(simpleUiMode)
+  override fun reset() {
+    val panel = dialogPanel ?: return
+    // Reset DSL-bound fields
+    panel.reset()
+    // Reset SecretsStore-backed fields
+    mirrorApiKeyLocal = SecretsStore.mirrorApiKey
+    syncPasswordLocal = SecretsStore.syncPassword
+    gitLabTokenLocal = SecretsStore.gitLabToken
+  }
 
-    root.add(JLabel(" "))
-    root.add(JLabel(LocalGitMirrorBundle.message("settings.workMode.title")))
-    row(LocalGitMirrorBundle.message("settings.workMode"), workModeCombo)
-
-    panel = root
-    reset()
-    return root
+  override fun disposeUIResources() {
+    dialogPanel = null
   }
 
   private fun onDiscoverClicked() {
-    discoverBtn?.isEnabled = false
-    discoverBtn?.text = LocalGitMirrorBundle.message("settings.discover.searching")
-
     Thread({
       val servers = try {
         LanDiscovery.discover(timeoutMs = 6000)
@@ -109,9 +192,6 @@ class MirrorSettingsConfigurable : Configurable {
       }
 
       SwingUtilities.invokeLater {
-        discoverBtn?.isEnabled = true
-        discoverBtn?.text = LocalGitMirrorBundle.message("settings.discover")
-
         when {
           servers.isEmpty() -> {
             Messages.showInfoMessage(
@@ -120,7 +200,9 @@ class MirrorSettingsConfigurable : Configurable {
             )
           }
           servers.size == 1 -> {
-            mirrorBaseUrl.text = servers.first().toUrl()
+            val url = servers.first().toUrl()
+            state.baseUrl = url
+            dialogPanel?.reset()
           }
           else -> {
             val options = servers.map { "${it.toUrl()} (${it.ip})" }.toTypedArray()
@@ -135,88 +217,13 @@ class MirrorSettingsConfigurable : Configurable {
             if (chosen != null) {
               val idx = options.indexOf(chosen)
               if (idx >= 0) {
-                mirrorBaseUrl.text = servers[idx].toUrl()
+                state.baseUrl = servers[idx].toUrl()
+                dialogPanel?.reset()
               }
             }
           }
         }
       }
     }, "LAN-Discovery").start()
-  }
-
-  private var discoverBtn: JButton? = null
-
-  private fun state(): MirrorSettingsService.State = service<MirrorSettingsService>().state
-
-  override fun isModified(): Boolean {
-    val state = state()
-    return mirrorBaseUrl.text != state.baseUrl ||
-      String(mirrorApiKey.password) != SecretsStore.mirrorApiKey ||
-      mirrorRepo.text != state.repo ||
-      (uiLanguage.selectedItem?.toString() ?: "auto") != state.uiLanguage ||
-      String(syncPassword.password) != SecretsStore.syncPassword ||
-      mirrorInsecureTls.isSelected != state.mirrorInsecureTls ||
-      gitLabBaseUrl.text != state.gitLabBaseUrl ||
-      String(gitLabToken.password) != SecretsStore.gitLabToken ||
-      gitLabProject.text != state.gitLabProject ||
-      gitLabTargetBranch.text != state.gitLabDefaultTargetBranch ||
-      gitLabInsecureTls.isSelected != state.gitLabInsecureTls ||
-      gitRemoteName.text != state.gitRemoteName ||
-      pullBackDefaultMode.text != state.pullBackDefaultMode ||
-      offlineGenerateOnly.isSelected != state.offlineGenerateOnly ||
-      autoCheckPullOnStartup.isSelected != state.autoCheckPullOnStartup ||
-      simpleUiMode.isSelected != state.simpleUiMode ||
-      (workModeCombo.selectedItem?.toString() ?: "auto") != state.workMode
-  }
-
-  override fun apply() {
-    val s = state()
-    s.baseUrl = mirrorBaseUrl.text.trim()
-    SecretsStore.mirrorApiKey = String(mirrorApiKey.password)
-    s.repo = mirrorRepo.text.trim()
-    s.uiLanguage = (uiLanguage.selectedItem?.toString() ?: "auto").lowercase()
-    SecretsStore.syncPassword = String(syncPassword.password)
-    s.mirrorInsecureTls = mirrorInsecureTls.isSelected
-
-    s.gitLabBaseUrl = gitLabBaseUrl.text.trim()
-    SecretsStore.gitLabToken = String(gitLabToken.password)
-    s.gitLabProject = gitLabProject.text.trim()
-    s.gitLabDefaultTargetBranch = gitLabTargetBranch.text.trim().ifBlank { "main" }
-    s.gitLabInsecureTls = gitLabInsecureTls.isSelected
-
-    s.gitRemoteName = gitRemoteName.text.trim().ifBlank { "origin" }
-    s.pullBackDefaultMode = pullBackDefaultMode.text.trim().ifBlank { "new-branch" }
-    s.offlineGenerateOnly = offlineGenerateOnly.isSelected
-    s.autoCheckPullOnStartup = autoCheckPullOnStartup.isSelected
-    s.simpleUiMode = simpleUiMode.isSelected
-    s.workMode = (workModeCombo.selectedItem?.toString() ?: "auto").lowercase()
-  }
-
-  override fun reset() {
-    val state = state()
-    mirrorBaseUrl.text = state.baseUrl
-    mirrorApiKey.text = SecretsStore.mirrorApiKey
-    mirrorRepo.text = state.repo
-    uiLanguage.selectedItem = state.uiLanguage.ifBlank { "auto" }
-    syncPassword.text = SecretsStore.syncPassword
-    mirrorInsecureTls.isSelected = state.mirrorInsecureTls
-
-    gitLabBaseUrl.text = state.gitLabBaseUrl
-    gitLabToken.text = SecretsStore.gitLabToken
-    gitLabProject.text = state.gitLabProject
-    gitLabTargetBranch.text = state.gitLabDefaultTargetBranch
-    gitLabInsecureTls.isSelected = state.gitLabInsecureTls
-
-    gitRemoteName.text = state.gitRemoteName
-    pullBackDefaultMode.text = state.pullBackDefaultMode
-    offlineGenerateOnly.isSelected = state.offlineGenerateOnly
-    autoCheckPullOnStartup.isSelected = state.autoCheckPullOnStartup
-    simpleUiMode.isSelected = state.simpleUiMode
-    workModeCombo.selectedItem = state.workMode.ifBlank { "auto" }
-  }
-
-  override fun disposeUIResources() {
-    panel = null
-    discoverBtn = null
   }
 }
