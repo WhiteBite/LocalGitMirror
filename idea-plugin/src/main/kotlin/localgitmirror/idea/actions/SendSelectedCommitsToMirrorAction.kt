@@ -11,6 +11,7 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
@@ -20,7 +21,7 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
     val project: Project = e.project ?: return
     val baseDir = project.basePath
     if (baseDir.isNullOrBlank()) {
-      notify(project, "Cannot determine project directory", NotificationType.ERROR)
+      notify(project, LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
       return
     }
     val projectDir = File(baseDir)
@@ -29,13 +30,13 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
 
     val commits = GitLocal.recentCommits(project, projectDir, 30)
     if (commits.isEmpty()) {
-      notify(project, "No recent commits found", NotificationType.WARNING)
+      notify(project, LocalGitMirrorBundle.message("notify.noRecentCommits"), NotificationType.WARNING)
       return
     }
 
     val selected = Messages.showEditableChooseDialog(
-      "Enter commit hashes to send (space-separated) or pick one",
-      "LocalGitMirror: Send commits",
+      LocalGitMirrorBundle.message("action.sendCommits.selectPrompt"),
+      LocalGitMirrorBundle.message("action.sendCommits.dialogTitle"),
       null,
       commits.map { it.display() }.toTypedArray(),
       commits.first().display(),
@@ -44,21 +45,21 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
 
     val hashes = parseHashes(selected)
     if (hashes.isEmpty()) {
-      notify(project, "No commit hashes selected", NotificationType.WARNING)
+      notify(project, LocalGitMirrorBundle.message("action.sendCommits.noSelection"), NotificationType.WARNING)
       return
     }
 
     val repoInfo = syncFacade.describeRepoTarget(projectDir, settings)
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send commits", false) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("action.sendCommits.dialogTitle"), false) {
       override fun run(indicator: ProgressIndicator) {
-        notify(project, "Starting sync: $repoInfo", NotificationType.INFORMATION)
+        notify(project, LocalGitMirrorBundle.message("action.sendCommits.starting", repoInfo), NotificationType.INFORMATION)
         val original = GitLocal.currentBranch(project, projectDir)
         val tempBranch = "sync-tmp-${System.currentTimeMillis()}"
 
         val create = GitLocal.checkoutNew(project, projectDir, tempBranch, "HEAD")
         if (!create.ok()) {
-          notify(project, "Failed to create temp branch: ${create.stderr}", NotificationType.ERROR)
+          notify(project, LocalGitMirrorBundle.message("action.sendCommits.tempBranchFailed", create.stderr), NotificationType.ERROR)
           return
         }
 
@@ -67,7 +68,7 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
             val cp = GitLocal.cherryPick(project, projectDir, hash)
             if (!cp.ok()) {
               GitLocal.cherryPickAbort(project, projectDir)
-              notify(project, "Cherry-pick failed for $hash: ${cp.stderr}", NotificationType.ERROR)
+              notify(project, LocalGitMirrorBundle.message("action.sendCommits.cherryPickFailed", hash, cp.stderr), NotificationType.ERROR)
               return
             }
           }

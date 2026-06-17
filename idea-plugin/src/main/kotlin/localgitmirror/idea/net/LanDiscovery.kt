@@ -58,6 +58,7 @@ object LanDiscovery {
 
   // ── mDNS discovery ──────────────────────────────────────────────────
 
+  @Suppress("HttpCallOnEdt") // always called from Thread in MirrorSettingsConfigurable
   private fun discoverMdns(timeoutMs: Int): List<DiscoveredServer> {
     val results = mutableListOf<DiscoveredServer>()
     var jmdns: JmDNS? = null
@@ -82,6 +83,7 @@ object LanDiscovery {
 
   // ── UDP fallback (binary: port(2) + flags(1)) ──────────────────────
 
+  @Suppress("HttpCallOnEdt") // always called from Thread in MirrorSettingsConfigurable
   private fun discoverUdp(timeoutMs: Int): List<DiscoveredServer> {
     val results = mutableListOf<DiscoveredServer>()
     val seen = mutableSetOf<String>()

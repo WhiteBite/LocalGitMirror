@@ -44,7 +44,7 @@ class SyncGitLabMrToMirrorAction : AnAction() {
 
     val ensureRepo = syncFacade.ensureRemoteRepo(s.baseUrl, SecretsStore.mirrorApiKey, repoName, s.mirrorInsecureTls)
     if (!ensureRepo.ok) {
-      notify(project, "${ensureRepo.message}. ${ensureRepo.details}", NotificationType.ERROR)
+      notify(project, LocalGitMirrorBundle.message("action.mr.ensureRepoFailed", ensureRepo.message, ensureRepo.details), NotificationType.ERROR)
       return
     }
     if (s.gitLabBaseUrl.isBlank() || SecretsStore.gitLabToken.isBlank() || s.gitLabProject.isBlank()) {

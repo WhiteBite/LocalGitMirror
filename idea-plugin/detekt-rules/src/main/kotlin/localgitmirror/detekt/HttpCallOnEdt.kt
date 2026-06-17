@@ -31,7 +31,6 @@ class HttpCallOnEdt(config: Config) : Rule(config) {
   private val httpMethodNames = setOf(
     "ping", "upload", "download", "fetch", "getRefs",
     "listOpenMergeRequests", "getMergeRequestSourceBranch",
-    "discover", "discoverMdns", "discoverUdp",
   )
 
   override fun visitCallExpression(expression: KtCallExpression) {
@@ -68,6 +67,12 @@ class HttpCallOnEdt(config: Config) : Rule(config) {
           return true
         }
       }
+      // Check for suspend function declaration
+      if (parent is KtNamedFunction) {
+        if (parent.hasModifier(org.jetbrains.kotlin.lexer.KtTokens.SUSPEND_KEYWORD)) {
+          return true
+        }
+      }
       // Check for lambda passed to ProgressManager.run()
       if (parent is KtCallExpression) {
         val callText = parent.calleeExpression?.text ?: ""
@@ -75,11 +80,21 @@ class HttpCallOnEdt(config: Config) : Rule(config) {
           return true
         }
       }
-      // Check for Thread {} wrapper
+      // Check for Thread {} wrapper (including Thread({...}).start())
       if (parent is KtCallExpression) {
         val callText = parent.calleeExpression?.text ?: ""
         if (callText == "Thread" || callText == "thread") {
           return true
+        }
+      }
+      // Walk through Thread({...}).start() — parent is KtDotQualifiedExpression
+      if (parent is KtDotQualifiedExpression) {
+        val receiver = parent.receiverExpression
+        if (receiver is KtCallExpression) {
+          val receiverText = receiver.calleeExpression?.text ?: ""
+          if (receiverText == "Thread" || receiverText == "thread") {
+            return true
+          }
         }
       }
       // Check for SwingUtilities.invokeLater

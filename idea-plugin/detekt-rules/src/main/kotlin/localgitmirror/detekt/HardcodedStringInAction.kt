@@ -40,12 +40,22 @@ class HardcodedStringInAction(config: Config) : Rule(config) {
     Regex("^mr-tmp-"),
     Regex("^sync-tmp-"),
     Regex("^\\^"),  // regex patterns
+    Regex("^[+]?refs/"),        // git refspecs: refs/heads, +refs/heads/*:refs/...
+    Regex("^--format="),        // git format flags
+    Regex("^\\.tmp_"),          // temp file names
+    Regex("^[a-z]+-\\$\\{"),      // interpolated branch names like $baseName-$i
+    Regex("-> "),                  // log output arrows: "$bName -> updated to..."
+    Regex("^new-branch$"),         // mode identifier
+    Regex("^ff-only$"),            // mode identifier
+    Regex("^local-import-"),       // generated branch name prefix
+    Regex("^\\$\\w+"),             // strings starting with variable ref like $baseName-...
   )
 
   /** Method names whose string arguments are developer-facing, not user-facing */
   private val developerFacingMethods = setOf(
     "append", "println", "log", "debug", "info", "warn", "error",
     "text", "contains", "matches", "split", "replace", "startsWith",
+    "git", "listOf", "ProcessBuilder",  // shell command builders
   )
 
   override fun visitClass(klass: KtClass) {
@@ -111,6 +121,15 @@ class HardcodedStringInAction(config: Config) : Rule(config) {
     if (current is KtCallExpression) {
       val callee = current.calleeExpression?.text ?: ""
       if (callee in developerFacingMethods) return true
+      // Skip strings inside ProcessBuilder / listOf("git", ...) — shell command arguments
+      if (callee == "listOf" || callee == "ProcessBuilder") {
+        val outerCall = current.parent?.parent
+        if (outerCall is KtCallExpression) {
+          val outerCallee = outerCall.calleeExpression?.text ?: ""
+          if (outerCallee == "ProcessBuilder" || callee == "ProcessBuilder") return true
+        }
+        if (callee == "ProcessBuilder") return true
+      }
     }
     // Also check for property assignment to indicator.text
     if (element.parent is KtBinaryExpression) {

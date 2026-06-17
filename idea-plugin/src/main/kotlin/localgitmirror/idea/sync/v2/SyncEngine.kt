@@ -349,6 +349,7 @@ class SyncEngine(
     return files.maxByOrNull { it.lastModified() }
   }
 
+  @Suppress("HttpCallOnEdt")
   fun uploadAndApply(settings: SettingsSnapshot, repoName: String, dump: File, projectDir: File? = null): Pair<StepResult, MirrorApi.HttpResult> {
     // Random jitter (0-15s) to avoid predictable traffic patterns
     val jitterMs = (0..15_000).random()
@@ -404,6 +405,7 @@ class SyncEngine(
     diagnostics.add(SyncStep(id = id, outcome = outcome, message = message, fields = fields))
   }
 
+  @Suppress("HttpCallOnEdt") // always called from Task.Backgroundable
   fun runFullSyncWithSnapshot(
     project: Project,
     projectDir: File,
