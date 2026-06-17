@@ -25,21 +25,48 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
     return
   }
 
-  val branch = selectedBranch() ?: GitLocal.currentBranch(project, dir) ?: "(unknown)"
+  val chosenBranch = selectedBranch() ?: GitLocal.currentBranch(project, dir) ?: "(unknown)"
+  val currentBranch = GitLocal.currentBranch(project, dir)
   val additionalBranches = selectedAdditionalBranches.toList()
+  val needsCheckout = chosenBranch != currentBranch && !chosenBranch.isBlank()
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send current", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send «$chosenBranch»", false) {
     override fun run(indicator: ProgressIndicator) {
       try {
-        append("Send current: $branch")
+        // If a different branch is selected in the combo — checkout first, then restore
+        if (needsCheckout) {
+          indicator.text = "Переключаемся на «$chosenBranch»…"
+          val co = GitLocal.checkout(project, dir, chosenBranch)
+          if (!co.ok()) {
+            notify(LocalGitMirrorBundle.message("notify.checkoutFailed", co.stderr), NotificationType.ERROR)
+            markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
+            historyService.add("Send", false, "checkout failed: ${co.stderr}")
+            return
+          }
+        }
+
+        indicator.text = "Отправляем «$chosenBranch»…"
+        append("Send: $chosenBranch")
         if (additionalBranches.isNotEmpty()) append("Send additional: ${additionalBranches.joinToString()}")
         append("Target: ${syncFacade.describeRepoTarget(dir, settings)}")
-        val syncRes = syncFacade.runFullSync(dir, settings, additionalBranches)
+
+        val syncRes = try {
+          syncFacade.runFullSync(dir, settings, additionalBranches)
+        } finally {
+          // Always restore original branch after checkout
+          if (needsCheckout && !currentBranch.isNullOrBlank()) {
+            val back = GitLocal.checkout(project, dir, currentBranch)
+            if (!back.ok()) {
+              notify(LocalGitMirrorBundle.message("notify.restoreBranchFailed", currentBranch, back.stderr), NotificationType.WARNING)
+            }
+          }
+        }
+
         val res = syncRes.step
         if (!res.ok) {
           append("Failed: ${res.message} ${res.details}")
-          historyService.add("Send current", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}")
+          historyService.add("Send", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}")
           notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}", NotificationType.ERROR)
           markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
           refreshHistoryLog()
@@ -47,12 +74,12 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
         }
         if (settings.offlineGenerateOnly) {
           append("Offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          historyService.add("Send current", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
+          historyService.add("Send", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
           notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: settings.repo}'", NotificationType.INFORMATION)
         } else {
           append("OK: ${syncRes.http?.code} ${syncRes.http?.body?.take(400) ?: ""}")
-          historyService.add("Send current", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${syncRes.http?.body ?: "OK"}")
-          notify("[trace=${syncRes.traceId}] Synced current branch to Mirror repo '${syncRes.repo ?: settings.repo}'", NotificationType.INFORMATION)
+          historyService.add("Send", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${syncRes.http?.body ?: "OK"}")
+          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.branch.ok", chosenBranch, syncRes.repo ?: settings.repo)}", NotificationType.INFORMATION)
         }
         markLastSyncOk()
         refreshHistoryLog()
