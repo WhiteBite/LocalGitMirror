@@ -45,6 +45,7 @@ class PullFromMirrorAction : AnAction() {
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Sync Pull", false) {
       override fun run(indicator: ProgressIndicator) {
         val traceId = UUID.randomUUID().toString().take(8)
+        try {
         
         notify(project, "[trace=$traceId] Starting sync pull: repo=$repoName", NotificationType.INFORMATION, dir)
 
@@ -181,6 +182,10 @@ class PullFromMirrorAction : AnAction() {
         
         if (!refsResult.head.isNullOrBlank()) {
             SyncStateStore.writeLastPulledHead(dir, refsResult.head)
+        }
+
+        } catch (t: Throwable) {
+          notify(project, "[trace=$traceId] Sync pull failed: ${t.message}", NotificationType.ERROR, dir)
         }
       }
     })
