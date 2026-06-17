@@ -429,6 +429,7 @@ internal fun LocalGitMirrorPanel.syncMr() {
   })
 }
 
+@Suppress("HttpCallOnEdt") // called from inside Task.Backgroundable.run()
 internal fun LocalGitMirrorPanel.pickMrIid(s: MirrorSettingsService.State): String? {
   val (listRes, mrs) = GitLabApi.listOpenMergeRequests(
     baseUrl = s.gitLabBaseUrl, token = SecretsStore.gitLabToken,

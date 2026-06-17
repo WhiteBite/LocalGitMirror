@@ -11,6 +11,7 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
@@ -37,7 +38,7 @@ class PullFromMirrorAction : AnAction() {
     val repoName = settings.repo.ifBlank { project.name }
 
     if (!GitLocal.isCleanWorkTree(project, dir)) {
-      notify(project, "Working tree has uncommitted changes. Commit/stash before syncing.", NotificationType.WARNING, dir)
+      notify(project, LocalGitMirrorBundle.message("notify.worktree.dirty"), NotificationType.WARNING, dir)
       return
     }
 

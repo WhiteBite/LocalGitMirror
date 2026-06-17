@@ -10,6 +10,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
@@ -20,7 +21,7 @@ class SyncCurrentBranchToMirrorAction : AnAction() {
     val project: Project = e.project ?: return
     val baseDir = project.basePath
     if (baseDir.isNullOrBlank()) {
-      notify(project, "Cannot determine project directory", NotificationType.ERROR)
+      notify(project, LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
       return
     }
     val projectDir = File(baseDir)
@@ -28,15 +29,15 @@ class SyncCurrentBranchToMirrorAction : AnAction() {
     val syncFacade = project.getService(SyncFacadeService::class.java)
 
     if (settings.baseUrl.isBlank()) {
-      notify(project, "Configure Mirror URL in settings", NotificationType.WARNING)
+      notify(project, LocalGitMirrorBundle.message("action.syncBranch.urlMissing"), NotificationType.WARNING)
       return
     }
     if (SecretsStore.syncPassword.isBlank()) {
-      notify(project, "Configure Sync Password in settings", NotificationType.WARNING)
+      notify(project, LocalGitMirrorBundle.message("action.syncBranch.syncPasswordMissing"), NotificationType.WARNING)
       return
     }
     if (!GitLocal.isCleanWorkTree(project, projectDir)) {
-      notify(project, "Working tree has uncommitted changes. Commit/stash before syncing.", NotificationType.WARNING)
+      notify(project, LocalGitMirrorBundle.message("notify.worktree.dirty"), NotificationType.WARNING)
       return
     }
 
@@ -44,10 +45,10 @@ class SyncCurrentBranchToMirrorAction : AnAction() {
 
     val branch = GitLocal.currentBranch(project, projectDir) ?: "(unknown)"
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Sync current branch", false) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("action.syncCurrent.progress"), false) {
       override fun run(indicator: ProgressIndicator) {
-        indicator.text = "Syncing current branch"
-        notify(project, "Starting sync: $repoInfo", NotificationType.INFORMATION)
+        indicator.text = LocalGitMirrorBundle.message("action.syncCurrent.indicatorText")
+        notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
         val syncRes = syncFacade.runFullSync(projectDir, settings)
         val result = syncRes.step
         if (!result.ok) {

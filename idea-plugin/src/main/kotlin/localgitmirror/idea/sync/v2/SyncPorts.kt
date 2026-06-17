@@ -18,30 +18,37 @@ interface MirrorPort {
 }
 
 object DefaultMirrorPort : MirrorPort {
+  @Suppress("HttpCallOnEdt")
   override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File?): MirrorApi.HttpResult {
     return MirrorApi.ensureRepoExists(baseUrl, apiKey, repo, insecureTls, projectDir)
   }
 
+  @Suppress("HttpCallOnEdt")
   override fun capabilities(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorApi.CapabilitiesResult {
     return MirrorApi.capabilities(baseUrl, apiKey, insecureTls)
   }
 
+  @Suppress("HttpCallOnEdt")
   override fun passwordProbe(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorApi.ProbeResult {
     return MirrorApi.passwordProbe(baseUrl, apiKey, insecureTls)
   }
 
+  @Suppress("HttpCallOnEdt")
   override fun getRefs(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): MirrorApi.RefsResult {
     return MirrorApi.getRefs(baseUrl, apiKey, repo, insecureTls)
   }
 
+  @Suppress("HttpCallOnEdt")
   override fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, insecureTls: Boolean): MirrorApi.HttpResult {
     return MirrorApi.hasCommits(baseUrl, apiKey, repo, commits, insecureTls)
   }
 
+  @Suppress("HttpCallOnEdt")
   override fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, branches: Map<String, String>, insecureTls: Boolean): MirrorApi.HttpResult {
     return MirrorApi.applyKnown(baseUrl, apiKey, repo, commit, branches, insecureTls)
   }
 
+  @Suppress("HttpCallOnEdt")
   override fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, insecureTls: Boolean, projectDir: File?): MirrorApi.HttpResult {
     return MirrorApi.uploadAndApply(baseUrl, apiKey, repo, dumpFile, insecureTls, projectDir)
   }

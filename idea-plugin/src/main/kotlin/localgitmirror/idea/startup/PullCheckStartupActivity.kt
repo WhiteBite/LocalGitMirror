@@ -68,6 +68,7 @@ class PullCheckStartupActivity : ProjectActivity {
     }
   }
 
+  @Suppress("HttpCallOnEdt") // called from coroutine (execute) and Thread (focus listener)
   private fun checkForUpdates(
     project: Project,
     dir: File,

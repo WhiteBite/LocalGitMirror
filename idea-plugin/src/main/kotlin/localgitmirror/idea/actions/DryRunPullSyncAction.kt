@@ -9,6 +9,7 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
@@ -25,9 +26,9 @@ class DryRunPullSyncAction : AnAction() {
       override fun run(indicator: ProgressIndicator) {
         val report = facade.runPullDryRun(dir, settings)
         val summary = if (report.ok) {
-          "Pull dry-run: hasUpdates=${report.hasUpdates}, remoteHead=${report.remoteHead?.take(12) ?: "(empty)"}, reason=${report.reason}"
+          LocalGitMirrorBundle.message("action.dryRunPull.summary", report.hasUpdates, report.remoteHead?.take(12) ?: "(empty)", report.reason)
         } else {
-          "Pull dry-run failed"
+          LocalGitMirrorBundle.message("action.dryRunPull.failed")
         }
         notify(project, summary, if (report.ok) NotificationType.INFORMATION else NotificationType.WARNING)
       }

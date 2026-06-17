@@ -75,6 +75,7 @@ object SyncOrchestrator {
     return step.toLegacy() to dump
   }
 
+  @Suppress("HttpCallOnEdt")
   fun uploadAndApply(settings: SettingsSnapshot, repoName: String, dump: File): Pair<StepResult, MirrorApi.HttpResult> {
     val (step, http) = engine.uploadAndApply(settings, repoName, dump)
     return step.toLegacy() to http
