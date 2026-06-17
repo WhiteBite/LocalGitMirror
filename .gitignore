@@ -108,3 +108,5 @@ backend/nul
 idea-plugin/.gradle/
 idea-plugin/build/
 idea-plugin/bin/
+idea-plugin/detekt-rules/bin/
+idea-plugin/detekt-rules/build/
