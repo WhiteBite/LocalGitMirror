@@ -200,8 +200,9 @@ class MirrorSettingsConfigurable : Configurable {
             )
           }
           servers.size == 1 -> {
-            val url = servers.first().toUrl()
-            state.baseUrl = url
+            val server = servers.first()
+            state.baseUrl = server.toUrl()
+            if (server.tls) state.mirrorInsecureTls = true
             dialogPanel?.reset()
           }
           else -> {
@@ -218,6 +219,7 @@ class MirrorSettingsConfigurable : Configurable {
               val idx = options.indexOf(chosen)
               if (idx >= 0) {
                 state.baseUrl = servers[idx].toUrl()
+                if (servers[idx].tls) state.mirrorInsecureTls = true
                 dialogPanel?.reset()
               }
             }
