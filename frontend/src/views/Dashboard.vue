@@ -137,6 +137,93 @@
         </div>
       </section>
 
+      <!-- Plugin Connection Info -->
+      <section class="connection-info-card border-l-4 border-emerald-500">
+        <details>
+          <summary class="conn-summary">
+            <div class="flex items-center gap-3">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+              </svg>
+              <span class="summary-title">{{ t('dashboard.plugin_setup.title') }}</span>
+            </div>
+            <span class="chevron">▼</span>
+          </summary>
+          <div class="conn-body">
+            <p class="conn-desc">{{ t('dashboard.plugin_setup.desc') }}</p>
+
+            <div class="conn-fields">
+              <!-- Mirror URL -->
+              <div class="conn-field">
+                <label class="conn-label">{{ t('dashboard.plugin_setup.mirror_url') }}</label>
+                <div class="conn-input-row">
+                  <input readonly :value="connInfo.mirror_url" class="conn-input" @click="$event.target.select()" />
+                  <button class="btn-icon" :title="t('common.copy')" @click="copyField('mirror_url')">
+                    <svg v-if="copiedField !== 'mirror_url'" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#4ade80" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- API Key -->
+              <div class="conn-field">
+                <label class="conn-label">{{ t('dashboard.plugin_setup.api_key') }}</label>
+                <div class="conn-input-row">
+                  <input readonly :value="showApiKey ? connInfo.api_key : maskValue(connInfo.api_key)" class="conn-input font-mono" @click="$event.target.select()" />
+                  <button class="btn-icon" :title="showApiKey ? t('common.hide') : t('common.show')" @click="showApiKey = !showApiKey">
+                    <svg v-if="!showApiKey" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  </button>
+                  <button class="btn-icon" :title="t('common.copy')" @click="copyField('api_key')">
+                    <svg v-if="copiedField !== 'api_key'" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#4ade80" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Sync Password -->
+              <div class="conn-field">
+                <label class="conn-label">{{ t('dashboard.plugin_setup.sync_password') }}</label>
+                <div class="conn-input-row">
+                  <input readonly :value="showPassword ? connInfo.sync_password : maskValue(connInfo.sync_password)" class="conn-input font-mono" @click="$event.target.select()" />
+                  <button class="btn-icon" :title="showPassword ? t('common.hide') : t('common.show')" @click="showPassword = !showPassword">
+                    <svg v-if="!showPassword" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  </button>
+                  <button class="btn-icon" :title="t('common.copy')" @click="copyField('sync_password')">
+                    <svg v-if="copiedField !== 'sync_password'" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#4ade80" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Default Repo -->
+              <div class="conn-field">
+                <label class="conn-label">{{ t('dashboard.plugin_setup.default_repo') }}</label>
+                <div class="conn-input-row">
+                  <input readonly :value="connInfo.default_repo" class="conn-input" @click="$event.target.select()" />
+                  <button class="btn-icon" :title="t('common.copy')" @click="copyField('default_repo')">
+                    <svg v-if="copiedField !== 'default_repo'" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                    <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#4ade80" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Copy Full Config -->
+            <div class="conn-full-config">
+              <button class="btn-copy-config" @click="copyFullConfig">
+                <svg v-if="copiedField !== 'full'" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#4ade80" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                <span>{{ copiedField === 'full' ? t('dashboard.plugin_setup.copied') : t('dashboard.plugin_setup.copy_full_config') }}</span>
+              </button>
+              <p class="conn-hint">{{ t('dashboard.plugin_setup.paste_hint') }}</p>
+            </div>
+          </div>
+        </details>
+      </section>
+
       <!-- Sync Wizard -->
       <SyncWizard />
 
@@ -215,6 +302,12 @@ const copied = ref(false)
 const lastActivity = ref('Никогда')
 const statusError = ref('')
 
+// Connection info state
+const connInfo = ref({ mirror_url: '', api_key: '', sync_password: '', default_repo: '', config_line: '' })
+const showApiKey = ref(false)
+const showPassword = ref(false)
+const copiedField = ref('')
+
 // Обновлять данные при смене тома в сайдбаре
 watch(() => reposStore.currentRepo, () => {
   fetchStatus()
@@ -226,6 +319,7 @@ onMounted(async () => {
   }
   await fetchStatus()
   await fetchMetrics()
+  await fetchConnectionInfo()
   setInterval(fetchMetrics, 30000)
 })
 
@@ -298,6 +392,33 @@ async function prepareForWork() {
   } finally {
     syncing.value = false
   }
+}
+
+async function fetchConnectionInfo() {
+  try {
+    const response = await axios.get('/api/connection-info')
+    connInfo.value = response.data
+  } catch (error) {
+    console.error('Failed to fetch connection info:', error)
+  }
+}
+
+function maskValue(val) {
+  if (!val) return ''
+  return '•'.repeat(Math.min(val.length, 16))
+}
+
+function copyField(field) {
+  const value = connInfo.value[field] || ''
+  navigator.clipboard.writeText(value)
+  copiedField.value = field
+  setTimeout(() => copiedField.value = '', 2000)
+}
+
+function copyFullConfig() {
+  navigator.clipboard.writeText(connInfo.value.config_line || '')
+  copiedField.value = 'full'
+  setTimeout(() => copiedField.value = '', 3000)
 }
 
 async function panicMode() {
@@ -376,5 +497,97 @@ details summary { padding: 15px 20px; cursor: pointer; display: flex; justify-co
 @media (max-width: 640px) {
   .view-header { padding: 16px 16px; }
   .view-content { padding: 16px; }
+}
+
+/* Connection Info Card */
+.connection-info-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  margin-bottom: 30px;
+  overflow: hidden;
+}
+.conn-summary {
+  padding: 15px 20px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 500;
+  color: var(--text-secondary);
+  list-style: none;
+}
+.conn-summary::-webkit-details-marker { display: none; }
+.conn-summary .summary-title {
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.conn-body {
+  padding: 0 20px 20px;
+}
+.conn-desc {
+  color: var(--text-secondary);
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.conn-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.conn-field { }
+.conn-label {
+  display: block;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  letter-spacing: 0.5px;
+}
+.conn-input-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.conn-input {
+  flex: 1;
+  background: rgba(0,0,0,0.2);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-main);
+  font-size: 13px;
+  padding: 6px 10px;
+  outline: none;
+}
+.conn-input:focus {
+  border-color: var(--accent);
+}
+.conn-full-config {
+  border-top: 1px solid var(--border-color);
+  padding-top: 14px;
+}
+.btn-copy-config {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.btn-copy-config:hover {
+  filter: brightness(1.15);
+}
+.conn-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 </style>
