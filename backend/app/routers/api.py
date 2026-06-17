@@ -130,10 +130,11 @@ async def get_connection_info():
     default_repo = repo_manager.current_repo if repo_manager else "default"
 
     # Build raw config line compatible with plugin's ConfigLineCodec.parseRawPayload()
+    # Always set mirrorInsecureTls=true because auto-generated cert is self-signed
     config_line = (
         f"baseUrl={mirror_url}\n"
         f"repo={default_repo}\n"
-        f"mirrorInsecureTls={str(not tls_enabled).lower()}\n"
+        f"mirrorInsecureTls=true\n"
         f"offlineGenerateOnly=false\n"
         f"simpleUiMode=false\n"
         f"gitLabBaseUrl=\n"

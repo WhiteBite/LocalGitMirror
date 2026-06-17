@@ -14,7 +14,7 @@ from app.core.system_monitor import SystemMonitor
 MDNS_SERVICE_TYPE = "_http._tcp.local."
 MDNS_SERVICE_NAME = "DocCache"
 UDP_FALLBACK_PORT = 37020
-UDP_FALLBACK_INTERVAL_SEC = 30
+UDP_FALLBACK_INTERVAL_SEC = 5
 
 
 class LanBeacon:
