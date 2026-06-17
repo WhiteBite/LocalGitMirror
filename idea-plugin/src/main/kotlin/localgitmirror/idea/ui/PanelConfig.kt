@@ -47,6 +47,14 @@ internal fun LocalGitMirrorPanel.pasteConfigLine() {
     ""
   }
 
+  // Try raw key=value format first (pasted from web UI / console)
+  val directSnapshot = ConfigLineCodec.decode(clipboardText)
+  if (directSnapshot != null) {
+    applySnapshot(directSnapshot)
+    notify(LocalGitMirrorBundle.message("notify.config.applied"), NotificationType.INFORMATION)
+    return
+  }
+
   val fromClipboard = ConfigLineCodec.extractOrNull(clipboardText)
 
   val line = if (fromClipboard != null) {
@@ -58,15 +66,17 @@ internal fun LocalGitMirrorPanel.pasteConfigLine() {
       null, "", null
     )?.trim().orEmpty()
 
+    // Try raw key=value first for manual input too
+    val directManual = ConfigLineCodec.decode(manual)
+    if (directManual != null) {
+      applySnapshot(directManual)
+      notify(LocalGitMirrorBundle.message("notify.config.applied"), NotificationType.INFORMATION)
+      return
+    }
+
     val extractedManual = ConfigLineCodec.extractOrNull(manual)
     if (extractedManual == null) {
-      val direct = ConfigLineCodec.decode(manual)
-      if (direct == null) {
-        notify(LocalGitMirrorBundle.message("notify.config.notFound"), NotificationType.WARNING)
-        return
-      }
-      applySnapshot(direct)
-      notify(LocalGitMirrorBundle.message("notify.config.applied"), NotificationType.INFORMATION)
+      notify(LocalGitMirrorBundle.message("notify.config.notFound"), NotificationType.WARNING)
       return
     }
     extractedManual

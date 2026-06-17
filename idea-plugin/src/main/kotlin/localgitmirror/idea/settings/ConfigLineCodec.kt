@@ -255,10 +255,18 @@ object ConfigLineCodec {
    * More tolerant than extractToken(): also supports heavily wrapped text.
    */
   fun extractOrNull(text: String): String? {
-    val direct = extractToken(text)
+    val sanitized = sanitize(text)
+    val trimmed = sanitized.trim()
+    if (trimmed.isBlank()) return null
+
+    // If the text is a raw key=value payload, don't try to extract tokens from it
+    if (trimmed.contains("baseUrl=") && trimmed.contains("repo=") && !trimmed.contains(PREFIX_MARKER_V2) && !trimmed.contains(PREFIX_MARKER_V1)) {
+      return null
+    }
+
+    val direct = extractToken(trimmed)
     if (!direct.isNullOrBlank()) return direct
 
-    val sanitized = sanitize(text)
     val compact = sanitized.replace("\r", "").replace("\n", "").replace("\t", "").replace(" ", "")
 
     // Try V2 first
