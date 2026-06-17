@@ -310,6 +310,7 @@ class PreviewPullRequest(BaseModel):
 class PreviewPullDetailsRequest(BaseModel):
     repo: str
     since: Optional[str] = None
+    branch: Optional[str] = None
 
 
 @router.get("/health")
@@ -919,13 +920,73 @@ async def sync_refs(repo: str = Query(...)):
     }
 
 
+def _build_export_bundle(workspace: Path, bundle_path: Path, since, branch, haves):
+    """
+    Build a git bundle, downloading only what the client needs.
+
+    Strategy (most specific wins):
+    1. branch + haves: bundle only `branch`, excluding commits the client already has.
+       -> git bundle create <branch> ^have1 ^have2 ...   (minimal delta, single branch)
+    2. branch only: bundle the full history of just that branch.
+    3. since (legacy): bundle --all excluding `since`.
+    4. nothing: bundle --all (full).
+
+    Only haves that actually exist on the server are used as exclusions
+    (a missing ^hash would make git bundle fail).
+    Returns the CompletedProcess from `git bundle`.
+    """
+    # Resolve which refs to include
+    if branch:
+        # Verify the branch exists on the server
+        check_branch = _git(workspace, "rev-parse", "--verify", f"refs/heads/{branch}")
+        include_refs = [f"refs/heads/{branch}"] if check_branch.returncode == 0 else ["--all"]
+    else:
+        include_refs = ["--all"]
+
+    # Build exclusion list from valid haves (or legacy `since`)
+    exclusions = []
+    have_list = []
+    if haves:
+        have_list = [h.strip() for h in haves.split(",") if h.strip()]
+    if since and since not in have_list:
+        have_list.append(since.strip())
+
+    for h in have_list:
+        # Only exclude commits the server actually has
+        if _git(workspace, "cat-file", "-e", f"{h}^{{commit}}").returncode == 0:
+            exclusions.append(f"^{h}")
+
+    args = ["bundle", "create", str(bundle_path)] + include_refs + exclusions
+    proc = _git(workspace, *args)
+
+    # If exclusions made the bundle empty/invalid, retry without exclusions
+    # (covers the case where the requested branch tip IS one of the haves but
+    #  client asked anyway — git refuses empty bundle).
+    if proc.returncode != 0 and "Refusing to create empty bundle" not in proc.stderr and exclusions:
+        proc = _git(workspace, "bundle", "create", str(bundle_path), *include_refs)
+
+    return proc
+
+
 @router.post("/documents/export")
-def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(None)):
+def sync_export_dump(
+    repo: str = Form(...),
+    since: Optional[str] = Form(None),
+    branch: Optional[str] = Form(None),
+    haves: Optional[str] = Form(None),
+):
     # NOTE: intentionally a sync `def` (not async). The body does heavy blocking
     # work (git bundle, encryption, base64 of a potentially large repo). As a
     # sync handler Starlette runs it in a threadpool, keeping the event loop free
     # so keep-alive/connection handling stays healthy and the client can finish
     # reading the response instead of hitting "channel was closed".
+    #
+    # Parameters:
+    #   branch  - bundle ONLY this branch (instead of --all). Avoids downloading
+    #             unrelated branches the client didn't ask for.
+    #   haves   - CSV of commit hashes the client already has; used as ^exclusions
+    #             so only the delta is bundled. Invalid/unknown hashes are ignored.
+    #   since   - legacy single-hash exclusion (kept for backward compatibility).
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
@@ -944,18 +1005,13 @@ def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(None)):
         raise HTTPException(400, "Repository has no commits")
     head = (head_proc.stdout or "").strip()
 
+    branch_name = (branch or "").strip() or None
+
     with tempfile.TemporaryDirectory(prefix="idea-sync-") as tmp:
         tmp_dir = Path(tmp)
         bundle_path = tmp_dir / "export.bundle"
 
-        if since:
-            check_since = _git(workspace, "cat-file", "-e", f"{since}^{{commit}}")
-            if check_since.returncode == 0:
-                bundle_proc = _git(workspace, "bundle", "create", str(bundle_path), f"^{since}", "--all")
-            else:
-                bundle_proc = _git(workspace, "bundle", "create", str(bundle_path), "--all")
-        else:
-            bundle_proc = _git(workspace, "bundle", "create", str(bundle_path), "--all")
+        bundle_proc = _build_export_bundle(workspace, bundle_path, since, branch_name, haves)
 
         if bundle_proc.returncode != 0:
             if "Refusing to create empty bundle" in bundle_proc.stderr:
@@ -1078,7 +1134,8 @@ async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
         raise HTTPException(404, "Workspace not found")
 
     since = (request.since or "").strip()
-    rev_range = f"{since}..HEAD" if since else "HEAD"
+    target = (request.branch or "").strip() or "HEAD"
+    rev_range = f"{since}..{target}" if since else target
 
     # Get commits
     log_proc = _git(workspace, "log", "--oneline", "-n", "30", rev_range)
