@@ -75,7 +75,8 @@ class RepoManager:
 
             # 1. Check if user.name is already configured locally
             existing_name = subprocess.run(
-                ["git", "config", "user.name"], cwd=str(workspace), capture_output=True, text=True
+                ["git", "config", "user.name"], cwd=str(workspace), capture_output=True, text=True,
+                encoding="utf-8", errors="replace"
             ).stdout.strip()
 
             if existing_name:
@@ -83,12 +84,14 @@ class RepoManager:
 
             # 2. Auto-detect from last commit
             proc_name = subprocess.run(
-                ["git", "log", "-1", "--format=%an"], cwd=str(workspace), capture_output=True, text=True
+                ["git", "log", "-1", "--format=%an"], cwd=str(workspace), capture_output=True, text=True,
+                encoding="utf-8", errors="replace"
             )
             author_name = proc_name.stdout.strip()
 
             proc_email = subprocess.run(
-                ["git", "log", "-1", "--format=%ae"], cwd=str(workspace), capture_output=True, text=True
+                ["git", "log", "-1", "--format=%ae"], cwd=str(workspace), capture_output=True, text=True,
+                encoding="utf-8", errors="replace"
             )
             author_email = proc_email.stdout.strip()
 
@@ -126,7 +129,8 @@ class RepoManager:
 
             if is_non_bare:
                 branch_proc = subprocess.run(
-                    ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(workspace), capture_output=True, text=True
+                    ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(workspace), capture_output=True, text=True,
+                    encoding="utf-8", errors="replace"
                 )
                 current_branch = branch_proc.stdout.strip()
 
@@ -153,6 +157,8 @@ class RepoManager:
                 cwd=str(workspace),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
 
             branch_proc = subprocess.run(
@@ -160,6 +166,8 @@ class RepoManager:
                 cwd=str(workspace),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             target_branch = branch_proc.stdout.strip().replace("origin/", "") or branch
 
@@ -171,6 +179,8 @@ class RepoManager:
                 cwd=str(workspace),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
 
             if sync_res.returncode != 0:

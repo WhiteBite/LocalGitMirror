@@ -472,7 +472,8 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
     if system_logger:
         system_logger.info(f"Exec: {' '.join(cmd)} (cwd={cwd.name})")
     
-    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
     
     if system_logger:
         if proc.stderr and proc.stderr.strip():

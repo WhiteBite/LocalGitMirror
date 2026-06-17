@@ -72,6 +72,7 @@ import { ref, onMounted, onUnmounted, computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useFilesStore } from '@/stores/files'
 import { useReposStore } from '@/stores/repos'
+import { useSystemStore } from '@/stores/system'
 import axios from 'axios'
 import SharedFolders from '@/components/SharedFolders.vue'
 import FileBrowserToolbar from '@/components/file-browser/FileBrowserToolbar.vue'
@@ -80,6 +81,7 @@ import FileBrowserPreview from '@/components/file-browser/FileBrowserPreview.vue
 
 const { t } = useI18n()
 const filesStore = useFilesStore()
+const systemStore = useSystemStore()
 const reposStore = useReposStore()
 const mode = ref('git') // 'git' | 'shared'
 const searchQuery = ref('')
@@ -175,10 +177,15 @@ async function toggleDiff() {
   }
 }
 
-const connectWebSocket = () => {
+const connectWebSocket = async () => {
+  // Fetch API key if not cached
+  if (!systemStore.apiKey) {
+    await systemStore.fetchApiKey()
+  }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.hostname
-  const wsUrl = `${protocol}//${host}${window.location.port ? `:${window.location.port}` : ''}/ws/files`
+  const keyParam = systemStore.apiKey ? `?key=${encodeURIComponent(systemStore.apiKey)}` : ''
+  const wsUrl = `${protocol}//${host}${window.location.port ? `:${window.location.port}` : ''}/ws/files${keyParam}`
   
   if (ws) ws.close()
   ws = new WebSocket(wsUrl)
@@ -199,9 +206,11 @@ const connectWebSocket = () => {
     }
   }
   
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     wsConnected.value = false
-    setTimeout(() => { if (ws) connectWebSocket() }, 3000)
+    if (event.code !== 1008) {
+      setTimeout(() => { if (ws) connectWebSocket() }, 3000)
+    }
   }
 }
 
