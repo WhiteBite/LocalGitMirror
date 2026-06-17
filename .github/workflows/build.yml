@@ -72,7 +72,7 @@ jobs:
 
       - name: Build plugin
         working-directory: idea-plugin
-        run: gradle buildPlugin --no-daemon
+        run: gradle buildPlugin --no-daemon -PbuildNumber=${{ github.run_number }}
 
       - name: Upload plugin zip
         uses: actions/upload-artifact@v4

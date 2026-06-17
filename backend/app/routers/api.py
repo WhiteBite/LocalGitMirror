@@ -885,7 +885,17 @@ async def sync_upload_and_apply(repo: str = Form(...), attachment: UploadFile = 
 
 @router.get("/documents/list")
 async def sync_refs(repo: str = Query(...)):
-    """Get all branch tips from the server workspace."""
+    """
+    Get all branch tips visible to the server.
+
+    Branches can live in two places:
+      - the bare repo (<repo>.git): where `git push` lands, AND where
+        upload-and-apply pushes branches. This is the source of truth.
+      - the workspace (<repo>): a single checked-out tree (web UI editing).
+
+    We merge both, with the bare repo taking precedence, so a branch pushed
+    via git (but never checked out in the workspace) is still listed.
+    """
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
@@ -896,21 +906,38 @@ async def sync_refs(repo: str = Query(...)):
         raise HTTPException(404, "Repository not found")
 
     workspace = repo_manager._get_workspace_path(repo_name)
-    if not workspace.exists():
-        raise HTTPException(404, "Workspace not found")
+    bare = repo_manager._get_bare_path(repo_name)
 
-    refs_proc = _git(workspace, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/")
+    if not workspace.exists() and not bare.exists():
+        raise HTTPException(404, "Repository data not found")
+
+    def _collect_refs(path: Path) -> dict:
+        out = {}
+        if not path.exists():
+            return out
+        proc = _git(path, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads/")
+        if proc.returncode == 0:
+            for line in (proc.stdout or "").strip().split("\n"):
+                if not line:
+                    continue
+                parts = line.split(" ", 1)
+                if len(parts) == 2:
+                    out[parts[0]] = parts[1]
+        return out
+
+    # Workspace first, then bare overrides (bare is the push target / source of truth)
     refs = {}
-    if refs_proc.returncode == 0:
-        for line in (refs_proc.stdout or "").strip().split("\n"):
-            if not line:
-                continue
-            parts = line.split(" ", 1)
-            if len(parts) == 2:
-                refs[parts[0]] = parts[1]
+    refs.update(_collect_refs(workspace))
+    refs.update(_collect_refs(bare))
 
-    head_proc = _git(workspace, "rev-parse", "HEAD")
-    head = (head_proc.stdout or "").strip() if head_proc.returncode == 0 else ""
+    # HEAD: prefer workspace HEAD, fall back to bare
+    head = ""
+    for path in (workspace, bare):
+        if path.exists():
+            head_proc = _git(path, "rev-parse", "HEAD")
+            if head_proc.returncode == 0 and head_proc.stdout.strip():
+                head = head_proc.stdout.strip()
+                break
 
     return {
         "success": True,
@@ -997,21 +1024,38 @@ def sync_export_dump(
         raise HTTPException(404, "Repository not found")
 
     workspace = repo_manager._get_workspace_path(repo_name)
-    if not workspace.exists():
-        raise HTTPException(404, "Workspace not found")
+    bare = repo_manager._get_bare_path(repo_name)
+    if not workspace.exists() and not bare.exists():
+        raise HTTPException(404, "Repository data not found")
 
-    head_proc = _git(workspace, "rev-parse", "HEAD")
+    branch_name = (branch or "").strip() or None
+
+    # Choose the source repo that actually contains the requested branch.
+    # Direct `git push` lands branches in the BARE repo; the workspace is just
+    # one checkout and may not have them. Prefer the source that has the branch.
+    def _has_branch(path: Path, br: str) -> bool:
+        return path.exists() and _git(path, "rev-parse", "--verify", f"refs/heads/{br}").returncode == 0
+
+    if branch_name and _has_branch(bare, branch_name) and not _has_branch(workspace, branch_name):
+        source = bare
+    elif workspace.exists():
+        source = workspace
+    else:
+        source = bare
+
+    head_proc = _git(source, "rev-parse", "HEAD")
+    if head_proc.returncode != 0:
+        # workspace HEAD may be unborn; try bare
+        head_proc = _git(bare, "rev-parse", "HEAD") if bare.exists() else head_proc
     if head_proc.returncode != 0:
         raise HTTPException(400, "Repository has no commits")
     head = (head_proc.stdout or "").strip()
-
-    branch_name = (branch or "").strip() or None
 
     with tempfile.TemporaryDirectory(prefix="idea-sync-") as tmp:
         tmp_dir = Path(tmp)
         bundle_path = tmp_dir / "export.bundle"
 
-        bundle_proc = _build_export_bundle(workspace, bundle_path, since, branch_name, haves)
+        bundle_proc = _build_export_bundle(source, bundle_path, since, branch_name, haves)
 
         if bundle_proc.returncode != 0:
             if "Refusing to create empty bundle" in bundle_proc.stderr:

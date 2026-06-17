@@ -7,12 +7,26 @@ plugins {
 
 group = "localgitmirror"
 
-// Auto-incrementing version: reads .build_number, bumps only on buildPlugin
+// Version resolution (in priority order):
+//   1. -PbuildNumber=<N>  gradle property (passed by CI: github.run_number)
+//   2. BUILD_NUMBER env var
+//   3. local .build_number file (dev machines, auto-incremented on buildPlugin)
+// This avoids the "always 0.1.0" bug when .build_number is gitignored and
+// therefore absent in CI checkouts.
 val buildNumberFile = file(".build_number")
-val buildNumber: Int = if (buildNumberFile.exists()) {
+val ciBuildNumber: Int? =
+  (project.findProperty("buildNumber") as String?)?.toIntOrNull()
+    ?: System.getenv("BUILD_NUMBER")?.toIntOrNull()
+val localBuildNumber: Int = if (buildNumberFile.exists()) {
   buildNumberFile.readText().trim().toIntOrNull() ?: 0
 } else 0
-version = "0.${buildNumber + 1}.0"
+// CI: version = 0.<run_number>.0 (deterministic, unique per run)
+// Local: version = 0.<localBuildNumber + 1>.0
+version = if (ciBuildNumber != null) {
+  "0.${ciBuildNumber}.0"
+} else {
+  "0.${localBuildNumber + 1}.0"
+}
 
 repositories {
   mavenCentral()
@@ -50,14 +64,20 @@ tasks {
 
   named("buildPlugin") {
     doLast {
-      val f = file(".build_number")
-      val cur = if (f.exists()) f.readText().trim().toIntOrNull() ?: 0 else 0
-      f.writeText((cur + 1).toString())
-      println("==> Built plugin version: $version  (next build will be 0.${cur + 2}.0)")
+      // Only bump the local counter for dev builds (not CI, which uses run_number)
+      if (ciBuildNumber == null) {
+        val f = file(".build_number")
+        val cur = if (f.exists()) f.readText().trim().toIntOrNull() ?: 0 else 0
+        f.writeText((cur + 1).toString())
+        println("==> Built plugin version: $version  (next dev build will be 0.${cur + 2}.0)")
+      } else {
+        println("==> Built plugin version: $version  (CI build #$ciBuildNumber)")
+      }
     }
   }
 
   patchPluginXml {
+    version.set(project.version.toString())
     sinceBuild.set("241")
     untilBuild.set("263.*")
   }
