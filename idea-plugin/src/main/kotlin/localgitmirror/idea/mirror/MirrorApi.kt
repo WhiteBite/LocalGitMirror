@@ -367,6 +367,10 @@ object MirrorApi {
     since: String?,
     insecureTls: Boolean,
     outFile: File,
+    /** Bundle ONLY this branch on the server (instead of --all). */
+    branch: String? = null,
+    /** Commit hashes the client already has; server excludes them (^hash) to send only the delta. */
+    haves: List<String> = emptyList(),
     /** Called periodically during body download: (bytesRead, totalBytes). totalBytes = -1 if unknown. */
     onProgress: ((read: Long, total: Long) -> Unit)? = null
   ): DownloadResult {
@@ -396,6 +400,12 @@ object MirrorApi {
         part("repo", repo)
         if (!since.isNullOrBlank()) {
           part("since", since)
+        }
+        if (!branch.isNullOrBlank()) {
+          part("branch", branch)
+        }
+        if (haves.isNotEmpty()) {
+          part("haves", haves.joinToString(","))
         }
         writer.write("--$boundary--\r\n")
         writer.flush()
@@ -491,7 +501,8 @@ object MirrorApi {
     apiKey: String,
     repo: String,
     since: String?,
-    insecureTls: Boolean
+    insecureTls: Boolean,
+    branch: String? = null
   ): PreviewPullDetailsResult {
     return try {
       val url = URL("${baseUrl.trimEnd('/')}/api/documents/preview-details")
@@ -504,7 +515,8 @@ object MirrorApi {
       }
 
       val sinceJson = if (!since.isNullOrBlank()) "\"$since\"" else "null"
-      val payload = """{"repo":"$repo","since":$sinceJson}"""
+      val branchJson = if (!branch.isNullOrBlank()) "\"$branch\"" else "null"
+      val payload = """{"repo":"$repo","since":$sinceJson,"branch":$branchJson}"""
       conn.outputStream.use { it.write(payload.toByteArray(java.nio.charset.StandardCharsets.UTF_8)) }
 
       val code = conn.responseCode
