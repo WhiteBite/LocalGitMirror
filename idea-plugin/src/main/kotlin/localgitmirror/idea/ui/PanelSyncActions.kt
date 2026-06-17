@@ -7,7 +7,6 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.git.GitLocal
-import localgitmirror.idea.gitlab.GitLabApi
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
@@ -26,7 +25,7 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
     return
   }
 
-  val branch = GitLocal.currentBranch(project, dir) ?: "(unknown)"
+  val branch = selectedBranch() ?: GitLocal.currentBranch(project, dir) ?: "(unknown)"
   val additionalBranches = selectedAdditionalBranches.toList()
 
   isSyncing = true
@@ -330,130 +329,6 @@ internal fun LocalGitMirrorPanel.pushAs() {
       isSyncing = false
     }
   })
-}
-
-internal fun LocalGitMirrorPanel.syncMr() {
-  val dir = baseDir() ?: run {
-    notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
-    return
-  }
-  val s = service<MirrorSettingsService>().state
-  val err = ensureConfigured(s)
-  if (err != null) {
-    notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
-    return
-  }
-  if (s.gitLabBaseUrl.isBlank() || SecretsStore.gitLabToken.isBlank() || s.gitLabProject.isBlank()) {
-    notify(LocalGitMirrorBundle.message("notify.gitlab.missing"), NotificationType.WARNING)
-    return
-  }
-
-  isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send MR/PR", false) {
-    override fun run(indicator: ProgressIndicator) {
-      try {
-        val mrIid = pickMrIid(s) ?: return
-        val original = GitLocal.currentBranch(project, dir)
-        var createdBranch: String? = null
-        append("Send MR: !$mrIid")
-        append("Target: ${syncFacade.describeRepoTarget(dir, s)}")
-
-        val (mr, sourceBranch) = GitLabApi.getMergeRequestSourceBranch(
-          s.gitLabBaseUrl, SecretsStore.gitLabToken, s.gitLabProject, mrIid, s.gitLabInsecureTls
-        )
-        if (mr.code !in 200..299 || sourceBranch.isNullOrBlank()) {
-          notify(LocalGitMirrorBundle.message("notify.mr.sourceBranchFailed", mr.code), NotificationType.ERROR)
-          markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
-          historyService.add("Send MR/PR", false, "Failed to resolve source branch")
-          refreshHistoryLog()
-          return
-        }
-
-        val fetch = GitLocal.fetch(project, dir, s.gitRemoteName, sourceBranch)
-        if (!fetch.ok()) {
-          notify(LocalGitMirrorBundle.message("notify.gitFetchFailed", fetch.stderr), NotificationType.ERROR)
-          markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
-          historyService.add("Send MR/PR", false, "git fetch failed")
-          refreshHistoryLog()
-          return
-        }
-
-        val co = GitLocal.checkout(project, dir, sourceBranch)
-        if (!co.ok()) {
-          val localTemp = "mr-tmp-$mrIid-${System.currentTimeMillis()}"
-          val co2 = GitLocal.checkoutNew(project, dir, localTemp, "FETCH_HEAD")
-          if (!co2.ok()) {
-            notify(LocalGitMirrorBundle.message("notify.checkoutFailed", "${co.stderr}\n${co2.stderr}"), NotificationType.ERROR)
-            markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
-            historyService.add("Send MR/PR", false, "git checkout failed")
-            refreshHistoryLog()
-            return
-          }
-          createdBranch = localTemp
-        }
-
-        val syncRes = try {
-          syncFacade.runFullSync(dir, s)
-        } finally {
-          if (!original.isNullOrBlank()) GitLocal.checkout(project, dir, original)
-          if (!createdBranch.isNullOrBlank()) GitLocal.deleteLocalBranch(project, dir, createdBranch, force = true)
-        }
-
-        val res = syncRes.step
-        if (!res.ok) {
-          historyService.add("Send MR/PR", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: s.repo}' ${res.message}. ${res.details}")
-          notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: s.repo}' ${res.message}. ${res.details}", NotificationType.ERROR)
-          markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
-          refreshHistoryLog()
-          return
-        }
-        if (s.offlineGenerateOnly) {
-          append("Offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          historyService.add("Send MR/PR", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: s.repo}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: s.repo}'", NotificationType.INFORMATION)
-        } else {
-          append("OK: ${syncRes.http?.code} ${syncRes.http?.body?.take(400) ?: ""}")
-          historyService.add("Send MR/PR", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: s.repo}' ${syncRes.http?.body ?: "OK"}")
-          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.mr.ok", mrIid, syncRes.repo ?: s.repo)}", NotificationType.INFORMATION)
-        }
-        markLastSyncOk()
-        refreshHistoryLog()
-      } finally {
-        isSyncing = false
-      }
-    }
-
-    override fun onFinished() {
-      isSyncing = false
-    }
-  })
-}
-
-@Suppress("HttpCallOnEdt") // called from inside Task.Backgroundable.run()
-internal fun LocalGitMirrorPanel.pickMrIid(s: MirrorSettingsService.State): String? {
-  val (listRes, mrs) = GitLabApi.listOpenMergeRequests(
-    baseUrl = s.gitLabBaseUrl, token = SecretsStore.gitLabToken,
-    projectIdOrPath = s.gitLabProject, insecureTls = s.gitLabInsecureTls, perPage = 20
-  )
-
-  if (listRes.code !in 200..299 || mrs.isEmpty()) {
-    if (listRes.code !in 200..299) {
-      append("MR list failed HTTP ${listRes.code}: ${listRes.body.take(300)}")
-    }
-    return Messages.showInputDialog(project, "Enter GitLab MR IID", "LocalGitMirror: Send MR/PR", null)
-  }
-
-  val items = mrs.map { it.display() }.toTypedArray()
-  val selected = Messages.showEditableChooseDialog(
-    "Select open Merge Request", "LocalGitMirror", null, items, items.firstOrNull(), null
-  ) ?: return null
-
-  val selectedMr = mrs.firstOrNull { it.display() == selected }
-  if (selectedMr != null) return selectedMr.iid.toString()
-
-  val typed = selected.trim()
-  if (typed.isBlank()) return null
-  return typed.removePrefix("!")
 }
 
 internal fun LocalGitMirrorPanel.pickCommitHashes(commits: List<GitLocal.CommitSummary>): List<String> {

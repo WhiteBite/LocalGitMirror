@@ -56,6 +56,21 @@ object HttpClient {
   }
 
   fun readBody(conn: HttpURLConnection): String {
+    return readBodyWithProgress(conn, null)
+  }
+
+  /**
+   * Read the response body, optionally reporting download progress.
+   *
+   * @param conn     the open connection (responseCode already triggered)
+   * @param onProgress callback receiving (bytesRead, totalBytes).
+   *                   totalBytes is -1 when Content-Length is unknown.
+   *                   Called on the current thread — do not do heavy work in it.
+   */
+  fun readBodyWithProgress(
+    conn: HttpURLConnection,
+    onProgress: ((read: Long, total: Long) -> Unit)?
+  ): String {
     val code = conn.responseCode
     val stream: InputStream? = try {
       if (code in 200..299) conn.inputStream else conn.errorStream
@@ -63,7 +78,32 @@ object HttpClient {
       null
     }
     if (stream == null) return ""
-    return stream.bufferedReader(Charsets.UTF_8).readText()
+
+    if (onProgress == null) {
+      return stream.bufferedReader(Charsets.UTF_8).readText()
+    }
+
+    val total = conn.contentLengthLong   // -1 if unknown
+    val buf = ByteArray(8 * 1024)
+    val out = java.io.ByteArrayOutputStream()
+    var read = 0L
+    var lastReportAt = 0L
+
+    stream.use { s ->
+      while (true) {
+        val n = s.read(buf)
+        if (n < 0) break
+        out.write(buf, 0, n)
+        read += n
+        // Report every ~200 KB or when total changes by ≥ 2%
+        if (read - lastReportAt >= 200 * 1024) {
+          onProgress(read, total)
+          lastReportAt = read
+        }
+      }
+    }
+    onProgress(read, total)   // final
+    return out.toString(Charsets.UTF_8.name())
   }
 
   fun classifyError(t: Throwable): ErrorInfo {

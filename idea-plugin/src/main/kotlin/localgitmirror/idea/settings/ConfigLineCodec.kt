@@ -15,26 +15,21 @@ data class ConfigSnapshot(
   val repo: String,
   val mirrorInsecureTls: Boolean,
   val offlineGenerateOnly: Boolean,
-  val simpleUiMode: Boolean,
-  val gitLabBaseUrl: String,
-  val gitLabProject: String,
-  val gitLabInsecureTls: Boolean,
   val gitRemoteName: String,
   val pullBackDefaultMode: String,
   val mirrorApiKey: String,
-  val syncPassword: String,
-  val gitLabToken: String,
-  val workMode: String = "auto"
+  val syncPassword: String
 )
 
 object ConfigLineCodec {
-  const val PREFIX = "LGM_CONFIG_V2:"
+  const val PREFIX = "LGM_CONFIG_V3:"
+  private const val PREFIX_MARKER_V3 = "LGM_CONFIG_V3"
   private const val PREFIX_MARKER_V2 = "LGM_CONFIG_V2"
   private const val PREFIX_MARKER_V1 = "LGM_CONFIG_V1"
   private val V1_PREFIX = "LGM_CONFIG_V1:"
 
   private val TOKEN_REGEX = Regex(
-    pattern = """(?is)\bLGM_CONFIG_V[12]\s*[:=]\s*""",
+    pattern = """(?is)\bLGM_CONFIG_V[123]\s*[:=]\s*""",
     options = setOf(RegexOption.IGNORE_CASE)
   )
 
@@ -98,16 +93,10 @@ object ConfigLineCodec {
       "repo=${snapshot.repo}",
       "mirrorInsecureTls=${snapshot.mirrorInsecureTls}",
       "offlineGenerateOnly=${snapshot.offlineGenerateOnly}",
-      "simpleUiMode=${snapshot.simpleUiMode}",
-      "gitLabBaseUrl=${snapshot.gitLabBaseUrl}",
-      "gitLabProject=${snapshot.gitLabProject}",
-      "gitLabInsecureTls=${snapshot.gitLabInsecureTls}",
       "gitRemoteName=${snapshot.gitRemoteName}",
       "pullBackDefaultMode=${snapshot.pullBackDefaultMode}",
       "mirrorApiKey=${snapshot.mirrorApiKey}",
-      "syncPassword=${snapshot.syncPassword}",
-      "gitLabToken=${snapshot.gitLabToken}",
-      "workMode=${snapshot.workMode}"
+      "syncPassword=${snapshot.syncPassword}"
     ).joinToString("\n")
 
     val encrypted = encrypt(raw)
@@ -125,9 +114,17 @@ object ConfigLineCodec {
 
     val normalized = extractToken(line) ?: return null
 
-    // V2: encrypted payload
-    if (normalized.startsWith("$PREFIX_MARKER_V2")) {
-      val payload = normalized.removePrefix("$PREFIX_MARKER_V2").trim().removePrefix(":").trim()
+    // V3: encrypted payload (current format)
+    if (normalized.startsWith(PREFIX_MARKER_V3)) {
+      val payload = normalized.removePrefix(PREFIX_MARKER_V3).trim().removePrefix(":").trim()
+      if (payload.isBlank()) return null
+      val decrypted = decrypt(payload.filterNot { it.isWhitespace() }) ?: return null
+      return parseRawPayload(decrypted)
+    }
+
+    // V2: encrypted payload (legacy — same encryption, unknown keys silently ignored)
+    if (normalized.startsWith(PREFIX_MARKER_V2)) {
+      val payload = normalized.removePrefix(PREFIX_MARKER_V2).trim().removePrefix(":").trim()
       if (payload.isBlank()) return null
       val decrypted = decrypt(payload.filterNot { it.isWhitespace() }) ?: return null
       return parseRawPayload(decrypted)
@@ -178,6 +175,11 @@ object ConfigLineCodec {
     return null
   }
 
+  /**
+   * Parse a raw key=value payload into a ConfigSnapshot.
+   * Unknown keys (e.g. legacy gitLab* fields, workMode, simpleUiMode) are silently ignored
+   * to maintain backward compatibility with V1/V2 configs.
+   */
   private fun parseRawPayload(raw: String): ConfigSnapshot? {
     val map = stripZeroWidth(raw)
       .lines()
@@ -196,16 +198,12 @@ object ConfigLineCodec {
       repo = map["repo"].orEmpty(),
       mirrorInsecureTls = map["mirrorInsecureTls"].equals("true", ignoreCase = true),
       offlineGenerateOnly = map["offlineGenerateOnly"].equals("true", ignoreCase = true),
-      simpleUiMode = map["simpleUiMode"].equals("true", ignoreCase = true),
-      gitLabBaseUrl = map["gitLabBaseUrl"].orEmpty(),
-      gitLabProject = map["gitLabProject"].orEmpty(),
-      gitLabInsecureTls = map["gitLabInsecureTls"].equals("true", ignoreCase = true),
       gitRemoteName = map["gitRemoteName"].orEmpty().ifBlank { "origin" },
       pullBackDefaultMode = map["pullBackDefaultMode"].orEmpty().ifBlank { "new-branch" },
       mirrorApiKey = map["mirrorApiKey"].orEmpty(),
-      syncPassword = map["syncPassword"].orEmpty(),
-      gitLabToken = map["gitLabToken"].orEmpty(),
-      workMode = map["workMode"].orEmpty().ifBlank { "auto" }
+      syncPassword = map["syncPassword"].orEmpty()
+      // Legacy keys (gitLabBaseUrl, gitLabProject, gitLabInsecureTls, gitLabToken,
+      // workMode, simpleUiMode) are read from map but intentionally not used here.
     )
   }
 
@@ -218,7 +216,13 @@ object ConfigLineCodec {
     val tail = trimmed.substring(match.range.last + 1)
 
     // Determine which version prefix was matched
-    val isV2 = matchedPrefix.contains("V2", ignoreCase = true)
+    val isEncrypted = matchedPrefix.contains("V2", ignoreCase = true) ||
+      matchedPrefix.contains("V3", ignoreCase = true)
+    val markerVersion = when {
+      matchedPrefix.contains("V3", ignoreCase = true) -> PREFIX_MARKER_V3
+      matchedPrefix.contains("V2", ignoreCase = true) -> PREFIX_MARKER_V2
+      else -> null
+    }
 
     // Primary strategy: token usually sits on one line after prefix.
     val firstLine = tail.lineSequence().firstOrNull().orEmpty().trim()
@@ -226,9 +230,9 @@ object ConfigLineCodec {
       it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' || it == '-' || it == '_'
     }
     if (firstLineCompact.isNotBlank()) {
-      if (isV2) {
-        // V2 tokens are encrypted — just return as-is
-        return PREFIX_MARKER_V2 + ":" + firstLineCompact
+      if (isEncrypted) {
+        // V2/V3 tokens are encrypted — just return as-is
+        return "$markerVersion:$firstLineCompact"
       }
       val payload = findValidPayloadPrefix(firstLineCompact)
       if (!payload.isNullOrBlank()) {
@@ -242,8 +246,8 @@ object ConfigLineCodec {
     val compact = payloadLike.filterNot { it.isWhitespace() }
     if (compact.isBlank()) return null
 
-    if (isV2) {
-      return PREFIX_MARKER_V2 + ":" + compact
+    if (isEncrypted) {
+      return "$markerVersion:$compact"
     }
 
     val payload = findValidPayloadPrefix(compact) ?: return null
@@ -260,7 +264,10 @@ object ConfigLineCodec {
     if (trimmed.isBlank()) return null
 
     // If the text is a raw key=value payload, don't try to extract tokens from it
-    if (trimmed.contains("baseUrl=") && trimmed.contains("repo=") && !trimmed.contains(PREFIX_MARKER_V2) && !trimmed.contains(PREFIX_MARKER_V1)) {
+    if (trimmed.contains("baseUrl=") && trimmed.contains("repo=") &&
+      !trimmed.contains(PREFIX_MARKER_V3) && !trimmed.contains(PREFIX_MARKER_V2) &&
+      !trimmed.contains(PREFIX_MARKER_V1)
+    ) {
       return null
     }
 
@@ -269,7 +276,23 @@ object ConfigLineCodec {
 
     val compact = sanitized.replace("\r", "").replace("\n", "").replace("\t", "").replace(" ", "")
 
-    // Try V2 first
+    // Try V3 first
+    val idx3 = compact.indexOf(PREFIX_MARKER_V3, ignoreCase = true)
+    if (idx3 >= 0) {
+      val after = compact.substring(idx3 + PREFIX_MARKER_V3.length)
+      if (after.isNotEmpty() && (after[0] == ':' || after[0] == '=')) {
+        val payloadRaw = after.substring(1)
+        val payload = payloadRaw.takeWhile {
+          it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' || it == '-' || it == '_'
+        }
+        if (payload.isNotBlank()) {
+          val normalized = "$PREFIX_MARKER_V3:$payload"
+          if (decode(normalized) != null) return normalized
+        }
+      }
+    }
+
+    // Try V2
     val idx2 = compact.indexOf(PREFIX_MARKER_V2, ignoreCase = true)
     if (idx2 >= 0) {
       val after = compact.substring(idx2 + PREFIX_MARKER_V2.length)
@@ -279,7 +302,7 @@ object ConfigLineCodec {
           it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' || it == '-' || it == '_'
         }
         if (payload.isNotBlank()) {
-          val normalized = PREFIX_MARKER_V2 + ":" + payload
+          val normalized = "$PREFIX_MARKER_V2:$payload"
           if (decode(normalized) != null) return normalized
         }
       }

@@ -467,14 +467,23 @@ def _init_git_workspace():
         git_workspace = GitWorkspace(workspace, bare)
 
 
-def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
+def _git(cwd: Path, *args: str, timeout: int = 600) -> subprocess.CompletedProcess:
     cmd = ["git", *args]
     if system_logger:
         system_logger.info(f"Exec: {' '.join(cmd)} (cwd={cwd.name})")
-    
-    proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
-                          encoding="utf-8", errors="replace")
-    
+
+    try:
+        proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if system_logger:
+            system_logger.error(f"Git timed out after {timeout}s: {' '.join(cmd)}")
+        # Surface as a non-zero CompletedProcess so callers handle it uniformly.
+        return subprocess.CompletedProcess(
+            cmd, returncode=124, stdout="",
+            stderr=f"git command timed out after {timeout}s",
+        )
+
     if system_logger:
         if proc.stderr and proc.stderr.strip():
             system_logger.info(f"Git Stderr: {proc.stderr.strip()}")
@@ -911,7 +920,12 @@ async def sync_refs(repo: str = Query(...)):
 
 
 @router.post("/documents/export")
-async def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(None)):
+def sync_export_dump(repo: str = Form(...), since: Optional[str] = Form(None)):
+    # NOTE: intentionally a sync `def` (not async). The body does heavy blocking
+    # work (git bundle, encryption, base64 of a potentially large repo). As a
+    # sync handler Starlette runs it in a threadpool, keeping the event loop free
+    # so keep-alive/connection handling stays healthy and the client can finish
+    # reading the response instead of hitting "channel was closed".
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 

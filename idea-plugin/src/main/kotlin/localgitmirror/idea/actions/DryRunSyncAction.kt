@@ -26,7 +26,7 @@ class DryRunSyncAction : AnAction() {
       override fun run(indicator: ProgressIndicator) {
         val report = facade.runDryRun(dir, settings)
         val summary = if (report.ok) {
-          LocalGitMirrorBundle.message("action.dryRun.summary", report.predictedMode, report.commitCount, report.targetRepo ?: "(none)")
+          LocalGitMirrorBundle.message("action.dryRun.summary", report.predictedMode, report.commitCount, report.targetRepo.orEmpty().ifBlank { "(none)" })
         } else {
           LocalGitMirrorBundle.message("action.dryRun.failed")
         }
