@@ -7,7 +7,6 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.git.GitLocal
-import localgitmirror.idea.gitlab.GitLabApi
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.settings.MirrorSettingsService
@@ -118,6 +117,11 @@ internal fun LocalGitMirrorPanel.pullBack() {
 
 internal fun LocalGitMirrorPanel.pullFromMirror() {
   isSyncing = true
+  // PullFromMirrorAction handles its own Task lifecycle.
+  // isSyncing will be reset in onFinished/onCancel of the inner task,
+  // but we also guard with a finally in actionPerformed.
+  setProgress(-1.0, "Получаем список веток с Mirror…")
+
   try {
     localgitmirror.idea.actions.PullFromMirrorAction().actionPerformed(
       com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
@@ -128,6 +132,8 @@ internal fun LocalGitMirrorPanel.pullFromMirror() {
       )
     )
   } finally {
+    // isSyncing will be turned off by the action's own task completion,
+    // but release it here too in case the action returned early (no task started).
     isSyncing = false
   }
 }
@@ -291,38 +297,3 @@ internal fun LocalGitMirrorPanel.runPullDryRun() {
   })
 }
 
-internal fun LocalGitMirrorPanel.testGitLab() {
-  val s = service<MirrorSettingsService>().state
-  if (s.gitLabBaseUrl.isBlank() || SecretsStore.gitLabToken.isBlank() || s.gitLabProject.isBlank()) {
-    notify(LocalGitMirrorBundle.message("toolwindow.badge.gitlabNotConfigured"), NotificationType.WARNING)
-    return
-  }
-
-  isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Test GitLab", false) {
-    override fun run(indicator: ProgressIndicator) {
-      try {
-        val (res, mrs) = GitLabApi.listOpenMergeRequests(
-          baseUrl = s.gitLabBaseUrl, token = SecretsStore.gitLabToken,
-          projectIdOrPath = s.gitLabProject, insecureTls = s.gitLabInsecureTls, perPage = 5
-        )
-        append("GitLab test HTTP ${res.code}. Open MRs loaded: ${mrs.size}")
-        if (res.code !in 200..299) {
-          val msg = if (res.code == 0)
-            LocalGitMirrorBundle.message("notify.gitlab.unreachable", res.body)
-          else
-            LocalGitMirrorBundle.message("notify.gitlab.testFail", res.code.toString())
-          notify(msg, NotificationType.ERROR)
-          return
-        }
-        notify(LocalGitMirrorBundle.message("notify.gitlab.testOk", mrs.size.toString()), NotificationType.INFORMATION)
-      } finally {
-        isSyncing = false
-      }
-    }
-
-    override fun onFinished() {
-      isSyncing = false
-    }
-  })
-}

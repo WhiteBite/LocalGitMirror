@@ -6,10 +6,8 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.components.service
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.ui.Messages
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBPanel
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.git.GitLocal
@@ -28,20 +26,36 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal val log = JTextArea()
   internal val status = JBLabel("")
   internal val mirrorBadge = BadgeLabel("Mirror: ?")
-  internal val gitLabBadge = BadgeLabel("GitLab: ?")
   internal val lastSyncBadge = BadgeLabel("Last sync: \u2014")
-  internal val modeBadge = ModeBadge(LocalGitMirrorBundle.message("badge.mode.home"), false)
-  internal val progressBar = JProgressBar().apply { isVisible = false; isIndeterminate = true }
+
+  // Progress bar + stage label shown during sync
+  internal val progressBar = JProgressBar().apply {
+    isVisible = false
+    isIndeterminate = true
+    minimum = 0; maximum = 100
+  }
+  internal val progressLabel = JBLabel("").apply {
+    font = JBUI.Fonts.smallFont()
+    foreground = UIUtil.getContextHelpForeground()
+    isVisible = false
+  }
 
   internal lateinit var historyScroll: JScrollPane
 
   internal val historyService = service<OperationsHistoryService>()
   internal val syncFacade = project.getService(SyncFacadeService::class.java)
 
-  internal val branchChipPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
+  // ── Branch selector (JComboBox) ──
+  // Populated from local branches; enriched with Mirror branches during pull
+  internal val branchCombo = JComboBox<String>().apply {
+    font = JBUI.Fonts.smallFont()
+    toolTipText = "Ветка для Отправить / Подтянуть"
+  }
+
+  // Additional branches to include on send (legacy chip behaviour kept as internal set)
   internal val selectedAdditionalBranches = mutableSetOf<String>()
 
-  // Dynamic UI containers — rebuilt when mode changes
+  // Dynamic UI containers
   internal val badgesPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply { isOpaque = false }
   internal val actionsBox = JPanel().apply {
     layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -51,8 +65,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal val moreMenu = JPopupMenu()
   internal val autoPullItem = JCheckBoxMenuItem(LocalGitMirrorBundle.message("settings.sync.autoCheck"))
 
-  internal fun isWorkMode(): Boolean = service<MirrorSettingsService>().state.isWorkMode()
-
   internal var isSyncing = false
     set(value) {
       field = value
@@ -61,22 +73,42 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
   internal enum class SyncOutcome { OK, FAIL }
 
+  // ── Progress helpers ──
+
+  /** Update progress bar + label from any thread. fraction in [0..1] or -1 for indeterminate. */
+  internal fun setProgress(fraction: Double, text: String) {
+    UIUtil.invokeLaterIfNeeded {
+      progressLabel.text = text
+      if (fraction < 0) {
+        progressBar.isIndeterminate = true
+      } else {
+        progressBar.isIndeterminate = false
+        progressBar.value = (fraction * 100).toInt().coerceIn(0, 100)
+      }
+    }
+  }
+
   private fun updateUiState() {
     UIUtil.invokeLaterIfNeeded {
       val enabled = !isSyncing
-      // Disable all buttons in the top container during sync
       fun disableAll(container: java.awt.Container) {
         for (c in container.components) {
-          if (c is JButton || c is JToggleButton) c.isEnabled = enabled
+          if (c is JButton || c is JToggleButton || c is JComboBox<*>) c.isEnabled = enabled
           if (c is java.awt.Container) disableAll(c)
         }
       }
       disableAll(this)
       progressBar.isVisible = isSyncing
+      progressLabel.isVisible = isSyncing
+      if (!isSyncing) {
+        progressLabel.text = ""
+        progressBar.isIndeterminate = true
+        progressBar.value = 0
+      }
     }
   }
 
-  /** Standard action button — natural size, no stretching. */
+  /** Standard action button. */
   private fun btn(title: String, icon: Icon? = null, action: () -> Unit): JButton {
     val b = JButton(title, icon)
     b.margin = JBUI.insets(2, 8)
@@ -86,101 +118,58 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     return b
   }
 
-  /** Primary action button — IntelliJ default style (accent). */
+  /** Primary (accent) button. */
   private fun primaryBtn(title: String, icon: Icon? = null, action: () -> Unit): JButton {
     val b = JButton(title, icon)
-    b.margin = JBUI.insets(2, 8)
+    b.margin = JBUI.insets(2, 10)
     b.font = b.font.deriveFont(Font.BOLD)
     b.putClientProperty("JButton.buttonType", "default")
     b.addActionListener { action() }
     return b
   }
 
-  private fun createBranchChip(branchName: String): JToggleButton {
-    val chip = JToggleButton(LocalGitMirrorBundle.message("send.addBaseBranch", branchName))
-    chip.font = chip.font.deriveFont(JBUI.scale(11f).toFloat())
-    chip.margin = JBUI.insets(2, 8)
-    chip.isFocusPainted = false
-    chip.border = BorderFactory.createEmptyBorder(JBUI.scale(3), JBUI.scale(10), JBUI.scale(3), JBUI.scale(10))
-    chip.isSelected = selectedAdditionalBranches.contains(branchName)
-    chip.addActionListener {
-      if (chip.isSelected) selectedAdditionalBranches.add(branchName)
-      else selectedAdditionalBranches.remove(branchName)
-      updateChipStyles()
-    }
-    styleChip(chip)
-    return chip
-  }
-
-  private fun styleChip(chip: JToggleButton) {
-    if (chip.isSelected) {
-      chip.background = JBColor(Color(0x3574F0), Color(0x4A86E8))
-      chip.foreground = JBColor(Color.WHITE, Color.WHITE)
-    } else {
-      chip.background = JBColor(Color(0xE0E0E0), Color(0x3C3C3C))
-      chip.foreground = JBColor(Color(0x333333), Color(0xBBBBBB))
-    }
-  }
-
-  private fun updateChipStyles() {
-    branchChipPanel.components.filterIsInstance<JToggleButton>().forEach { styleChip(it) }
-  }
-
-  private fun refreshBranchChips() {
-    branchChipPanel.removeAll()
-    val dir = baseDir() ?: return
-    val branches = GitLocal.listBranches(project, dir)
-    val currentBranch = GitLocal.currentBranch(project, dir) ?: return
-
-    val currentLbl = JBLabel(LocalGitMirrorBundle.message("send.currentBranch", currentBranch))
-    currentLbl.font = JBUI.Fonts.smallFont().deriveFont(Font.BOLD)
-    currentLbl.border = JBUI.Borders.emptyRight(4)
-    branchChipPanel.add(currentLbl)
-
-    val baseBranches = listOf("master", "main", "develop").filter { it in branches && it != currentBranch }
-    for (br in baseBranches) {
-      branchChipPanel.add(createBranchChip(br))
-    }
-
-    val moreBtn = JButton(LocalGitMirrorBundle.message("send.moreBranches"))
-    moreBtn.font = moreBtn.font.deriveFont(JBUI.scale(11f).toFloat())
-    moreBtn.margin = JBUI.insets(2, 6)
-    moreBtn.addActionListener {
-      val chosen = Messages.showEditableChooseDialog(
-        LocalGitMirrorBundle.message("dialog.selectBranch.prompt"),
-        LocalGitMirrorBundle.message("dialog.selectBranch.title"),
-        null, branches.toTypedArray(), branches.firstOrNull { it != currentBranch }, null
-      )
-      if (chosen != null && chosen != currentBranch) {
-        selectedAdditionalBranches.add(chosen)
-        refreshBranchChips()
-      }
-    }
-    branchChipPanel.add(moreBtn)
-  }
-
-  // ── Helper to create gear menu items ──
   private fun gearMenuItem(title: String, icon: Icon? = null, action: () -> Unit): JMenuItem {
     val mi = JMenuItem(title, icon)
     mi.addActionListener { action() }
     return mi
   }
 
-  // ── Helper to create a single row of action buttons ──
-  private fun actionRow(vararg buttons: JButton): JPanel {
+  private fun actionRow(vararg components: JComponent): JPanel {
     val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
     row.isOpaque = false
     row.alignmentX = LEFT_ALIGNMENT
-    row.maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(28))
-    buttons.forEach { row.add(it) }
+    row.maximumSize = Dimension(Int.MAX_VALUE, JBUI.scale(32))
+    components.forEach { row.add(it) }
     return row
   }
 
-  /**
-   * Rebuild the gear popup menu based on current mode.
-   */
+  /** Refresh branch combo from local branches. */
+  internal fun refreshBranchCombo() {
+    val dir = baseDir() ?: return
+    val branches = GitLocal.listBranches(project, dir)
+    val current = GitLocal.currentBranch(project, dir)
+
+    val selected = (branchCombo.selectedItem as? String)?.takeIf { it in branches } ?: current
+
+    branchCombo.removeAllItems()
+    branches.forEach { branchCombo.addItem(it) }
+    if (selected != null && branches.contains(selected)) {
+      branchCombo.selectedItem = selected
+    } else if (branches.isNotEmpty()) {
+      branchCombo.selectedItem = branches.first()
+    }
+  }
+
+  /** Returns the branch currently chosen in the selector, or current git branch as fallback. */
+  internal fun selectedBranch(): String? {
+    val combo = branchCombo.selectedItem as? String
+    if (!combo.isNullOrBlank()) return combo
+    val dir = baseDir() ?: return null
+    return GitLocal.currentBranch(project, dir)
+  }
+
+  /** Rebuild gear menu. */
   internal fun rebuildGearMenu() {
-    val workMode = isWorkMode()
     val settingsState = service<MirrorSettingsService>().state
     moreMenu.removeAll()
 
@@ -188,11 +177,13 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.dryRunSend"), AllIcons.Actions.Preview) { runDryRun() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.dryRunPull"), AllIcons.Actions.Preview) { runPullDryRun() })
     moreMenu.addSeparator()
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.sendBranch"), AllIcons.Vcs.Branch) { syncBranch() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.sendAs"), AllIcons.Actions.Copy) { pushAs() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.sendCommits"), AllIcons.Vcs.History) { syncSelectedCommits() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.pullBack"), AllIcons.Actions.Diff) { pullBack() })
+    moreMenu.addSeparator()
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.applyLocalDump"), AllIcons.Actions.OpenNewTab) { applyLocalDump() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.testMirror"), AllIcons.Actions.Checked) { testMirror() })
-    if (workMode) {
-      moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.testGitLab"), AllIcons.Actions.Checked) { testGitLab() })
-    }
     moreMenu.addSeparator()
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.copyConfig"), AllIcons.Actions.Copy) { copyConfigLine() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.pasteConfig"), AllIcons.Actions.Upload) { pasteConfigLine() })
@@ -205,57 +196,29 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     })
   }
 
-  /**
-   * Rebuild the action buttons and badge visibility based on current mode.
-   */
+  /** Rebuild action buttons. */
   internal fun rebuildActions() {
-    val workMode = isWorkMode()
-
-    // Update mode badge text and icon
-    modeBadge.workMode = workMode
-    modeBadge.text = if (workMode) LocalGitMirrorBundle.message("badge.mode.work") else LocalGitMirrorBundle.message("badge.mode.home")
-
-    // Manage GitLab badge visibility
-    if (workMode) {
-      if (gitLabBadge.parent == null) {
-        // Insert before lastSyncBadge
-        val idx = badgesPanel.components.indexOf(lastSyncBadge).coerceAtLeast(0)
-        badgesPanel.add(gitLabBadge, idx)
-      }
-    } else {
-      badgesPanel.remove(gitLabBadge)
-    }
-
-    // Rebuild action buttons
     actionsBox.removeAll()
-    if (workMode) {
-      actionsBox.add(actionRow(
-        primaryBtn(LocalGitMirrorBundle.message("toolwindow.sendCurrent"), AllIcons.Actions.Upload) { syncCurrentBranch() },
-        btn(LocalGitMirrorBundle.message("toolwindow.menu.sendBranch"), AllIcons.Vcs.Branch) { syncBranch() },
-        btn(LocalGitMirrorBundle.message("toolwindow.menu.sendAs"), AllIcons.Actions.Copy) { pushAs() }
-      ))
-      actionsBox.add(Box.createVerticalStrut(JBUI.scale(2)))
-      actionsBox.add(actionRow(
-        btn(LocalGitMirrorBundle.message("toolwindow.sendCommits"), AllIcons.Vcs.History) { syncSelectedCommits() },
-        btn(LocalGitMirrorBundle.message("toolwindow.menu.sendMr"), AllIcons.Vcs.Merge) { syncMr() },
-        btn(LocalGitMirrorBundle.message("toolwindow.pullFromMirror"), AllIcons.Actions.Download) { pullFromMirror() },
-        btn(LocalGitMirrorBundle.message("toolwindow.pullBack"), AllIcons.Actions.Diff) { pullBack() }
-      ))
-    } else {
-      actionsBox.add(actionRow(
-        primaryBtn(LocalGitMirrorBundle.message("toolwindow.pullFromMirror"), AllIcons.Actions.Download) { pullFromMirror() },
-        btn(LocalGitMirrorBundle.message("toolwindow.sendCurrent"), AllIcons.Actions.Upload) { syncCurrentBranch() }
-      ))
-      actionsBox.add(Box.createVerticalStrut(JBUI.scale(2)))
-      actionsBox.add(actionRow(
-        btn(LocalGitMirrorBundle.message("toolwindow.sendCommits"), AllIcons.Vcs.History) { syncSelectedCommits() },
-        btn(LocalGitMirrorBundle.message("toolwindow.pullBack"), AllIcons.Actions.Diff) { pullBack() }
-      ))
-    }
 
-    // Rebuild gear menu
+    // Selector row: label + combobox
+    val selectorRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
+    selectorRow.isOpaque = false
+    selectorRow.alignmentX = LEFT_ALIGNMENT
+    val branchLabel = JBLabel(LocalGitMirrorBundle.message("panel.branch.label"))
+    branchLabel.font = JBUI.Fonts.smallFont()
+    branchLabel.foreground = UIUtil.getContextHelpForeground()
+    selectorRow.add(branchLabel)
+    selectorRow.add(branchCombo)
+    actionsBox.add(selectorRow)
+    actionsBox.add(Box.createVerticalStrut(JBUI.scale(4)))
+
+    // Primary action row: Pull + Send
+    actionsBox.add(actionRow(
+      primaryBtn(LocalGitMirrorBundle.message("toolwindow.pullFromMirror"), AllIcons.Actions.Download) { pullFromMirror() },
+      primaryBtn(LocalGitMirrorBundle.message("toolwindow.sendCurrent"), AllIcons.Actions.Upload) { syncCurrentBranch() }
+    ))
+
     rebuildGearMenu()
-
     revalidate()
     repaint()
   }
@@ -264,29 +227,20 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     layout = BorderLayout()
 
     val settingsState = service<MirrorSettingsService>().state
-    val workMode = isWorkMode()
 
-    // Seed modeBadge
-    modeBadge.text = if (workMode) LocalGitMirrorBundle.message("badge.mode.work") else LocalGitMirrorBundle.message("badge.mode.home")
-    modeBadge.workMode = workMode
-
-    // ── topContainer: packs all controls tightly to the top ──
     val topContainer = JPanel()
     topContainer.layout = BoxLayout(topContainer, BoxLayout.Y_AXIS)
     topContainer.border = JBUI.Borders.empty(JBUI.scale(4), JBUI.scale(8))
 
-    // Row 1: Header — badges LEFT, gear RIGHT (compact!)
+    // ── Header row: badges LEFT, gear RIGHT ──
     val headerRow = JPanel(BorderLayout(JBUI.scale(4), 0))
     headerRow.isOpaque = false
     headerRow.alignmentX = LEFT_ALIGNMENT
 
-    badgesPanel.add(modeBadge)
     badgesPanel.add(mirrorBadge)
-    if (workMode) badgesPanel.add(gitLabBadge)
     badgesPanel.add(lastSyncBadge)
     headerRow.add(badgesPanel, BorderLayout.CENTER)
 
-    // Wire autoPullItem toggle + refresh on menu open
     autoPullItem.addActionListener { settingsState.autoCheckPullOnStartup = autoPullItem.isSelected }
     moreMenu.addPopupMenuListener(object : PopupMenuListener {
       override fun popupMenuWillBecomeVisible(e: PopupMenuEvent) {
@@ -296,7 +250,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       override fun popupMenuCanceled(e: PopupMenuEvent) {}
     })
 
-    // Build gear menu
     rebuildGearMenu()
 
     val gearBtn = JButton(AllIcons.General.Settings)
@@ -309,7 +262,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     headerRow.add(gearBtn, BorderLayout.EAST)
     topContainer.add(headerRow)
 
-    // Status line (branch info, compact)
+    // ── Status line ──
     status.font = JBUI.Fonts.smallFont()
     status.foreground = UIUtil.getContextHelpForeground()
     status.alignmentX = LEFT_ALIGNMENT
@@ -318,19 +271,22 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
     topContainer.add(Box.createVerticalStrut(JBUI.scale(4)))
 
-    // Row 2: Action buttons (dynamic — rebuilt by rebuildActions)
+    // ── Branch selector + action buttons ──
+    refreshBranchCombo()
     rebuildActions()
     topContainer.add(actionsBox)
 
-    // Row 3: Branch chips
-    branchChipPanel.isOpaque = false
-    branchChipPanel.alignmentX = LEFT_ALIGNMENT
-    refreshBranchChips()
-    topContainer.add(branchChipPanel)
-
     topContainer.add(Box.createVerticalStrut(JBUI.scale(2)))
 
-    // Row 4: History toggle + clear button (compact)
+    // ── Progress row: bar + stage label ──
+    val progressRow = JPanel(BorderLayout(JBUI.scale(4), 0))
+    progressRow.isOpaque = false
+    progressRow.alignmentX = LEFT_ALIGNMENT
+    progressRow.add(progressBar, BorderLayout.CENTER)
+    progressRow.add(progressLabel, BorderLayout.EAST)
+    topContainer.add(progressRow)
+
+    // ── History toggle + clear ──
     val historyToggleRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
     historyToggleRow.isOpaque = false
     historyToggleRow.alignmentX = LEFT_ALIGNMENT
@@ -354,20 +310,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     historyToggleRow.add(clearBtn)
     topContainer.add(historyToggleRow)
 
-    // Pack topContainer to NORTH — no vertical gap
     add(topContainer, BorderLayout.NORTH)
 
-    // Progress bar above history
-    progressBar.alignmentX = LEFT_ALIGNMENT
-    val bottomPanel = JPanel(BorderLayout())
-    bottomPanel.add(progressBar, BorderLayout.NORTH)
-
-    // History log fills CENTER (expands when toggled)
     log.isEditable = false; log.lineWrap = true; log.wrapStyleWord = true
     log.font = Font("JetBrains Mono", Font.PLAIN, JBUI.scale(11))
     historyScroll = JScrollPane(log); historyScroll.isVisible = false
-    bottomPanel.add(historyScroll, BorderLayout.CENTER)
-    add(bottomPanel, BorderLayout.CENTER)
+    add(historyScroll, BorderLayout.CENTER)
 
     historyToggle.addActionListener {
       historyScroll.isVisible = historyToggle.isSelected
@@ -408,20 +356,22 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val branch = GitLocal.currentBranch(project, dir) ?: "(unknown)"
     val clean = GitLocal.isCleanWorkTree(project, dir)
     val s = service<MirrorSettingsService>().state
-    status.text = LocalGitMirrorBundle.message("toolwindow.status.branchClean", branch, clean.toString())
 
-    // Rebuild buttons/badges/menu if mode changed
+    val cleanText = if (clean)
+      LocalGitMirrorBundle.message("panel.status.clean")
+    else
+      LocalGitMirrorBundle.message("panel.status.dirty")
+    status.text = "$branch · $cleanText"
+
     rebuildActions()
+    refreshBranchCombo()
 
     val mirrorConfigured = s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
-    mirrorBadge.text = if (mirrorConfigured) LocalGitMirrorBundle.message("toolwindow.badge.mirrorConnected") else LocalGitMirrorBundle.message("toolwindow.badge.mirrorNotConfigured")
+    mirrorBadge.text = if (mirrorConfigured)
+      LocalGitMirrorBundle.message("toolwindow.badge.mirrorConnected")
+    else
+      LocalGitMirrorBundle.message("toolwindow.badge.mirrorNotConfigured")
     mirrorBadge.status = if (mirrorConfigured) BadgeLabel.Status.GOOD else BadgeLabel.Status.BAD
-
-    val gitLabConfigured = s.gitLabBaseUrl.isNotBlank() && s.gitLabProject.isNotBlank() && SecretsStore.gitLabToken.isNotBlank()
-    gitLabBadge.text = if (gitLabConfigured) LocalGitMirrorBundle.message("toolwindow.badge.gitlabConnected") else LocalGitMirrorBundle.message("toolwindow.badge.gitlabNotConfigured")
-    gitLabBadge.status = if (gitLabConfigured) BadgeLabel.Status.GOOD else BadgeLabel.Status.BAD
-
-    refreshBranchChips()
   }
 
   internal fun ensureConfigured(settings: MirrorSettingsService.State): String? {
@@ -429,9 +379,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     return if (cfg.ok) null else cfg.message
   }
 
-  internal fun markLastSyncOk() {
-    markLastSync(SyncOutcome.OK)
-  }
+  internal fun markLastSyncOk() = markLastSync(SyncOutcome.OK)
 
   internal fun markLastSync(outcome: SyncOutcome) {
     val ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
@@ -451,12 +399,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       log.text = "No operations yet"
       return
     }
-
-    val snapshot = entries.joinToString("\n") { e ->
+    log.text = entries.joinToString("\n") { e ->
       "${e.timestamp} [${e.status}] ${e.operation}: ${e.details}"
     }
-
-    log.text = snapshot
     log.caretPosition = 0
   }
 }

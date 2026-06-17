@@ -32,8 +32,11 @@ if __name__ == "__main__":
         "port": CONFIG["web_port"],
         "reload": False,
         "log_level": "info",
-        "timeout_graceful_shutdown": 0,
-        "timeout_keep_alive": 0,
+        # Keep-alive must NOT be 0: with 0 uvicorn closes the TCP connection
+        # immediately after sending the response, which races slow/large reads
+        # on the client and surfaces as "channel was closed" during pull.
+        "timeout_graceful_shutdown": 30,
+        "timeout_keep_alive": 30,
     }
 
     if ssl_cert.exists() and ssl_key.exists():

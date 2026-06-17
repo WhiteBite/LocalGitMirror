@@ -366,7 +366,9 @@ object MirrorApi {
     repo: String,
     since: String?,
     insecureTls: Boolean,
-    outFile: File
+    outFile: File,
+    /** Called periodically during body download: (bytesRead, totalBytes). totalBytes = -1 if unknown. */
+    onProgress: ((read: Long, total: Long) -> Unit)? = null
   ): DownloadResult {
     return try {
       val boundary = "----FormBoundary${UUID.randomUUID()}"
@@ -406,7 +408,8 @@ object MirrorApi {
       }
 
       // Response is JSON: {"status", "head", "repo", "data" (base64), "filename"}
-      val body = HttpClient.readBody(conn)
+      // Use streaming read so caller can show download progress.
+      val body = HttpClient.readBodyWithProgress(conn, onProgress)
       val json = Json.parseToJsonElement(body).jsonObject
       val status = json["status"]?.jsonPrimitive?.contentOrNull ?: ""
       val head = json["head"]?.jsonPrimitive?.contentOrNull

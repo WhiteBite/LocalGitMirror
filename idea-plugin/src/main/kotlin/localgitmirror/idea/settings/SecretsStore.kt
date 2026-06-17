@@ -32,8 +32,4 @@ object SecretsStore {
   var syncPassword: String
     get() = get("mirror.syncPassword")
     set(value) = set("mirror.syncPassword", value)
-
-  var gitLabToken: String
-    get() = get("gitlab.token")
-    set(value) = set("gitlab.token", value)
 }

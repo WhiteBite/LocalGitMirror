@@ -22,16 +22,10 @@ internal fun LocalGitMirrorPanel.copyConfigLine() {
       repo = s.repo,
       mirrorInsecureTls = s.mirrorInsecureTls,
       offlineGenerateOnly = s.offlineGenerateOnly,
-      simpleUiMode = s.simpleUiMode,
-      gitLabBaseUrl = s.gitLabBaseUrl,
-      gitLabProject = s.gitLabProject,
-      gitLabInsecureTls = s.gitLabInsecureTls,
       gitRemoteName = s.gitRemoteName,
       pullBackDefaultMode = s.pullBackDefaultMode,
       mirrorApiKey = SecretsStore.mirrorApiKey,
-      syncPassword = SecretsStore.syncPassword,
-      gitLabToken = SecretsStore.gitLabToken,
-      workMode = s.workMode
+      syncPassword = SecretsStore.syncPassword
     )
   )
 
@@ -98,17 +92,11 @@ internal fun LocalGitMirrorPanel.applySnapshot(snapshot: ConfigSnapshot) {
   s.repo = snapshot.repo
   s.mirrorInsecureTls = snapshot.mirrorInsecureTls
   s.offlineGenerateOnly = snapshot.offlineGenerateOnly
-  s.simpleUiMode = snapshot.simpleUiMode
-  s.gitLabBaseUrl = snapshot.gitLabBaseUrl
-  s.gitLabProject = snapshot.gitLabProject
-  s.gitLabInsecureTls = snapshot.gitLabInsecureTls
   s.gitRemoteName = snapshot.gitRemoteName
   s.pullBackDefaultMode = snapshot.pullBackDefaultMode
-  s.workMode = snapshot.workMode
 
   SecretsStore.mirrorApiKey = snapshot.mirrorApiKey
   SecretsStore.syncPassword = snapshot.syncPassword
-  SecretsStore.gitLabToken = snapshot.gitLabToken
 
   refreshStatus()
 }
