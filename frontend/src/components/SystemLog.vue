@@ -97,7 +97,10 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { useSystemStore } from '@/stores/system'
+import axios from 'axios'
 
+const systemStore = useSystemStore()
 const logs = ref([])
 const filterLevel = ref('All')
 const isExpanded = ref(false)
@@ -117,10 +120,15 @@ const filteredLogs = computed(() => {
 })
 
 // Connect to WebSocket
-const connectWebSocket = () => {
+const connectWebSocket = async () => {
+  // Fetch API key if not cached
+  if (!systemStore.apiKey) {
+    await systemStore.fetchApiKey()
+  }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.hostname
-  const wsUrl = `${protocol}//${host}${window.location.port ? `:${window.location.port}` : ''}/ws/logs`
+  const keyParam = systemStore.apiKey ? `?key=${encodeURIComponent(systemStore.apiKey)}` : ''
+  const wsUrl = `${protocol}//${host}${window.location.port ? `:${window.location.port}` : ''}/ws/logs${keyParam}`
   
   ws = new WebSocket(wsUrl)
 
@@ -145,8 +153,13 @@ const connectWebSocket = () => {
     wsConnected.value = false
   }
   
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     wsConnected.value = false
+    // Don't reconnect on auth failure (1008)
+    if (event.code === 1008) {
+      console.log('WebSocket auth failed (1008), not reconnecting')
+      return
+    }
     console.log('WebSocket disconnected, reconnecting in 3s...')
     
     // Reconnect after 3 seconds

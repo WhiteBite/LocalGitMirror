@@ -108,6 +108,8 @@ def on_repo_receive(repo_name: str):
                     cwd=str(bare_path),
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                 )
                 latest_branch = proc.stdout.strip()
 

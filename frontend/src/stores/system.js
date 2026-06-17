@@ -24,7 +24,9 @@ export const useSystemStore = defineStore('system', () => {
   const loading = ref(false)
   const error = ref(null)
   const wsConnection = ref(null)
+  const wsReconnectTimer = ref(null)
   const notifications = ref([])
+  const apiKey = ref('')
 
   // Getters
   const storagePercentage = computed(() => {
@@ -146,13 +148,19 @@ export const useSystemStore = defineStore('system', () => {
     }
   }
 
-  function connectWebSocket() {
+  async function connectWebSocket() {
     if (wsConnection.value) {
       return
     }
 
+    // Fetch API key if not cached
+    if (!apiKey.value) {
+      await fetchApiKey()
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const wsUrl = `${protocol}//${window.location.host}/ws/logs`  // Fixed path
+    const keyParam = apiKey.value ? `?key=${encodeURIComponent(apiKey.value)}` : ''
+    const wsUrl = `${protocol}//${window.location.host}/ws/logs${keyParam}`
     
     try {
       wsConnection.value = new WebSocket(wsUrl)
@@ -174,13 +182,16 @@ export const useSystemStore = defineStore('system', () => {
         console.error('WebSocket error:', error)
       }
       
-      wsConnection.value.onclose = () => {
-        console.log('WebSocket disconnected')
+      wsConnection.value.onclose = (event) => {
+        console.log('WebSocket disconnected', event.code)
         wsConnection.value = null
-        // Attempt to reconnect after 5 seconds
-        setTimeout(() => {
-          connectWebSocket()
-        }, 5000)
+        // Only reconnect if not an auth failure (1008 = policy violation)
+        if (event.code !== 1008) {
+          clearTimeout(wsReconnectTimer.value)
+          wsReconnectTimer.value = setTimeout(() => {
+            connectWebSocket()
+          }, 5000)
+        }
       }
     } catch (err) {
       console.error('Error connecting WebSocket:', err)
@@ -242,6 +253,17 @@ export const useSystemStore = defineStore('system', () => {
     notifications.value = []
   }
 
+  async function fetchApiKey() {
+    if (apiKey.value) return apiKey.value
+    try {
+      const response = await axios.get('/api/connection-info')
+      apiKey.value = response.data.api_key || ''
+    } catch (err) {
+      console.error('Error fetching API key:', err)
+    }
+    return apiKey.value
+  }
+
   function clearError() {
     error.value = null
   }
@@ -271,6 +293,7 @@ export const useSystemStore = defineStore('system', () => {
     stopGit,
     connectWebSocket,
     disconnectWebSocket,
+    fetchApiKey,
     addNotification,
     removeNotification,
     markNotificationRead,

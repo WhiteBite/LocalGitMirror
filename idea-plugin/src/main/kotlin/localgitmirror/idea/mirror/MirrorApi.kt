@@ -374,8 +374,8 @@ object MirrorApi {
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
       conn.doOutput = true
-      conn.connectTimeout = 60_000
-      conn.readTimeout = 120_000
+      conn.connectTimeout = 90_000
+      conn.readTimeout = 300_000
       conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
       if (apiKey.isNotBlank()) {
         conn.setRequestProperty("Authorization", "Bearer $apiKey")
