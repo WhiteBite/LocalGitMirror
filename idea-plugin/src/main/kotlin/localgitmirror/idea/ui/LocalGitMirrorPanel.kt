@@ -27,6 +27,13 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal val status = JBLabel("")
   internal val mirrorBadge = BadgeLabel("Mirror: ?")
   internal val lastSyncBadge = BadgeLabel("Last sync: \u2014")
+  internal val versionBadge = BadgeLabel("").apply {
+    // Read plugin version at runtime from the platform's plugin descriptor
+    val pluginId = com.intellij.openapi.extensions.PluginId.getId("localgitmirror.idea.orchestrator")
+    val descriptor = com.intellij.ide.plugins.PluginManagerCore.getPlugin(pluginId)
+    text = if (descriptor != null) "v${descriptor.version}" else "v?"
+    status = BadgeLabel.Status.NEUTRAL
+  }
 
   // Progress bar + stage label shown during sync
   internal val progressBar = JProgressBar().apply {
@@ -239,6 +246,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
     badgesPanel.add(mirrorBadge)
     badgesPanel.add(lastSyncBadge)
+    badgesPanel.add(versionBadge)
     headerRow.add(badgesPanel, BorderLayout.CENTER)
 
     autoPullItem.addActionListener { settingsState.autoCheckPullOnStartup = autoPullItem.isSelected }

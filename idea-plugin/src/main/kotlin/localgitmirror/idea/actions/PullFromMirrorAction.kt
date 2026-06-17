@@ -41,8 +41,8 @@ class PullFromMirrorAction : AnAction() {
       return
     }
 
-    // ── Step 1: fetch refs on a background thread, then ask user to pick a branch ──
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Getting Mirror branches…", true) {
+    // ── Step 1: fetch refs in background ──
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Получаем ветки…", true) {
       private var refsResult: MirrorApi.RefsResult? = null
 
       override fun run(indicator: ProgressIndicator) {
@@ -70,29 +70,41 @@ class PullFromMirrorAction : AnAction() {
           return
         }
 
-        // ── Step 2: show branch picker on EDT ──
+        // ── Step 2: branch picker on EDT — shows MIRROR branches, including ones missing locally ──
         val remoteBranches = remoteRefs.keys.sorted()
         val currentBranch = GitLocal.currentBranch(project, dir)
+        val localBranches = GitLocal.listBranches(project, dir).toSet()
 
-        // Pre-select: current branch if it exists on Mirror, else first branch
+        // Mark branches that don't exist locally with a ★ so user knows it's a new branch
+        val displayItems = remoteBranches.map { b ->
+          if (localBranches.contains(b)) b else "★ $b  (новая)"
+        }.toTypedArray()
+
         val preselect = if (currentBranch != null && remoteBranches.contains(currentBranch))
-          currentBranch else remoteBranches.first()
+          displayItems[remoteBranches.indexOf(currentBranch)]
+        else
+          displayItems.first()
 
-        val chosen = Messages.showEditableChooseDialog(
-          "Выберите ветку для подтягивания с Mirror:",
+        val chosenDisplay = Messages.showEditableChooseDialog(
+          "Выберите ветку для подтягивания с Mirror:\n(★ = ветки которых нет локально — будут созданы)",
           "LocalGitMirror: Pull from Mirror",
           null,
-          remoteBranches.toTypedArray(),
+          displayItems,
           preselect,
           null
-        ) ?: return // user cancelled
+        ) ?: return
+
+        // Strip display decoration back to plain branch name
+        val chosenIdx = displayItems.indexOf(chosenDisplay)
+        val chosen = if (chosenIdx >= 0) remoteBranches[chosenIdx]
+                     else chosenDisplay.removePrefix("★ ").substringBefore("  (")
 
         if (!remoteRefs.containsKey(chosen)) {
           notify(project, "Ветка «$chosen» не найдена на Mirror.", NotificationType.WARNING)
           return
         }
 
-        // ── Step 3: run the actual pull ──
+        // ── Step 3: pull ──
         doPull(project, dir, settings, repoName, chosen, remoteRefs)
       }
     })
@@ -117,7 +129,7 @@ class PullFromMirrorAction : AnAction() {
             return
           }
 
-          // ── Check if we already have the objects ──
+          // ── Check if objects exist locally ──
           indicator.text = "Проверяем локальные объекты…"
           val hasObjects = git(dir, "cat-file", "-e", targetHash).exitCode == 0
 
@@ -126,15 +138,12 @@ class PullFromMirrorAction : AnAction() {
           val gitDir = if (File(rawGd).isAbsolute) File(rawGd) else File(dir, rawGd)
 
           if (!hasObjects) {
-            // ── Download bundle ──
-            indicator.text = "Скачивание объектов… (это может занять несколько минут)"
+            indicator.text = "Скачивание объектов…"
             indicator.isIndeterminate = true
 
-            val tmpDir = File(gitDir, ".cache")
-            if (!tmpDir.exists()) tmpDir.mkdirs()
+            val tmpDir = File(gitDir, ".cache").also { if (!it.exists()) it.mkdirs() }
             val dumpOut = File(tmpDir, ".tmp_${UUID.randomUUID().toString().take(8)}")
 
-            // Find a good since-hash: most recent local commit that exists on mirror
             val sinceHash = findSinceHash(dir, remoteRefs)
 
             val dl = MirrorApi.exportDump(
@@ -147,7 +156,6 @@ class PullFromMirrorAction : AnAction() {
               onProgress = { read, total ->
                 if (total > 0) {
                   indicator.isIndeterminate = false
-                  // base64 overhead ~33%; raw bundle is ~0.75× the JSON body
                   indicator.fraction = (read.toDouble() / total).coerceIn(0.0, 0.95)
                   val readMb = "%.1f".format(read / 1_048_576.0)
                   val totalMb = "%.1f".format(total / 1_048_576.0)
@@ -161,7 +169,25 @@ class PullFromMirrorAction : AnAction() {
 
             when {
               dl.code == 204 -> {
-                // Server says nothing new — objects might already be present
+                // Server has nothing newer than `since` — but we know target hash is missing
+                // locally. This means sinceHash was wrong or server state is inconsistent.
+                // Retry without `since` to get a full bundle.
+                indicator.text = "Запрашиваем полный бандл…"
+                indicator.isIndeterminate = true
+                val dlFull = MirrorApi.exportDump(
+                  baseUrl = settings.baseUrl,
+                  apiKey = SecretsStore.mirrorApiKey,
+                  repo = repoName,
+                  since = null,
+                  insecureTls = settings.mirrorInsecureTls,
+                  outFile = dumpOut
+                )
+                if (dlFull.code == 204 || dlFull.code !in 200..299 || dlFull.file == null) {
+                  notify(project, "[trace=$traceId] Сервер не может отдать нужные объекты (${dlFull.code})", NotificationType.ERROR)
+                  historyService.add("Pull from Mirror", false, "trace=$traceId 204 on full export")
+                  return
+                }
+                if (!doFetch(dir, dlFull.file, traceId, project, historyService, targetBranch)) return
               }
               dl.code !in 200..299 || dl.file == null -> {
                 notify(project, "[trace=$traceId] Ошибка скачивания HTTP ${dl.code}: ${dl.message}", NotificationType.ERROR)
@@ -171,33 +197,34 @@ class PullFromMirrorAction : AnAction() {
               else -> {
                 indicator.text = "Распаковываем объекты…"
                 indicator.isIndeterminate = true
-                try {
-                  val decryptedBytes = BundleCrypto.decryptDumpBytes(dl.file.readBytes(), SecretsStore.syncPassword)
-                  fetchFromBundle(dir, decryptedBytes) { errMsg ->
-                    notify(project, "[trace=$traceId] $errMsg", NotificationType.ERROR)
-                    historyService.add("Pull from Mirror", false, "trace=$traceId $errMsg")
-                  }
-                } finally {
-                  try { dl.file.delete() } catch (_: Exception) {}
-                }
+                if (!doFetch(dir, dl.file, traceId, project, historyService, targetBranch)) return
               }
+            }
+
+            // Verify objects are now available after fetch
+            val hasNow = git(dir, "cat-file", "-e", targetHash).exitCode == 0
+            if (!hasNow) {
+              notify(project, "[trace=$traceId] Объекты ветки «$targetBranch» недоступны после загрузки. Попробуйте ещё раз.", NotificationType.ERROR)
+              historyService.add("Pull from Mirror", false, "trace=$traceId objects missing after fetch")
+              return
             }
           }
 
-          // ── Update only the requested branch ──
+          // ── Apply the branch ref ──
           indicator.text = "Обновляем ветку «$targetBranch»…"
           indicator.isIndeterminate = false
           indicator.fraction = 0.9
 
           val localBranches = listLocalBranches(dir)
+          val isNewBranch = !localBranches.contains(targetBranch)
           val result = applyBranch(dir, targetBranch, targetHash, localBranches)
 
-          // ── Clean up temp fetch refs ──
+          // ── Cleanup temp refs ──
           git(dir, "for-each-ref", "--format=%(refname)", "refs/fetched/").stdout
             .lines().filter { it.isNotBlank() }
             .forEach { git(dir, "update-ref", "-d", it.trim()) }
 
-          // ── Reset working tree if we're on the updated branch ──
+          // ── Reset working tree if already on this branch ──
           val currentBranch = GitLocal.currentBranch(project, dir)
           if (currentBranch == targetBranch) {
             git(dir, "reset", "--hard", "HEAD")
@@ -205,7 +232,11 @@ class PullFromMirrorAction : AnAction() {
 
           indicator.fraction = 1.0
 
-          val msg = "[trace=$traceId] Pull завершён: $result"
+          // ── Notify user — hint to checkout if branch was new ──
+          val checkoutHint = if (isNewBranch)
+            "\nЧтобы переключиться: git checkout $targetBranch"
+          else ""
+          val msg = "[trace=$traceId] Pull завершён: $result$checkoutHint"
           notify(project, msg, NotificationType.INFORMATION)
           historyService.add("Pull from Mirror", true, "trace=$traceId branch=$targetBranch $result")
 
@@ -221,7 +252,37 @@ class PullFromMirrorAction : AnAction() {
     })
   }
 
-  /** Returns a since-hash to minimise bundle size: most recent local commit that mirror also has. */
+  /**
+   * Decrypt dump file and pipe into `git fetch -`.
+   * Returns true on success, false on failure (error already notified).
+   */
+  private fun doFetch(
+    dir: File,
+    dumpFile: File,
+    traceId: String,
+    project: Project,
+    historyService: OperationsHistoryService,
+    targetBranch: String
+  ): Boolean {
+    return try {
+      val decryptedBytes = BundleCrypto.decryptDumpBytes(dumpFile.readBytes(), SecretsStore.syncPassword)
+      var fetchError: String? = null
+      fetchFromBundle(dir, decryptedBytes) { err -> fetchError = err }
+      if (fetchError != null) {
+        notify(project, "[trace=$traceId] $fetchError", NotificationType.ERROR)
+        historyService.add("Pull from Mirror", false, "trace=$traceId $fetchError")
+        false
+      } else true
+    } catch (e: Exception) {
+      notify(project, "[trace=$traceId] Ошибка расшифровки: ${e.message}", NotificationType.ERROR)
+      historyService.add("Pull from Mirror", false, "trace=$traceId decrypt error: ${e.message}")
+      false
+    } finally {
+      try { dumpFile.delete() } catch (_: Exception) {}
+    }
+  }
+
+  /** Returns a since-hash to minimise bundle size. */
   private fun findSinceHash(dir: File, remoteRefs: Map<String, String>): String? =
     PullLogic.findSinceHash(dir, remoteRefs)
 
@@ -242,15 +303,10 @@ class PullFromMirrorAction : AnAction() {
     createSuffixedBranch = { base, hash -> createSuffixedBranch(dir, base, hash) }
   )
 
-  /** Pipe decrypted bundle bytes into `git fetch -` */
-  private fun fetchFromBundle(
-    dir: File,
-    decryptedBytes: ByteArray,
-    onError: (String) -> Unit
-  ) {
+  /** Pipe decrypted bundle bytes into `git fetch -`. */
+  private fun fetchFromBundle(dir: File, decryptedBytes: ByteArray, onError: (String) -> Unit) {
     val pb = ProcessBuilder(listOf("git", "fetch", "-", "+refs/heads/*:refs/fetched/mirror/*"))
-      .directory(dir)
-      .redirectErrorStream(false)
+      .directory(dir).redirectErrorStream(false)
     val proc = pb.start()
     proc.outputStream.use { it.write(decryptedBytes); it.flush() }
     val stdoutSb = StringBuilder()
@@ -260,9 +316,7 @@ class PullFromMirrorAction : AnAction() {
     t1.start(); t2.start()
     val exitCode = proc.waitFor(300, TimeUnit.SECONDS).let { if (it) proc.exitValue() else { proc.destroy(); -1 } }
     t1.join(); t2.join()
-    if (exitCode != 0) {
-      onError("Ошибка распаковки бандла: $stderrSb")
-    }
+    if (exitCode != 0) onError("Ошибка распаковки бандла: $stderrSb")
   }
 
   // ── Git helpers ──
@@ -271,21 +325,15 @@ class PullFromMirrorAction : AnAction() {
 
   private fun git(workDir: File, vararg args: String): CmdResult {
     localgitmirror.idea.sync.SyncLogger.log(workDir, "Exec: git ${args.joinToString(" ")}")
-    val p = ProcessBuilder(listOf("git", *args))
-      .directory(workDir)
-      .redirectErrorStream(false)
-      .start()
-    val stdoutSb = StringBuilder()
-    val stderrSb = StringBuilder()
+    val p = ProcessBuilder(listOf("git", *args)).directory(workDir).redirectErrorStream(false).start()
+    val stdoutSb = StringBuilder(); val stderrSb = StringBuilder()
     val t1 = Thread { stdoutSb.append(p.inputStream.bufferedReader().readText()) }
     val t2 = Thread { stderrSb.append(p.errorStream.bufferedReader().readText()) }
     t1.start(); t2.start()
     p.waitFor(300, TimeUnit.SECONDS)
     t1.join(); t2.join()
     val res = CmdResult(p.exitValue(), stdoutSb.toString().trim(), stderrSb.toString().trim())
-    if (res.exitCode != 0) {
-      localgitmirror.idea.sync.SyncLogger.log(workDir, "Git Failed (${res.exitCode}): ${res.stderr}")
-    }
+    if (res.exitCode != 0) localgitmirror.idea.sync.SyncLogger.log(workDir, "Git Failed (${res.exitCode}): ${res.stderr}")
     return res
   }
 
