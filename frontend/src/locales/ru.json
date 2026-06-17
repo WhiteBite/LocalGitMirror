@@ -7,7 +7,10 @@
     "refresh": "Обновить",
     "loading": "Загрузка...",
     "error": "Ошибка",
-    "success": "Успешно"
+    "success": "Успешно",
+    "copy": "Копировать",
+    "show": "Показать",
+    "hide": "Скрыть"
   },
   "nav": {
     "dashboard": "Панель управления",
@@ -41,7 +44,18 @@
       "here_home": "Здесь (дома)",
       "step2_desc": "Правьте код, затем нажмите"
     },
-    "panic": "ПАНИКА"
+    "panic": "ПАНИКА",
+    "plugin_setup": {
+      "title": "Подключение плагина IDEA",
+      "desc": "Эти данные нужны для настройки плагина LocalGitMirror на другом компьютере. Скопируйте отдельные поля или весь конфиг целиком.",
+      "mirror_url": "Mirror URL (Base URL)",
+      "api_key": "API Key",
+      "sync_password": "Sync Password",
+      "default_repo": "Репозиторий по умолчанию",
+      "copy_full_config": "Скопировать весь конфиг для плагина",
+      "copied": "Скопировано!",
+      "paste_hint": "Вставьте скопированное в IDEA: Tools > LocalGitMirror > Paste Config (или используйте меню шестерёнки в панели плагина)."
+    }
   },
   "files": {
     "title": "Проводник",

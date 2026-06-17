@@ -113,6 +113,52 @@ async def get_config():
     }
 
 
+@router.get("/connection-info")
+async def get_connection_info():
+    """Return connection info for IDEA plugin setup (mirror URL, API key, sync password)."""
+    from app.core.system_monitor import SystemMonitor
+    from pathlib import Path as _Path
+
+    local_ip = SystemMonitor.get_local_ip()
+    web_port = config.get("web_port", 443)
+    tls_enabled = _Path("cert.pem").exists() and _Path("key.pem").exists()
+    protocol = "https" if tls_enabled else "http"
+    mirror_url = f"{protocol}://{local_ip}:{web_port}"
+
+    api_key = os.getenv("API_KEY", "")
+    sync_password = os.getenv("SYNC_PASSWORD", "")
+    default_repo = repo_manager.current_repo if repo_manager else "default"
+
+    # Build raw config line compatible with plugin's ConfigLineCodec.parseRawPayload()
+    config_line = (
+        f"baseUrl={mirror_url}\n"
+        f"repo={default_repo}\n"
+        f"mirrorInsecureTls={str(not tls_enabled).lower()}\n"
+        f"offlineGenerateOnly=false\n"
+        f"simpleUiMode=false\n"
+        f"gitLabBaseUrl=\n"
+        f"gitLabProject=\n"
+        f"gitLabInsecureTls=false\n"
+        f"gitRemoteName=origin\n"
+        f"pullBackDefaultMode=new-branch\n"
+        f"mirrorApiKey={api_key}\n"
+        f"syncPassword={sync_password}\n"
+        f"gitLabToken=\n"
+        f"workMode=auto"
+    )
+
+    return {
+        "mirror_url": mirror_url,
+        "api_key": api_key,
+        "sync_password": sync_password,
+        "default_repo": default_repo,
+        "protocol": protocol,
+        "local_ip": local_ip,
+        "web_port": web_port,
+        "config_line": config_line,
+    }
+
+
 @router.post("/config/storage")
 async def set_storage_path(request: StoragePathRequest):
     """Change storage directory"""
