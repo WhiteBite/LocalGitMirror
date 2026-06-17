@@ -206,6 +206,20 @@ async def lifespan(app: FastAPI):
     if sync_pass and len(sync_pass) < 12:
         console.print(f"[bold yellow][!] WARNING: SYNC_PASSWORD is weak ({len(sync_pass)} chars). Use 16+ chars for security.[/bold yellow]")
 
+    # Print connection info for IDEA plugin setup
+    from app.core.system_monitor import SystemMonitor
+    local_ip = SystemMonitor.get_local_ip()
+    api_key = os.getenv("API_KEY", "")
+    console.print("")
+    console.print("[bold cyan]─── Plugin Connection Info ───[/bold cyan]")
+    console.print(f"[cyan]Mirror URL:[/cyan]      {protocol}://{local_ip}:{CONFIG['web_port']}")
+    console.print(f"[cyan]API Key:[/cyan]         {api_key}")
+    console.print(f"[cyan]Sync Password:[/cyan]   {sync_pass}")
+    console.print(f"[cyan]Default Repo:[/cyan]    {repo_manager.current_repo if repo_manager else 'default'}")
+    console.print("[bold cyan]─────────────────────────────[/bold cyan]")
+    console.print("[dim]Copy these values into IDEA plugin Settings > LocalGitMirror[/dim]")
+    console.print("")
+
     yield
     # Non-blocking shutdown
     if lan_beacon:
