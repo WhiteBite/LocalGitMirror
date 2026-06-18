@@ -351,10 +351,6 @@ class SyncEngine(
 
   @Suppress("HttpCallOnEdt")
   fun uploadAndApply(settings: SettingsSnapshot, repoName: String, dump: File, projectDir: File? = null): Pair<StepResult, MirrorApi.HttpResult> {
-    // Random jitter (0-15s) to avoid predictable traffic patterns
-    val jitterMs = (0..15_000).random()
-    Thread.sleep(jitterMs.toLong())
-
     val res = mirror.uploadAndApply(
       baseUrl = settings.baseUrl,
       apiKey = settings.mirrorApiKey,

@@ -730,7 +730,11 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
 
 
 @router.post("/documents/check")
-async def sync_has_commits(request: SyncHasCommitsRequest):
+def sync_has_commits(request: SyncHasCommitsRequest):
+    # NOTE: sync def + threadpool. Old version was async + 1 subprocess per
+    # hash (~80 hashes -> ~20s of forking). Now it's a single
+    # `git cat-file --batch-check` over stdin (one subprocess regardless of
+    # input size).
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
@@ -744,21 +748,82 @@ async def sync_has_commits(request: SyncHasCommitsRequest):
         return {"success": True, "repo": repo, "known": []}
 
     workspace = repo_manager._get_workspace_path(repo)
-    if not workspace.exists():
+    bare = repo_manager._get_bare_path(repo)
+
+    # Pick the source that actually has the most refs; bare is the push target,
+    # so a branch pushed via git but never checked out lives only there.
+    sources = [p for p in (bare, workspace) if p.exists()]
+    if not sources:
         return {"success": True, "repo": repo, "known": []}
 
-    known = []
-    for h in commits:
-        proc = _git(workspace, "cat-file", "-e", f"{h}^{{commit}}")
-        if proc.returncode == 0:
-            known.append(h)
+    known = _batch_check_commits(sources, commits)
 
     head = None
-    head_proc = _git(workspace, "rev-parse", "HEAD")
-    if head_proc.returncode == 0:
-        head = (head_proc.stdout or "").strip() or None
+    for src in (workspace, bare):
+        if not src.exists():
+            continue
+        head_proc = _git(src, "rev-parse", "HEAD")
+        if head_proc.returncode == 0 and head_proc.stdout.strip():
+            head = head_proc.stdout.strip()
+            break
 
     return {"success": True, "repo": repo, "known": known, "head": head}
+
+
+def _batch_check_commits(sources, commits):
+    """
+    Verify which commit hashes are present in any of the provided git dirs.
+    Uses a single `git cat-file --batch-check` per source over stdin instead
+    of fork-per-hash, which is ~50x faster on a list of ~80 hashes.
+    """
+    if not commits:
+        return []
+    # Deduplicate while preserving caller's order so the response order is stable.
+    seen = set()
+    deduped = []
+    for c in commits:
+        if c not in seen:
+            seen.add(c)
+            deduped.append(c)
+
+    # Map each input hash to whether ANY source confirmed it.
+    # `git cat-file --batch-check` echoes the full SHA when known, or
+    # "<input> missing" otherwise. We accept the input if either form matches
+    # (handles short hashes by checking known SHAs start with the input).
+    stdin_payload = "\n".join(deduped) + "\n"
+    known_full = set()  # full SHAs reported as present
+    for src in sources:
+        if not deduped:
+            break
+        try:
+            proc = subprocess.run(
+                ["git", "cat-file", "--batch-check"],
+                cwd=str(src),
+                input=stdin_payload,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            continue
+        for line in (proc.stdout or "").splitlines():
+            parts = line.split(" ", 2)
+            # Format: "<sha> <type> <size>" for known, "<input> missing" for not.
+            if len(parts) >= 2 and parts[1] != "missing":
+                known_full.add(parts[0].lower())
+
+    def _is_known(h: str) -> bool:
+        h_lc = h.lower()
+        if h_lc in known_full:
+            return True
+        # Short-hash input: any full SHA starting with it counts as known
+        if len(h_lc) < 40:
+            return any(full.startswith(h_lc) for full in known_full)
+        return False
+
+    return [c for c in deduped if _is_known(c)]
 
 
 @router.post("/documents/link")
