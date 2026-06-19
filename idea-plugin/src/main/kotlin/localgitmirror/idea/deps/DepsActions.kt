@@ -218,14 +218,55 @@ class RespondDepsAction : AnAction() {
         val filterText: String
 
         if (gradleResult.ok && gradleResult.artifacts.isNotEmpty()) {
-          val needed = gradleResult.artifacts.map { it.f.replace('\\', '/').lowercase() }.toSet()
-          val haveOnDome = manifest.keys()
+          // Build a key set from gradle's resolved list (group:name:version) — these
+          // are what the project actually needs to build/run.
+          val neededKeys = gradleResult.artifacts.map { "${it.g}:${it.n}:${it.v}" }.toSet()
+
+          // Also remember the absolute paths gradle reported, so we can ALSO ship
+          // the exact files (matched by path against our scan of the cache).
+          val neededPaths = gradleResult.artifacts.map { it.f.replace('\\', '/').lowercase() }.toSet()
+
+          // Dome's manifest tells us what it already has — by g:n:v:sha:filename.
+          // We DON'T compare paths between machines because absolute paths differ
+          // (C:\Users\dome\... vs C:\Users\work\...). We compare on identity.
+          // For "does dome have it" we strip filename/sha because the same artifact
+          // might have been downloaded with a different sha if released twice.
+          val domeHaveGNV = manifest.artifacts.map { "${it.g}:${it.n}:${it.v}" }.toSet()
+
           toShip = workArtifacts.filter { art ->
-            val key = "${art.group}:${art.name}:${art.version}:${art.sha1}:${art.fileName}"
+            val gnv = "${art.group}:${art.name}:${art.version}"
             val pathLow = art.absolutePath.replace('\\', '/').lowercase()
-            pathLow in needed && key !in haveOnDome
+            // Project needs it (by gnv OR exact path match) AND dome doesn't have it (by gnv)
+            (gnv in neededKeys || pathLow in neededPaths) && gnv !in domeHaveGNV
           }
           filterText = "gradle: ${gradleResult.artifacts.size} resolved, ${toShip.size} новых для дома (за ${gradleResult.durationMs} мс)"
+
+          // Diagnostic: write a debug file so we can see WHY toShip is whatever
+          // it is, especially when it's 0 but the dome side is still missing things.
+          try {
+            val debug = buildString {
+              appendLine("# LocalGitMirror — deps respond diagnostic")
+              appendLine("# date: ${java.time.LocalDateTime.now()}")
+              appendLine("# gradle resolved: ${gradleResult.artifacts.size}")
+              appendLine("# work cache size: ${workArtifacts.size}")
+              appendLine("# dome manifest size: ${manifest.artifacts.size}")
+              appendLine("# to ship: ${toShip.size}")
+              appendLine()
+              appendLine("## Gradle resolved (first 30):")
+              gradleResult.artifacts.take(30).forEach { appendLine("  ${it.g}:${it.n}:${it.v}  ->  ${it.f}") }
+              appendLine()
+              val neededOnly = neededKeys.toList()
+              val domeMissing = neededOnly.filter { it !in domeHaveGNV }
+              appendLine("## Needed but NOT in dome's manifest (${domeMissing.size}):")
+              domeMissing.take(50).forEach { appendLine("  $it") }
+              appendLine()
+              val workHas = workArtifacts.map { "${it.group}:${it.name}:${it.version}" }.toSet()
+              val needNotInWorkCache = neededKeys.filter { it !in workHas }
+              appendLine("## Needed but NOT in work cache (${needNotInWorkCache.size}):")
+              needNotInWorkCache.take(50).forEach { appendLine("  $it") }
+            }
+            File(projectDir, ".lgm-deps-debug.txt").writeText(debug, Charsets.UTF_8)
+          } catch (_: Exception) {}
         } else {
           // Fallback to origin/substring filter
           val (internal, internalSource) = resolveInternalRepos(settings, projectDir)
