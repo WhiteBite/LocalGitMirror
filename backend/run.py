@@ -37,6 +37,32 @@ if __name__ == "__main__":
         # on the client and surfaces as "channel was closed" during pull.
         "timeout_graceful_shutdown": 30,
         "timeout_keep_alive": 30,
+        # Log format with timestamps and no ANSI colors (clean when piped/redirected).
+        "log_config": {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "format": "%(asctime)s [%(levelname)s] %(message)s",
+                    "datefmt": "%Y-%m-%d %H:%M:%S",
+                },
+                "access": {
+                    "format": '%(asctime)s [ACCESS] %(client_addr)s "%(request_line)s" %(status_code)s',
+                    "datefmt": "%Y-%m-%d %H:%M:%S",
+                    "class": "uvicorn.logging.AccessFormatter",
+                    "use_colors": False,
+                },
+            },
+            "handlers": {
+                "default": {"class": "logging.StreamHandler", "formatter": "default"},
+                "access":  {"class": "logging.StreamHandler", "formatter": "access"},
+            },
+            "loggers": {
+                "uvicorn":        {"handlers": ["default"], "level": "INFO", "propagate": False},
+                "uvicorn.error":  {"handlers": ["default"], "level": "INFO", "propagate": False},
+                "uvicorn.access": {"handlers": ["access"],  "level": "INFO", "propagate": False},
+            },
+        },
     }
 
     if ssl_cert.exists() and ssl_key.exists():

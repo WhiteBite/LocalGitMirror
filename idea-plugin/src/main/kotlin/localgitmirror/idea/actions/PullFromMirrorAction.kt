@@ -52,6 +52,16 @@ class PullFromMirrorAction : AnAction() {
       return
     }
 
+    // ── Step 0: handshake — fail fast on wrong Sync Password BEFORE we
+    // download a multi-megabyte bundle that we won't be able to decrypt ──
+    val handshakeError = quickHandshake(settings)
+    if (handshakeError != null) {
+      notify(project, handshakeError, NotificationType.ERROR)
+      service<OperationsHistoryService>().add("Pull from Mirror", false, handshakeError)
+      operationInProgress.set(false)
+      return
+    }
+
     // ── Step 1: fetch refs in background ──
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Получаем ветки…", true) {
       private var refsResult: MirrorApi.RefsResult? = null
@@ -391,6 +401,50 @@ class PullFromMirrorAction : AnAction() {
   }
 
   /**
+   * Verify Sync Password matches the server BEFORE downloading a bundle that
+   * we won't be able to decrypt. Returns null on success, error string on failure.
+   * The check uses /api/auth/verify (passwordProbe) the same way SyncEngine does
+   * for the send path, so push and pull behave consistently.
+   */
+  private fun quickHandshake(settings: MirrorSettingsService.State): String? {
+    if (settings.baseUrl.isBlank()) return "Не настроен Mirror URL."
+    val syncPassword = SecretsStore.syncPassword
+    if (syncPassword.isBlank()) return "Не задан Sync Password (Settings → LocalGitMirror)."
+
+    val probe = MirrorApi.passwordProbe(
+      baseUrl = settings.baseUrl,
+      apiKey = SecretsStore.mirrorApiKey,
+      insecureTls = settings.mirrorInsecureTls
+    )
+    if (probe.code !in 200..299 || probe.bytes == null) {
+      return "Mirror недоступен: HTTP ${probe.code}: ${probe.message.take(200)}"
+    }
+    return try {
+      val plain = String(BundleCrypto.decryptDumpBytes(probe.bytes, syncPassword)).trim()
+      if (plain == "LGM-PROBE" || plain == "SYNC-PROBE") null
+      else "Sync Password не совпадает с сервером (probe вернул неожиданный payload)."
+    } catch (_: Throwable) {
+      "Sync Password не совпадает с сервером. " +
+        "Откройте Settings → LocalGitMirror и введите тот же пароль, что в .env (SYNC_PASSWORD) на сервере."
+    }
+  }
+
+  /** Decryption errors usually have an empty message — translate them by class name. */
+  private fun describeDecryptError(e: Throwable): String {
+    val cls = e::class.java.simpleName
+    val raw = e.message?.takeIf { it.isNotBlank() }
+    return when {
+      // AES-GCM tag mismatch = wrong password (or corrupted bundle)
+      cls.contains("BadTag") || cls.contains("BadPadding") || raw?.contains("Tag mismatch", true) == true ->
+        "Ошибка расшифровки: Sync Password не совпадает с сервером. " +
+          "Сверьте пароль в Settings → LocalGitMirror с .env SYNC_PASSWORD на сервере."
+      cls.contains("IllegalArgument") ->
+        "Ошибка расшифровки: повреждённый или неподдерживаемый формат пакета. ${raw ?: ""}".trim()
+      else -> "Ошибка расшифровки: ${raw ?: cls}"
+    }
+  }
+
+  /**
    * Decrypt dump file and pipe into `git fetch -`.
    * Returns true on success, false on failure (error already notified).
    */
@@ -412,8 +466,9 @@ class PullFromMirrorAction : AnAction() {
         false
       } else true
     } catch (e: Exception) {
-      notify(project, "[trace=$traceId] Ошибка расшифровки: ${e.message}", NotificationType.ERROR)
-      historyService.add("Pull from Mirror", false, "trace=$traceId decrypt error: ${e.message}")
+      val msg = describeDecryptError(e)
+      notify(project, "[trace=$traceId] $msg", NotificationType.ERROR)
+      historyService.add("Pull from Mirror", false, "trace=$traceId $msg")
       false
     } finally {
       try { dumpFile.delete() } catch (_: Exception) {}
@@ -464,20 +519,34 @@ class PullFromMirrorAction : AnAction() {
     createSuffixedBranch = { base, hash -> createSuffixedBranch(dir, base, hash) }
   )
 
-  /** Pipe decrypted bundle bytes into `git fetch -`. */
+  /**
+   * Apply the decrypted bundle into the local repo.
+   *
+   * Modern git (≥2.42 strict, fully blocked in 2.50+) refuses `git fetch -`
+   * because of the CVE-2024-32002 security tightening: stdin pipe via "-" is
+   * treated as "strange pathname" and rejected. We therefore write the bundle
+   * to a temporary file inside the project's .git/.cache (so it never leaves
+   * the encrypted directory boundary) and fetch from that file.
+   * The temp file is deleted in `finally` regardless of success.
+   */
   private fun fetchFromBundle(dir: File, decryptedBytes: ByteArray, onError: (String) -> Unit) {
-    val pb = ProcessBuilder(listOf("git", "fetch", "-", "+refs/heads/*:refs/fetched/mirror/*"))
-      .directory(dir).redirectErrorStream(false)
-    val proc = pb.start()
-    proc.outputStream.use { it.write(decryptedBytes); it.flush() }
-    val stdoutSb = StringBuilder()
-    val stderrSb = StringBuilder()
-    val t1 = Thread { stdoutSb.append(proc.inputStream.bufferedReader().readText()) }
-    val t2 = Thread { stderrSb.append(proc.errorStream.bufferedReader().readText()) }
-    t1.start(); t2.start()
-    val exitCode = proc.waitFor(300, TimeUnit.SECONDS).let { if (it) proc.exitValue() else { proc.destroy(); -1 } }
-    t1.join(); t2.join()
-    if (exitCode != 0) onError("Ошибка распаковки бандла: $stderrSb")
+    val gitDirRes = git(dir, "rev-parse", "--git-dir")
+    val raw = gitDirRes.stdout.trim()
+    val gitDir = if (File(raw).isAbsolute) File(raw) else File(dir, raw)
+    val cacheDir = File(gitDir, ".cache").also { if (!it.exists()) it.mkdirs() }
+    val tmpBundle = File(cacheDir, ".bundle_${UUID.randomUUID().toString().take(8)}")
+
+    try {
+      tmpBundle.writeBytes(decryptedBytes)
+      val res = git(dir, "fetch", tmpBundle.absolutePath, "+refs/heads/*:refs/fetched/mirror/*")
+      if (res.exitCode != 0) {
+        onError("Ошибка распаковки бандла: ${res.stderr.ifBlank { res.stdout }.take(500)}")
+      }
+    } catch (t: Throwable) {
+      onError("Ошибка распаковки бандла: ${t.message ?: t::class.simpleName}")
+    } finally {
+      try { tmpBundle.delete() } catch (_: Exception) {}
+    }
   }
 
   // ── Git helpers ──

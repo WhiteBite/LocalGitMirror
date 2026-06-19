@@ -1230,7 +1230,13 @@ async def sync_preview_pull(request: PreviewPullRequest):
 
 @router.post("/documents/preview-details")
 async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
-    """Get commit list and diffstat for incoming changes"""
+    """Get commit list and diffstat for incoming changes.
+
+    Picks the source repo (bare or workspace) that actually has the requested
+    branch, since `git push` lands branches in BARE while workspace is just
+    one checkout. Without this, preview is empty for any branch the user has
+    pushed but never had checked out.
+    """
     if not repo_manager:
         raise HTTPException(500, "Repo manager not initialized")
 
@@ -1239,15 +1245,31 @@ async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
         raise HTTPException(404, "Repository not found")
 
     workspace = repo_manager._get_workspace_path(repo_name)
-    if not workspace.exists():
-        raise HTTPException(404, "Workspace not found")
+    bare = repo_manager._get_bare_path(repo_name)
+    if not workspace.exists() and not bare.exists():
+        raise HTTPException(404, "Repository data not found")
 
     since = (request.since or "").strip()
     target = (request.branch or "").strip() or "HEAD"
     rev_range = f"{since}..{target}" if since else target
 
+    # Pick the source that actually has the target ref (bare-only branches!)
+    def _has_ref(path: Path, ref: str) -> bool:
+        if not path.exists():
+            return False
+        if ref == "HEAD":
+            return _git(path, "rev-parse", "--verify", "HEAD").returncode == 0
+        return _git(path, "rev-parse", "--verify", ref).returncode == 0
+
+    if _has_ref(bare, target) and not _has_ref(workspace, target):
+        source = bare
+    elif workspace.exists():
+        source = workspace
+    else:
+        source = bare
+
     # Get commits
-    log_proc = _git(workspace, "log", "--oneline", "-n", "30", rev_range)
+    log_proc = _git(source, "log", "--oneline", "-n", "30", rev_range)
     commits = []
     if log_proc.returncode == 0:
         for line in (log_proc.stdout or "").strip().split("\n"):
@@ -1260,7 +1282,7 @@ async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
             })
 
     # Get diffstat
-    diff_proc = _git(workspace, "diff", "--stat", rev_range)
+    diff_proc = _git(source, "diff", "--stat", rev_range)
     diffstat = diff_proc.stdout or ""
 
     return {
