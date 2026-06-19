@@ -197,10 +197,37 @@ class RespondDepsAction : AnAction() {
         indicator.text = "Сканируем локальный gradle-кеш…"
         val workArtifacts = DepsScanner.scan()
         val projectDir = project.basePath?.let { File(it) } ?: File(".")
-        val (internal, internalSource) = resolveInternalRepos(settings, projectDir)
-        val toShip = DepsDiff.compute(workArtifacts, manifest, internal)
+
+        // ── Strategy A: ask Gradle directly which artifacts the project needs.
+        // This catches plugin classpath (com.diffplug.spotless, etc.) and any
+        // artifact whose origin sidecar is missing — a heuristic filter can't.
+        indicator.text = "Спрашиваем у Gradle что нужно проекту…"
+        val gradleResult = GradleResolver.resolve(projectDir)
+        val toShip: List<DepsScanner.Artifact>
+        val filterText: String
+
+        if (gradleResult.ok && gradleResult.artifacts.isNotEmpty()) {
+          val needed = gradleResult.artifacts.map { it.f.replace('\\', '/').lowercase() }.toSet()
+          val haveOnDome = manifest.keys()
+          toShip = workArtifacts.filter { art ->
+            val key = "${art.group}:${art.name}:${art.version}:${art.sha1}:${art.fileName}"
+            val pathLow = art.absolutePath.replace('\\', '/').lowercase()
+            pathLow in needed && key !in haveOnDome
+          }
+          filterText = "gradle: ${gradleResult.artifacts.size} resolved, ${toShip.size} новых для дома (за ${gradleResult.durationMs} мс)"
+        } else {
+          // Fallback to origin/substring filter
+          val (internal, internalSource) = resolveInternalRepos(settings, projectDir)
+          toShip = DepsDiff.compute(workArtifacts, manifest, internal)
+          filterText = if (internal.isEmpty())
+            "fallback: всё что у дома отсутствует"
+          else
+            "fallback: ${internal.joinToString(",")} ($internalSource)"
+          if (!gradleResult.ok) {
+            history.add("Deps respond", false, "gradle resolve failed: ${gradleResult.log.takeLast(300)}")
+          }
+        }
         val diffSize = toShip.sumOf { it.size }
-        val filterText = if (internal.isEmpty()) "—" else "${internal.joinToString(",")} ($internalSource)"
         notify(
           project,
           LocalGitMirrorBundle.message("deps.notify.diffComputed", toShip.size.toString(), humanBytes(diffSize), filterText),
