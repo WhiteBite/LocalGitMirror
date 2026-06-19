@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
-from app.routers import api as api_router
+from tests import _harness
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -44,15 +44,14 @@ def test_full_roundtrip_work_home_work(tmp_path: Path):
 
     repo_manager = RepoManager(storage)
 
-    api_router.git_handler = None
-    api_router.repo_manager = repo_manager
-    api_router.git_workspace = None
-    api_router.shared_manager = None
-    api_router.config = {"git_port": 0, "web_port": 0, "storage_path": storage}
-    api_router.system_logger = None
-
-    app = FastAPI()
-    app.include_router(api_router.router)
+    app = _harness.build_app(
+        git_handler=None,
+        repo_manager=repo_manager,
+        git_workspace=None,
+        shared_manager=None,
+        config={"git_port": 0, "web_port": 0, "storage_path": storage},
+        system_logger=None,
+    )
     client = TestClient(app)
 
     # 1) Create/select test repo ("home")

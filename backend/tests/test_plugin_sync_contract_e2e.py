@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
 from app.core.bundle_crypto import encrypt_bundle_to_dump
-from app.routers import api as api_router
+from tests import _harness
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -39,15 +39,14 @@ def test_plugin_sync_contract_e2e(tmp_path: Path, monkeypatch):
 
     repo_name = f"e2e-plugin-sync-{int(time.time())}"
     repo_manager = RepoManager(storage)
-    api_router.repo_manager = repo_manager
-    api_router.git_handler = None
-    api_router.git_workspace = None
-    api_router.shared_manager = None
-    api_router.system_logger = None
-    api_router.config = {"git_port": 0, "web_port": 0, "storage_path": storage}
-
-    app = FastAPI()
-    app.include_router(api_router.router)
+    app = _harness.build_app(
+        repo_manager=repo_manager,
+        git_handler=None,
+        git_workspace=None,
+        shared_manager=None,
+        system_logger=None,
+        config={"git_port": 0, "web_port": 0, "storage_path": storage},
+    )
     client = TestClient(app)
 
     # 1) Ensure repo exists
@@ -143,15 +142,14 @@ def test_upload_and_apply_unrelated_histories_replaces_branch(tmp_path: Path, mo
 
     repo_name = f"e2e-unrelated-{int(time.time())}"
     repo_manager = RepoManager(storage)
-    api_router.repo_manager = repo_manager
-    api_router.git_handler = None
-    api_router.git_workspace = None
-    api_router.shared_manager = None
-    api_router.system_logger = None
-    api_router.config = {"git_port": 0, "web_port": 0, "storage_path": storage}
-
-    app = FastAPI()
-    app.include_router(api_router.router)
+    app = _harness.build_app(
+        repo_manager=repo_manager,
+        git_handler=None,
+        git_workspace=None,
+        shared_manager=None,
+        system_logger=None,
+        config={"git_port": 0, "web_port": 0, "storage_path": storage},
+    )
     client = TestClient(app)
 
     created = client.post("/api/repos/create", json={"name": repo_name})
@@ -214,15 +212,14 @@ def test_apply_known_rejects_dirty_workspace_and_unknown_commit(tmp_path: Path, 
 
     repo_name = f"e2e-apply-known-{int(time.time())}"
     repo_manager = RepoManager(storage)
-    api_router.repo_manager = repo_manager
-    api_router.git_handler = None
-    api_router.git_workspace = None
-    api_router.shared_manager = None
-    api_router.system_logger = None
-    api_router.config = {"git_port": 0, "web_port": 0, "storage_path": storage}
-
-    app = FastAPI()
-    app.include_router(api_router.router)
+    app = _harness.build_app(
+        repo_manager=repo_manager,
+        git_handler=None,
+        git_workspace=None,
+        shared_manager=None,
+        system_logger=None,
+        config={"git_port": 0, "web_port": 0, "storage_path": storage},
+    )
     client = TestClient(app)
 
     created = client.post("/api/repos/create", json={"name": repo_name})
@@ -266,15 +263,14 @@ def test_export_dump_unknown_since_falls_back_to_full_dump(tmp_path: Path, monke
 
     repo_name = f"e2e-export-fallback-{int(time.time())}"
     repo_manager = RepoManager(storage)
-    api_router.repo_manager = repo_manager
-    api_router.git_handler = None
-    api_router.git_workspace = None
-    api_router.shared_manager = None
-    api_router.system_logger = None
-    api_router.config = {"git_port": 0, "web_port": 0, "storage_path": storage}
-
-    app = FastAPI()
-    app.include_router(api_router.router)
+    app = _harness.build_app(
+        repo_manager=repo_manager,
+        git_handler=None,
+        git_workspace=None,
+        shared_manager=None,
+        system_logger=None,
+        config={"git_port": 0, "web_port": 0, "storage_path": storage},
+    )
     client = TestClient(app)
 
     created = client.post("/api/repos/create", json={"name": repo_name})

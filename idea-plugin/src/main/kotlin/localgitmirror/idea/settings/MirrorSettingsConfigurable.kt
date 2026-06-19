@@ -29,10 +29,9 @@ class MirrorSettingsConfigurable : Configurable {
     syncPasswordLocal = SecretsStore.syncPassword
 
     val panel = panel {
-      // ── Group 1: Mirror Server (always visible — the essentials) ──
+      // ── Mirror Server (always visible — 3 essentials) ──
       group(LocalGitMirrorBundle.message("settings.mirror.title", "Mirror Server")) {
 
-        // URL + Discover + Test on one row
         row(LocalGitMirrorBundle.message("settings.mirror.baseUrl")) {
           textField()
             .bindText(state::baseUrl)
@@ -54,24 +53,9 @@ class MirrorSettingsConfigurable : Configurable {
             .bindText(state::repo)
             .comment(LocalGitMirrorBundle.message("settings.mirror.repo.comment"))
         }
-
-        row {
-          checkBox(LocalGitMirrorBundle.message("settings.insecureTls"))
-            .bindSelected(state::mirrorInsecureTls)
-            .comment(LocalGitMirrorBundle.message("settings.insecureTls.comment"))
-        }
       }
 
-      // ── Language (visible) ──
-      row(LocalGitMirrorBundle.message("settings.ui.language")) {
-        comboBox(listOf("auto", "en", "ru"))
-          .bindItem(
-            { state.uiLanguage },
-            { state.uiLanguage = it ?: "auto" }
-          )
-      }
-
-      // ── Advanced (collapsed by default) ──
+      // ── Advanced (collapsed — rarely needed) ──
       collapsibleGroup(LocalGitMirrorBundle.message("settings.advanced.title"), false) {
 
         row(LocalGitMirrorBundle.message("settings.mirror.apiKey")) {
@@ -80,18 +64,10 @@ class MirrorSettingsConfigurable : Configurable {
             .comment(LocalGitMirrorBundle.message("settings.mirror.apiKey.comment"))
         }
 
-        row(LocalGitMirrorBundle.message("settings.git.remote")) {
-          textField()
-            .bindText(state::gitRemoteName)
-            .comment("Default: origin")
-        }
-
-        row(LocalGitMirrorBundle.message("settings.git.pullMode")) {
-          comboBox(listOf("new-branch", "ff-only"))
-            .bindItem(
-              { state.pullBackDefaultMode },
-              { state.pullBackDefaultMode = it ?: "new-branch" }
-            )
+        row {
+          checkBox(LocalGitMirrorBundle.message("settings.insecureTls"))
+            .bindSelected(state::mirrorInsecureTls)
+            .comment(LocalGitMirrorBundle.message("settings.insecureTls.comment"))
         }
 
         row {
@@ -100,10 +76,26 @@ class MirrorSettingsConfigurable : Configurable {
             .comment(LocalGitMirrorBundle.message("settings.sync.offlineMode.comment"))
         }
 
-        row(LocalGitMirrorBundle.message("settings.deps.internalRepos")) {
+        row {
+          checkBox("Deps diagnostics (debug)")
+            .bindSelected(state::depsDiagnosticsEnabled)
+            .comment("Write a log under the IDE log folder — never into the project. Names hidden unless verbose is also on.")
+        }
+        row {
+          checkBox("Deps diagnostics verbose (include package names)")
+            .bindSelected(state::depsDiagnosticsVerbose)
+            .comment("Only effective when diagnostics is enabled.")
+        }
+
+        row("npm corporate scopes") {
           textField()
-            .bindText(state::internalRepos)
-            .comment(LocalGitMirrorBundle.message("settings.deps.internalRepos.comment"))
+            .bindText(state::npmCorporateScopes)
+            .comment(
+              "Optional override, comma-separated (e.g. @krypto-ui,krypto-). " +
+                "By default npm deps are classified by probing the public registry — " +
+                "a package missing there is corporate. Use this only to force-include " +
+                "scopes, or when this machine has no public npm access."
+            )
         }
       }
     }
@@ -133,10 +125,6 @@ class MirrorSettingsConfigurable : Configurable {
       url.startsWith("http://") || url.startsWith("https://") -> url.trimEnd('/')
       else -> "https://${url.trimEnd('/')}"
     }
-
-    // Normalize defaults
-    if (state.gitRemoteName.isBlank()) state.gitRemoteName = "origin"
-    if (state.pullBackDefaultMode.isBlank()) state.pullBackDefaultMode = "new-branch"
   }
 
   override fun reset() {

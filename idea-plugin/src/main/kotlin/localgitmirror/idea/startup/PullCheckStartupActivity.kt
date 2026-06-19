@@ -7,6 +7,8 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.wm.WindowManager
+import localgitmirror.idea.deps.ApplyDepsAction
+import localgitmirror.idea.deps.RespondDepsAction
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.settings.MirrorSettingsService
@@ -16,6 +18,19 @@ import java.awt.event.WindowAdapter
 import java.awt.event.WindowEvent
 import java.io.File
 import javax.swing.SwingUtilities
+
+/**
+ * Pure function: determines whether a "pending deps" notification should fire.
+ *
+ * @param count         number of pending items (>0 means there is something to show)
+ * @param lastNotified  epoch-ms of the last notification (0 = never)
+ * @param nowMillis     current epoch-ms
+ * @param cooldownMs    minimum ms between consecutive notifications
+ */
+fun shouldNotifyPending(count: Int, lastNotified: Long, nowMillis: Long, cooldownMs: Long): Boolean {
+  if (count <= 0) return false
+  return (nowMillis - lastNotified) >= cooldownMs
+}
 
 class PullCheckStartupActivity : ProjectActivity {
 
@@ -33,10 +48,12 @@ class PullCheckStartupActivity : ProjectActivity {
     val dir = File(baseDir)
     if (!dir.exists()) return
 
-    val repoName = settings.repo.ifBlank { project.name }
+    val repoName = localgitmirror.idea.sync.v2.RepoResolver
+      .resolve(project, dir, settings.repo).sanitized.ifBlank { project.name }
 
     // Single check on startup
     checkForUpdates(project, dir, settings, repoName)
+    checkForDeps(project, dir, settings, repoName)
 
     // Register window focus listener for subsequent checks
     SwingUtilities.invokeLater {
@@ -44,6 +61,10 @@ class PullCheckStartupActivity : ProjectActivity {
       frame.addWindowFocusListener(object : WindowAdapter() {
         @Volatile
         private var lastCheckEpoch = System.currentTimeMillis() / 1000
+        @Volatile
+        private var lastDepsNotifyPendingMs = 0L
+        @Volatile
+        private var lastDepsNotifyResponsesMs = 0L
 
         override fun windowGainedFocus(e: WindowEvent?) {
           val now = System.currentTimeMillis() / 1000
@@ -55,12 +76,26 @@ class PullCheckStartupActivity : ProjectActivity {
           if (!s.autoCheckPullOnStartup) return
           if (s.baseUrl.isBlank()) return
 
-          val repo = s.repo.ifBlank { project.name }
+          val repo = localgitmirror.idea.sync.v2.RepoResolver
+            .resolve(project, dir, s.repo).sanitized.ifBlank { project.name }
 
-          // Run check on background thread to not block UI
+          // Run checks on background thread to not block UI
           Thread({
             try {
               checkForUpdates(project, dir, s, repo)
+            } catch (_: Exception) {}
+            try {
+              val nowMs = System.currentTimeMillis()
+              checkForDepsWithCooldown(
+                project, dir, s, repo,
+                lastPendingMs = lastDepsNotifyPendingMs,
+                lastResponsesMs = lastDepsNotifyResponsesMs,
+                nowMs = nowMs,
+                cooldownMs = COOLDOWN_SEC * 1000
+              ).let { (newPendingMs, newResponsesMs) ->
+                if (newPendingMs > 0) lastDepsNotifyPendingMs = newPendingMs
+                if (newResponsesMs > 0) lastDepsNotifyResponsesMs = newResponsesMs
+              }
             } catch (_: Exception) {}
           }, "sync-focus-check").start()
         }
@@ -68,7 +103,7 @@ class PullCheckStartupActivity : ProjectActivity {
     }
   }
 
-  @Suppress("HttpCallOnEdt") // called from coroutine (execute) and Thread (focus listener)
+  @Suppress("HttpCallOnEdt")
   private fun checkForUpdates(
     project: Project,
     dir: File,
@@ -87,7 +122,7 @@ class PullCheckStartupActivity : ProjectActivity {
     if (remoteRefs.isEmpty()) return
 
     val currentBranch = GitLocal.currentBranch(project, dir) ?: return
-    val remoteHash = remoteRefs[currentBranch] ?: return
+    val remoteHash = remoteRefs[currentBranch]?.sha ?: return
     val localHash = GitLocal.headHash(project, dir) ?: return
 
     if (remoteHash.equals(localHash, ignoreCase = true)) return
@@ -114,5 +149,116 @@ class PullCheckStartupActivity : ProjectActivity {
       })
 
     notification.notify(project)
+  }
+
+  /**
+   * Startup (one-shot) deps check — no cooldown state needed on first run.
+   */
+  @Suppress("HttpCallOnEdt")
+  private fun checkForDeps(
+    project: Project,
+    dir: File,
+    settings: MirrorSettingsService.State,
+    repoName: String
+  ) {
+    if (SecretsStore.syncPassword.isBlank()) return
+    checkForDepsWithCooldown(project, dir, settings, repoName,
+      lastPendingMs = 0L, lastResponsesMs = 0L,
+      nowMs = System.currentTimeMillis(), cooldownMs = 0L)
+  }
+
+  /**
+   * Deps check with cooldown. Returns a pair of (newPendingNotifyMs, newResponsesNotifyMs):
+   * each is the current time if a notification was fired, or 0 otherwise.
+   */
+  @Suppress("HttpCallOnEdt")
+  private fun checkForDepsWithCooldown(
+    project: Project,
+    @Suppress("UNUSED_PARAMETER") dir: File,
+    settings: MirrorSettingsService.State,
+    repoName: String,
+    lastPendingMs: Long,
+    lastResponsesMs: Long,
+    nowMs: Long,
+    cooldownMs: Long
+  ): Pair<Long, Long> {
+    if (SecretsStore.syncPassword.isBlank()) return Pair(0L, 0L)
+
+    var notifiedPendingMs = 0L
+    var notifiedResponsesMs = 0L
+
+    // Check pending requests (work laptop role)
+    val pending = try {
+      MirrorApi.depsPending(
+        baseUrl = settings.baseUrl,
+        apiKey = SecretsStore.mirrorApiKey,
+        repo = repoName,
+        insecureTls = settings.mirrorInsecureTls
+      )
+    } catch (_: Exception) { null }
+
+    if (pending != null && pending.code in 200..299) {
+      val count = pending.items.size
+      // Update visibility cache
+      RespondDepsAction.lastKnownPendingCount.set(count)
+      if (shouldNotifyPending(count, lastPendingMs, nowMs, cooldownMs)) {
+        val notification = NotificationGroupManager.getInstance()
+          .getNotificationGroup("LocalGitMirror")
+          .createNotification(
+            "На Mirror ждёт $count запрос(ов) зависимостей. Нажми «Выдать».",
+            NotificationType.INFORMATION
+          )
+          .addAction(NotificationAction.createSimpleExpiring("Выдать") {
+            RespondDepsAction().actionPerformed(
+              com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
+                "DepsStartupCheck", null,
+                com.intellij.openapi.actionSystem.DataContext { dataId ->
+                  if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
+                }
+              )
+            )
+          })
+        notification.notify(project)
+        notifiedPendingMs = nowMs
+      }
+    }
+
+    // Check available responses (home PC role)
+    val responses = try {
+      MirrorApi.depsResponses(
+        baseUrl = settings.baseUrl,
+        apiKey = SecretsStore.mirrorApiKey,
+        repo = repoName,
+        insecureTls = settings.mirrorInsecureTls
+      )
+    } catch (_: Exception) { null }
+
+    if (responses != null && responses.code in 200..299) {
+      val count = responses.items.size
+      // Update visibility cache
+      ApplyDepsAction.lastKnownResponseCount.set(count)
+      if (shouldNotifyPending(count, lastResponsesMs, nowMs, cooldownMs)) {
+        val notification = NotificationGroupManager.getInstance()
+          .getNotificationGroup("LocalGitMirror")
+          .createNotification(
+            "Готов ответ с зависимостями ($count). Нажми «Применить».",
+            NotificationType.INFORMATION
+          )
+          .addAction(NotificationAction.createSimpleExpiring("Применить") {
+            ApplyDepsAction().actionPerformed(
+              com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
+                "DepsStartupCheck", null,
+                com.intellij.openapi.actionSystem.DataContext { dataId ->
+                  if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
+                }
+              )
+            )
+          })
+        notification.notify(project)
+        notifiedResponsesMs = nowMs
+      }
+    }
+
+    return Pair(notifiedPendingMs, notifiedResponsesMs)
   }
 }

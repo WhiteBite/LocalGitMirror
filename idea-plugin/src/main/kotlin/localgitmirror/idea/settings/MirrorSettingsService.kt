@@ -26,11 +26,18 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     // If true, check for incoming changes on project open and show balloon if available.
     var autoCheckPullOnStartup: Boolean = false,
 
-    // Substrings (comma-separated, plain text) used to detect "internal" repos
-    // (e.g. nexus.kryptonit) for Gradle deps sync. Only artifacts originating
-    // from these are shipped from work to dome — the rest are reachable from
-    // public repos on dome anyway. Empty = ship everything missing.
-    var internalRepos: String = ""
+    // Deps-sync diagnostics. Off by default for stealth: nothing is written to
+    // disk. When on, a single diag file is written under the IDE log dir (never
+    // the project tree). "verbose" additionally allows coordinate names in it.
+    var depsDiagnosticsEnabled: Boolean = false,
+    var depsDiagnosticsVerbose: Boolean = false,
+
+    // npm corporate-scope override (comma-separated, e.g. "@krypto-ui,krypto-").
+    // The primary npm filter is a live probe of the public registry (a package
+    // that 404s on registry.npmjs.org is corporate). This list is an OPTIONAL
+    // override for when the dome has no public-npm access, or to force-include
+    // packages by scope/prefix. Empty = rely on the registry probe.
+    var npmCorporateScopes: String = ""
   )
 
   private var state = State()

@@ -40,7 +40,8 @@ class PullFromMirrorAction : AnAction() {
     val dir = File(dirPath)
 
     val settings = service<MirrorSettingsService>().state
-    val repoName = settings.repo.ifBlank { project.name }
+    val repoName = localgitmirror.idea.sync.v2.RepoResolver
+      .resolve(project, dir, settings.repo).sanitized.ifBlank { project.name }
 
     if (!GitLocal.isCleanWorkTree(project, dir)) {
       notify(project, LocalGitMirrorBundle.message("notify.worktree.dirty"), NotificationType.WARNING)
@@ -86,7 +87,7 @@ class PullFromMirrorAction : AnAction() {
           return
         }
 
-        val remoteRefs = result.refs
+        val remoteRefs = result.refs ?: emptyMap()
         if (remoteRefs.isEmpty()) {
           notify(project, "Mirror репозиторий пустой.", NotificationType.INFORMATION)
           operationInProgress.set(false)
@@ -133,7 +134,7 @@ class PullFromMirrorAction : AnAction() {
         }
 
         // ── Step 3: fetch preview, then confirm, then pull ──
-        previewAndPull(project, dir, settings, repoName, chosen, remoteRefs)
+        previewAndPull(project, dir, settings, repoName, chosen, remoteRefs.mapValues { it.value.sha })
       }
 
       override fun onThrowable(error: Throwable) {

@@ -20,7 +20,7 @@ internal fun LocalGitMirrorPanel.pullBack() {
     return
   }
   val s = service<MirrorSettingsService>().state
-  val remote = s.gitRemoteName.ifBlank { "origin" }
+  val remote = GitLocal.defaultRemote(project, dir)
 
   val branches = GitLocal.remoteBranches(project, dir, remote)
   if (branches.isEmpty()) {
@@ -37,7 +37,7 @@ internal fun LocalGitMirrorPanel.pullBack() {
   val mode = Messages.showEditableChooseDialog(
     LocalGitMirrorBundle.message("dialog.pullBack.mode"),
     LocalGitMirrorBundle.message("dialog.pullBack.localBranchTitle"),
-    null, arrayOf("new-branch", "ff-only"), s.pullBackDefaultMode, null
+    null, arrayOf("new-branch", "ff-only"), "new-branch", null
   )?.trim()?.lowercase().orEmpty()
 
   isSyncing = true
@@ -160,7 +160,8 @@ internal fun LocalGitMirrorPanel.pushCurrent() {
     return
   }
   val s = service<MirrorSettingsService>().state
-  val remote = Messages.showInputDialog(project, "Remote name", "git push", null, s.gitRemoteName, null) ?: return
+  val remote = Messages.showInputDialog(project, "Remote name", "git push", null,
+    GitLocal.defaultRemote(project, dir), null) ?: return
 
   ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: git push", false) {
     override fun run(indicator: ProgressIndicator) {

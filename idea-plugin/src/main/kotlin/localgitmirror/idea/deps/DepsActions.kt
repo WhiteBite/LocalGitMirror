@@ -19,7 +19,7 @@ import localgitmirror.idea.workkit.BundleCrypto
 import java.io.File
 import java.text.DecimalFormat
 
-private fun humanBytes(b: Long): String {
+internal fun humanBytes(b: Long): String {
   if (b < 1024) return "$b B"
   val units = arrayOf("KB", "MB", "GB", "TB")
   var v = b.toDouble() / 1024
@@ -28,8 +28,13 @@ private fun humanBytes(b: Long): String {
   return DecimalFormat("0.#").format(v) + " " + units[i]
 }
 
-private fun resolveRepoName(project: Project, settings: MirrorSettingsService.State): String =
-  settings.repo.ifBlank { project.name }
+private fun resolveRepoName(project: Project, settings: MirrorSettingsService.State): String {
+  val dir = project.basePath?.let { File(it) } ?: File(".")
+  return localgitmirror.idea.sync.v2.RepoResolver
+    .resolve(project, dir, settings.repo)
+    .sanitized
+    .ifBlank { project.name }
+}
 
 private fun notify(project: Project, msg: String, type: NotificationType) {
   NotificationGroupManager.getInstance()
@@ -38,43 +43,60 @@ private fun notify(project: Project, msg: String, type: NotificationType) {
     .notify(project)
 }
 
-private fun parseInternalRepos(settings: MirrorSettingsService.State): List<String> =
-  settings.internalRepos
-    .split(',', '\n')
-    .map { it.trim() }
-    .filter { it.isNotBlank() }
+private fun projectJdkHome(project: Project): String? = try {
+  com.intellij.openapi.roots.ProjectRootManager.getInstance(project).projectSdk?.homePath
+} catch (_: Throwable) { null }
 
 /**
- * Resolve the effective list of "internal" repo substrings to filter the
- * artifact diff with.
- *
- *   1. If user filled `Internal repos` in Settings, that wins (manual override).
- *   2. Otherwise scan the project's gradle files and auto-detect.
- *   3. If nothing was found either way, return empty list (= no filter).
- *
- * Returns Pair(substrings, source) so the UI can tell the user where the
- * list came from ("manual" / "auto" / "none").
+ * STEALTH cleanup: earlier versions wrote `.lgm-deps-debug.txt`,
+ * `.lgm-last-sent-deps.txt` and `.lgm-last-deps.txt` into the project root.
+ * Those leak corporate package names into the git working tree. Remove any
+ * that linger. Best-effort; never throws.
  */
-private fun resolveInternalRepos(
-  settings: MirrorSettingsService.State,
-  projectDir: File
-): Pair<List<String>, String> {
-  val manual = parseInternalRepos(settings)
-  if (manual.isNotEmpty()) return manual to "manual"
-  val detected = RepoDetector.detect(projectDir)
-  if (detected.internalSubstrings.isNotEmpty()) {
-    return detected.internalSubstrings to "auto(${detected.sources.size} gradle files)"
+private fun sweepLegacyDepsFiles(projectDir: File) {
+  listOf(".lgm-deps-debug.txt", ".lgm-last-sent-deps.txt", ".lgm-last-deps.txt").forEach {
+    runCatching { File(projectDir, it).takeIf { f -> f.exists() }?.delete() }
   }
-  return emptyList<String>() to "none"
 }
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. RequestDepsAction (dome side): scan local cache, send manifest
+// Visibility helpers (pure functions — no network, testable without IntelliJ)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Pure function for [RespondDepsAction] / [ApplyDepsAction] enabled state.
+ *
+ * @param configured  true when baseUrl and syncPassword are both non-blank
+ * @param lastKnownPending  cached count of pending items (may be -1 = unknown)
+ * @return true when the action should be enabled in the UI
+ */
+fun computeRespondEnabled(configured: Boolean, lastKnownPending: Int): Boolean {
+  if (!configured) return false
+  // If cache is empty/unknown (-1) we err on the side of "show" (safe default)
+  return lastKnownPending != 0
+}
+
+fun computeApplyEnabled(configured: Boolean, lastKnownPending: Int): Boolean =
+  computeRespondEnabled(configured, lastKnownPending)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. RequestDepsAction (DOME): figure out what we can't resolve locally, send it
 // ─────────────────────────────────────────────────────────────────────────────
 
 class RequestDepsAction : AnAction() {
-  override fun update(e: AnActionEvent) { e.presentation.isEnabled = e.project != null }
+  override fun update(e: AnActionEvent) {
+    val project = e.project
+    if (project == null) {
+      e.presentation.isEnabled = false
+      return
+    }
+    val settings = service<MirrorSettingsService>().state
+    val configured = settings.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+    val dir = project.basePath?.let { java.io.File(it) } ?: java.io.File(".")
+    val hasEcosystem = configured && DepsEcosystems.detect(dir).isNotEmpty()
+    e.presentation.isEnabled = hasEcosystem
+  }
 
   override fun actionPerformed(e: AnActionEvent) {
     val project = e.project ?: return
@@ -86,29 +108,58 @@ class RequestDepsAction : AnAction() {
     }
     val repo = resolveRepoName(project, settings)
     val history = service<OperationsHistoryService>()
+    val projectDir = project.basePath?.let { File(it) } ?: File(".")
+    val jdkHome = projectJdkHome(project)
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Запрос gradle-зависимостей", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Запрос недостающих зависимостей", true) {
       override fun run(indicator: ProgressIndicator) {
-        indicator.text = LocalGitMirrorBundle.message("deps.notify.scanStart")
         indicator.isIndeterminate = true
+        sweepLegacyDepsFiles(projectDir)
+        val ecosystems = DepsEcosystems.detect(projectDir)
+        if (ecosystems.isEmpty()) {
+          notify(project, "Не найден ни gradle, ни npm проект в ${projectDir.name}.", NotificationType.WARNING)
+          return
+        }
 
-        val artifacts = DepsScanner.scan()
-        val totalSize = artifacts.sumOf { it.size }
-        notify(
-          project,
-          LocalGitMirrorBundle.message("deps.notify.scanResult", artifacts.size.toString(), humanBytes(totalSize)),
-          NotificationType.INFORMATION
-        )
+        val allMissing = mutableListOf<DepCoordinate>()
+        val logs = StringBuilder()
+        for (eco in ecosystems) {
+          indicator.text = "Определяем недостающие ${eco.id}-зависимости…"
+          val r = eco.resolveMissing(projectDir, jdkHome)
+          logs.appendLine("[${eco.id}] ok=${r.ok} missing=${r.missing.size} (${r.durationMs}ms)")
+          if (!r.ok && r.missing.isEmpty()) {
+            logs.appendLine("  ! ${r.log.takeLast(300)}")
+          }
+          allMissing.addAll(r.missing)
+        }
+        val missing = allMissing.distinctBy { it.key }
 
-        val manifest = DepsManifest.fromArtifacts(
+        // Sync the stealth toggle, then emit diagnostics to the IDE log / opt-in
+        // file under the IDE log dir — NEVER into the project tree.
+        DepsDiagnostics.enabled = settings.depsDiagnosticsEnabled
+        DepsDiagnostics.verbose = settings.depsDiagnosticsVerbose
+        DepsDiagnostics.event("request: ecosystems=${ecosystems.joinToString(",") { it.id }} missing=${missing.size}")
+        for (line in logs.lineSequence()) if (line.isNotBlank()) DepsDiagnostics.event(line.trim())
+        DepsDiagnostics.detail("Missing coordinates") { missing.map { "${it.ecosystem}  ${it.label}" } }
+
+        if (missing.isEmpty()) {
+          notify(project,
+            "Всё резолвится локально — запрашивать нечего.",
+            NotificationType.INFORMATION)
+          history.add("Deps request", true, "nothing missing (${ecosystems.joinToString(",") { it.id }})")
+          return
+        }
+
+        val manifest = DepsRequestManifest(
+          version = 2,
           requester = System.getProperty("user.name") ?: "dome",
           project = repo,
-          artifacts = artifacts
+          ecosystem = ecosystems.joinToString(",") { it.id },
+          missing = missing
         )
-        val plain = DepsManifest.toJsonBytes(manifest)
-        val encrypted = BundleCrypto.encryptBundleBytes(plain, syncPwd)
+        val encrypted = BundleCrypto.encryptBundleBytes(DepsRequestManifest.toJsonBytes(manifest), syncPwd)
 
-        indicator.text = "Отправляем манифест (${humanBytes(encrypted.size.toLong())})…"
+        indicator.text = "Отправляем запрос (${missing.size} координат)…"
         val res = MirrorApi.depsRequest(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
@@ -122,8 +173,11 @@ class RequestDepsAction : AnAction() {
           history.add("Deps request", false, msg)
           return
         }
-        notify(project, LocalGitMirrorBundle.message("deps.notify.requestSent"), NotificationType.INFORMATION)
-        history.add("Deps request", true, "repo='$repo' id=${res.id} artifacts=${artifacts.size} size=${humanBytes(totalSize)}")
+        notify(project,
+          "Запрошено ${missing.size} недостающих зависимостей (${manifest.ecosystem}).\n" +
+            "На рабочей машине нажми «Выдать запрошенные зависимости».",
+          NotificationType.INFORMATION)
+        history.add("Deps request", true, "repo='$repo' id=${res.id} missing=${missing.size} eco=${manifest.ecosystem}")
       }
     })
   }
@@ -131,11 +185,28 @@ class RequestDepsAction : AnAction() {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. RespondDepsAction (work side): resolve diff, send archive
+// 2. RespondDepsAction (WORK): collect the requested coords from cache, ship them
 // ─────────────────────────────────────────────────────────────────────────────
 
 class RespondDepsAction : AnAction() {
-  override fun update(e: AnActionEvent) { e.presentation.isEnabled = e.project != null }
+
+  companion object {
+    /**
+     * Cached count of pending requests from the last successful network call.
+     * -1 = never fetched (unknown) → show unconditionally when configured.
+     *  0 = known empty → hide.
+     * >0 = known non-empty → show.
+     */
+    val lastKnownPendingCount = java.util.concurrent.atomic.AtomicInteger(-1)
+  }
+
+  override fun update(e: AnActionEvent) {
+    val project = e.project
+    if (project == null) { e.presentation.isEnabled = false; return }
+    val settings = service<MirrorSettingsService>().state
+    val configured = settings.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+    e.presentation.isEnabled = computeRespondEnabled(configured, lastKnownPendingCount.get())
+  }
 
   override fun actionPerformed(e: AnActionEvent) {
     val project = e.project ?: return
@@ -148,9 +219,11 @@ class RespondDepsAction : AnAction() {
     val repo = resolveRepoName(project, settings)
     val history = service<OperationsHistoryService>()
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Ответ на запрос deps", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Выдать запрошенные зависимости", true) {
       override fun run(indicator: ProgressIndicator) {
-        indicator.text = "Проверяем pending-запросы для repo='$repo'…"
+        indicator.isIndeterminate = true
+        project.basePath?.let { sweepLegacyDepsFiles(File(it)) }
+        indicator.text = "Проверяем запросы для repo='$repo'…"
         val pending = MirrorApi.depsPending(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
@@ -161,22 +234,20 @@ class RespondDepsAction : AnAction() {
           notify(project, "Не удалось получить список запросов: ${pending.message}", NotificationType.ERROR)
           return
         }
+        // Update visibility cache so update() knows the current count
+        lastKnownPendingCount.set(pending.items.size)
         if (pending.items.isEmpty()) {
-          // Helpful hint: the repo name on this machine probably doesn't match
-          // the one used by the dome side when posting the request.
-          val msg = "Нет ожидающих запросов для repo='$repo'.\n" +
-            "Проверь Settings → LocalGitMirror → Mirror репозиторий: " +
-            "имя должно совпадать с тем, под которым домашняя машина " +
-            "отправила запрос (обычно имя проекта)."
-          notify(project, msg, NotificationType.WARNING)
+          notify(project,
+            "Нет запросов для repo='$repo'.\n" +
+              "Проверь, что имя репозитория в настройках совпадает на обеих машинах.",
+            NotificationType.WARNING)
           history.add("Deps respond", false, "no pending for repo='$repo'")
           return
         }
 
-        // Take the freshest request (the list is already newest-first).
         val req = pending.items.first()
-        indicator.text = "Скачиваем манифест ${req.id.take(8)}…"
-        val tmpManifest = File.createTempFile("lgm-manifest-", ".bin").apply { deleteOnExit() }
+        indicator.text = "Скачиваем запрос ${req.id.take(8)}…"
+        val tmpManifest = File.createTempFile("lgm-req-", ".bin").apply { deleteOnExit() }
         val dl = MirrorApi.depsDownload(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
@@ -187,112 +258,55 @@ class RespondDepsAction : AnAction() {
           outFile = tmpManifest
         )
         if (dl.code !in 200..299 || dl.file == null) {
-          notify(project, "Не удалось скачать манифест: ${dl.message}", NotificationType.ERROR)
+          notify(project, "Не удалось скачать запрос: ${dl.message}", NotificationType.ERROR)
           return
         }
 
         val manifest = try {
-          val decoded = BundleCrypto.decryptDumpBytes(tmpManifest.readBytes(), syncPwd)
-          DepsManifest.fromJsonBytes(decoded)
+          DepsRequestManifest.fromJsonBytes(BundleCrypto.decryptDumpBytes(tmpManifest.readBytes(), syncPwd))
         } catch (t: Throwable) {
-          notify(project, "Ошибка расшифровки манифеста: ${t.message ?: t::class.simpleName}", NotificationType.ERROR)
+          notify(project, "Ошибка расшифровки запроса: ${t.message ?: t::class.simpleName}", NotificationType.ERROR)
           return
         } finally {
-          try { tmpManifest.delete() } catch (_: Exception) {}
+          runCatching { tmpManifest.delete() }
         }
 
-        indicator.text = "Сканируем локальный gradle-кеш…"
-        val workArtifacts = DepsScanner.scan()
-        val projectDir = project.basePath?.let { File(it) } ?: File(".")
-
-        // ── Strategy A: ask Gradle directly which artifacts the project needs.
-        // This catches plugin classpath (com.diffplug.spotless, etc.) and any
-        // artifact whose origin sidecar is missing — a heuristic filter can't.
-        indicator.text = "Спрашиваем у Gradle что нужно проекту…"
-        val projectJdkHome = try {
-          val sdk = com.intellij.openapi.roots.ProjectRootManager.getInstance(project).projectSdk
-          sdk?.homePath
-        } catch (_: Throwable) { null }
-        val gradleResult = GradleResolver.resolve(projectDir, javaHome = projectJdkHome)
-        val toShip: List<DepsScanner.Artifact>
-        val filterText: String
-
-        if (gradleResult.ok && gradleResult.artifacts.isNotEmpty()) {
-          // Build a key set from gradle's resolved list (group:name:version) — these
-          // are what the project actually needs to build/run.
-          val neededKeys = gradleResult.artifacts.map { "${it.g}:${it.n}:${it.v}" }.toSet()
-
-          // Also remember the absolute paths gradle reported, so we can ALSO ship
-          // the exact files (matched by path against our scan of the cache).
-          val neededPaths = gradleResult.artifacts.map { it.f.replace('\\', '/').lowercase() }.toSet()
-
-          // Dome's manifest tells us what it already has — by g:n:v:sha:filename.
-          // We DON'T compare paths between machines because absolute paths differ
-          // (C:\Users\dome\... vs C:\Users\work\...). We compare on identity.
-          // For "does dome have it" we strip filename/sha because the same artifact
-          // might have been downloaded with a different sha if released twice.
-          val domeHaveGNV = manifest.artifacts.map { "${it.g}:${it.n}:${it.v}" }.toSet()
-
-          toShip = workArtifacts.filter { art ->
-            val gnv = "${art.group}:${art.name}:${art.version}"
-            val pathLow = art.absolutePath.replace('\\', '/').lowercase()
-            // Project needs it (by gnv OR exact path match) AND dome doesn't have it (by gnv)
-            (gnv in neededKeys || pathLow in neededPaths) && gnv !in domeHaveGNV
-          }
-          filterText = "gradle: ${gradleResult.artifacts.size} resolved, ${toShip.size} новых для дома (за ${gradleResult.durationMs} мс)"
-
-          // Diagnostic: write a debug file so we can see WHY toShip is whatever
-          // it is, especially when it's 0 but the dome side is still missing things.
-          try {
-            val debug = buildString {
-              appendLine("# LocalGitMirror — deps respond diagnostic")
-              appendLine("# date: ${java.time.LocalDateTime.now()}")
-              appendLine("# gradle resolved: ${gradleResult.artifacts.size}")
-              appendLine("# work cache size: ${workArtifacts.size}")
-              appendLine("# dome manifest size: ${manifest.artifacts.size}")
-              appendLine("# to ship: ${toShip.size}")
-              appendLine()
-              appendLine("## Gradle resolved (first 30):")
-              gradleResult.artifacts.take(30).forEach { appendLine("  ${it.g}:${it.n}:${it.v}  ->  ${it.f}") }
-              appendLine()
-              val neededOnly = neededKeys.toList()
-              val domeMissing = neededOnly.filter { it !in domeHaveGNV }
-              appendLine("## Needed but NOT in dome's manifest (${domeMissing.size}):")
-              domeMissing.take(50).forEach { appendLine("  $it") }
-              appendLine()
-              val workHas = workArtifacts.map { "${it.group}:${it.name}:${it.version}" }.toSet()
-              val needNotInWorkCache = neededKeys.filter { it !in workHas }
-              appendLine("## Needed but NOT in work cache (${needNotInWorkCache.size}):")
-              needNotInWorkCache.take(50).forEach { appendLine("  $it") }
-            }
-            File(projectDir, ".lgm-deps-debug.txt").writeText(debug, Charsets.UTF_8)
-          } catch (_: Exception) {}
-        } else {
-          // Fallback to origin/substring filter
-          val (internal, internalSource) = resolveInternalRepos(settings, projectDir)
-          toShip = DepsDiff.compute(workArtifacts, manifest, internal)
-          filterText = if (internal.isEmpty())
-            "fallback: всё что у дома отсутствует"
-          else
-            "fallback: ${internal.joinToString(",")} ($internalSource)"
-          if (!gradleResult.ok) {
-            history.add("Deps respond", false, "gradle resolve failed: ${gradleResult.log.takeLast(300)}")
-          }
-        }
-        val diffSize = toShip.sumOf { it.size }
-        notify(
-          project,
-          LocalGitMirrorBundle.message("deps.notify.diffComputed", toShip.size.toString(), humanBytes(diffSize), filterText),
-          NotificationType.INFORMATION
-        )
-        if (toShip.isEmpty()) {
-          history.add("Deps respond", true, "nothing to send (filter=$filterText)")
-          notify(project, "У дома уже есть всё нужное (фильтр: $filterText).", NotificationType.INFORMATION)
+        if (manifest.version < 2 || manifest.missing.isEmpty()) {
+          notify(project,
+            "Запрос пуст или в старом формате (v${manifest.version}). " +
+              "Обнови плагин на домашней машине и повтори «Запросить».",
+            NotificationType.WARNING)
+          history.add("Deps respond", false, "empty/legacy manifest v${manifest.version}")
           return
         }
 
-        indicator.text = "Упаковываем ${toShip.size} артефактов (${humanBytes(diffSize)})…"
-        val zipBytes = DepsBundler.pack(toShip)
+        // Collect requested coordinates from local caches, grouped by ecosystem.
+        indicator.text = "Ищем ${manifest.missing.size} координат в локальном кеше…"
+        val byEco = manifest.missing.groupBy { it.ecosystem }
+        val entries = mutableListOf<DepFileEntry>()
+        val notFound = mutableListOf<DepCoordinate>()
+        for ((ecoId, coords) in byEco) {
+          val eco = DepsEcosystems.byId(ecoId)
+          if (eco == null) { notFound.addAll(coords); continue }
+          entries.addAll(eco.collect(coords) { notFound.add(it) })
+        }
+
+        if (entries.isEmpty()) {
+          notify(project,
+            "Ни одна из ${manifest.missing.size} запрошенных зависимостей не найдена в локальном кеше.\n" +
+              "Собери проект на рабочей машине (gradle build / npm install), чтобы они попали в кеш.",
+            NotificationType.WARNING)
+          history.add("Deps respond", false, "0 of ${manifest.missing.size} found in cache")
+          return
+        }
+
+        // Pack with ecosystem-prefixed entry names so the dome can route them.
+        val prefixed = entries.map {
+          it.copy(relativePath = "${it.coordinate.ecosystem}/${it.relativePath}")
+        }
+        val diffSize = prefixed.sumOf { it.size }
+        indicator.text = "Упаковываем ${prefixed.size} файлов (${humanBytes(diffSize)})…"
+        val zipBytes = DepsBundler.packEntries(prefixed)
         val encrypted = BundleCrypto.encryptBundleBytes(zipBytes, syncPwd)
 
         indicator.text = "Отправляем (${humanBytes(encrypted.size.toLong())})…"
@@ -310,28 +324,27 @@ class RespondDepsAction : AnAction() {
           history.add("Deps respond", false, msg)
           return
         }
-        notify(
-          project,
-          LocalGitMirrorBundle.message("deps.notify.responseSent", humanBytes(diffSize)),
-          NotificationType.INFORMATION
-        )
 
-        // Persist the list of shipped artifacts so the user can audit later.
-        val sentList = buildString {
-          appendLine("# LocalGitMirror — gradle deps sent to dome")
-          appendLine("# date: ${java.time.LocalDateTime.now()}")
-          appendLine("# request_id: ${req.id}")
-          appendLine("# total_bytes: $diffSize")
-          appendLine("# strategy: $filterText")
-          appendLine()
-          appendLine("## Shipped (${toShip.size})")
-          toShip.forEach { appendLine("  ${it.group}:${it.name}:${it.version}") }
+        val foundCoords = entries.map { it.coordinate.key }.toSet()
+        val notFoundUnique = notFound.distinctBy { it.key }
+        DepsDiagnostics.enabled = settings.depsDiagnosticsEnabled
+        DepsDiagnostics.verbose = settings.depsDiagnosticsVerbose
+        DepsDiagnostics.event("respond: shipped=${foundCoords.size} notFound=${notFoundUnique.size} bytes=$diffSize")
+        DepsDiagnostics.detail("Shipped coordinates") {
+          entries.map { it.coordinate.label }.distinct().sorted()
         }
-        val sentFile = File(projectDir, ".lgm-last-sent-deps.txt")
-        try { sentFile.writeText(sentList, Charsets.UTF_8) } catch (_: Exception) {}
+        if (notFoundUnique.isNotEmpty()) {
+          DepsDiagnostics.detail("Requested but NOT in local cache") {
+            notFoundUnique.map { "${it.ecosystem}  ${it.label}" }
+          }
+        }
 
+        val warn = if (notFoundUnique.isNotEmpty()) " (не найдено ${notFoundUnique.size})" else ""
+        notify(project,
+          "Отправлено ${humanBytes(diffSize)} — ${foundCoords.size} зависимостей$warn.",
+          NotificationType.INFORMATION)
         history.add("Deps respond", true,
-          "request=${req.id} artifacts=${toShip.size} size=${humanBytes(diffSize)} list=$sentFile")
+          "request=${req.id} shipped=${foundCoords.size} notFound=${notFoundUnique.size} size=${humanBytes(diffSize)}")
       }
     })
   }
@@ -339,11 +352,28 @@ class RespondDepsAction : AnAction() {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 3. ApplyDepsAction (dome side): fetch latest response, unpack, ack
+// 3. ApplyDepsAction (DOME): fetch the response, unpack into each cache root
 // ─────────────────────────────────────────────────────────────────────────────
 
 class ApplyDepsAction : AnAction() {
-  override fun update(e: AnActionEvent) { e.presentation.isEnabled = e.project != null }
+
+  companion object {
+    /**
+     * Cached count of available responses from the last successful network call.
+     * -1 = unknown → show unconditionally when configured.
+     *  0 = known empty → hide.
+     * >0 = known non-empty → show.
+     */
+    val lastKnownResponseCount = java.util.concurrent.atomic.AtomicInteger(-1)
+  }
+
+  override fun update(e: AnActionEvent) {
+    val project = e.project
+    if (project == null) { e.presentation.isEnabled = false; return }
+    val settings = service<MirrorSettingsService>().state
+    val configured = settings.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+    e.presentation.isEnabled = computeApplyEnabled(configured, lastKnownResponseCount.get())
+  }
 
   override fun actionPerformed(e: AnActionEvent) {
     val project = e.project ?: return
@@ -369,12 +399,13 @@ class ApplyDepsAction : AnAction() {
           notify(project, "Не удалось получить список: ${list.message}", NotificationType.ERROR)
           return
         }
+        // Update visibility cache so update() knows the current count
+        lastKnownResponseCount.set(list.items.size)
         if (list.items.isEmpty()) {
           notify(project, LocalGitMirrorBundle.message("deps.notify.noResponses"), NotificationType.INFORMATION)
           return
         }
 
-        // Confirm before downloading multi-MB archive
         val resp = list.items.first()
         val confirmed = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
           Messages.showYesNoDialog(
@@ -413,16 +444,15 @@ class ApplyDepsAction : AnAction() {
         indicator.text = "Расшифровка и распаковка…"
         val unpackResult = try {
           val decrypted = BundleCrypto.decryptDumpBytes(tmpResp.readBytes(), syncPwd)
-          DepsBundler.unpackInto(decrypted)
+          DepsBundler.unpackRouted(decrypted) { ecoId -> DepsEcosystems.byId(ecoId)?.cacheRoot() }
         } catch (t: Throwable) {
           notify(project, "Ошибка применения: ${t.message ?: t::class.simpleName}", NotificationType.ERROR)
           history.add("Deps apply", false, "decrypt/unpack failed: ${t.message}")
           return
         } finally {
-          try { tmpResp.delete() } catch (_: Exception) {}
+          runCatching { tmpResp.delete() }
         }
 
-        // Tell the server it's safe to delete the response blob
         MirrorApi.depsAck(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
@@ -431,50 +461,51 @@ class ApplyDepsAction : AnAction() {
           id = resp.id
         )
 
-        val ok = LocalGitMirrorBundle.message(
-          "deps.notify.appliedOk",
-          unpackResult.installed.toString(),
-          humanBytes(unpackResult.totalBytes),
-          unpackResult.skipped.toString()
-        )
-
-        // Save the install list so the user can see exactly what landed
-        val installManifest = buildString {
-          appendLine("# LocalGitMirror — installed gradle deps")
-          appendLine("# date: ${java.time.LocalDateTime.now()}")
-          appendLine("# response_id: ${resp.id}")
-          appendLine("# total_bytes: ${unpackResult.totalBytes}")
-          appendLine()
-          appendLine("## Installed (${unpackResult.installed})")
-          unpackResult.installedEntries.forEach { appendLine("  $it") }
-          if (unpackResult.skippedEntries.isNotEmpty()) {
-            appendLine()
-            appendLine("## Already up-to-date (${unpackResult.skipped})")
-            unpackResult.skippedEntries.forEach { appendLine("  $it") }
+        // Best-effort per-ecosystem post-install (e.g. npm cache add). The
+        // unpack stored display names, but postInstall needs cache-relative
+        // paths, so recompute them from the npm mirror tree.
+        val postStatus = StringBuilder()
+        runCatching {
+          val npmMirrorRoot = NpmEcosystem.cacheRoot()
+          if (npmMirrorRoot.isDirectory) {
+            val tgzRel = npmMirrorRoot.walkTopDown()
+              .filter { it.isFile && it.extension == "tgz" }
+              .map { it.relativeTo(npmMirrorRoot).path.replace('\\', '/') }
+              .toList()
+            if (tgzRel.isNotEmpty()) {
+              val s = NpmEcosystem.postInstall(tgzRel)
+              if (s.isNotBlank()) postStatus.append(s)
+            }
           }
         }
-        val manifestFile = File(project.basePath ?: ".", ".lgm-last-deps.txt")
-        try { manifestFile.writeText(installManifest, Charsets.UTF_8) } catch (_: Exception) {}
 
-        // Notification with a "View list" action
-        val previewLines = unpackResult.installedEntries.take(10).joinToString("\n  • ", prefix = "  • ")
-        val moreCount = (unpackResult.installedEntries.size - 10).coerceAtLeast(0)
-        val notifMsg = buildString {
-          append(ok)
-          appendLine()
-          appendLine()
-          if (unpackResult.installedEntries.isNotEmpty()) {
-            appendLine("Установлены:")
-            append(previewLines)
-            if (moreCount > 0) append("\n  … и ещё $moreCount")
-          }
-          appendLine()
-          appendLine()
-          append("Полный список: ${manifestFile.absolutePath}")
+        val npmMirror = NpmEcosystem.cacheRoot()
+        val npmInstalled = unpackResult.installedEntries.any { it.endsWith(".tgz") }
+
+        DepsDiagnostics.enabled = settings.depsDiagnosticsEnabled
+        DepsDiagnostics.verbose = settings.depsDiagnosticsVerbose
+        DepsDiagnostics.event("apply: installed=${unpackResult.installed} skipped=${unpackResult.skipped} invalid=${unpackResult.invalid} bytes=${unpackResult.totalBytes}")
+        DepsDiagnostics.detail("Installed") { unpackResult.installedEntries }
+        if (unpackResult.skippedEntries.isNotEmpty()) {
+          DepsDiagnostics.detail("Already present") { unpackResult.skippedEntries }
         }
-        notify(project, notifMsg, NotificationType.INFORMATION)
+
+        val msg = buildString {
+          append("Применено: ${unpackResult.installed} установлено, ${unpackResult.skipped} уже было")
+          if (unpackResult.invalid > 0) append(", ${unpackResult.invalid} отклонено")
+          append(" (${humanBytes(unpackResult.totalBytes)}).")
+          if (npmInstalled) {
+            appendLine(); appendLine()
+            if (postStatus.isNotEmpty()) {
+              append("npm: $postStatus")
+            } else {
+              append("npm-тарболы: ${npmMirror.absolutePath}\nставь из этой папки (npm install --offline).")
+            }
+          }
+        }
+        notify(project, msg, NotificationType.INFORMATION)
         history.add("Deps apply", true,
-          "installed=${unpackResult.installed} skipped=${unpackResult.skipped} invalid=${unpackResult.invalid} size=${humanBytes(unpackResult.totalBytes)} list=$manifestFile")
+          "installed=${unpackResult.installed} skipped=${unpackResult.skipped} invalid=${unpackResult.invalid} size=${humanBytes(unpackResult.totalBytes)}")
       }
     })
   }

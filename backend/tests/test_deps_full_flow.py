@@ -16,8 +16,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
-from app.routers import api as api_router
 from app.routers import deps as deps_router_mod
+from tests import _harness
 
 
 def _make_client(tmp_path: Path):
@@ -28,18 +28,17 @@ def _make_client(tmp_path: Path):
         encoding="utf-8",
     )
     rm = RepoManager(storage)
-    api_router.repo_manager = rm
-    api_router.git_handler = None
-    api_router.git_workspace = None
-    api_router.shared_manager = None
-    api_router.system_logger = None
-    api_router.config = {"git_port": 0, "web_port": 0, "storage_path": storage}
+    app = _harness.build_app(
+        repo_manager=rm,
+        git_handler=None,
+        git_workspace=None,
+        shared_manager=None,
+        system_logger=None,
+        config={"git_port": 0, "web_port": 0, "storage_path": storage},
+    )
 
     deps_router_mod.repo_manager = rm
     deps_router_mod.system_logger = None
-
-    app = FastAPI()
-    app.include_router(api_router.router)
     app.include_router(deps_router_mod.router)
     return TestClient(app), storage
 

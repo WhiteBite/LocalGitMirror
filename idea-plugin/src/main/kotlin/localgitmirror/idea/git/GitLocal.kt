@@ -134,6 +134,36 @@ object GitLocal {
       .filterNot { it.endsWith("/HEAD") }
   }
 
+  /** Configured git remotes (e.g. ["origin", "upstream"]). Empty if none/error. */
+  fun remotes(project: Project, workDir: File): List<String> {
+    val r = run(project, workDir, 10, "remote")
+    if (!r.ok()) return emptyList()
+    return r.stdout.lines().map { it.trim() }.filter { it.isNotBlank() }
+  }
+
+  /**
+   * Best-effort default remote: the only one if there's a single remote,
+   * "origin" if it exists among several, else the first, else "origin".
+   * Removes the need for a manual "remote name" setting in the common case.
+   */
+  fun defaultRemote(project: Project, workDir: File): String {
+    val all = remotes(project, workDir)
+    return when {
+      all.isEmpty() -> "origin"
+      all.size == 1 -> all.first()
+      "origin" in all -> "origin"
+      else -> all.first()
+    }
+  }
+
+  /** Fetch URL of [remote] (e.g. origin), or "" if none/error. */
+  fun remoteUrl(project: Project, workDir: File, remote: String): String {
+    val r = run(project, workDir, 10, "remote", "get-url", remote)
+    if (!r.ok()) return ""
+    return r.stdout.trim()
+  }
+
+
   fun recentCommits(project: Project, workDir: File, limit: Int): List<CommitSummary> {
     val n = if (limit <= 0) 30 else limit
     val r = run(project, workDir, 20, "log", "--oneline", "-n", n.toString())
