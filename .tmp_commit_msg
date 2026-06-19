@@ -1,0 +1,26 @@
+feat(deps): auto-detect internal repos from project gradle files
+
+User no longer needs to manually fill "Internal repos" in Settings - the
+plugin scans build.gradle, build.gradle.kts, settings.gradle in the
+project root and direct subprojects, extracts every URL declared inside
+maven { url ... } or shorthand maven("..."), and treats anything that's
+not a known public repo (Maven Central, Google, Gradle Plugin Portal,
+Spring, Jitpack, JBoss, Sonatype OSS) as internal.
+
+Manual override still wins: if the Settings field is non-empty, that list
+is used unchanged.
+
+Bug found by the new test: stripLineComment() was killing "//" inside
+URL schemes (https://...), so detection returned empty for every file.
+Fixed: only strip "//" when it's not preceded by ":".
+
+Tests: RepoDetectorTest - 14 cases on real Gradle file fixtures:
+- Groovy DSL: maven { url '...' }, shorthand maven '...'
+- Kotlin DSL: maven { url = uri('...') }, shorthand maven('...')
+- settings.gradle pluginManagement repositories
+- Multi-module: detection across subprojects
+- Public repos excluded
+- Commented-out URLs ignored without breaking schemes
+- Realistic onyx-platform fixture with Spring milestone + nexus mix
+- Detected substrings round-trip into DepsScanner.matchesInternalRepo
+- Edge cases: empty project, missing dir, deduplication, weird URLs
