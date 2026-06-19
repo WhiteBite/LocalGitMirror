@@ -202,7 +202,11 @@ class RespondDepsAction : AnAction() {
         // This catches plugin classpath (com.diffplug.spotless, etc.) and any
         // artifact whose origin sidecar is missing — a heuristic filter can't.
         indicator.text = "Спрашиваем у Gradle что нужно проекту…"
-        val gradleResult = GradleResolver.resolve(projectDir)
+        val projectJdkHome = try {
+          val sdk = com.intellij.openapi.roots.ProjectRootManager.getInstance(project).projectSdk
+          sdk?.homePath
+        } catch (_: Throwable) { null }
+        val gradleResult = GradleResolver.resolve(projectDir, javaHome = projectJdkHome)
         val toShip: List<DepsScanner.Artifact>
         val filterText: String
 
