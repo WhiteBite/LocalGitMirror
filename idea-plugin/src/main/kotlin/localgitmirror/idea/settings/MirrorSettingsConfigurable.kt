@@ -99,6 +99,12 @@ class MirrorSettingsConfigurable : Configurable {
             .bindSelected(state::offlineGenerateOnly)
             .comment(LocalGitMirrorBundle.message("settings.sync.offlineMode.comment"))
         }
+
+        row(LocalGitMirrorBundle.message("settings.deps.internalRepos")) {
+          textField()
+            .bindText(state::internalRepos)
+            .comment(LocalGitMirrorBundle.message("settings.deps.internalRepos.comment"))
+        }
       }
     }
 

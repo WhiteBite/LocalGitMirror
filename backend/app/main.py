@@ -288,9 +288,15 @@ init_git_http(app, initial_storage)
 
 
 # Include routers
-from app.routers import api_router, settings_router, web_router, websocket_router
+from app.routers import api_router, deps_router, settings_router, web_router, websocket_router
+from app.routers import deps as deps_module
+
+# Wire deps router with the same shared services as the main API router
+deps_module.repo_manager = repo_manager
+deps_module.system_logger = system_logger
 
 app.include_router(api_router, dependencies=[Depends(get_api_key)])
+app.include_router(deps_router, dependencies=[Depends(get_api_key)])
 app.include_router(web_router)
 app.include_router(settings_router, dependencies=[Depends(get_api_key)])
 app.include_router(websocket_router)

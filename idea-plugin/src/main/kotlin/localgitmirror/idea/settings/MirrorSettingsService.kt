@@ -24,7 +24,13 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     var offlineGenerateOnly: Boolean = false,
 
     // If true, check for incoming changes on project open and show balloon if available.
-    var autoCheckPullOnStartup: Boolean = false
+    var autoCheckPullOnStartup: Boolean = false,
+
+    // Substrings (comma-separated, plain text) used to detect "internal" repos
+    // (e.g. nexus.kryptonit) for Gradle deps sync. Only artifacts originating
+    // from these are shipped from work to dome — the rest are reachable from
+    // public repos on dome anyway. Empty = ship everything missing.
+    var internalRepos: String = ""
   )
 
   private var state = State()

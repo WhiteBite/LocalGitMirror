@@ -544,4 +544,201 @@ object MirrorApi {
       PreviewPullDetailsResult(0, emptyList(), "", "${e.type}: ${e.message}")
     }
   }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // /api/deps/* — Gradle dependency sync (encrypted blob postbox)
+  // ───────────────────────────────────────────────────────────────────────
+
+  data class DepsItem(val id: String, val size: Long, val mtime: Long)
+  data class DepsListResult(val code: Int, val items: List<DepsItem>, val message: String)
+  data class DepsUploadResult(val code: Int, val id: String?, val size: Long, val message: String)
+
+  private fun parseDepsList(body: String): List<DepsItem> {
+    val items = mutableListOf<DepsItem>()
+    val itemRe = Regex(
+      """\{\s*"id"\s*:\s*"([^"]+)"\s*,\s*"size"\s*:\s*(\d+)\s*,\s*"mtime"\s*:\s*(\d+)\s*\}"""
+    )
+    for (m in itemRe.findAll(body)) {
+      items.add(DepsItem(m.groupValues[1], m.groupValues[2].toLong(), m.groupValues[3].toLong()))
+    }
+    return items
+  }
+
+  private fun multipartUpload(
+    baseUrl: String,
+    apiKey: String,
+    insecureTls: Boolean,
+    path: String,
+    fields: Map<String, String>,
+    fileFieldName: String,
+    fileName: String,
+    fileBytes: ByteArray
+  ): HttpResult {
+    return try {
+      val boundary = "----FormBoundary${UUID.randomUUID()}"
+      val url = URL("${baseUrl.trimEnd('/')}$path")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "POST"
+      conn.doOutput = true
+      conn.connectTimeout = 60_000
+      conn.readTimeout = 600_000  // big archives may take a while
+      conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+
+      conn.outputStream.use { os ->
+        val writer = OutputStreamWriter(os, StandardCharsets.UTF_8)
+        for ((name, value) in fields) {
+          writer.write("--$boundary\r\n")
+          writer.write("Content-Disposition: form-data; name=\"$name\"\r\n\r\n")
+          writer.write(value); writer.write("\r\n"); writer.flush()
+        }
+        writer.write("--$boundary\r\n")
+        writer.write("Content-Disposition: form-data; name=\"$fileFieldName\"; filename=\"$fileName\"\r\n")
+        writer.write("Content-Type: application/octet-stream\r\n\r\n")
+        writer.flush()
+        os.write(fileBytes); os.flush()
+        writer.write("\r\n--$boundary--\r\n"); writer.flush()
+      }
+      HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  /** Dome side: post the encrypted manifest. */
+  fun depsRequest(
+    baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,
+    encryptedManifest: ByteArray
+  ): DepsUploadResult {
+    val res = multipartUpload(
+      baseUrl, apiKey, insecureTls, "/api/deps/request",
+      fields = mapOf("repo" to repo),
+      fileFieldName = "attachment",
+      fileName = "manifest.bin",
+      fileBytes = encryptedManifest
+    )
+    if (res.code !in 200..299) return DepsUploadResult(res.code, null, 0, res.body.take(500))
+    val id = Regex(""""id"\s*:\s*"([^"]+)"""").find(res.body)?.groupValues?.getOrNull(1)
+    val size = Regex(""""size"\s*:\s*(\d+)""").find(res.body)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0
+    return DepsUploadResult(res.code, id, size, "OK")
+  }
+
+  /** Work side: list pending requests. */
+  fun depsPending(
+    baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean
+  ): DepsListResult = depsList(baseUrl, apiKey, repo, insecureTls, path = "/api/deps/pending")
+
+  /** Dome side: list ready responses. */
+  fun depsResponses(
+    baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean
+  ): DepsListResult = depsList(baseUrl, apiKey, repo, insecureTls, path = "/api/deps/responses")
+
+  private fun depsList(
+    baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, path: String
+  ): DepsListResult {
+    return try {
+      val url = URL("${baseUrl.trimEnd('/')}$path?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "GET"
+      conn.connectTimeout = 30_000
+      conn.readTimeout = 30_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+      if (code !in 200..299) return DepsListResult(code, emptyList(), body.take(500))
+      DepsListResult(code, parseDepsList(body), "OK")
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      DepsListResult(0, emptyList(), "${e.type}: ${e.message}")
+    }
+  }
+
+  /** Download a manifest blob (work side) or response blob (dome side). */
+  fun depsDownload(
+    baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,
+    id: String, kind: DepsKind, outFile: File,
+    onProgress: ((read: Long, total: Long) -> Unit)? = null
+  ): DownloadResult {
+    val pathBase = if (kind == DepsKind.MANIFEST) "/api/deps/manifest" else "/api/deps/fetch"
+    return try {
+      val url = URL(
+        "${baseUrl.trimEnd('/')}$pathBase?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}" +
+          "&id=${java.net.URLEncoder.encode(id, "UTF-8")}"
+      )
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "GET"
+      conn.connectTimeout = 60_000
+      conn.readTimeout = 600_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      val code = conn.responseCode
+      if (code !in 200..299) {
+        return DownloadResult(code, null, HttpClient.readBody(conn).take(500))
+      }
+      val total = conn.contentLengthLong
+      conn.inputStream.use { input ->
+        outFile.outputStream().use { out ->
+          val buf = ByteArray(64 * 1024)
+          var read = 0L
+          var lastReport = 0L
+          while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            out.write(buf, 0, n)
+            read += n
+            if (onProgress != null && read - lastReport >= 200 * 1024) {
+              onProgress(read, total)
+              lastReport = read
+            }
+          }
+          onProgress?.invoke(read, total)
+        }
+      }
+      DownloadResult(code, outFile, "OK")
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      DownloadResult(0, null, "${e.type}: ${e.message}")
+    }
+  }
+
+  enum class DepsKind { MANIFEST, RESPONSE }
+
+  /** Work side: upload encrypted archive in response to a pending manifest. */
+  fun depsRespond(
+    baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,
+    requestId: String, encryptedArchive: ByteArray
+  ): DepsUploadResult {
+    val res = multipartUpload(
+      baseUrl, apiKey, insecureTls, "/api/deps/respond",
+      fields = mapOf("repo" to repo, "request_id" to requestId),
+      fileFieldName = "attachment",
+      fileName = "archive.bin",
+      fileBytes = encryptedArchive
+    )
+    if (res.code !in 200..299) return DepsUploadResult(res.code, null, 0, res.body.take(500))
+    val id = Regex(""""id"\s*:\s*"([^"]+)"""").find(res.body)?.groupValues?.getOrNull(1)
+    val size = Regex(""""size"\s*:\s*(\d+)""").find(res.body)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0
+    return DepsUploadResult(res.code, id, size, "OK")
+  }
+
+  /** Dome side: confirm response applied; server will delete it. */
+  fun depsAck(
+    baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, id: String
+  ): HttpResult {
+    return try {
+      val url = URL(
+        "${baseUrl.trimEnd('/')}/api/deps/ack?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}" +
+          "&id=${java.net.URLEncoder.encode(id, "UTF-8")}"
+      )
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "DELETE"
+      conn.connectTimeout = 30_000
+      conn.readTimeout = 30_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
 }

@@ -141,6 +141,18 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     return mi
   }
 
+  /** Trigger an action registered in plugin.xml by id, in the panel's project context. */
+  private fun runRegisteredAction(actionId: String) {
+    val action = com.intellij.openapi.actionSystem.ActionManager.getInstance().getAction(actionId) ?: return
+    val dataContext = com.intellij.openapi.actionSystem.DataContext { dataId ->
+      if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
+    }
+    val event = com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
+      "LocalGitMirrorToolWindow", null, dataContext
+    )
+    action.actionPerformed(event)
+  }
+
   private fun actionRow(vararg components: JComponent): JPanel {
     val row = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
     row.isOpaque = false
@@ -191,6 +203,17 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     moreMenu.addSeparator()
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.applyLocalDump"), AllIcons.Actions.OpenNewTab) { applyLocalDump() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.testMirror"), AllIcons.Actions.Checked) { testMirror() })
+    moreMenu.addSeparator()
+    // Gradle deps sync ─ entries dispatch the standalone actions through the IntelliJ ActionManager
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("deps.menu.request"), AllIcons.Actions.Download) {
+      runRegisteredAction("LocalGitMirror.DepsRequest")
+    })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("deps.menu.respond"), AllIcons.Actions.Upload) {
+      runRegisteredAction("LocalGitMirror.DepsRespond")
+    })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("deps.menu.apply"), AllIcons.Actions.OpenNewTab) {
+      runRegisteredAction("LocalGitMirror.DepsApply")
+    })
     moreMenu.addSeparator()
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.copyConfig"), AllIcons.Actions.Copy) { copyConfigLine() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.pasteConfig"), AllIcons.Actions.Upload) { pasteConfigLine() })
