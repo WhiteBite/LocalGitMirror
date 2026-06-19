@@ -44,6 +44,30 @@ private fun parseInternalRepos(settings: MirrorSettingsService.State): List<Stri
     .map { it.trim() }
     .filter { it.isNotBlank() }
 
+/**
+ * Resolve the effective list of "internal" repo substrings to filter the
+ * artifact diff with.
+ *
+ *   1. If user filled `Internal repos` in Settings, that wins (manual override).
+ *   2. Otherwise scan the project's gradle files and auto-detect.
+ *   3. If nothing was found either way, return empty list (= no filter).
+ *
+ * Returns Pair(substrings, source) so the UI can tell the user where the
+ * list came from ("manual" / "auto" / "none").
+ */
+private fun resolveInternalRepos(
+  settings: MirrorSettingsService.State,
+  projectDir: File
+): Pair<List<String>, String> {
+  val manual = parseInternalRepos(settings)
+  if (manual.isNotEmpty()) return manual to "manual"
+  val detected = RepoDetector.detect(projectDir)
+  if (detected.internalSubstrings.isNotEmpty()) {
+    return detected.internalSubstrings to "auto(${detected.sources.size} gradle files)"
+  }
+  return emptyList<String>() to "none"
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. RequestDepsAction (dome side): scan local cache, send manifest
@@ -172,10 +196,11 @@ class RespondDepsAction : AnAction() {
 
         indicator.text = "Сканируем локальный gradle-кеш…"
         val workArtifacts = DepsScanner.scan()
-        val internal = parseInternalRepos(settings)
+        val projectDir = project.basePath?.let { File(it) } ?: File(".")
+        val (internal, internalSource) = resolveInternalRepos(settings, projectDir)
         val toShip = DepsDiff.compute(workArtifacts, manifest, internal)
         val diffSize = toShip.sumOf { it.size }
-        val filterText = if (internal.isEmpty()) "—" else internal.joinToString(",")
+        val filterText = if (internal.isEmpty()) "—" else "${internal.joinToString(",")} ($internalSource)"
         notify(
           project,
           LocalGitMirrorBundle.message("deps.notify.diffComputed", toShip.size.toString(), humanBytes(diffSize), filterText),
