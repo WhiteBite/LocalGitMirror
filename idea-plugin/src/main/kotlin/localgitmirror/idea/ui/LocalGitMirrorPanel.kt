@@ -335,6 +335,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
     refreshStatus()
     refreshHistoryLog()
+
+    // Auto-refresh history on any new entry, regardless of which thread added it.
+    val listener: () -> Unit = {
+      com.intellij.util.ui.UIUtil.invokeLaterIfNeeded { refreshHistoryLog() }
+    }
+    historyService.addChangeListener(listener)
   }
 
   internal fun baseDir(): File? {

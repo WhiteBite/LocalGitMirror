@@ -25,6 +25,16 @@ class OperationsHistoryService : PersistentStateComponent<OperationsHistoryServi
   }
 
   private var state = State()
+  // Subscribers notified on any change (add/clear). Panel uses this to refresh.
+  private val listeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+  fun addChangeListener(l: () -> Unit) { listeners.add(l) }
+  fun removeChangeListener(l: () -> Unit) { listeners.remove(l) }
+  private fun fireChanged() {
+    for (l in listeners) {
+      try { l() } catch (_: Throwable) { /* never let a bad listener break history */ }
+    }
+  }
 
   override fun getState(): State = state
 
@@ -45,6 +55,7 @@ class OperationsHistoryService : PersistentStateComponent<OperationsHistoryServi
     while (state.entries.size > MAX_ENTRIES) {
       state.entries.removeAt(0)
     }
+    fireChanged()
   }
 
   fun latest(limit: Int = 20): List<Entry> {
@@ -55,5 +66,6 @@ class OperationsHistoryService : PersistentStateComponent<OperationsHistoryServi
 
   fun clear() {
     state.entries.clear()
+    fireChanged()
   }
 }
