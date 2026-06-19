@@ -37,7 +37,9 @@ object DepsBundler {
     val installed: Int,
     val skipped: Int,        // already-present, byte-for-byte
     val invalid: Int,        // bad path / outside the cache root
-    val totalBytes: Long
+    val totalBytes: Long,
+    val installedEntries: List<String> = emptyList(),  // group:name:version
+    val skippedEntries: List<String> = emptyList()
   )
 
   /**
@@ -53,6 +55,8 @@ object DepsBundler {
     var skipped = 0
     var invalid = 0
     var totalBytes = 0L
+    val installedNames = mutableListOf<String>()
+    val skippedNames = mutableListOf<String>()
 
     ZipInputStream(zipBytes.inputStream()).use { zin ->
       while (true) {
@@ -78,18 +82,24 @@ object DepsBundler {
           // Read entry bytes once; we may need them for a "skipped if identical" check
           val bytes = zin.readBytes()
 
+          // Recover artifact identity from the zip path: <group>/<name>/<version>/<sha>/<file>
+          val parts = name.split('/')
+          val displayName = if (parts.size >= 4) "${parts[0]}:${parts[1]}:${parts[2]}" else name
+
           if (target.exists() && target.length() == bytes.size.toLong() && target.readBytes().contentEquals(bytes)) {
             skipped++
+            skippedNames.add(displayName)
             continue
           }
           target.writeBytes(bytes)
           installed++
           totalBytes += bytes.size
+          installedNames.add(displayName)
         } finally {
           zin.closeEntry()
         }
       }
     }
-    return UnpackResult(installed, skipped, invalid, totalBytes)
+    return UnpackResult(installed, skipped, invalid, totalBytes, installedNames, skippedNames)
   }
 }

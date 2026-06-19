@@ -123,7 +123,7 @@ class RequestDepsAction : AnAction() {
           return
         }
         notify(project, LocalGitMirrorBundle.message("deps.notify.requestSent"), NotificationType.INFORMATION)
-        history.add("Deps request", true, "id=${res.id} artifacts=${artifacts.size} size=${humanBytes(totalSize)}")
+        history.add("Deps request", true, "repo='$repo' id=${res.id} artifacts=${artifacts.size} size=${humanBytes(totalSize)}")
       }
     })
   }
@@ -150,7 +150,7 @@ class RespondDepsAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Ответ на запрос deps", true) {
       override fun run(indicator: ProgressIndicator) {
-        indicator.text = "Проверяем pending-запросы…"
+        indicator.text = "Проверяем pending-запросы для repo='$repo'…"
         val pending = MirrorApi.depsPending(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
@@ -162,7 +162,14 @@ class RespondDepsAction : AnAction() {
           return
         }
         if (pending.items.isEmpty()) {
-          notify(project, LocalGitMirrorBundle.message("deps.notify.noRequests"), NotificationType.INFORMATION)
+          // Helpful hint: the repo name on this machine probably doesn't match
+          // the one used by the dome side when posting the request.
+          val msg = "Нет ожидающих запросов для repo='$repo'.\n" +
+            "Проверь Settings → LocalGitMirror → Mirror репозиторий: " +
+            "имя должно совпадать с тем, под которым домашняя машина " +
+            "отправила запрос (обычно имя проекта)."
+          notify(project, msg, NotificationType.WARNING)
+          history.add("Deps respond", false, "no pending for repo='$repo'")
           return
         }
 
@@ -267,7 +274,23 @@ class RespondDepsAction : AnAction() {
           LocalGitMirrorBundle.message("deps.notify.responseSent", humanBytes(diffSize)),
           NotificationType.INFORMATION
         )
-        history.add("Deps respond", true, "request=${req.id} artifacts=${toShip.size} size=${humanBytes(diffSize)}")
+
+        // Persist the list of shipped artifacts so the user can audit later.
+        val sentList = buildString {
+          appendLine("# LocalGitMirror — gradle deps sent to dome")
+          appendLine("# date: ${java.time.LocalDateTime.now()}")
+          appendLine("# request_id: ${req.id}")
+          appendLine("# total_bytes: $diffSize")
+          appendLine("# strategy: $filterText")
+          appendLine()
+          appendLine("## Shipped (${toShip.size})")
+          toShip.forEach { appendLine("  ${it.group}:${it.name}:${it.version}") }
+        }
+        val sentFile = File(projectDir, ".lgm-last-sent-deps.txt")
+        try { sentFile.writeText(sentList, Charsets.UTF_8) } catch (_: Exception) {}
+
+        history.add("Deps respond", true,
+          "request=${req.id} artifacts=${toShip.size} size=${humanBytes(diffSize)} list=$sentFile")
       }
     })
   }
@@ -373,9 +396,44 @@ class ApplyDepsAction : AnAction() {
           humanBytes(unpackResult.totalBytes),
           unpackResult.skipped.toString()
         )
-        notify(project, ok, NotificationType.INFORMATION)
+
+        // Save the install list so the user can see exactly what landed
+        val installManifest = buildString {
+          appendLine("# LocalGitMirror — installed gradle deps")
+          appendLine("# date: ${java.time.LocalDateTime.now()}")
+          appendLine("# response_id: ${resp.id}")
+          appendLine("# total_bytes: ${unpackResult.totalBytes}")
+          appendLine()
+          appendLine("## Installed (${unpackResult.installed})")
+          unpackResult.installedEntries.forEach { appendLine("  $it") }
+          if (unpackResult.skippedEntries.isNotEmpty()) {
+            appendLine()
+            appendLine("## Already up-to-date (${unpackResult.skipped})")
+            unpackResult.skippedEntries.forEach { appendLine("  $it") }
+          }
+        }
+        val manifestFile = File(project.basePath ?: ".", ".lgm-last-deps.txt")
+        try { manifestFile.writeText(installManifest, Charsets.UTF_8) } catch (_: Exception) {}
+
+        // Notification with a "View list" action
+        val previewLines = unpackResult.installedEntries.take(10).joinToString("\n  • ", prefix = "  • ")
+        val moreCount = (unpackResult.installedEntries.size - 10).coerceAtLeast(0)
+        val notifMsg = buildString {
+          append(ok)
+          appendLine()
+          appendLine()
+          if (unpackResult.installedEntries.isNotEmpty()) {
+            appendLine("Установлены:")
+            append(previewLines)
+            if (moreCount > 0) append("\n  … и ещё $moreCount")
+          }
+          appendLine()
+          appendLine()
+          append("Полный список: ${manifestFile.absolutePath}")
+        }
+        notify(project, notifMsg, NotificationType.INFORMATION)
         history.add("Deps apply", true,
-          "installed=${unpackResult.installed} skipped=${unpackResult.skipped} invalid=${unpackResult.invalid} size=${humanBytes(unpackResult.totalBytes)}")
+          "installed=${unpackResult.installed} skipped=${unpackResult.skipped} invalid=${unpackResult.invalid} size=${humanBytes(unpackResult.totalBytes)} list=$manifestFile")
       }
     })
   }
