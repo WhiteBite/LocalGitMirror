@@ -77,6 +77,19 @@
             class="localgitmirror.idea.actions.ApplyLocalDumpAction"
             text="Apply local sync package…" description="Apply local encrypted sync package"/>
 
+    <!-- ── Gradle deps sync ── -->
+    <action id="LocalGitMirror.DepsRequest"
+            class="localgitmirror.idea.deps.RequestDepsAction"
+            text="Request gradle deps…" description="Send manifest of locally cached artifacts to ask the work machine for missing internal deps"/>
+
+    <action id="LocalGitMirror.DepsRespond"
+            class="localgitmirror.idea.deps.RespondDepsAction"
+            text="Respond to gradle deps request…" description="Compute diff and ship missing internal artifacts"/>
+
+    <action id="LocalGitMirror.DepsApply"
+            class="localgitmirror.idea.deps.ApplyDepsAction"
+            text="Apply received gradle deps…" description="Unpack ready response into ~/.gradle/caches"/>
+
     <!-- ── Diagnostics ── -->
     <action id="LocalGitMirror.Preflight"
             class="localgitmirror.idea.actions.PreflightCheckAction"
@@ -101,6 +114,10 @@
       <reference ref="LocalGitMirror.SyncPull"/>
       <reference ref="LocalGitMirror.PullBack"/>
       <reference ref="LocalGitMirror.ApplyLocalSync"/>
+      <separator/>
+      <reference ref="LocalGitMirror.DepsRequest"/>
+      <reference ref="LocalGitMirror.DepsRespond"/>
+      <reference ref="LocalGitMirror.DepsApply"/>
       <separator/>
       <reference ref="LocalGitMirror.Preflight"/>
       <reference ref="LocalGitMirror.DryRun"/>
