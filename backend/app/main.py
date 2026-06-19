@@ -152,13 +152,15 @@ async def lifespan(app: FastAPI):
     shared_manager = SharedManager(actual_storage_path)
 
     # 2. Inject dependencies into routers
-    from app.routers import api, settings
+    from app.routers import api, deps, settings
 
     api.git_handler = git_handler
     api.repo_manager = repo_manager
     api.shared_manager = shared_manager
     api.system_logger = system_logger
     api.config = CONFIG
+    deps.repo_manager = repo_manager
+    deps.system_logger = system_logger
     settings.settings_manager = settings_manager
 
     # 3. Clean up legacy hooks
@@ -289,11 +291,9 @@ init_git_http(app, initial_storage)
 
 # Include routers
 from app.routers import api_router, deps_router, settings_router, web_router, websocket_router
-from app.routers import deps as deps_module
 
-# Wire deps router with the same shared services as the main API router
-deps_module.repo_manager = repo_manager
-deps_module.system_logger = system_logger
+# deps router is wired to repo_manager / system_logger inside the lifespan
+# handler above, after those globals are actually constructed.
 
 app.include_router(api_router, dependencies=[Depends(get_api_key)])
 app.include_router(deps_router, dependencies=[Depends(get_api_key)])
