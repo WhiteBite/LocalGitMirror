@@ -83,6 +83,8 @@ class DepsLogicTest {
       // No _remote.repositories sidecar — origin unknown
       fakeArtifact(cache, "g", "a", "1", "s", "a.jar", "a".toByteArray(), originUrl = null)
       val all = DepsScanner.scan(cache)
+      // Without sidecar we can't tell — and with a filter active we play it safe and exclude.
+      // The proper resolution path is GradleResolver, not heuristic group matching.
       assertTrue(!DepsScanner.matchesInternalRepo(all[0], listOf("nexus.local")))
     } finally { cache.deleteRecursively() }
   }
