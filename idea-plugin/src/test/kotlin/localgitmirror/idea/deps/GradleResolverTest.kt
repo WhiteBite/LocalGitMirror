@@ -49,8 +49,69 @@ class GradleResolverTest {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  // resolve() input validation — guards against accidental misuse
+  // JAVA_HOME resolution — guards the IDE from a broken user env
   // ─────────────────────────────────────────────────────────────────────────
+
+  @Test
+  fun `unwrapBinSuffix strips trailing bin from windows-style path`() {
+    assertEquals("C:\\Users\\d.minkin\\jdk-25",
+      GradleResolver.unwrapBinSuffix("C:\\Users\\d.minkin\\jdk-25\\bin"))
+  }
+
+  @Test
+  fun `unwrapBinSuffix strips trailing bin from unix-style path`() {
+    assertEquals("/opt/jdk-25", GradleResolver.unwrapBinSuffix("/opt/jdk-25/bin"))
+  }
+
+  @Test
+  fun `unwrapBinSuffix leaves correct paths alone`() {
+    assertEquals("C:\\Users\\jdk-25", GradleResolver.unwrapBinSuffix("C:\\Users\\jdk-25"))
+    assertEquals("/opt/jdk-25", GradleResolver.unwrapBinSuffix("/opt/jdk-25"))
+  }
+
+  @Test
+  fun `unwrapBinSuffix is case insensitive`() {
+    assertEquals("C:\\jdk-25", GradleResolver.unwrapBinSuffix("C:\\jdk-25\\BIN"))
+  }
+
+  @Test
+  fun `unwrapBinSuffix handles trailing slash`() {
+    assertEquals("/opt/jdk-25", GradleResolver.unwrapBinSuffix("/opt/jdk-25/bin/"))
+  }
+
+  @Test
+  fun `resolveJavaHome falls back to running JDK when explicit is null`() {
+    val home = GradleResolver.resolveJavaHome(null)
+    // The current process is running on SOME JDK, so it must be discoverable
+    assertTrue(home != null && File(home).exists(),
+      "Expected a working JAVA_HOME, got: $home")
+    val isWindows = System.getProperty("os.name").lowercase().contains("win")
+    val javaBin = File(home, "bin/" + if (isWindows) "java.exe" else "java")
+    assertTrue(javaBin.exists(), "java binary must exist at $javaBin")
+  }
+
+  @Test
+  fun `resolveJavaHome strips broken bin suffix from explicit input`() {
+    // Give it OUR running JDK with an evil "/bin" tail.
+    val running = System.getProperty("java.home")
+    val broken = "$running${File.separator}bin"   // simulating the user's env
+
+    val home = GradleResolver.resolveJavaHome(broken)
+    assertEquals(running, home,
+      "Should have stripped the spurious /bin and returned the real JDK home")
+  }
+
+  @Test
+  fun `resolveJavaHome returns null when path is not a real JDK`() {
+    val home = GradleResolver.resolveJavaHome("/this/is/not/a/jdk/at/all")
+    assertEquals(null, home)
+  }
+
+  @Test
+  fun `resolveJavaHome ignores blank input and falls back to running JDK`() {
+    val home = GradleResolver.resolveJavaHome("   ")
+    assertTrue(home != null && File(home).exists())
+  }
 
   @Test
   fun `resolve returns error when projectDir does not exist`() {

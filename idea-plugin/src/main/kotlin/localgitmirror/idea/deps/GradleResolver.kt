@@ -46,11 +46,17 @@ object GradleResolver {
    *                     to freeze the IDE
    * @param extraArgs    extra arguments — typically empty; a caller can add
    *                     "--offline" to verify the cache is self-sufficient
+   * @param javaHome     explicit JAVA_HOME to pass to the gradle process.
+   *                     If null, falls back to the JDK running IntelliJ
+   *                     (`java.home`). NEVER trusts the user's env var,
+   *                     because in practice it's often broken (points at
+   *                     `\bin` subdir, missing, set to deleted JDK, etc.).
    */
   fun resolve(
     projectDir: File,
     timeoutSec: Long = 300,
-    extraArgs: List<String> = emptyList()
+    extraArgs: List<String> = emptyList(),
+    javaHome: String? = null
   ): Result {
     val started = System.currentTimeMillis()
     if (!projectDir.exists() || !projectDir.isDirectory) {
@@ -73,6 +79,16 @@ object GradleResolver {
       }
 
       val pb = ProcessBuilder(cmd).directory(projectDir).redirectErrorStream(true)
+
+      // Override JAVA_HOME for the gradle subprocess so a broken user env
+      // (the classic ".../jdk-25/bin" instead of ".../jdk-25") doesn't fail us.
+      val effectiveJavaHome = resolveJavaHome(javaHome)
+      if (effectiveJavaHome != null) {
+        pb.environment()["JAVA_HOME"] = effectiveJavaHome
+        // Some setups also read JDK_HOME; keep them in sync.
+        pb.environment()["JDK_HOME"] = effectiveJavaHome
+      }
+
       val proc = pb.start()
       val stdoutCollector = StringBuilder()
       val readerThread = Thread {
@@ -92,10 +108,11 @@ object GradleResolver {
 
       val artifacts = parseJsonLines(outputFile)
       val ok = proc.exitValue() == 0
+      val effectiveJavaNote = if (effectiveJavaHome != null) " (JAVA_HOME=$effectiveJavaHome)" else ""
       return Result(
         ok = ok && artifacts.isNotEmpty(),
         artifacts = artifacts,
-        log = stdoutCollector.takeLast(4000).toString(),
+        log = (stdoutCollector.takeLast(4000).toString() + effectiveJavaNote),
         durationMs = System.currentTimeMillis() - started
       )
     } catch (t: Throwable) {
@@ -104,6 +121,34 @@ object GradleResolver {
       try { initScript.delete() } catch (_: Exception) {}
       try { outputFile.delete() } catch (_: Exception) {}
     }
+  }
+
+  /**
+   * Pick a JAVA_HOME we know works:
+   *   1. Caller-provided (e.g. ProjectSdk path from IntelliJ)
+   *   2. The JDK currently running this code (always real, always at least
+   *      whatever IntelliJ itself is using, which is JDK 17+)
+   * NEVER falls through to the user's environment, because that env is
+   * exactly what we're trying to work around.
+   *
+   * Also defensively unwraps the broken `\bin` suffix some users have:
+   * `C:\Users\x\jdk-25\bin` -> `C:\Users\x\jdk-25`.
+   */
+  internal fun resolveJavaHome(explicit: String?): String? {
+    val candidate = explicit?.takeIf { it.isNotBlank() }
+      ?: System.getProperty("java.home")?.takeIf { it.isNotBlank() }
+      ?: return null
+    val cleaned = unwrapBinSuffix(candidate)
+    val javaBin = File(cleaned, "bin/" + (if (System.getProperty("os.name").lowercase().contains("win")) "java.exe" else "java"))
+    return if (javaBin.exists()) cleaned else null
+  }
+
+  /** "C:/Users/x/jdk-25/bin" -> "C:/Users/x/jdk-25". Anything else is returned untouched. */
+  internal fun unwrapBinSuffix(path: String): String {
+    val trimmed = path.trimEnd('/', '\\')
+    val sep = if (trimmed.contains('\\')) '\\' else '/'
+    val tail = trimmed.substringAfterLast(sep)
+    return if (tail.equals("bin", ignoreCase = true)) trimmed.substringBeforeLast(sep) else trimmed
   }
 
   /** Pick `./gradlew`/`gradlew.bat` if the project ships a wrapper; else system gradle. */
