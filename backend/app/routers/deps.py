@@ -16,6 +16,7 @@ inspects their content. Two flows happen here:
 All payloads are pre-encrypted by the plugin (BundleCrypto), so leaking
 the storage dir does not leak project deps.
 """
+import hashlib
 import os
 import re
 import time
@@ -64,16 +65,66 @@ def _deps_root() -> Path:
     return root
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# D2: Hashed repo directory names for stealth
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _deps_repo_hash(repo: str) -> str:
+    """Return a short deterministic hash of the repo name for filesystem stealth."""
+    return hashlib.sha256(repo.encode()).hexdigest()[:16]
+
+
 def _requests_dir(repo: str) -> Path:
-    d = _deps_root() / repo / "requests"
+    hashed = _deps_repo_hash(repo)
+    root = _deps_root()
+
+    # Backward-compat migration: if hashed dir doesn't exist but plain-name dir does, rename it.
+    plain_dir = root / repo
+    hashed_dir = root / hashed
+    if not hashed_dir.exists() and plain_dir.exists():
+        plain_dir.rename(hashed_dir)
+
+    d = hashed_dir / "requests"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
 def _responses_dir(repo: str) -> Path:
-    d = _deps_root() / repo / "responses"
+    hashed = _deps_repo_hash(repo)
+    root = _deps_root()
+
+    # Backward-compat migration: if hashed dir doesn't exist but plain-name dir does, rename it.
+    plain_dir = root / repo
+    hashed_dir = root / hashed
+    if not hashed_dir.exists() and plain_dir.exists():
+        plain_dir.rename(hashed_dir)
+
+    d = hashed_dir / "responses"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# D1: Auto-TTL cleanup of stale blobs
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _cleanup_stale(directory: Path, max_age_seconds: int = 7 * 24 * 3600) -> int:
+    """Delete .bin files older than max_age_seconds. Returns count deleted."""
+    if not directory.exists():
+        return 0
+    now = time.time()
+    deleted = 0
+    for p in directory.iterdir():
+        if not p.is_file() or not p.name.endswith(".bin"):
+            continue
+        try:
+            age = now - os.path.getmtime(p)
+            if age > max_age_seconds:
+                p.unlink()
+                deleted += 1
+        except OSError:
+            continue
+    return deleted
 
 
 def _list_blobs(directory: Path) -> List[dict]:
@@ -118,8 +169,14 @@ async def deps_request(
     if len(payload) > 10 * 1024 * 1024:  # 10 MB hard cap on manifest
         raise HTTPException(413, "Manifest too large")
 
+    # D1: lazy cleanup before storing new request
+    req_dir = _requests_dir(repo)
+    n = _cleanup_stale(req_dir)
+    if n > 0 and system_logger:
+        system_logger.info("deps TTL cleanup", {"dir": str(req_dir), "deleted": n})
+
     item_id = uuid.uuid4().hex
-    target = _requests_dir(repo) / f"{item_id}.bin"
+    target = req_dir / f"{item_id}.bin"
     target.write_bytes(payload)
 
     if system_logger:
@@ -132,7 +189,12 @@ async def deps_request(
 def deps_pending(repo: str = Query(...)):
     """Work side: list outstanding requests for this repo."""
     repo = _validate_repo(repo)
-    return {"success": True, "repo": repo, "items": _list_blobs(_requests_dir(repo))}
+    req_dir = _requests_dir(repo)
+    # D1: lazy cleanup before listing
+    n = _cleanup_stale(req_dir)
+    if n > 0 and system_logger:
+        system_logger.info("deps TTL cleanup", {"dir": str(req_dir), "deleted": n})
+    return {"success": True, "repo": repo, "items": _list_blobs(req_dir)}
 
 
 @router.get("/manifest")
@@ -187,7 +249,12 @@ async def deps_respond(
 def deps_responses(repo: str = Query(...)):
     """Dome side: list ready responses for this repo."""
     repo = _validate_repo(repo)
-    return {"success": True, "repo": repo, "items": _list_blobs(_responses_dir(repo))}
+    resp_dir = _responses_dir(repo)
+    # D1: lazy cleanup before listing
+    n = _cleanup_stale(resp_dir)
+    if n > 0 and system_logger:
+        system_logger.info("deps TTL cleanup", {"dir": str(resp_dir), "deleted": n})
+    return {"success": True, "repo": repo, "items": _list_blobs(resp_dir)}
 
 
 @router.get("/fetch")

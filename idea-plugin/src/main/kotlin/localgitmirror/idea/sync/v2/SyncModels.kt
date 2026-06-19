@@ -6,6 +6,7 @@ import java.util.UUID
 
 enum class RepoSource {
   SETTINGS,
+  GIT_REMOTE,
   PROJECT_NAME,
   DIRECTORY_NAME,
   DEFAULT

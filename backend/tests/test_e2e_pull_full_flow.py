@@ -32,7 +32,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
-from app.routers import api as api_router
+from tests import _harness
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -57,15 +57,14 @@ def _make_client(tmp_path: Path, monkeypatch, sync_password: str = "test-pass"):
     monkeypatch.setenv("SYNC_PASSWORD", sync_password)
 
     rm = RepoManager(storage)
-    api_router.repo_manager = rm
-    api_router.git_handler = None
-    api_router.git_workspace = None
-    api_router.shared_manager = None
-    api_router.system_logger = None
-    api_router.config = {"git_port": 0, "web_port": 0, "storage_path": storage}
-
-    app = FastAPI()
-    app.include_router(api_router.router)
+    app = _harness.build_app(
+        repo_manager=rm,
+        git_handler=None,
+        git_workspace=None,
+        shared_manager=None,
+        system_logger=None,
+        config={"git_port": 0, "web_port": 0, "storage_path": storage},
+    )
     return TestClient(app), storage
 
 
@@ -211,7 +210,7 @@ def test_pull_happy_path_decrypts_and_contains_target_branch(tmp_path: Path, mon
 
     # Step 2: list
     refs = client.get("/api/documents/list", params={"repo": repo}).json()["refs"]
-    assert refs.get(target) == tip
+    assert refs.get(target, {}).get("sha") == tip
 
     # Step 3: export with branch + empty haves -> full delta of the branch
     export = client.post(

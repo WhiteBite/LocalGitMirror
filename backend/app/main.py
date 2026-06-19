@@ -152,16 +152,48 @@ async def lifespan(app: FastAPI):
     shared_manager = SharedManager(actual_storage_path)
 
     # 2. Inject dependencies into routers
-    from app.routers import api, deps, settings
+    from app.routers import deps, settings
 
-    api.git_handler = git_handler
-    api.repo_manager = repo_manager
-    api.shared_manager = shared_manager
-    api.system_logger = system_logger
-    api.config = CONFIG
     deps.repo_manager = repo_manager
     deps.system_logger = system_logger
     settings.settings_manager = settings_manager
+
+    from app.routers import system as system_router_mod
+    from app.routers import repos as repos_router_mod
+    from app.routers import sync as sync_router_mod
+    from app.routers import files as files_router_mod
+    from app.routers import shared as shared_router_mod
+
+    # system
+    system_router_mod.git_handler = git_handler
+    system_router_mod.repo_manager = repo_manager
+    system_router_mod.git_workspace = git_workspace
+    system_router_mod.shared_manager = shared_manager
+    system_router_mod.system_logger = system_logger
+    system_router_mod.config = CONFIG
+
+    # repos
+    repos_router_mod.git_handler = git_handler
+    repos_router_mod.repo_manager = repo_manager
+    repos_router_mod.git_workspace = git_workspace
+    repos_router_mod.system_logger = system_logger
+    repos_router_mod.config = CONFIG
+
+    # sync
+    sync_router_mod.repo_manager = repo_manager
+    sync_router_mod.shared_manager = shared_manager
+    sync_router_mod.system_logger = system_logger
+    sync_router_mod.config = CONFIG
+
+    # files
+    files_router_mod.repo_manager = repo_manager
+    files_router_mod.git_workspace = git_workspace
+    files_router_mod.system_logger = system_logger
+    files_router_mod.config = CONFIG
+
+    # shared
+    shared_router_mod.shared_manager = shared_manager
+    shared_router_mod.system_logger = system_logger
 
     # 3. Clean up legacy hooks
     if actual_storage_path.exists():
@@ -290,12 +322,19 @@ init_git_http(app, initial_storage)
 
 
 # Include routers
-from app.routers import api_router, deps_router, settings_router, web_router, websocket_router
+from app.routers import (
+    deps_router, settings_router, web_router, websocket_router,
+    system_router, repos_router, sync_router, files_router, shared_router,
+)
 
 # deps router is wired to repo_manager / system_logger inside the lifespan
 # handler above, after those globals are actually constructed.
 
-app.include_router(api_router, dependencies=[Depends(get_api_key)])
+app.include_router(system_router, dependencies=[Depends(get_api_key)])
+app.include_router(repos_router, dependencies=[Depends(get_api_key)])
+app.include_router(sync_router, dependencies=[Depends(get_api_key)])
+app.include_router(files_router, dependencies=[Depends(get_api_key)])
+app.include_router(shared_router, dependencies=[Depends(get_api_key)])
 app.include_router(deps_router, dependencies=[Depends(get_api_key)])
 app.include_router(web_router)
 app.include_router(settings_router, dependencies=[Depends(get_api_key)])

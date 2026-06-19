@@ -147,7 +147,12 @@ object MirrorApi {
     }
   }
 
-  data class RefsResult(val code: Int, val message: String, val head: String?, val refs: Map<String, String>?)
+  data class RefInfo(
+    val sha: String,
+    val updated: String,   // ISO-8601 committer date, "" if old server
+    val isHead: Boolean
+  )
+  data class RefsResult(val code: Int, val message: String, val head: String?, val refs: Map<String, RefInfo>?)
 
   fun getRefs(
     baseUrl: String,
@@ -170,11 +175,23 @@ object MirrorApi {
       if (code in 200..299) {
         val root = com.google.gson.JsonParser.parseString(body).asJsonObject
         val head = if (root.has("head") && !root.get("head").isJsonNull) root.get("head").asString else null
-        val refsMap = mutableMapOf<String, String>()
+        val refsMap = mutableMapOf<String, RefInfo>()
         if (root.has("refs") && root.get("refs").isJsonObject) {
           val refsObj = root.getAsJsonObject("refs")
-          for (entry in refsObj.entrySet()) {
-            refsMap[entry.key] = entry.value.asString
+          for ((branch, el) in refsObj.entrySet()) {
+            val info = if (el.isJsonObject) {
+              // New format: {"sha":"..","updated":"..","is_head":bool}
+              val o = el.asJsonObject
+              RefInfo(
+                sha = o.get("sha")?.asString ?: "",
+                updated = o.get("updated")?.asString ?: "",
+                isHead = o.get("is_head")?.asBoolean ?: (o.get("sha")?.asString == head)
+              )
+            } else {
+              // Old format: plain sha string
+              RefInfo(sha = el.asString, updated = "", isHead = el.asString == head)
+            }
+            refsMap[branch] = info
           }
         }
         RefsResult(code, "OK", head, refsMap)
@@ -735,6 +752,26 @@ object MirrorApi {
       conn.connectTimeout = 30_000
       conn.readTimeout = 30_000
       if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  /** Delete a branch on the Mirror server. Requires explicit user confirmation in the caller. */
+  fun deleteRef(baseUrl: String, apiKey: String, repo: String, branch: String, insecureTls: Boolean): HttpResult {
+    return try {
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/delete-ref")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "POST"
+      conn.doOutput = true
+      conn.connectTimeout = 30_000
+      conn.readTimeout = 30_000
+      conn.setRequestProperty("Content-Type", "application/json")
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      val payload = """{"repo":"$repo","branch":"$branch"}"""
+      conn.outputStream.use { it.write(payload.toByteArray(StandardCharsets.UTF_8)) }
       HttpResult(conn.responseCode, HttpClient.readBody(conn))
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)

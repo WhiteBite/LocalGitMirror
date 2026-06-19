@@ -17,20 +17,101 @@ import java.util.zip.ZipOutputStream
  */
 object DepsBundler {
 
-  /** Encode artifacts into a ZIP byte array. */
-  fun pack(artifacts: List<DepsScanner.Artifact>): ByteArray {
+  /** Encode artifacts into a ZIP byte array (gradle convenience overload). */
+  fun pack(artifacts: List<DepsScanner.Artifact>): ByteArray =
+    packEntries(artifacts.map {
+      DepFileEntry(
+        coordinate = DepCoordinate("gradle", it.group, it.name, it.version),
+        absolutePath = it.absolutePath,
+        relativePath = "${it.group}/${it.name}/${it.version}/${it.sha1}/${it.fileName}",
+        size = it.size
+      )
+    })
+
+  /** Encode ecosystem-agnostic file entries into a ZIP, keyed by relativePath. */
+  fun packEntries(entries: List<DepFileEntry>): ByteArray {
     val baos = ByteArrayOutputStream()
+    val seen = HashSet<String>()
     ZipOutputStream(baos).use { zip ->
-      for (art in artifacts) {
-        val source = File(art.absolutePath)
+      for (entry in entries) {
+        val source = File(entry.absolutePath)
         if (!source.exists()) continue
-        val entryName = "${art.group}/${art.name}/${art.version}/${art.sha1}/${art.fileName}"
-        zip.putNextEntry(ZipEntry(entryName))
+        val name = entry.relativePath.replace('\\', '/').trimStart('/')
+        if (name.isEmpty() || name.contains("..") || !seen.add(name)) continue
+        zip.putNextEntry(ZipEntry(name))
         source.inputStream().use { it.copyTo(zip) }
         zip.closeEntry()
       }
     }
     return baos.toByteArray()
+  }
+
+  /**
+   * Multi-ecosystem unpack. ZIP entry names are expected to be prefixed with
+   * the ecosystem id, e.g. `gradle/<group>/.../file.jar` or `npm/<scope>/...tgz`.
+   * Each entry is routed to the cache root returned by [rootFor] for that
+   * ecosystem (null = skip the entry as invalid). Path-traversal is rejected
+   * after canonicalisation, same as [unpackInto].
+   */
+  fun unpackRouted(
+    zipBytes: ByteArray,
+    rootFor: (ecosystem: String) -> File?
+  ): UnpackResult {
+    var installed = 0
+    var skipped = 0
+    var invalid = 0
+    var totalBytes = 0L
+    val installedNames = mutableListOf<String>()
+    val skippedNames = mutableListOf<String>()
+    val canonicalRoots = HashMap<String, File>()
+
+    ZipInputStream(zipBytes.inputStream()).use { zin ->
+      while (true) {
+        val entry: ZipEntry = zin.nextEntry ?: break
+        try {
+          if (entry.isDirectory) continue
+          val full = entry.name.replace('\\', '/').trimStart('/')
+          val slash = full.indexOf('/')
+          if (slash <= 0) { invalid++; continue }
+          val eco = full.substring(0, slash)
+          val rel = full.substring(slash + 1)
+          if (rel.isEmpty() || rel.contains("..")) { invalid++; continue }
+
+          val root = rootFor(eco) ?: run { invalid++; null } ?: continue
+          if (!root.exists()) root.mkdirs()
+          val rootCanonical = canonicalRoots.getOrPut(eco) { root.canonicalFile }
+
+          val target = File(root, rel).canonicalFile
+          if (!target.path.startsWith(rootCanonical.path + File.separator) &&
+              target.path != rootCanonical.path
+          ) { invalid++; continue }
+          target.parentFile?.mkdirs()
+
+          val bytes = zin.readBytes()
+          val displayName = displayNameFor(eco, rel)
+
+          if (target.exists() && target.length() == bytes.size.toLong() && target.readBytes().contentEquals(bytes)) {
+            skipped++; skippedNames.add(displayName); continue
+          }
+          target.writeBytes(bytes)
+          installed++
+          totalBytes += bytes.size
+          installedNames.add(displayName)
+        } finally {
+          zin.closeEntry()
+        }
+      }
+    }
+    return UnpackResult(installed, skipped, invalid, totalBytes, installedNames, skippedNames)
+  }
+
+  private fun displayNameFor(eco: String, rel: String): String {
+    val parts = rel.split('/')
+    return when (eco) {
+      "gradle" -> if (parts.size >= 4) "${parts[0]}:${parts[1]}:${parts[2]}" else rel
+      "npm" -> parts.lastOrNull() ?: rel
+      else -> rel
+    }
   }
 
   data class UnpackResult(

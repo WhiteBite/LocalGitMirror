@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from app.routers.api import _git
+from app.routers.sync import _git
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ def test_sync_export_dump_is_not_async():
     work (git bundle, encryption, base64) — the original cause of
     'channel was closed' errors on large repos.
     """
-    from app.routers.api import sync_export_dump
+    from app.routers.sync import sync_export_dump
     assert not inspect.iscoroutinefunction(sync_export_dump), (
         "sync_export_dump must be a plain `def` (not async) so FastAPI runs it "
         "in a threadpool. Converting it back to async def will block the event "
@@ -74,10 +74,9 @@ def test_sync_export_dump_is_not_async():
 def test_export_empty_repo_returns_400(tmp_path: Path, monkeypatch):
     """Export of a repo with no commits returns HTTP 400."""
     import json
-    from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from app.core.repo_manager import RepoManager
-    from app.routers import api as api_router
+    from tests import _harness
 
     storage = tmp_path / "storage"
     storage.mkdir()
@@ -89,15 +88,14 @@ def test_export_empty_repo_returns_400(tmp_path: Path, monkeypatch):
 
     repo_name = "empty-repo-export-test"
     rm = RepoManager(storage)
-    api_router.repo_manager = rm
-    api_router.git_handler = None
-    api_router.git_workspace = None
-    api_router.shared_manager = None
-    api_router.system_logger = None
-    api_router.config = {"git_port": 0, "web_port": 0, "storage_path": storage}
-
-    app = FastAPI()
-    app.include_router(api_router.router)
+    app = _harness.build_app(
+        repo_manager=rm,
+        git_handler=None,
+        git_workspace=None,
+        shared_manager=None,
+        system_logger=None,
+        config={"git_port": 0, "web_port": 0, "storage_path": storage},
+    )
     client = TestClient(app)
 
     # Create repo (this makes the initial commit via RepoManager)

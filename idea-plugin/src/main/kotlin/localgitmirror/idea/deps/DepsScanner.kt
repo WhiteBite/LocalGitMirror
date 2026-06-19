@@ -89,31 +89,4 @@ object DepsScanner {
     }
     return out
   }
-
-  /**
-   * Read the `_remote.repositories` sidecar that Gradle puts next to each artifact.
-   * Format: `<filename>>repo-id=<url>` per line.
-   * Returns the list of origin URLs/IDs (may be empty if Gradle didn't record them).
-   */
-  fun originsFor(artifact: Artifact): List<String> {
-    val sidecar = File(File(artifact.absolutePath).parentFile, "_remote.repositories")
-    if (!sidecar.exists()) return emptyList()
-    return sidecar.readLines()
-      .mapNotNull {
-        val eq = it.indexOf('=')
-        if (eq < 0) null else it.substring(eq + 1).trim().trimEnd(':')
-      }
-      .filter { it.isNotBlank() }
-      .distinct()
-  }
-
-  /** True if the artifact came from any of the configured "internal" repositories. */
-  fun matchesInternalRepo(artifact: Artifact, internalSubstrings: List<String>): Boolean {
-    if (internalSubstrings.isEmpty()) return true   // no filter = anything counts
-    val origins = originsFor(artifact)
-    if (origins.isEmpty()) return false             // unknown origin -> NOT internal by default
-    return origins.any { origin ->
-      internalSubstrings.any { sub -> origin.contains(sub, ignoreCase = true) }
-    }
-  }
 }

@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
 from app.core.bundle_crypto import encrypt_bundle_to_dump, decrypt_dump_to_bundle
-from app.routers import api as api_router
+from tests import _harness
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -52,15 +52,14 @@ def _git_branches(cwd: Path) -> set:
 
 def _build_client(storage: Path) -> TestClient:
     repo_manager = RepoManager(storage)
-    api_router.repo_manager = repo_manager
-    api_router.git_handler = None
-    api_router.git_workspace = None
-    api_router.shared_manager = None
-    api_router.system_logger = None
-    api_router.config = {"git_port": 0, "web_port": 0, "storage_path": storage}
-
-    app = FastAPI()
-    app.include_router(api_router.router)
+    app = _harness.build_app(
+        repo_manager=repo_manager,
+        git_handler=None,
+        git_workspace=None,
+        shared_manager=None,
+        system_logger=None,
+        config={"git_port": 0, "web_port": 0, "storage_path": storage},
+    )
     return TestClient(app)
 
 

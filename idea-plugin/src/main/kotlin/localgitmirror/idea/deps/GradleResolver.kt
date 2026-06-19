@@ -62,63 +62,141 @@ object GradleResolver {
     if (!projectDir.exists() || !projectDir.isDirectory) {
       return Result(false, emptyList(), "projectDir not found: ${projectDir.absolutePath}", 0)
     }
-
-    val initScript = File.createTempFile("lgm-resolve-", ".gradle")
     val outputFile = File.createTempFile("lgm-resolved-", ".jsonl")
     try {
-      initScript.writeText(buildInitScript(outputFile))
-
-      val gradleCmd = pickGradleCommand(projectDir)
-      val cmd = mutableListOf<String>().apply {
-        addAll(gradleCmd)
-        add("--init-script"); add(initScript.absolutePath)
-        add("-q")                              // quiet — we only care about errors
-        add("--no-daemon")                     // don't leave a daemon behind on dev machines
-        addAll(extraArgs)
-        add("help")                            // cheapest task that still configures projects
+      val run = runGradleWithInitScript(
+        projectDir = projectDir,
+        initScriptContent = buildInitScript(outputFile),
+        timeoutSec = timeoutSec,
+        javaHome = javaHome,
+        extraArgs = extraArgs
+      )
+      if (run.timedOut) {
+        return Result(false, emptyList(),
+          "gradle resolve timed out after ${timeoutSec}s\n${run.stdout.takeLast(2000)}",
+          System.currentTimeMillis() - started)
       }
+      val artifacts = parseJsonLines(outputFile)
+      return Result(
+        ok = run.exitCode == 0 && artifacts.isNotEmpty(),
+        artifacts = artifacts,
+        log = run.stdout.takeLast(4000) + run.javaHomeNote,
+        durationMs = System.currentTimeMillis() - started
+      )
+    } catch (t: Throwable) {
+      return Result(false, emptyList(), "gradle resolve failed: ${t.message}", System.currentTimeMillis() - started)
+    } finally {
+      try { outputFile.delete() } catch (_: Exception) {}
+    }
+  }
 
+  /** Raw outcome of running gradle with a temporary init-script. */
+  data class RawRun(
+    val timedOut: Boolean,
+    val exitCode: Int,
+    val stdout: String,
+    val javaHomeNote: String
+  )
+
+  /**
+   * Run the project's gradle with [initScriptContent] dropped into a temp file
+   * and `help` as the task. Shared by [resolve] and [resolveMissing]. Handles
+   * JAVA_HOME normalisation, stdout draining and the hard timeout.
+   */
+  fun runGradleWithInitScript(
+    projectDir: File,
+    initScriptContent: String,
+    timeoutSec: Long = 300,
+    javaHome: String? = null,
+    extraArgs: List<String> = emptyList(),
+    task: String = "help"
+  ): RawRun {
+    val initScript = File.createTempFile("lgm-init-", ".gradle")
+    try {
+      initScript.writeText(initScriptContent)
+      val cmd = mutableListOf<String>().apply {
+        addAll(pickGradleCommand(projectDir))
+        add("--init-script"); add(initScript.absolutePath)
+        add("-q")
+        add("--no-daemon")
+        addAll(extraArgs)
+        add(task)
+      }
       val pb = ProcessBuilder(cmd).directory(projectDir).redirectErrorStream(true)
-
-      // Override JAVA_HOME for the gradle subprocess so a broken user env
-      // (the classic ".../jdk-25/bin" instead of ".../jdk-25") doesn't fail us.
       val effectiveJavaHome = resolveJavaHome(javaHome)
       if (effectiveJavaHome != null) {
         pb.environment()["JAVA_HOME"] = effectiveJavaHome
-        // Some setups also read JDK_HOME; keep them in sync.
         pb.environment()["JDK_HOME"] = effectiveJavaHome
       }
-
       val proc = pb.start()
       val stdoutCollector = StringBuilder()
       val readerThread = Thread {
         proc.inputStream.bufferedReader().useLines { it.forEach { line -> stdoutCollector.appendLine(line) } }
       }
       readerThread.start()
-
       val finished = proc.waitFor(timeoutSec, java.util.concurrent.TimeUnit.SECONDS)
+      val note = if (effectiveJavaHome != null) " (JAVA_HOME=$effectiveJavaHome)" else ""
       if (!finished) {
         proc.destroyForcibly()
         readerThread.join(2_000)
-        return Result(false, emptyList(),
-          "gradle resolve timed out after ${timeoutSec}s\n${stdoutCollector.takeLast(2000)}",
-          System.currentTimeMillis() - started)
+        return RawRun(timedOut = true, exitCode = -1, stdout = stdoutCollector.toString(), javaHomeNote = note)
       }
       readerThread.join(5_000)
+      return RawRun(timedOut = false, exitCode = proc.exitValue(), stdout = stdoutCollector.toString(), javaHomeNote = note)
+    } finally {
+      try { initScript.delete() } catch (_: Exception) {}
+    }
+  }
 
-      val artifacts = parseJsonLines(outputFile)
-      val ok = proc.exitValue() == 0
-      val effectiveJavaNote = if (effectiveJavaHome != null) " (JAVA_HOME=$effectiveJavaHome)" else ""
+  /**
+   * DOME side. Run gradle with `--refresh-dependencies` and an init-script that
+   * records every *unresolved* module dependency (via LenientConfiguration).
+   * On the dome, corporate-only artifacts fail to resolve and show up here —
+   * giving us the exact, machine-independent set to request from work.
+   *
+   * Returns coordinates as [GradleResolver.ResolvedArtifact] with an empty `f`
+   * (no local file — that's the whole point), so callers can reuse parsing.
+   */
+  fun resolveMissing(
+    projectDir: File,
+    timeoutSec: Long = 300,
+    javaHome: String? = null
+  ): Result {
+    val started = System.currentTimeMillis()
+    if (!projectDir.exists() || !projectDir.isDirectory) {
+      return Result(false, emptyList(), "projectDir not found: ${projectDir.absolutePath}", 0)
+    }
+    val outputFile = File.createTempFile("lgm-missing-", ".jsonl")
+    try {
+      val run = runGradleWithInitScript(
+        projectDir = projectDir,
+        initScriptContent = buildMissingInitScript(outputFile),
+        timeoutSec = timeoutSec,
+        javaHome = javaHome,
+        // --refresh-dependencies forces a real resolve attempt against the
+        // repos available HERE, so corporate deps actually fail (not served
+        // stale from cache).
+        extraArgs = listOf("--refresh-dependencies")
+      )
+      if (run.timedOut) {
+        return Result(false, emptyList(),
+          "gradle resolveMissing timed out after ${timeoutSec}s\n${run.stdout.takeLast(2000)}",
+          System.currentTimeMillis() - started)
+      }
+      val missing = parseJsonLines(outputFile)
+      // Note: exit code may be non-zero when a config fails hard; we still trust
+      // whatever the init-script managed to record. "ok" means we got a usable
+      // signal (either clean run, or at least some unresolved entries captured).
+      val ok = run.exitCode == 0 || missing.isNotEmpty()
       return Result(
-        ok = ok && artifacts.isNotEmpty(),
-        artifacts = artifacts,
-        log = (stdoutCollector.takeLast(4000).toString() + effectiveJavaNote),
+        ok = ok,
+        artifacts = missing,
+        log = run.stdout.takeLast(4000) + run.javaHomeNote,
         durationMs = System.currentTimeMillis() - started
       )
     } catch (t: Throwable) {
-      return Result(false, emptyList(), "gradle resolve failed: ${t.message}", System.currentTimeMillis() - started)
+      return Result(false, emptyList(), "gradle resolveMissing failed: ${t.message}", System.currentTimeMillis() - started)
     } finally {
-      try { initScript.delete() } catch (_: Exception) {}
       try { outputFile.delete() } catch (_: Exception) {}
     }
   }
@@ -252,5 +330,55 @@ allprojects { p ->
       } catch (_: Exception) { /* skip malformed lines */ }
     }
     return out
+  }
+
+  /**
+   * Init-script for [resolveMissing]. Uses each resolvable configuration's
+   * LenientConfiguration to enumerate module dependencies that FAILED to
+   * resolve against the repositories available on this (dome) machine, plus
+   * the settings + buildscript classpaths (so unresolved PLUGINS are captured
+   * too — that's the foojay/spotless case).
+   *
+   * Emits one JSON line per unresolved coordinate with an EMPTY `f` (no local
+   * file — that's the point). [parseJsonLines] reuses the same shape.
+   */
+  private fun buildMissingInitScript(outputFile: File): String {
+    val outPath = outputFile.absolutePath.replace('\\', '/')
+    return """
+// LocalGitMirror init-script — records every module dependency that could NOT
+// be resolved on this machine (= corporate/internal artifacts to request).
+def lgmWriteMissing(out, group, name, version) {
+  if (version == null || version == 'null' || version == '') return
+  out.write('{"g":"' + group + '","n":"' + name + '","v":"' + version + '","f":""}\n')
+}
+
+def lgmScanConf(out, conf) {
+  if (!conf.canBeResolved) return
+  try {
+    def lenient = conf.resolvedConfiguration.lenientConfiguration
+    lenient.unresolvedModuleDependencies.each { dep ->
+      def sel = dep.selector
+      lgmWriteMissing(out, sel.group, sel.name, sel.version)
+    }
+  } catch (Throwable ignored) { }
+}
+
+settingsEvaluated { settings ->
+  def out = new java.io.FileWriter('$outPath', true)
+  try {
+    try { lgmScanConf(out, settings.buildscript.configurations.classpath) } catch (Throwable ignored) { }
+  } finally { out.close() }
+}
+
+allprojects { p ->
+  p.afterEvaluate {
+    def out = new java.io.FileWriter('$outPath', true)
+    try {
+      p.configurations.each { conf -> lgmScanConf(out, conf) }
+      try { lgmScanConf(out, p.buildscript.configurations.classpath) } catch (Throwable ignored) { }
+    } finally { out.close() }
+  }
+}
+""".trimIndent()
   }
 }

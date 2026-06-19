@@ -61,4 +61,115 @@ class RepoResolverTest {
     assertEquals(RepoSource.DEFAULT, fallback.source)
     assertEquals("default", fallback.sanitized)
   }
+
+  // ── repoNameFromRemoteUrl — the cross-machine stability fix (A2) ──
+  // The whole point: the SAME remote URL yields the SAME slug, regardless of
+  // how the repo was cloned (https/ssh/scp) or where it lives on disk.
+
+  @Test
+  fun `remote url https with git suffix yields repo slug`() {
+    assertEquals("repo", RepoResolver.repoNameFromRemoteUrl("https://nexus.local/group/repo.git"))
+  }
+
+  @Test
+  fun `remote url https without git suffix`() {
+    assertEquals("repo", RepoResolver.repoNameFromRemoteUrl("https://nexus.local/group/repo"))
+  }
+
+  @Test
+  fun `remote url https with port does not confuse port for path`() {
+    assertEquals("repo", RepoResolver.repoNameFromRemoteUrl("https://nexus.local:8443/group/sub/repo.git"))
+  }
+
+  @Test
+  fun `remote url scp form git at host`() {
+    assertEquals("repo", RepoResolver.repoNameFromRemoteUrl("git@github.com:group/repo.git"))
+  }
+
+  @Test
+  fun `remote url ssh scheme with port`() {
+    assertEquals("repo", RepoResolver.repoNameFromRemoteUrl("ssh://git@host:22/group/repo.git"))
+  }
+
+  @Test
+  fun `remote url trailing slash still yields last segment`() {
+    assertEquals("repo", RepoResolver.repoNameFromRemoteUrl("https://host/group/repo/"))
+  }
+
+  @Test
+  fun `remote url deep group path uses last segment only`() {
+    assertEquals("myrepo", RepoResolver.repoNameFromRemoteUrl("https://gitlab.local/a/b/c/d/myrepo.git"))
+  }
+
+  @Test
+  fun `remote url with dashes lowercased`() {
+    assertEquals("my-repo", RepoResolver.repoNameFromRemoteUrl("https://host/group/My-Repo.git"))
+  }
+
+  @Test
+  fun `remote url underscores preserved`() {
+    assertEquals("my_repo", RepoResolver.repoNameFromRemoteUrl("https://host/group/My_Repo.git"))
+  }
+
+  @Test
+  fun `blank remote url yields empty`() {
+    assertEquals("", RepoResolver.repoNameFromRemoteUrl(""))
+    assertEquals("", RepoResolver.repoNameFromRemoteUrl("   "))
+  }
+
+  @Test
+  fun `same repo cloned differently yields identical slug on both machines`() {
+    // DOME cloned via https, WORK laptop cloned via ssh — same logical repo.
+    val dome = RepoResolver.repoNameFromRemoteUrl("https://nexus.local/eaes/onyx-platform.git")
+    val work = RepoResolver.repoNameFromRemoteUrl("git@nexus.local:eaes/onyx-platform.git")
+    assertEquals(dome, work)
+    assertEquals("onyx-platform", dome)
+  }
+
+  @Test
+  fun `resolve prefers git remote over differing project names`() {
+    // This is the actual bug: project.name differs between machines
+    // (IntelliJ "default" vs directory "onyx-platform"), but the remote URL
+    // is identical → both must resolve to the same Mirror key.
+    val machineA = RepoResolver.resolveByNames(
+      projectName = "default",
+      directoryName = "checkout-a",
+      configuredRepo = "",
+      remoteUrl = "https://nexus.local/eaes/onyx-platform.git"
+    )
+    val machineB = RepoResolver.resolveByNames(
+      projectName = "onyx-platform",
+      directoryName = "checkout-b",
+      configuredRepo = "",
+      remoteUrl = "git@nexus.local:eaes/onyx-platform.git"
+    )
+    assertEquals(RepoSource.GIT_REMOTE, machineA.source)
+    assertEquals(RepoSource.GIT_REMOTE, machineB.source)
+    assertEquals(machineA.sanitized, machineB.sanitized)
+    assertEquals("onyx-platform", machineA.sanitized)
+  }
+
+  @Test
+  fun `configured repo still wins over git remote`() {
+    val r = RepoResolver.resolveByNames(
+      projectName = "default",
+      directoryName = "checkout",
+      configuredRepo = "explicit-name",
+      remoteUrl = "https://nexus.local/eaes/onyx-platform.git"
+    )
+    assertEquals(RepoSource.SETTINGS, r.source)
+    assertEquals("explicit-name", r.sanitized)
+  }
+
+  @Test
+  fun `falls through to project name when no remote`() {
+    val r = RepoResolver.resolveByNames(
+      projectName = "Onyx Platform",
+      directoryName = "checkout",
+      configuredRepo = "",
+      remoteUrl = ""
+    )
+    assertEquals(RepoSource.PROJECT_NAME, r.source)
+    assertEquals("onyx-platform", r.sanitized)
+  }
 }

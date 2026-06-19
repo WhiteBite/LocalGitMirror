@@ -11,11 +11,10 @@ import kotlin.test.assertTrue
  * Pure logic tests — no network, no IntelliJ runtime.
  * Builds a fake gradle cache layout under a tmp dir and checks:
  *   - scanner finds all artifacts and reports correct sha1 dirname
- *   - internal-repo filter works against _remote.repositories sidecar
- *   - manifest round-trips through JSON
- *   - diff returns exactly what the work side should ship
  *   - bundler ZIPs and unpacks back into an identical tree
  *   - bundler refuses path-traversal entries
+ *
+ * (Ecosystem-level diff/collect logic lives in EcosystemDepsTest.)
  */
 class DepsLogicTest {
 
@@ -53,82 +52,17 @@ class DepsLogicTest {
   }
 
   @Test
-  fun `internal repo filter matches by substring of origin url`() {
-    val cache = mkTmp("filter")
+  fun `scanner skips sidecar and lock files`() {
+    val cache = mkTmp("scan-sidecar")
     try {
-      fakeArtifact(cache, "org.spring", "spring-core", "6.1.5", "abc", "x.jar", "x".toByteArray(), originUrl = "https://repo1.maven.org/maven2/")
-      fakeArtifact(cache, "com.kryptonit", "shared", "2.3.0", "def", "y.jar", "y".toByteArray(), originUrl = "https://nexus.kryptonit.local/repo/")
-
-      val all = DepsScanner.scan(cache)
-      val internalOnly = all.filter { DepsScanner.matchesInternalRepo(it, listOf("nexus.kryptonit")) }
-      assertEquals(1, internalOnly.size)
-      assertEquals("shared", internalOnly[0].name)
+      val dir = File(cache, "g/n/1.0/sha").apply { mkdirs() }
+      File(dir, "n-1.0.jar").writeText("jar")
+      File(dir, "_remote.repositories").writeText("n-1.0.jar>x=https://y")
+      File(dir, ".lock").writeText("")
+      val scanned = DepsScanner.scan(cache)
+      assertEquals(1, scanned.size, "Only the jar is an artifact")
+      assertEquals("n-1.0.jar", scanned[0].fileName)
     } finally { cache.deleteRecursively() }
-  }
-
-  @Test
-  fun `internal filter empty means accept everything`() {
-    val cache = mkTmp("filter-empty")
-    try {
-      fakeArtifact(cache, "g", "a", "1", "s", "a.jar", "a".toByteArray(), originUrl = "https://x")
-      val all = DepsScanner.scan(cache)
-      assertTrue(DepsScanner.matchesInternalRepo(all[0], emptyList()))
-    } finally { cache.deleteRecursively() }
-  }
-
-  @Test
-  fun `internal filter rejects artifact without origin sidecar when filter active`() {
-    val cache = mkTmp("filter-no-origin")
-    try {
-      // No _remote.repositories sidecar — origin unknown
-      fakeArtifact(cache, "g", "a", "1", "s", "a.jar", "a".toByteArray(), originUrl = null)
-      val all = DepsScanner.scan(cache)
-      // Without sidecar we can't tell — and with a filter active we play it safe and exclude.
-      // The proper resolution path is GradleResolver, not heuristic group matching.
-      assertTrue(!DepsScanner.matchesInternalRepo(all[0], listOf("nexus.local")))
-    } finally { cache.deleteRecursively() }
-  }
-
-  @Test
-  fun `manifest round-trips through JSON`() {
-    val cache = mkTmp("manifest")
-    try {
-      fakeArtifact(cache, "g1", "n1", "1.0", "sh1", "n1-1.0.jar", "x".toByteArray())
-      fakeArtifact(cache, "g2", "n2", "2.0", "sh2", "n2-2.0.jar", "y".toByteArray())
-      val arts = DepsScanner.scan(cache)
-
-      val m = DepsManifest.fromArtifacts(requester = "DOM", project = "onyx", artifacts = arts)
-      val bytes = DepsManifest.toJsonBytes(m)
-      val back = DepsManifest.fromJsonBytes(bytes)
-      assertEquals(2, back.artifacts.size)
-      assertEquals(m.keys(), back.keys())
-    } finally { cache.deleteRecursively() }
-  }
-
-  @Test
-  fun `diff yields only what work has and dome lacks, filtered by internal`() {
-    val cacheWork = mkTmp("work")
-    val cacheDome = mkTmp("dome")
-    try {
-      // Work has 3 artifacts: 2 from nexus, 1 from maven central.
-      fakeArtifact(cacheWork, "com.kryptonit", "shared", "2.3.0", "ww1", "shared-2.3.0.jar", "shared".toByteArray(), originUrl = "https://nexus.local/")
-      fakeArtifact(cacheWork, "com.kryptonit", "internal", "1.0.0", "ww2", "internal-1.0.0.jar", "internal".toByteArray(), originUrl = "https://nexus.local/")
-      fakeArtifact(cacheWork, "org.spring", "spring", "6.1.5", "ww3", "spring-6.1.5.jar", "spring".toByteArray(), originUrl = "https://repo1.maven.org/")
-
-      // Dome has only the spring one (downloaded from public repo).
-      fakeArtifact(cacheDome, "org.spring", "spring", "6.1.5", "ww3", "spring-6.1.5.jar", "spring".toByteArray())
-
-      val workArts = DepsScanner.scan(cacheWork)
-      val domeManifest = DepsManifest.fromArtifacts("DOM", "onyx", DepsScanner.scan(cacheDome))
-
-      val diff = DepsDiff.compute(workArts, domeManifest, internalRepoSubstrings = listOf("nexus.local"))
-      // Two nexus artifacts: shared + internal. Spring is excluded by internal-only filter
-      // (and dome has it anyway).
-      assertEquals(2, diff.size, "Expected exactly nexus-only missing artifacts in diff: ${diff.map { it.key }}")
-      assertTrue(diff.all { it.absolutePath.startsWith(cacheWork.absolutePath) })
-    } finally {
-      cacheWork.deleteRecursively(); cacheDome.deleteRecursively()
-    }
   }
 
   @Test
@@ -146,7 +80,6 @@ class DepsLogicTest {
       assertEquals(0, result.skipped)
       assertEquals(0, result.invalid)
 
-      // Verify the contents in the destination tree match
       val ext1 = File(target, "g1/n1/1.0/h1/n1-1.0.jar")
       val ext2 = File(target, "g2/n2/2.0/h2/n2-2.0.jar")
       assertTrue(ext1.exists() && ext2.exists())
@@ -181,14 +114,11 @@ class DepsLogicTest {
   fun `bundler refuses path traversal entries`() {
     val target = mkTmp("traversal")
     try {
-      // Build a malicious zip by hand
       val baos = java.io.ByteArrayOutputStream()
       java.util.zip.ZipOutputStream(baos).use { zos ->
-        // Try to escape with ../../etc/passwd
         zos.putNextEntry(java.util.zip.ZipEntry("../../escaped.txt"))
         zos.write("nope".toByteArray())
         zos.closeEntry()
-        // Absolute path
         zos.putNextEntry(java.util.zip.ZipEntry("/abs/path.txt"))
         zos.write("nope".toByteArray())
         zos.closeEntry()
