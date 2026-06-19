@@ -176,34 +176,61 @@ object GradleResolver {
    * depend on JSON pretty-printing.
    */
   private fun buildInitScript(outputFile: File): String {
-    // Use a forward-slash path so the Groovy single-quoted literal works on Windows too
     val outPath = outputFile.absolutePath.replace('\\', '/')
-    // Groovy script body — Kotlin string interpolation puts only outPath in.
-    // Inside Groovy: backslashes are escaped \\ to produce a single backslash literal,
-    // and \n / \\ in the Groovy single-quoted strings are written as \\n and \\\\.
     return """
+// LocalGitMirror init-script — reports every artifact gradle resolves for
+// this project, including plugin classpaths and settings pluginManagement.
+def lgmWrite(out, group, name, version, file) {
+  out.write('{"g":"' + group + '","n":"' + name + '","v":"' + version + '","f":"' + file.absolutePath.replace('\\', '/') + '"}\n')
+}
+
+settingsEvaluated { settings ->
+  // Settings-script plugins (e.g. foojay-resolver-convention) live here
+  def out = new java.io.FileWriter('$outPath', true)
+  try {
+    try {
+      settings.buildscript.configurations.classpath.resolvedConfiguration.resolvedArtifacts.each { a ->
+        def id = a.moduleVersion.id
+        lgmWrite(out, id.group, id.name, id.version, a.file)
+      }
+    } catch (Throwable ignored) { }
+    try {
+      settings.pluginManagement.plugins.each { /* declared plugins go through buildscript */ }
+    } catch (Throwable ignored) { }
+  } finally { out.close() }
+}
+
 allprojects { p ->
   p.afterEvaluate {
     def out = new java.io.FileWriter('$outPath', true)
     try {
+      // Project configurations (compile/runtime/test/etc.)
       p.configurations.each { conf ->
         if (conf.canBeResolved) {
           try {
             conf.resolvedConfiguration.resolvedArtifacts.each { a ->
               def id = a.moduleVersion.id
-              out.write('{"g":"' + id.group + '","n":"' + id.name + '","v":"' + id.version + '","f":"' + a.file.absolutePath.replace('\\', '/') + '"}\n')
+              lgmWrite(out, id.group, id.name, id.version, a.file)
             }
           } catch (Throwable ignored) { }
         }
       }
+      // Buildscript classpath of root project (build.gradle plugins)
       if (p == p.rootProject) {
         try {
           p.buildscript.configurations.classpath.resolvedConfiguration.resolvedArtifacts.each { a ->
             def id = a.moduleVersion.id
-            out.write('{"g":"' + id.group + '","n":"' + id.name + '","v":"' + id.version + '","f":"' + a.file.absolutePath.replace('\\', '/') + '"}\n')
+            lgmWrite(out, id.group, id.name, id.version, a.file)
           }
         } catch (Throwable ignored) { }
       }
+      // Buildscript classpath of subprojects (separate plugin classpaths)
+      try {
+        p.buildscript.configurations.classpath.resolvedConfiguration.resolvedArtifacts.each { a ->
+          def id = a.moduleVersion.id
+          lgmWrite(out, id.group, id.name, id.version, a.file)
+        }
+      } catch (Throwable ignored) { }
     } finally { out.close() }
   }
 }
