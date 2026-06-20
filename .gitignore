@@ -93,7 +93,6 @@ _tmp/
 server.pid
 *.bundle
 backend/dummy/
-idea-plugin/.build_number
 idea-plugin/out.txt
 idea-plugin/refactor.py
 nul
