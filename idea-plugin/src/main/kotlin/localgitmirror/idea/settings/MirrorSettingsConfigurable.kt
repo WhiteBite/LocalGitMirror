@@ -179,7 +179,7 @@ class MirrorSettingsConfigurable : Configurable {
           }
         }
       }
-    }, "LAN-Discovery").start()
+    }, "LAN-Discovery").apply { isDaemon = true }.start()
   }
 
   // ── Test Connection ──
@@ -225,6 +225,6 @@ class MirrorSettingsConfigurable : Configurable {
           )
         }
       }
-    }, "Mirror-Test").start()
+    }, "Mirror-Test").apply { isDaemon = true }.start()
   }
 }
