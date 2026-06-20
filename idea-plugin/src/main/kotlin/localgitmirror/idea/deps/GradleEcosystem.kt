@@ -16,6 +16,14 @@ import java.io.File
 object GradleEcosystem : DepsEcosystem {
   override val id: String = "gradle"
 
+  /**
+   * Optional project-dir hint set by the caller right before [collect], so the
+   * gradle-reported `gradleUserHomeDir` can be probed as an extra cache root.
+   * This catches the case where the IDE/work machine uses a gradle home that
+   * isn't any of the env/default candidates.
+   */
+  @Volatile var collectProjectDir: File? = null
+
   private val MARKER_FILES = listOf(
     "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"
   )
@@ -39,14 +47,22 @@ object GradleEcosystem : DepsEcosystem {
     coordinates: List<DepCoordinate>,
     onMissingLocally: (DepCoordinate) -> Unit
   ): List<DepFileEntry> {
+    collectProjectDir?.let { /* hint set by caller */ }
     val want = coordinates.filter { it.ecosystem == id }
       .associateBy { "${it.group}:${it.name}:${it.version}" }
     if (want.isEmpty()) return emptyList()
 
     // Scan ALL candidate gradle caches (env GRADLE_USER_HOME, IDE setting,
-    // default ~/.gradle). The IDE may have built into a different gradle-home
-    // than our env inherited, so we must look in every one — not just cacheRoot().
-    val allArtifacts = DepsScanner.scanAllCandidates()
+    // default ~/.gradle, plus a gradle-reported home if a project hint was set).
+    // The IDE may have built into a different gradle-home than our env inherited,
+    // so we must look in every one — not just cacheRoot().
+    val extraRoots = collectProjectDir?.let { dir ->
+      GradleResolver.discoverGradleUserHome(dir)?.let {
+        listOf(File(it, "caches/modules-2/files-2.1"))
+      }
+    } ?: emptyList()
+
+    val allArtifacts = DepsScanner.scanAllCandidates(extraRoots = extraRoots)
     val byGnv = allArtifacts.groupBy { "${it.group}:${it.name}:${it.version}" }
 
     val scannedRoots = DepsScanner.candidateCacheRoots()

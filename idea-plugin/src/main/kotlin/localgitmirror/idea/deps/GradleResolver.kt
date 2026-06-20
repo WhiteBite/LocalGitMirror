@@ -365,6 +365,39 @@ allprojects { p ->
 """.trimIndent()
   }
 
+  /**
+   * Ask gradle itself for its real `gradleUserHomeDir` by running an init-script
+   * that prints it. This is the authoritative cache location — it matches what
+   * the IDE used to build, regardless of env vars or IDE settings. Returns null
+   * on any failure (gradle missing, timeout). Cheap: `help` task, ~a few sec.
+   */
+  fun discoverGradleUserHome(projectDir: File, timeoutSec: Long = 120, javaHome: String? = null): String? {
+    if (!projectDir.isDirectory) return null
+    val out = File.createTempFile("lgm-guh-", ".txt")
+    return try {
+      val script = """
+        gradle.projectsEvaluated {
+          new File('${out.absolutePath.replace('\\', '/')}').text =
+            gradle.gradleUserHomeDir.absolutePath
+        }
+      """.trimIndent()
+      val run = runGradleWithInitScript(
+        projectDir = projectDir,
+        initScriptContent = script,
+        timeoutSec = timeoutSec,
+        javaHome = javaHome,
+        extraArgs = listOf("--offline")
+      )
+      // Even if the build fails (offline), projectsEvaluated may have fired.
+      val guh = if (out.exists()) out.readText().trim() else ""
+      guh.ifBlank { null }
+    } catch (_: Throwable) {
+      null
+    } finally {
+      try { out.delete() } catch (_: Exception) {}
+    }
+  }
+
   private fun parseJsonLines(file: File): List<ResolvedArtifact> {
     if (!file.exists()) return emptyList()
     val gson = Gson()

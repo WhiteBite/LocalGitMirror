@@ -49,7 +49,7 @@ class OperationsHistoryService : PersistentStateComponent<OperationsHistoryServi
         timestamp = ts,
         operation = operation,
         status = if (success) "OK" else "FAIL",
-        details = details.take(500)
+        details = details.take(2000)
       )
     )
     while (state.entries.size > MAX_ENTRIES) {
