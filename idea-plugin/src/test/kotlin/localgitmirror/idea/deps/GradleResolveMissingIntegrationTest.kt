@@ -9,14 +9,18 @@ import kotlin.test.assertTrue
 /**
  * HONEST integration test for [GradleResolver.resolveMissing].
  *
- * This actually forks a real `gradle` against a tiny generated project and
- * checks that the init-script's `LenientConfiguration.unresolvedModuleDependencies`
- * path captures a dependency whose repository is unreachable — i.e. the exact
- * "corporate dep the dome can't fetch" scenario the whole feature exists for.
+ * Uses `--offline` strategy (the correct approach for the dome: Nexus is
+ * unreachable, so we look for what is NOT in the local gradle cache).
  *
- * It is skipped (not failed) when `gradle` isn't on PATH or has no network to
- * fetch its own distribution, so it never produces false CI failures — but on
- * a developer machine with gradle installed it exercises the real Groovy.
+ * Tests:
+ *   1. A project that depends on an artifact NOT in the local cache → that
+ *      artifact must be reported as missing (via LenientConfiguration or
+ *      the "No cached version" stdout fallback parser).
+ *   2. A project with no external deps → nothing missing.
+ *   3. parseNoCachedVersionLines pure unit test (no gradle fork needed):
+ *      the real output gradle prints when running --offline with missing deps.
+ *
+ * The gradle-forking tests are skipped when gradle isn't on PATH.
  */
 class GradleResolveMissingIntegrationTest {
 
@@ -28,7 +32,6 @@ class GradleResolveMissingIntegrationTest {
   @AfterTest
   fun cleanup() { created.forEach { it.deleteRecursively() } }
 
-  /** True if a system `gradle` is callable. We only run the heavy test then. */
   private fun gradleAvailable(): Boolean {
     val isWindows = System.getProperty("os.name").lowercase().contains("win")
     val cmd = if (isWindows) listOf("cmd", "/c", "gradle", "-v") else listOf("gradle", "-v")
@@ -39,67 +42,98 @@ class GradleResolveMissingIntegrationTest {
     } catch (_: Exception) { false }
   }
 
+  // ── Pure unit test — no gradle fork ──────────────────────────────────────────
+
   @Test
-  fun `resolveMissing captures a dependency from an unreachable repo`() {
+  fun `parseNoCachedVersionLines extracts coordinates from gradle offline error output`() {
+    // This is the REAL output gradle prints when running --offline and a dep
+    // is missing from the local cache. The fallback parser must extract it.
+    val stdout = """
+      > Could not resolve all artifacts for configuration ':classpath'.
+         > Could not resolve ru.kryptonite:code-quality-plugin:1.1.0.
+            Required by:
+                root project :
+            > No cached version of ru.kryptonite:code-quality-plugin:1.1.0 available for offline mode.
+            > No cached version of ru.kryptonite:code-quality-plugin:1.1.0 available for offline mode.
+         > Could not resolve org.gradle.toolchains:foojay-resolver:0.9.0.
+            > No cached version of org.gradle.toolchains:foojay-resolver:0.9.0 available for offline mode.
+    """.trimIndent()
+
+    val result = GradleResolver.parseNoCachedVersionLines(stdout)
+    val labels = result.map { "${it.g}:${it.n}:${it.v}" }
+
+    assertTrue(
+      "ru.kryptonite:code-quality-plugin:1.1.0" in labels,
+      "Must extract ru.kryptonite plugin: $labels"
+    )
+    assertTrue(
+      "org.gradle.toolchains:foojay-resolver:0.9.0" in labels,
+      "Must extract foojay-resolver: $labels"
+    )
+    // Deduplication: the ru.kryptonite entry appears twice in the output.
+    assertTrue(result.size == 2, "Must deduplicate: got ${result.size} entries: $labels")
+  }
+
+  @Test
+  fun `parseNoCachedVersionLines returns empty for clean output`() {
+    val result = GradleResolver.parseNoCachedVersionLines(
+      "BUILD SUCCESSFUL\n\nWelcome to Gradle 8.10.2.\n"
+    )
+    assertTrue(result.isEmpty(), "Clean output must yield no missing deps")
+  }
+
+  // ── Integration tests (fork real gradle) ─────────────────────────────────────
+
+  @Test
+  fun `resolveMissing offline captures a dependency not in local cache`() {
     if (!gradleAvailable()) {
-      println("[skip] gradle not on PATH — skipping resolveMissing integration test")
+      println("[skip] gradle not on PATH")
       return
     }
-
-    val project = mkTmp("proj")
-    // An empty LOCAL maven repo: resolution fails fast (artifact simply absent)
-    // with no network wait, deterministically reproducing "dome can't fetch it".
-    val emptyRepo = mkTmp("empty-repo")
-    val repoUrl = emptyRepo.toURI().toString()
-    File(project, "settings.gradle").writeText("rootProject.name = 'lgm-missing-probe'\n")
+    val project = mkTmp("offline-missing")
+    // A project that requests a unique coordinate that will NEVER be in the
+    // local cache. Running --offline makes gradle immediately report it missing.
+    File(project, "settings.gradle").writeText("rootProject.name = 'lgm-offline-probe'\n")
     File(project, "build.gradle").writeText(
       """
       plugins { id 'java' }
-      repositories {
-        // Only an empty local repo — the requested artifact is absent, so it
-        // can never resolve. Same effect as a corporate dep on the dome.
-        maven { url '$repoUrl' }
-      }
+      repositories { mavenLocal() }
       dependencies {
-        implementation 'com.corp.internal:secret-lib:9.9.9'
+        implementation 'com.lgm.test.never.exists:unique-dep-xyz:99.99.99'
       }
       """.trimIndent()
     )
 
-    val r = GradleResolver.resolveMissing(project, timeoutSec = 240)
+    val r = GradleResolver.resolveMissing(project, timeoutSec = 120)
 
-    // The unreachable dependency MUST be reported as missing.
     val labels = r.artifacts.map { "${it.g}:${it.n}:${it.v}" }
     assertTrue(
-      labels.any { it == "com.corp.internal:secret-lib:9.9.9" },
-      "Expected the unresolved corporate dep to be captured. ok=${r.ok} " +
-        "artifacts=$labels log=${r.log.takeLast(800)}"
+      labels.any { it.contains("unique-dep-xyz") },
+      "Must report the missing dep. ok=${r.ok} artifacts=$labels " +
+        "log=${r.log.takeLast(600)}"
     )
   }
 
   @Test
-  fun `resolveMissing on a fully-resolvable project reports nothing missing`() {
+  fun `resolveMissing on a project with no dependencies reports nothing`() {
     if (!gradleAvailable()) {
-      println("[skip] gradle not on PATH — skipping resolveMissing integration test")
+      println("[skip] gradle not on PATH")
       return
     }
-
-    val project = mkTmp("proj-ok")
-    // A project with NO external dependencies resolves cleanly → nothing missing.
+    val project = mkTmp("offline-clean")
     File(project, "settings.gradle").writeText("rootProject.name = 'lgm-clean-probe'\n")
     File(project, "build.gradle").writeText(
       """
       plugins { id 'java' }
-      repositories { mavenCentral() }
-      // no dependencies at all
+      // No repositories, no dependencies — nothing to fail offline.
       """.trimIndent()
     )
 
-    val r = GradleResolver.resolveMissing(project, timeoutSec = 240)
+    val r = GradleResolver.resolveMissing(project, timeoutSec = 120)
 
     assertTrue(
-      r.artifacts.none { it.n == "secret-lib" },
-      "A clean project must not report phantom missing deps: ${r.artifacts.map { it.n }}"
+      r.artifacts.none { it.n.contains("unique-dep-xyz") },
+      "A project with no deps must not report phantom missing: ${r.artifacts.map { it.n }}"
     )
   }
 }

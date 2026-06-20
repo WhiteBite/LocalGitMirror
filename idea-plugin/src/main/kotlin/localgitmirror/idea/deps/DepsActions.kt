@@ -272,11 +272,15 @@ class RespondDepsAction : AnAction() {
         }
 
         if (manifest.version < 2 || manifest.missing.isEmpty()) {
+          val detail = "v=${manifest.version} missing=${manifest.missing.size} eco='${manifest.ecosystem}'"
           notify(project,
-            "Запрос пуст или в старом формате (v${manifest.version}). " +
-              "Обнови плагин на домашней машине и повтори «Запросить».",
+            "Запрос пуст или в старом формате ($detail). " +
+              if (manifest.version < 2)
+                "Обнови плагин на домашней машине и повтори «Запросить»."
+              else
+                "Домашняя машина решила что ничего не нужно. Открой Help → Show Log, найди '[deps] request:' — там будет причина.",
             NotificationType.WARNING)
-          history.add("Deps respond", false, "empty/legacy manifest v${manifest.version}")
+          history.add("Deps respond", false, "empty/legacy manifest $detail")
           return
         }
 
