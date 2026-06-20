@@ -296,11 +296,40 @@ class RespondDepsAction : AnAction() {
         }
 
         if (entries.isEmpty()) {
+          // Build an actionable diagnostic so the cause is visible immediately,
+          // without digging through logs.
+          val scanned = DepsScanner.candidateCacheRoots()
+          val scanReport = scanned.joinToString("\n") { root ->
+            val exists = root.isDirectory
+            val count = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
+            val mark = if (exists) "есть ($count групп)" else "НЕТ такой папки"
+            "  • ${root.absolutePath} — $mark"
+          }
+          val sampleWanted = manifest.missing.take(5).joinToString("\n") { "  • ${it.ecosystem}: ${it.label}" }
+          val gradleEnv = System.getenv("GRADLE_USER_HOME") ?: "(не задана)"
+
+          DepsDiagnostics.event("respond: 0 found. GRADLE_USER_HOME=$gradleEnv scanned=${scanned.size}")
+          DepsDiagnostics.detail("Scanned cache roots") { scanned.map { it.absolutePath } }
+          DepsDiagnostics.detail("Requested (not found)") { manifest.missing.map { "${it.ecosystem} ${it.label}" } }
+
           notify(project,
-            "Ни одна из ${manifest.missing.size} запрошенных зависимостей не найдена в локальном кеше.\n" +
-              "Собери проект на рабочей машине (gradle build / npm install), чтобы они попали в кеш.",
+            buildString {
+              appendLine("Ни одна из ${manifest.missing.size} запрошенных зависимостей не найдена в кеше.")
+              appendLine()
+              appendLine("Искал в этих gradle/npm кешах:")
+              appendLine(scanReport)
+              appendLine()
+              appendLine("GRADLE_USER_HOME = $gradleEnv")
+              appendLine()
+              appendLine("Запрашивались (первые 5):")
+              appendLine(sampleWanted)
+              appendLine()
+              append("Если папки кеша пустые/нет — собери проект на ЭТОЙ машине (gradle build). " +
+                "Если кеш в другом месте, чем в списке — скажи мне его путь.")
+            },
             NotificationType.WARNING)
-          history.add("Deps respond", false, "0 of ${manifest.missing.size} found in cache")
+          history.add("Deps respond", false,
+            "0 of ${manifest.missing.size} found; scanned=${scanned.map { it.absolutePath }}")
           return
         }
 
