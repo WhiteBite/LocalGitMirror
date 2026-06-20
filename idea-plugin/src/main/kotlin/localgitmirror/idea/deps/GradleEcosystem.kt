@@ -86,5 +86,20 @@ object GradleEcosystem : DepsEcosystem {
     return out
   }
 
-  override fun cacheRoot(): File = DepsScanner.cacheRoot()
+  override fun cacheRoot(): File {
+    // If a project-dir hint is set, ask gradle for its real gradleUserHomeDir
+    // and prefer that cache root — this is the most reliable way to find the
+    // correct cache when GRADLE_USER_HOME is not set in the IDE environment
+    // (e.g. it's set in CMD but IntelliJ was launched via a launcher that
+    // doesn't inherit it, so the default ~/.gradle would be wrong).
+    val hintDir = collectProjectDir
+    if (hintDir != null) {
+      val discovered = try { GradleResolver.discoverGradleUserHome(hintDir) } catch (_: Throwable) { null }
+      if (discovered != null) {
+        val root = File(discovered, "caches/modules-2/files-2.1")
+        if (root.isDirectory) return root
+      }
+    }
+    return DepsScanner.cacheRoot()
+  }
 }
