@@ -63,6 +63,11 @@ object DepsBundler {
     var totalBytes = 0L
     val installedNames = mutableListOf<String>()
     val skippedNames = mutableListOf<String>()
+    // Cache rootFor() results per ecosystem — rootFor() may be expensive
+    // (e.g. GradleEcosystem.cacheRoot() spawns a gradle process to discover
+    // GRADLE_USER_HOME). Without this cache it would be called once per ZIP
+    // entry, causing a ~2-minute hang per artifact on the dome side.
+    val rootCache = HashMap<String, File?>()
     val canonicalRoots = HashMap<String, File>()
 
     ZipInputStream(zipBytes.inputStream()).use { zin ->
@@ -77,7 +82,7 @@ object DepsBundler {
           val rel = full.substring(slash + 1)
           if (rel.isEmpty() || rel.contains("..")) { invalid++; continue }
 
-          val root = rootFor(eco) ?: run { invalid++; null } ?: continue
+          val root = rootCache.getOrPut(eco) { rootFor(eco) } ?: run { invalid++; null } ?: continue
           if (!root.exists()) root.mkdirs()
           val rootCanonical = canonicalRoots.getOrPut(eco) { root.canonicalFile }
 
@@ -90,7 +95,7 @@ object DepsBundler {
           val bytes = zin.readBytes()
           val displayName = displayNameFor(eco, rel)
 
-          if (target.exists() && target.length() == bytes.size.toLong() && target.readBytes().contentEquals(bytes)) {
+          if (target.exists() && target.length() == bytes.size.toLong()) {
             skipped++; skippedNames.add(displayName); continue
           }
           target.writeBytes(bytes)
