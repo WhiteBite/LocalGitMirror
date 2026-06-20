@@ -3,10 +3,10 @@ package localgitmirror.idea.startup
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.WindowManager
 import localgitmirror.idea.deps.ApplyDepsAction
 import localgitmirror.idea.deps.RespondDepsAction
@@ -45,6 +45,15 @@ class PullCheckStartupActivity : ProjectActivity {
     private const val COOLDOWN_SEC = 120L
   }
 
+  /**
+   * Called once per project open. Must return QUICKLY — IntelliJ holds a
+   * ChildScope open for the duration of this suspend function, so any slow or
+   * never-completing work inside it will block project/IDE shutdown (the scope
+   * stays Active and the IDE waits for it to complete).
+   *
+   * Strategy: do all real work on daemon threads (won't block shutdown) and
+   * register the window-focus listener synchronously before returning.
+   */
   override suspend fun execute(project: Project) {
     val settings = service<MirrorSettingsService>().state
     if (!settings.autoCheckPullOnStartup) return
@@ -57,19 +66,19 @@ class PullCheckStartupActivity : ProjectActivity {
     val repoName = localgitmirror.idea.sync.v2.RepoResolver
       .resolve(project, dir, settings.repo).sanitized.ifBlank { project.name }
 
-    // Startup check on a DAEMON thread — never block the startup activity / EDT
-    // with network calls (Mirror may be unreachable and hang on timeout).
+    // Startup check on a DAEMON thread — never block the startup activity / EDT.
     runDaemon("lgm-startup-check") {
       try { checkForUpdates(project, dir, settings, repoName) } catch (_: Exception) {}
       try { checkForDeps(project, dir, settings, repoName) } catch (_: Exception) {}
     }
 
-    // Register window focus listener for subsequent checks, and REMOVE it when
-    // the project is disposed — otherwise the listener (and its captured
-    // project/settings) leaks and can block the project/IDE from closing.
+    // Register window focus listener. We use invokeLater but we do NOT await it —
+    // execute() returns immediately so the ChildScope is released right away.
+    // The listener is cleaned up via Disposer when the project closes.
     SwingUtilities.invokeLater {
       if (project.isDisposed) return@invokeLater
       val frame = WindowManager.getInstance().getFrame(project) ?: return@invokeLater
+
       val listener = object : WindowAdapter() {
         @Volatile private var lastCheckEpoch = System.currentTimeMillis() / 1000
         @Volatile private var lastDepsNotifyPendingMs = 0L
@@ -107,13 +116,17 @@ class PullCheckStartupActivity : ProjectActivity {
           }
         }
       }
+
       frame.addWindowFocusListener(listener)
 
-      // Tie listener removal to project disposal so nothing leaks / blocks close.
-      com.intellij.openapi.util.Disposer.register(project) {
+      // Remove listener when project closes — prevents the frame reference from
+      // keeping the project alive and blocking IDE shutdown.
+      Disposer.register(project) {
         try { frame.removeWindowFocusListener(listener) } catch (_: Throwable) {}
       }
     }
+    // execute() returns here immediately. The ChildScope is released.
+    // All work continues on daemon threads or in the window listener.
   }
 
   @Suppress("HttpCallOnEdt")
