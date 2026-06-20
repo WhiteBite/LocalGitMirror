@@ -108,11 +108,18 @@ def _responses_dir(repo: str) -> Path:
 # D1: Auto-TTL cleanup of stale blobs
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _cleanup_stale(directory: Path, max_age_seconds: int = 7 * 24 * 3600) -> int:
-    """Delete .bin files older than max_age_seconds. Returns count deleted."""
+def _cleanup_stale(directory: Path, max_age_seconds: int = 7 * 24 * 3600,
+                   now: Optional[float] = None) -> int:
+    """Delete .bin files strictly older than max_age_seconds. Returns count deleted.
+
+    `now` is injectable so tests can pin the reference time and assert the exact
+    boundary deterministically (otherwise wall-clock drift between setting a
+    file's mtime and reading time.time() makes the "exactly at TTL" case flaky).
+    """
     if not directory.exists():
         return 0
-    now = time.time()
+    if now is None:
+        now = time.time()
     deleted = 0
     for p in directory.iterdir():
         if not p.is_file() or not p.name.endswith(".bin"):
