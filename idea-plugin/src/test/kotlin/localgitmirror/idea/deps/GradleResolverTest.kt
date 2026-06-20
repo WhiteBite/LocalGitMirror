@@ -113,6 +113,59 @@ class GradleResolverTest {
     assertTrue(home != null && File(home).exists())
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // parseNoCachedVersionLines — stdout fallback parser
+  // ─────────────────────────────────────────────────────────────────────────
+
+  @Test
+  fun `parseNoCachedVersionLines extracts real coordinates`() {
+    val stdout = """
+      > No cached version of ru.kryptonite.build:kryptonite-gradle-plugin:1.1.0 available for offline mode.
+      > No cached version of org.springframework:spring-core:6.1.5 available for offline mode.
+    """.trimIndent()
+    val result = GradleResolver.parseNoCachedVersionLines(stdout)
+    assertEquals(2, result.size)
+    assertEquals("ru.kryptonite.build", result[0].g)
+    assertEquals("kryptonite-gradle-plugin", result[0].n)
+    assertEquals("1.1.0", result[0].v)
+  }
+
+  @Test
+  fun `parseNoCachedVersionLines skips plugin marker artifacts`() {
+    // Plugin markers (group.id.gradle.plugin) are POM-only redirects with no
+    // jar. They must be filtered out — requesting them from work would find
+    // nothing in files-2.1 because only the real implementation has a jar.
+    // This test catches the bug where we requested
+    //   ru.kryptonite:code-quality-plugin:1.1.0   (marker, no jar)
+    // instead of
+    //   ru.kryptonite.build:kryptonite-gradle-plugin:1.1.0  (real jar)
+    val stdout = """
+      > No cached version of ru.kryptonite.code-quality:ru.kryptonite.code-quality.gradle.plugin:1.1.0 available for offline mode.
+      > No cached version of ru.kryptonite.build:kryptonite-gradle-plugin:1.1.0 available for offline mode.
+    """.trimIndent()
+    val result = GradleResolver.parseNoCachedVersionLines(stdout)
+    // Marker must be skipped, real implementation must be kept
+    assertEquals(1, result.size, "Marker artifact must be filtered out, got: $result")
+    assertEquals("kryptonite-gradle-plugin", result[0].n)
+  }
+
+  @Test
+  fun `parseNoCachedVersionLines deduplicates repeated entries`() {
+    val stdout = """
+      > No cached version of com.example:lib:1.0 available for offline mode.
+      > No cached version of com.example:lib:1.0 available for offline mode.
+    """.trimIndent()
+    val result = GradleResolver.parseNoCachedVersionLines(stdout)
+    assertEquals(1, result.size)
+  }
+
+  @Test
+  fun `parseNoCachedVersionLines returns empty for unrelated output`() {
+    val stdout = "BUILD FAILED\nCould not resolve something else entirely"
+    val result = GradleResolver.parseNoCachedVersionLines(stdout)
+    assertTrue(result.isEmpty())
+  }
+
   @Test
   fun `resolve returns error when projectDir does not exist`() {
     val nope = File("/very/much/not/exist/lgm-test-resolver")

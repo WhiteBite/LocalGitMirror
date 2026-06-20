@@ -233,11 +233,12 @@ object GradleResolver {
    * Fallback parser for gradle's own error output when LenientConfiguration
    * doesn't fire. Gradle prints lines like:
    *   > No cached version of ru.kryptonite:code-quality-plugin:1.1.0 available for offline mode.
-   * We extract the coordinates from these.
+   * We extract the coordinates from these, skipping plugin-marker artifacts
+   * (those ending in `.gradle.plugin`) since they have no jar — the real
+   * implementation artifact is captured via other means.
    */
   internal fun parseNoCachedVersionLines(stdout: String): List<ResolvedArtifact> {
     // Matches: "No cached version of <g>:<n>:<v> available for offline mode"
-    // Version can contain dots, so we take everything up to the first space.
     val re = Regex("""No cached version of ([^:\s]+):([^:\s]+):([^\s]+)\s+available""")
     val seen = LinkedHashSet<String>()
     val out = mutableListOf<ResolvedArtifact>()
@@ -245,6 +246,8 @@ object GradleResolver {
       val g = m.groupValues[1].trim()
       val n = m.groupValues[2].trim()
       val v = m.groupValues[3].trim()
+      // Skip plugin-marker artifacts — they have no jar
+      if (n.endsWith(".gradle.plugin")) continue
       val key = "$g:$n:$v"
       if (seen.add(key)) out.add(ResolvedArtifact(g, n, v, f = ""))
     }
@@ -416,41 +419,97 @@ allprojects { p ->
   }
 
   /**
-   * Init-script for [resolveMissing]. Uses each resolvable configuration's
-   * LenientConfiguration to enumerate module dependencies that FAILED to
-   * resolve against the repositories available on this (dome) machine, plus
-   * the settings + buildscript classpaths (so unresolved PLUGINS are captured
-   * too — that's the foojay/spotless case).
+   * Init-script for [resolveMissing]. Detects artifacts that are NOT in the
+   * local Gradle cache (offline) so the dome can request them from work.
    *
-   * Emits one JSON line per unresolved coordinate with an EMPTY `f` (no local
-   * file — that's the point). [parseJsonLines] reuses the same shape.
+   * Two passes per configuration:
+   *
+   *   Pass 1 — "resolved but file missing": use resolutionResult (never throws,
+   *     works offline) to enumerate every component gradle KNOWS about in the
+   *     dependency graph, then check whether the file actually exists on disk.
+   *     This catches the common plugin case: gradle resolved the marker
+   *     (ru.kryptonite.code-quality.gradle.plugin) and recorded its real
+   *     implementation coordinates (ru.kryptonite.build:kryptonite-gradle-plugin)
+   *     in the resolution result — but the jar isn't cached locally. We emit the
+   *     REAL coordinates (from resolutionResult), not the marker coordinates.
+   *
+   *   Pass 2 — "unresolved": lenientConfiguration.unresolvedModuleDependencies
+   *     catches anything gradle couldn't even start resolving (e.g. completely
+   *     unknown version). We fall back to the selector coordinates for these.
+   *
+   * Emits one JSON line per missing coordinate with an EMPTY `f`.
    */
   private fun buildMissingInitScript(outputFile: File): String {
     val outPath = outputFile.absolutePath.replace('\\', '/')
     return """
-// LocalGitMirror init-script — records every module dependency that could NOT
-// be resolved on this machine (= corporate/internal artifacts to request).
+// LocalGitMirror init-script — records every artifact missing from the local
+// Gradle cache. Two-pass: resolutionResult (real coords, file-exists check)
+// + lenientConfiguration (truly unresolved deps).
 def lgmWriteMissing(out, group, name, version) {
-  if (version == null || version == 'null' || version == '') return
+  if (!group || !name || !version || version == 'null' || version == '') return
+  // Skip pure plugin-marker artifacts — they have no jar, the real impl is
+  // captured separately via resolutionResult.
+  if (name.endsWith('.gradle.plugin')) return
   out.write('{"g":"' + group + '","n":"' + name + '","v":"' + version + '","f":""}\n')
 }
 
-def lgmScanConf(out, conf) {
+// Pass 1: walk resolutionResult component graph, check files exist.
+// resolutionResult works offline and gives REAL (non-marker) coordinates.
+def lgmScanResolved(out, conf) {
   if (!conf.canBeResolved) return
   try {
-    def lenient = conf.resolvedConfiguration.lenientConfiguration
-    lenient.unresolvedModuleDependencies.each { dep ->
+    conf.incoming.resolutionResult.allComponents.each { component ->
+      def id = component.moduleVersion
+      if (!id) return
+      // Skip the root project itself and Gradle's own virtual components
+      if (id.group == 'unspecified' || id.version == 'unspecified' || id.version == '') return
+      if (id.name.endsWith('.gradle.plugin')) return
+      // Check whether any cached file for this g:n:v exists in the
+      // gradle user home. If none → it's missing → request it.
+      try {
+        def artifacts = conf.incoming.artifactView { config ->
+          config.componentFilter { c -> c.moduleVersion?.module == id.module }
+          config.lenient(true)
+        }.artifacts
+        artifacts.each { ra ->
+          if (!ra.file.exists()) {
+            lgmWriteMissing(out, id.group, id.name, id.version)
+          }
+        }
+        // If artifactView returned nothing for this component it means
+        // the file was never downloaded; still request it.
+        if (artifacts.isEmpty()) {
+          lgmWriteMissing(out, id.group, id.name, id.version)
+        }
+      } catch (Throwable ignored) {
+        // Fallback: if we can't check files, emit the coordinate anyway
+        // so it at least appears in the request.
+        lgmWriteMissing(out, id.group, id.name, id.version)
+      }
+    }
+  } catch (Throwable ignored) { }
+}
+
+// Pass 2: truly unresolved (unknown version, repo unreachable etc.)
+def lgmScanUnresolved(out, conf) {
+  if (!conf.canBeResolved) return
+  try {
+    conf.resolvedConfiguration.lenientConfiguration.unresolvedModuleDependencies.each { dep ->
       def sel = dep.selector
       lgmWriteMissing(out, sel.group, sel.name, sel.version)
     }
   } catch (Throwable ignored) { }
 }
 
+def lgmScanConf(out, conf) {
+  lgmScanResolved(out, conf)
+  lgmScanUnresolved(out, conf)
+}
+
 settingsEvaluated { settings ->
   def out = new java.io.FileWriter('$outPath', true)
   try {
-    // Record gradle's REAL user home so the plugin scans the exact cache the
-    // IDE used (env GRADLE_USER_HOME may differ from the IDE's setting).
+    // Record gradle's REAL user home so the plugin scans the exact cache.
     try { out.write('{"g":"__GUH__","n":"","v":"","f":"' + settings.gradle.gradleUserHomeDir.absolutePath.replace('\\', '/') + '"}\n') } catch (Throwable ignored) { }
     try { lgmScanConf(out, settings.buildscript.configurations.classpath) } catch (Throwable ignored) { }
   } finally { out.close() }
