@@ -17,7 +17,6 @@ All payloads are pre-encrypted by the plugin (BundleCrypto), so leaking
 the storage dir does not leak project deps.
 """
 import hashlib
-import os
 import re
 import time
 import uuid
@@ -118,15 +117,20 @@ def _cleanup_stale(directory: Path, max_age_seconds: int = 7 * 24 * 3600,
     """
     if not directory.exists():
         return 0
-    if now is None:
-        now = time.time()
+    # Work in integer nanoseconds end-to-end. Float seconds (time.time() /
+    # os.path.getmtime) don't round-trip through the filesystem exactly, so a
+    # file aged *exactly* max_age_seconds could read back as a few ns over the
+    # limit and be wrongly deleted. Integer ns (time.time_ns / st_mtime_ns) is
+    # exact and deterministic on every platform.
+    now_ns = time.time_ns() if now is None else int(now * 1_000_000_000)
+    max_age_ns = int(max_age_seconds * 1_000_000_000)
     deleted = 0
     for p in directory.iterdir():
         if not p.is_file() or not p.name.endswith(".bin"):
             continue
         try:
-            age = now - os.path.getmtime(p)
-            if age > max_age_seconds:
+            age_ns = now_ns - p.stat().st_mtime_ns
+            if age_ns > max_age_ns:
                 p.unlink()
                 deleted += 1
         except OSError:

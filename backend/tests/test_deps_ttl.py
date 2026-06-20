@@ -26,9 +26,14 @@ def _write_blob(directory: Path, name: str, content: bytes = b"x") -> Path:
 
 
 def _set_age_at(path: Path, age_seconds: float, now: float = NOW) -> None:
-    """Set mtime so that, relative to `now`, the file is exactly age_seconds old."""
-    mtime = now - age_seconds
-    os.utime(path, (mtime, mtime))
+    """Set mtime so that, relative to `now`, the file is exactly age_seconds old.
+
+    Uses integer nanoseconds (os.utime ns=...) so the value round-trips through
+    the filesystem exactly and the "exactly at TTL" boundary is deterministic on
+    every platform — float seconds don't round-trip precisely on all filesystems.
+    """
+    mtime_ns = int((now - age_seconds) * 1_000_000_000)
+    os.utime(path, ns=(mtime_ns, mtime_ns))
 
 
 # ── basic happy path ──────────────────────────────────────────────────────────
