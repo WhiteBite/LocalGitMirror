@@ -33,7 +33,9 @@ object GradleResolver {
     val ok: Boolean,
     val artifacts: List<ResolvedArtifact>,
     val log: String,
-    val durationMs: Long
+    val durationMs: Long,
+    /** Gradle's real `gradleUserHomeDir` as reported by the init-script (may be null). */
+    val gradleUserHome: String? = null
   )
 
   /**
@@ -195,13 +197,17 @@ object GradleResolver {
           "gradle resolveMissing timed out after ${timeoutSec}s\n${run.stdout.takeLast(2000)}",
           System.currentTimeMillis() - started)
       }
-      val missing = parseJsonLines(outputFile)
+      val parsed = parseJsonLines(outputFile)
+      // Extract the gradle-user-home marker emitted by the init-script.
+      val guh = parsed.firstOrNull { it.g == "__GUH__" }?.f?.takeIf { it.isNotBlank() }
+      val missing = parsed.filter { it.g != "__GUH__" }
       if (missing.isNotEmpty()) {
         return Result(
           ok = true,
           artifacts = missing,
           log = run.stdout.takeLast(4000) + run.javaHomeNote,
-          durationMs = System.currentTimeMillis() - started
+          durationMs = System.currentTimeMillis() - started,
+          gradleUserHome = guh
         )
       }
       // Init-script got nothing but gradle still failed → parse stdout for
@@ -213,7 +219,8 @@ object GradleResolver {
         artifacts = fallback,
         log = run.stdout.takeLast(4000) + run.javaHomeNote +
           if (fallback.isNotEmpty()) "\n[fallback: parsed ${fallback.size} from stdout]" else "",
-        durationMs = System.currentTimeMillis() - started
+        durationMs = System.currentTimeMillis() - started,
+        gradleUserHome = guh
       )
     } catch (t: Throwable) {
       return Result(false, emptyList(), "gradle resolveMissing failed: ${t.message}", System.currentTimeMillis() - started)
@@ -409,6 +416,9 @@ def lgmScanConf(out, conf) {
 settingsEvaluated { settings ->
   def out = new java.io.FileWriter('$outPath', true)
   try {
+    // Record gradle's REAL user home so the plugin scans the exact cache the
+    // IDE used (env GRADLE_USER_HOME may differ from the IDE's setting).
+    try { out.write('{"g":"__GUH__","n":"","v":"","f":"' + settings.gradle.gradleUserHomeDir.absolutePath.replace('\\', '/') + '"}\n') } catch (Throwable ignored) { }
     try { lgmScanConf(out, settings.buildscript.configurations.classpath) } catch (Throwable ignored) { }
   } finally { out.close() }
 }

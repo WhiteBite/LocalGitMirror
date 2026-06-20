@@ -39,13 +39,21 @@ object GradleEcosystem : DepsEcosystem {
     coordinates: List<DepCoordinate>,
     onMissingLocally: (DepCoordinate) -> Unit
   ): List<DepFileEntry> {
-    val root = cacheRoot()
     val want = coordinates.filter { it.ecosystem == id }
       .associateBy { "${it.group}:${it.name}:${it.version}" }
     if (want.isEmpty()) return emptyList()
 
-    // Scan the whole cache once, then group by g:n:v.
-    val byGnv = DepsScanner.scan(root).groupBy { "${it.group}:${it.name}:${it.version}" }
+    // Scan ALL candidate gradle caches (env GRADLE_USER_HOME, IDE setting,
+    // default ~/.gradle). The IDE may have built into a different gradle-home
+    // than our env inherited, so we must look in every one — not just cacheRoot().
+    val allArtifacts = DepsScanner.scanAllCandidates()
+    val byGnv = allArtifacts.groupBy { "${it.group}:${it.name}:${it.version}" }
+
+    val scannedRoots = DepsScanner.candidateCacheRoots()
+      .filter { it.isDirectory }.joinToString(", ") { it.absolutePath }
+    DepsDiagnostics.event(
+      "gradle collect: scanned cache(s)=[$scannedRoots] totalArtifacts=${allArtifacts.size} wanted=${want.size}"
+    )
 
     val out = mutableListOf<DepFileEntry>()
     for ((gnv, coord) in want) {
