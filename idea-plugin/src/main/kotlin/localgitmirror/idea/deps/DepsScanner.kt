@@ -146,8 +146,12 @@ object DepsScanner {
    * whichever gradle-user-home the IDE actually used (env var, IDE setting,
    * default ~/.gradle), and we don't reliably know which one — so we look in all.
    */
-  fun scanAllCandidates(onlyGroupSubstrings: List<String> = emptyList()): List<Artifact> {
-    val roots = candidateCacheRoots().filter { it.isDirectory }.distinctBy { it.canonicalPath }
+  fun scanAllCandidates(
+    onlyGroupSubstrings: List<String> = emptyList(),
+    extraRoots: List<File> = emptyList()
+  ): List<Artifact> {
+    val roots = (extraRoots + candidateCacheRoots())
+      .filter { it.isDirectory }.distinctBy { it.canonicalPath }
     if (roots.isEmpty()) return emptyList()
     val seen = LinkedHashSet<String>()
     val out = mutableListOf<Artifact>()

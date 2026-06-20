@@ -286,6 +286,10 @@ class RespondDepsAction : AnAction() {
 
         // Collect requested coordinates from local caches, grouped by ecosystem.
         indicator.text = "Ищем ${manifest.missing.size} координат в локальном кеше…"
+        // Hint the gradle ecosystem with the project dir so it can ask gradle
+        // for its REAL gradleUserHomeDir and scan that cache too.
+        val workProjectDir = project.basePath?.let { File(it) }
+        GradleEcosystem.collectProjectDir = workProjectDir
         val byEco = manifest.missing.groupBy { it.ecosystem }
         val entries = mutableListOf<DepFileEntry>()
         val notFound = mutableListOf<DepCoordinate>()
@@ -294,42 +298,53 @@ class RespondDepsAction : AnAction() {
           if (eco == null) { notFound.addAll(coords); continue }
           entries.addAll(eco.collect(coords) { notFound.add(it) })
         }
+        GradleEcosystem.collectProjectDir = null
 
         if (entries.isEmpty()) {
-          // Build an actionable diagnostic so the cause is visible immediately,
-          // without digging through logs.
+          // Write a full diagnostic into the History (acts as a visible log) so
+          // the user can see EXACTLY where we looked and what we wanted, without
+          // touching the IDE log files.
           val scanned = DepsScanner.candidateCacheRoots()
-          val scanReport = scanned.joinToString("\n") { root ->
-            val exists = root.isDirectory
-            val count = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
-            val mark = if (exists) "есть ($count групп)" else "НЕТ такой папки"
-            "  • ${root.absolutePath} — $mark"
-          }
-          val sampleWanted = manifest.missing.take(5).joinToString("\n") { "  • ${it.ecosystem}: ${it.label}" }
           val gradleEnv = System.getenv("GRADLE_USER_HOME") ?: "(не задана)"
+          val gradleReported = workProjectDir?.let {
+            try { GradleResolver.discoverGradleUserHome(it) } catch (_: Throwable) { null }
+          } ?: "(не определён)"
 
+          history.add("Deps respond", false,
+            "0 из ${manifest.missing.size} найдено. GRADLE_USER_HOME=$gradleEnv | gradle сообщил=$gradleReported")
+          history.add("Deps: кеши", false,
+            "Просканировано ${scanned.size} кеш-путей (см. ниже)")
+          scanned.forEach { root ->
+            val exists = root.isDirectory
+            val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
+            val mark = if (exists) "OK, групп=$groups" else "НЕТ такой папки"
+            history.add("Deps: кеш-путь", exists, "$mark — ${root.absolutePath}")
+          }
+          manifest.missing.take(15).forEach {
+            history.add("Deps: запрошено", false, "${it.ecosystem}: ${it.label}")
+          }
+
+          // Diagnostics sink (IDE log + optional file) too.
           DepsDiagnostics.event("respond: 0 found. GRADLE_USER_HOME=$gradleEnv scanned=${scanned.size}")
           DepsDiagnostics.detail("Scanned cache roots") { scanned.map { it.absolutePath } }
           DepsDiagnostics.detail("Requested (not found)") { manifest.missing.map { "${it.ecosystem} ${it.label}" } }
 
+          val scanReport = scanned.joinToString("\n") { root ->
+            val exists = root.isDirectory
+            val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
+            "  • ${root.absolutePath} — ${if (exists) "есть ($groups групп)" else "НЕТ"}"
+          }
           notify(project,
             buildString {
-              appendLine("Ни одна из ${manifest.missing.size} запрошенных зависимостей не найдена в кеше.")
+              appendLine("Ни одна из ${manifest.missing.size} зависимостей не найдена в кеше.")
+              appendLine("Подробности записаны в Историю (панель плагина).")
               appendLine()
-              appendLine("Искал в этих gradle/npm кешах:")
+              appendLine("Искал в:")
               appendLine(scanReport)
               appendLine()
-              appendLine("GRADLE_USER_HOME = $gradleEnv")
-              appendLine()
-              appendLine("Запрашивались (первые 5):")
-              appendLine(sampleWanted)
-              appendLine()
-              append("Если папки кеша пустые/нет — собери проект на ЭТОЙ машине (gradle build). " +
-                "Если кеш в другом месте, чем в списке — скажи мне его путь.")
+              append("GRADLE_USER_HOME = $gradleEnv")
             },
             NotificationType.WARNING)
-          history.add("Deps respond", false,
-            "0 of ${manifest.missing.size} found; scanned=${scanned.map { it.absolutePath }}")
           return
         }
 
