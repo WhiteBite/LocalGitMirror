@@ -492,7 +492,21 @@ class ApplyDepsAction : AnAction() {
         indicator.text = "Расшифровка и распаковка…"
         val unpackResult = try {
           val decrypted = BundleCrypto.decryptDumpBytes(tmpResp.readBytes(), syncPwd)
-          DepsBundler.unpackRouted(decrypted) { ecoId -> DepsEcosystems.byId(ecoId)?.cacheRoot() }
+          // Hint the gradle ecosystem with the project dir so it resolves
+          // cacheRoot() via discoverGradleUserHome — same logic as in collect().
+          // This ensures artifacts land in the REAL gradle home (e.g.
+          // D:\gradle-8.10.2\.gradle) even when GRADLE_USER_HOME isn't set in
+          // the IDE process environment.
+          val applyProjectDir = project.basePath?.let { java.io.File(it) }
+          GradleEcosystem.collectProjectDir = applyProjectDir
+          try {
+            DepsBundler.unpackRouted(decrypted) { ecoId ->
+              val eco = DepsEcosystems.byId(ecoId) ?: return@unpackRouted null
+              eco.cacheRoot()
+            }
+          } finally {
+            GradleEcosystem.collectProjectDir = null
+          }
         } catch (t: Throwable) {
           notify(project, "Ошибка применения: ${t.message ?: t::class.simpleName}", NotificationType.ERROR)
           history.add("Deps apply", false, "decrypt/unpack failed: ${t.message}")
