@@ -149,13 +149,26 @@ object GradleResolver {
   }
 
   /**
-   * DOME side. Run gradle with `--refresh-dependencies` and an init-script that
-   * records every *unresolved* module dependency (via LenientConfiguration).
-   * On the dome, corporate-only artifacts fail to resolve and show up here —
-   * giving us the exact, machine-independent set to request from work.
+   * DOME side. Determine which artifacts the project needs but are NOT in the
+   * local gradle cache — i.e. the corporate deps that must be requested from work.
    *
-   * Returns coordinates as [GradleResolver.ResolvedArtifact] with an empty `f`
-   * (no local file — that's the whole point), so callers can reuse parsing.
+   * Strategy (two-pass):
+   *
+   *   1. Run gradle with `--offline` + the missing-init-script.
+   *      `--offline` forces gradle to use only the local cache. Any dependency
+   *      not cached locally causes gradle to report it via
+   *      `LenientConfiguration.unresolvedModuleDependencies` (or fail hard).
+   *      This is exact: a dep that IS cached is not reported as missing.
+   *      This is correct: a dep missing from cache IS what we need to ship.
+   *
+   *      The previous `--refresh-dependencies` (online) approach failed because
+   *      when the corporate Nexus is unreachable (expected on the dome), gradle
+   *      crashes with a network exception BEFORE the init-script can record
+   *      anything, so we got empty results.
+   *
+   *   2. If the init-script captured nothing but gradle exited non-zero,
+   *      fall back to parsing stdout for "No cached version" lines —
+   *      gradle's own error messages name the missing coordinates exactly.
    */
   fun resolveMissing(
     projectDir: File,
@@ -173,10 +186,9 @@ object GradleResolver {
         initScriptContent = buildMissingInitScript(outputFile),
         timeoutSec = timeoutSec,
         javaHome = javaHome,
-        // --refresh-dependencies forces a real resolve attempt against the
-        // repos available HERE, so corporate deps actually fail (not served
-        // stale from cache).
-        extraArgs = listOf("--refresh-dependencies")
+        // --offline: use only local cache. Deps not in cache → unresolved.
+        // This is the correct signal: "what the dome doesn't have".
+        extraArgs = listOf("--offline")
       )
       if (run.timedOut) {
         return Result(false, emptyList(),
@@ -184,14 +196,23 @@ object GradleResolver {
           System.currentTimeMillis() - started)
       }
       val missing = parseJsonLines(outputFile)
-      // Note: exit code may be non-zero when a config fails hard; we still trust
-      // whatever the init-script managed to record. "ok" means we got a usable
-      // signal (either clean run, or at least some unresolved entries captured).
-      val ok = run.exitCode == 0 || missing.isNotEmpty()
+      if (missing.isNotEmpty()) {
+        return Result(
+          ok = true,
+          artifacts = missing,
+          log = run.stdout.takeLast(4000) + run.javaHomeNote,
+          durationMs = System.currentTimeMillis() - started
+        )
+      }
+      // Init-script got nothing but gradle still failed → parse stdout for
+      // "No cached version of <g>:<n>:<v>" lines (gradle's own error output).
+      val fallback = parseNoCachedVersionLines(run.stdout)
+      val ok = run.exitCode == 0 || fallback.isNotEmpty()
       return Result(
         ok = ok,
-        artifacts = missing,
-        log = run.stdout.takeLast(4000) + run.javaHomeNote,
+        artifacts = fallback,
+        log = run.stdout.takeLast(4000) + run.javaHomeNote +
+          if (fallback.isNotEmpty()) "\n[fallback: parsed ${fallback.size} from stdout]" else "",
         durationMs = System.currentTimeMillis() - started
       )
     } catch (t: Throwable) {
@@ -199,6 +220,28 @@ object GradleResolver {
     } finally {
       try { outputFile.delete() } catch (_: Exception) {}
     }
+  }
+
+  /**
+   * Fallback parser for gradle's own error output when LenientConfiguration
+   * doesn't fire. Gradle prints lines like:
+   *   > No cached version of ru.kryptonite:code-quality-plugin:1.1.0 available for offline mode.
+   * We extract the coordinates from these.
+   */
+  internal fun parseNoCachedVersionLines(stdout: String): List<ResolvedArtifact> {
+    // Matches: "No cached version of <g>:<n>:<v> available for offline mode"
+    // Version can contain dots, so we take everything up to the first space.
+    val re = Regex("""No cached version of ([^:\s]+):([^:\s]+):([^\s]+)\s+available""")
+    val seen = LinkedHashSet<String>()
+    val out = mutableListOf<ResolvedArtifact>()
+    for (m in re.findAll(stdout)) {
+      val g = m.groupValues[1].trim()
+      val n = m.groupValues[2].trim()
+      val v = m.groupValues[3].trim()
+      val key = "$g:$n:$v"
+      if (seen.add(key)) out.add(ResolvedArtifact(g, n, v, f = ""))
+    }
+    return out
   }
 
   /**
