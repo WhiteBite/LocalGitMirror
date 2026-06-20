@@ -60,6 +60,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so `git rev-list --count` sees all commits
 
       - uses: actions/setup-java@v4
         with:
@@ -72,7 +74,7 @@ jobs:
 
       - name: Build plugin
         working-directory: idea-plugin
-        run: gradle buildPlugin --no-daemon -PbuildNumber=${{ github.run_number }}
+        run: gradle buildPlugin --no-daemon
 
       - name: Upload plugin zip
         uses: actions/upload-artifact@v4
@@ -89,6 +91,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history to compute the same commit-count version
+
+      - name: Compute version (commit count — matches the plugin)
+        id: ver
+        run: echo "version=0.$(git rev-list --count HEAD).0" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts/
@@ -100,10 +110,11 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: Build #${{ github.run_number }}
+          tag_name: v${{ steps.ver.outputs.version }}
+          name: v${{ steps.ver.outputs.version }}
           body: |
             Auto-build from commit `${{ github.sha }}`
+            Plugin version: `${{ steps.ver.outputs.version }}` (derived from git commit count — identical to a local build of the same commit)
 
             **Artifacts:**
             - `frontend-dist.zip` — built frontend (Vite)

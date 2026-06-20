@@ -7,26 +7,38 @@ plugins {
 
 group = "localgitmirror"
 
-// Version resolution (in priority order):
-//   1. -PbuildNumber=<N>  gradle property (passed by CI: github.run_number)
-//   2. BUILD_NUMBER env var
-//   3. local .build_number file (dev machines, auto-incremented on buildPlugin)
-// This avoids the "always 0.1.0" bug when .build_number is gitignored and
-// therefore absent in CI checkouts.
-val buildNumberFile = file(".build_number")
-val ciBuildNumber: Int? =
-  (project.findProperty("buildNumber") as String?)?.toIntOrNull()
-    ?: System.getenv("BUILD_NUMBER")?.toIntOrNull()
-val localBuildNumber: Int = if (buildNumberFile.exists()) {
-  buildNumberFile.readText().trim().toIntOrNull() ?: 0
-} else 0
-// CI: version = 0.<run_number>.0 (deterministic, unique per run)
-// Local: version = 0.<localBuildNumber + 1>.0
-version = if (ciBuildNumber != null) {
-  "0.${ciBuildNumber}.0"
-} else {
-  "0.${localBuildNumber + 1}.0"
+// ── Version: derived from git commit count — single source of truth ──────────
+// version = 0.<number-of-commits>.0
+//
+// Why this is the right approach:
+//   * AUTO-INCREMENT: every commit bumps the count, so every push gets a new
+//     version with zero manual work and no counter file to maintain.
+//   * IDENTICAL EVERYWHERE: commit count is a property of the git history
+//     itself — the SAME commit yields the SAME version on the dome laptop, the
+//     work laptop, and in CI. No more "local 0.50 vs release 0.31" drift.
+//   * Falls back to a VERSION file, then 0.0.0, when git history isn't available
+//     (e.g. building from a source zip without .git, or a shallow CI checkout).
+//
+// CI note: the checkout must use fetch-depth: 0 so the full history is present;
+// otherwise `git rev-list --count` only sees the shallow clone.
+fun gitCommitCount(): Int? = try {
+  val proc = ProcessBuilder("git", "rev-list", "--count", "HEAD")
+    .directory(rootDir)
+    .redirectErrorStream(true)
+    .start()
+  val out = proc.inputStream.bufferedReader().readText().trim()
+  if (proc.waitFor() == 0) out.toIntOrNull() else null
+} catch (_: Exception) { null }
+
+val resolvedVersion: String = run {
+  val count = gitCommitCount()
+  when {
+    count != null -> "0.$count.0"
+    file("VERSION").exists() -> file("VERSION").readText().trim()
+    else -> "0.0.0"
+  }
 }
+version = resolvedVersion
 
 repositories {
   mavenCentral()
@@ -64,15 +76,7 @@ tasks {
 
   named("buildPlugin") {
     doLast {
-      // Only bump the local counter for dev builds (not CI, which uses run_number)
-      if (ciBuildNumber == null) {
-        val f = file(".build_number")
-        val cur = if (f.exists()) f.readText().trim().toIntOrNull() ?: 0 else 0
-        f.writeText((cur + 1).toString())
-        println("==> Built plugin version: $version  (next dev build will be 0.${cur + 2}.0)")
-      } else {
-        println("==> Built plugin version: $version  (CI build #$ciBuildNumber)")
-      }
+      println("==> Built plugin version: $version  (derived from git commit count)")
     }
   }
 
