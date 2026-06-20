@@ -3,6 +3,7 @@ package localgitmirror.idea.startup
 import com.intellij.notification.NotificationAction
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
@@ -32,6 +33,11 @@ fun shouldNotifyPending(count: Int, lastNotified: Long, nowMillis: Long, cooldow
   return (nowMillis - lastNotified) >= cooldownMs
 }
 
+/** Daemon-threaded runner so background network work never blocks IDE shutdown. */
+private fun runDaemon(name: String, block: () -> Unit) {
+  Thread(block, name).apply { isDaemon = true }.start()
+}
+
 class PullCheckStartupActivity : ProjectActivity {
 
   companion object {
@@ -51,27 +57,30 @@ class PullCheckStartupActivity : ProjectActivity {
     val repoName = localgitmirror.idea.sync.v2.RepoResolver
       .resolve(project, dir, settings.repo).sanitized.ifBlank { project.name }
 
-    // Single check on startup
-    checkForUpdates(project, dir, settings, repoName)
-    checkForDeps(project, dir, settings, repoName)
+    // Startup check on a DAEMON thread — never block the startup activity / EDT
+    // with network calls (Mirror may be unreachable and hang on timeout).
+    runDaemon("lgm-startup-check") {
+      try { checkForUpdates(project, dir, settings, repoName) } catch (_: Exception) {}
+      try { checkForDeps(project, dir, settings, repoName) } catch (_: Exception) {}
+    }
 
-    // Register window focus listener for subsequent checks
+    // Register window focus listener for subsequent checks, and REMOVE it when
+    // the project is disposed — otherwise the listener (and its captured
+    // project/settings) leaks and can block the project/IDE from closing.
     SwingUtilities.invokeLater {
+      if (project.isDisposed) return@invokeLater
       val frame = WindowManager.getInstance().getFrame(project) ?: return@invokeLater
-      frame.addWindowFocusListener(object : WindowAdapter() {
-        @Volatile
-        private var lastCheckEpoch = System.currentTimeMillis() / 1000
-        @Volatile
-        private var lastDepsNotifyPendingMs = 0L
-        @Volatile
-        private var lastDepsNotifyResponsesMs = 0L
+      val listener = object : WindowAdapter() {
+        @Volatile private var lastCheckEpoch = System.currentTimeMillis() / 1000
+        @Volatile private var lastDepsNotifyPendingMs = 0L
+        @Volatile private var lastDepsNotifyResponsesMs = 0L
 
         override fun windowGainedFocus(e: WindowEvent?) {
+          if (project.isDisposed) return
           val now = System.currentTimeMillis() / 1000
           if (now - lastCheckEpoch < COOLDOWN_SEC) return
           lastCheckEpoch = now
 
-          // Re-read settings in case they changed
           val s = service<MirrorSettingsService>().state
           if (!s.autoCheckPullOnStartup) return
           if (s.baseUrl.isBlank()) return
@@ -79,11 +88,9 @@ class PullCheckStartupActivity : ProjectActivity {
           val repo = localgitmirror.idea.sync.v2.RepoResolver
             .resolve(project, dir, s.repo).sanitized.ifBlank { project.name }
 
-          // Run checks on background thread to not block UI
-          Thread({
-            try {
-              checkForUpdates(project, dir, s, repo)
-            } catch (_: Exception) {}
+          runDaemon("lgm-focus-check") {
+            if (project.isDisposed) return@runDaemon
+            try { checkForUpdates(project, dir, s, repo) } catch (_: Exception) {}
             try {
               val nowMs = System.currentTimeMillis()
               checkForDepsWithCooldown(
@@ -97,9 +104,15 @@ class PullCheckStartupActivity : ProjectActivity {
                 if (newResponsesMs > 0) lastDepsNotifyResponsesMs = newResponsesMs
               }
             } catch (_: Exception) {}
-          }, "sync-focus-check").start()
+          }
         }
-      })
+      }
+      frame.addWindowFocusListener(listener)
+
+      // Tie listener removal to project disposal so nothing leaks / blocks close.
+      com.intellij.openapi.util.Disposer.register(project) {
+        try { frame.removeWindowFocusListener(listener) } catch (_: Throwable) {}
+      }
     }
   }
 

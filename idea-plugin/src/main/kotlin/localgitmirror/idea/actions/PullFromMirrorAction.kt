@@ -558,8 +558,8 @@ class PullFromMirrorAction : AnAction() {
     localgitmirror.idea.sync.SyncLogger.log(workDir, "Exec: git ${args.joinToString(" ")}")
     val p = ProcessBuilder(listOf("git", *args)).directory(workDir).redirectErrorStream(false).start()
     val stdoutSb = StringBuilder(); val stderrSb = StringBuilder()
-    val t1 = Thread { stdoutSb.append(p.inputStream.bufferedReader().readText()) }
-    val t2 = Thread { stderrSb.append(p.errorStream.bufferedReader().readText()) }
+    val t1 = Thread { stdoutSb.append(p.inputStream.bufferedReader().readText()) }.apply { isDaemon = true }
+    val t2 = Thread { stderrSb.append(p.errorStream.bufferedReader().readText()) }.apply { isDaemon = true }
     t1.start(); t2.start()
     p.waitFor(300, TimeUnit.SECONDS)
     t1.join(); t2.join()
