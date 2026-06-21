@@ -503,12 +503,15 @@ def cmd_apply(args):
     raw = decrypt_bundle(tmp.read_bytes(), password)
     tmp.unlink(missing_ok=True)
 
-    # determine target cache root
-    roots = gradle_candidate_roots()
-    target = next((r for r in roots if r.is_dir()), roots[0] if roots else None)
-    if target is None:
-        sys.exit("No gradle cache root found")
+    # New protocol (v0.65+): receivers go to ~/.m2/repository under maven-local
+    # layout. The init-script ~/.gradle/init.d/lgm-mavenlocal-fallback.gradle
+    # makes them resolvable from gradle even with --offline.
+    target = maven_local_root()
+    target.mkdir(parents=True, exist_ok=True)
     print(f"  Target cache: {target}")
+
+    # Auto-install the init-script if it's missing/stale (same logic as plugin).
+    _ensure_mavenlocal_init_script()
 
     if args.dry_run:
         with zipfile.ZipFile(__import__("io").BytesIO(raw)) as zf:
@@ -542,6 +545,435 @@ def cmd_apply(args):
     print("  ACK sent.")
 
 
+# ── deps request (CLI equivalent of plugin's RequestDepsAction) ──────────────
+#
+# Goal: reproduce the plugin's "Request missing deps" flow without IDE.
+#   1. Run gradle on the project with the same missing-init-script the plugin
+#      uses. Yields a list of (g, n, v) the project needs but cannot resolve
+#      offline.
+#   2. Filter that list against everything the local cache actually has
+#      (g:n:v in cachedCoords) and against the project's own subprojects —
+#      same logic GradleEcosystem.resolveMissing applies.
+#   3. Build `present` from the local cache, applying the same shipability
+#      rules the work side will use (drop sources/javadoc/tests; pick the
+#      freshest sha-dir per kind). Same rules on both sides → identical keys.
+#   4. JSON-encode the v3 manifest, AES-GCM encrypt it with SYNC_PASSWORD,
+#      multipart-POST to /api/deps/request.
+#
+# After this the work machine will see a new pending request and can run
+# `python lgm.py respond` to ship the missing artifacts.
+
+_GRADLE_INIT_SCRIPT = r"""
+def lgmWriteMissing(out, group, name, version) {
+  if (!group || !name || !version || version == 'null' || version == '') return
+  if (name.endsWith('.gradle.plugin')) return
+  out.write('{"g":"' + group + '","n":"' + name + '","v":"' + version + '","f":""}\n')
+}
+
+def lgmScanResolved(out, conf) {
+  if (!conf.canBeResolved) return
+  try {
+    conf.incoming.resolutionResult.allComponents.each { component ->
+      def id = component.moduleVersion
+      if (!id) return
+      if (id.group == 'unspecified' || id.version == 'unspecified' || id.version == '') return
+      if (id.name.endsWith('.gradle.plugin')) return
+      try {
+        def artifacts = conf.incoming.artifactView { config ->
+          config.componentFilter { c -> c.moduleVersion?.module == id.module }
+          config.lenient(true)
+        }.artifacts
+        artifacts.each { ra ->
+          if (!ra.file.exists()) {
+            lgmWriteMissing(out, id.group, id.name, id.version)
+          }
+        }
+      } catch (Throwable ignored) { }
+    }
+  } catch (Throwable ignored) { }
+}
+
+def lgmScanUnresolved(out, conf) {
+  if (!conf.canBeResolved) return
+  try {
+    conf.resolvedConfiguration.lenientConfiguration.unresolvedModuleDependencies.each { dep ->
+      def sel = dep.selector
+      lgmWriteMissing(out, sel.group, sel.name, sel.version)
+    }
+  } catch (Throwable ignored) { }
+}
+
+def lgmScanConf(out, conf) {
+  lgmScanResolved(out, conf)
+  lgmScanUnresolved(out, conf)
+}
+
+settingsEvaluated { settings ->
+  def out = new java.io.FileWriter('__OUT__', true)
+  try {
+    try { out.write('{"g":"__GUH__","n":"","v":"","f":"' + settings.gradle.gradleUserHomeDir.absolutePath.replace('\\', '/') + '"}\n') } catch (Throwable ignored) { }
+    try { lgmScanConf(out, settings.buildscript.configurations.classpath) } catch (Throwable ignored) { }
+  } finally { out.close() }
+}
+
+allprojects { p ->
+  p.afterEvaluate {
+    def out = new java.io.FileWriter('__OUT__', true)
+    try {
+      p.configurations.each { conf -> lgmScanConf(out, conf) }
+      try { lgmScanConf(out, p.buildscript.configurations.classpath) } catch (Throwable ignored) { }
+    } finally { out.close() }
+  }
+}
+"""
+
+# Mirrors GradleEcosystem.classifyArtifact + pickShipableArtifacts.
+_DOC_SUFFIXES = ("-sources.jar", "-javadoc.jar", "-tests.jar", "-test.jar")
+
+def _classify_artifact(file_name: str) -> str | None:
+    """None = drop. Otherwise returns a kind tag for grouping."""
+    lower = file_name.lower()
+    if any(lower.endswith(s) for s in _DOC_SUFFIXES):
+        return None
+    if lower.endswith(".jar"):    return "jar"
+    if lower.endswith(".pom"):    return "pom"
+    if lower.endswith(".module"): return "module"
+    if lower.endswith(".aar"):    return "aar"
+    if lower.endswith(".klib"):   return "klib"
+    return "other"
+
+def _pick_shipable(arts: list[dict]) -> list[dict]:
+    """For one g:n:v, pick freshest file per kind, drop docs/tests/sources."""
+    by_kind: dict[str, list[dict]] = {}
+    for a in arts:
+        kind = _classify_artifact(a["file"])
+        if kind is None:
+            continue
+        by_kind.setdefault(kind, []).append(a)
+    out = []
+    for group in by_kind.values():
+        # mtime descending, then path for stable tie-break
+        group.sort(key=lambda a: (-Path(a["path"]).stat().st_mtime, a["path"]))
+        out.append(group[0])
+    return out
+
+def maven_local_root() -> Path:
+    return Path.home() / ".m2" / "repository"
+
+def _sha1_of(path: Path) -> str:
+    h = hashlib.sha1()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(8192)
+            if not chunk: break
+            h.update(chunk)
+    return h.hexdigest()
+
+def scan_maven_local(root: Path | None = None) -> list[dict]:
+    """
+    Scan ~/.m2/repository/. Returns artifacts in the same dict shape as
+    scan_cache(). Heuristic for version-dir: any file matching <parent>-<this>.*.
+    SHA-1 is computed from file bytes (gradle's content-address scheme — the
+    sha-dir name in caches/modules-2/files-2.1 IS this same digest).
+    """
+    if root is None:
+        root = maven_local_root()
+    if not root.is_dir(): return []
+    out = []
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            entries = list(d.iterdir())
+        except OSError:
+            continue
+        files = [e for e in entries if e.is_file()
+                 and not e.name.startswith("_")
+                 and not e.name.endswith(".lock")]
+        parent_name = d.parent.name if d.parent != d else ""
+        prefix = f"{parent_name}-{d.name}"
+        is_version_dir = (
+            parent_name and
+            any(f.stem.startswith(prefix) for f in files)
+        )
+        if is_version_dir and d.parent.parent != d.parent:
+            group_dir = d.parent.parent
+            try:
+                rel = group_dir.relative_to(root).as_posix().strip("/")
+            except ValueError:
+                continue
+            if not rel:
+                continue
+            group = rel.replace("/", ".")
+            name = parent_name
+            version = d.name
+            for f in files:
+                out.append({
+                    "group": group,
+                    "name": name,
+                    "version": version,
+                    "sha1": _sha1_of(f),
+                    "file": f.name,
+                    "path": str(f),
+                    "size": f.stat().st_size,
+                })
+            # do not descend into version dir
+        else:
+            for e in entries:
+                if e.is_dir():
+                    stack.append(e)
+    return out
+
+def maven_local_relpath(group: str, name: str, version: str, file_name: str) -> str:
+    return f"{group.replace('.', '/')}/{name}/{version}/{file_name}"
+
+def _read_root_project_name(project_dir: Path) -> str:
+    for fname in ("settings.gradle.kts", "settings.gradle"):
+        f = project_dir / fname
+        if not f.is_file():
+            continue
+        m = __import__("re").search(
+            r"""rootProject\.name\s*=\s*["']([^"']+)["']""",
+            f.read_text(encoding="utf-8", errors="replace"),
+        )
+        if m:
+            return m.group(1)
+    return ""
+
+def _detect_java_home() -> str | None:
+    candidates = [
+        os.environ.get("JAVA_HOME"),
+        cfg("JAVA_HOME"),
+        r"C:\Users\Mind\.jdks\openjdk-21",
+        r"C:\Users\Mind\.jdks\ms-21.0.10",
+        r"D:\SDKs\Java\temurin-23.0.2",
+    ]
+    for c in candidates:
+        if not c:
+            continue
+        # unwrap accidental \bin suffix
+        if Path(c).name.lower() == "bin":
+            c = str(Path(c).parent)
+        if (Path(c) / "bin" / ("java.exe" if os.name == "nt" else "java")).is_dir() or \
+           (Path(c) / "bin" / ("java.exe" if os.name == "nt" else "java")).is_file():
+            return c
+    return None
+
+def _run_gradle_init(project: Path, java_home: str | None) -> tuple[Path, str, int]:
+    """Drop init-script, run gradlew --offline help, return (jsonl_path, stdout, exit)."""
+    import tempfile, subprocess
+    out_file = Path(tempfile.mktemp(prefix="lgm-missing-", suffix=".jsonl"))
+    init_file = Path(tempfile.mktemp(prefix="lgm-init-", suffix=".gradle"))
+    init_file.write_text(
+        _GRADLE_INIT_SCRIPT.replace("__OUT__", str(out_file).replace("\\", "/")),
+        encoding="utf-8",
+    )
+    is_win = os.name == "nt"
+    wrapper = project / ("gradlew.bat" if is_win else "gradlew")
+    cmd = [str(wrapper) if wrapper.exists() else ("gradle.bat" if is_win else "gradle"),
+           "--init-script", str(init_file),
+           "-q", "--no-daemon", "--offline", "help"]
+    env = os.environ.copy()
+    if java_home:
+        env["JAVA_HOME"] = java_home
+        env["JDK_HOME"] = java_home
+    try:
+        proc = subprocess.run(cmd, cwd=str(project), env=env,
+                              capture_output=True, text=True, timeout=600)
+        return out_file, (proc.stdout or "") + (proc.stderr or ""), proc.returncode
+    finally:
+        try: init_file.unlink()
+        except Exception: pass
+
+def cmd_request(args):
+    """Build a minimum-traffic deps request (manifest v3) and post it to Mirror."""
+    base     = args.base_url or cfg("BASE_URL", "https://localhost:443")
+    key      = args.api_key  or cfg("API_KEY")
+    password = args.password or cfg("SYNC_PASSWORD")
+    repo     = args.repo     or "onyx-platform"
+    if not password:
+        sys.exit("SYNC_PASSWORD not set in env or .env")
+
+    project = Path(args.project).resolve()
+    if not project.is_dir():
+        sys.exit(f"project not found: {project}")
+
+    # ── Step 1: ask gradle what's missing ──────────────────────────────────
+    print(f"\n=== Resolving missing deps for {project.name} ===")
+    java_home = _detect_java_home()
+    print(f"  JAVA_HOME = {java_home or '(not detected)'}")
+    out_file, stdout_tail, exit_code = _run_gradle_init(project, java_home)
+    if exit_code != 0 and not out_file.exists():
+        for ln in stdout_tail.splitlines()[-15:]:
+            print(f"    {ln}")
+        sys.exit(f"gradle init-script failed (exit={exit_code})")
+
+    raw = []
+    guh = None
+    for line in out_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if obj.get("g") == "__GUH__":
+            guh = obj.get("f") or None
+            continue
+        raw.append(obj)
+    out_file.unlink(missing_ok=True)
+
+    # dedup by g:n:v
+    seen = set()
+    raw_missing = []
+    for o in raw:
+        k = f"{o.get('g','')}:{o.get('n','')}:{o.get('v','')}"
+        if k in seen:
+            continue
+        seen.add(k)
+        raw_missing.append(o)
+    print(f"  init-script reported {len(raw_missing)} candidate coord(s)")
+    print(f"  gradle user home (reported) = {guh or '(unknown)'}")
+
+    # ── Step 2: scan local cache + filter ──────────────────────────────────
+    extra_root = Path(guh) / "caches/modules-2/files-2.1" if guh else None
+    cache_roots = []
+    if extra_root and extra_root.is_dir():
+        cache_roots.append(extra_root)
+    for r in gradle_candidate_roots():
+        if r.is_dir() and r not in cache_roots:
+            cache_roots.append(r)
+    all_artifacts = []
+    seen_keys = set()
+    for r in cache_roots:
+        for a in scan_cache(r):
+            key = f"{a['group']}:{a['name']}:{a['version']}/{a['sha1']}/{a['file']}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            all_artifacts.append(a)
+    cached_coords = {f"{a['group']}:{a['name']}:{a['version']}" for a in all_artifacts}
+    print(f"  scanned {len(cache_roots)} cache root(s), {len(all_artifacts)} artifact(s), "
+          f"{len(cached_coords)} unique g:n:v")
+
+    root_name = _read_root_project_name(project)
+    def _own(g: str) -> bool:
+        return bool(root_name) and (g == root_name or g.startswith(f"{root_name}."))
+
+    missing = []
+    for o in raw_missing:
+        gnv = f"{o['g']}:{o['n']}:{o['v']}"
+        if gnv in cached_coords:
+            continue
+        if _own(o.get("g", "")):
+            continue
+        missing.append(o)
+    print(f"  after filter: {len(missing)} truly missing coord(s)")
+    if not missing:
+        print("\n  Nothing to request — all dependencies resolve locally.")
+        return
+    for m in missing[:10]:
+        print(f"    - {m['g']}:{m['n']}:{m['v']}")
+    if len(missing) > 10:
+        print(f"    ... and {len(missing) - 10} more")
+
+    # ── Step 3: build present (DOME enumerates what it has) ────────────────
+    # Scan BOTH gradle internal cache (caches/modules-2/files-2.1) AND maven
+    # local (~/.m2/repository). Same dedup key as the plugin: g:n:v:sha1:file.
+    by_gnv: dict[str, list[dict]] = {}
+    for a in all_artifacts:
+        by_gnv.setdefault(f"{a['group']}:{a['name']}:{a['version']}", []).append(a)
+    print(f"  scanning ~/.m2/repository (sha-1 of every file — may take a few seconds)…")
+    maven_arts = scan_maven_local()
+    for a in maven_arts:
+        by_gnv.setdefault(f"{a['group']}:{a['name']}:{a['version']}", []).append(a)
+    print(f"  +{len(maven_arts)} artifact(s) from maven-local")
+
+    present = []
+    seen_keys = set()
+    for arts in by_gnv.values():
+        for a in _pick_shipable(arts):
+            key = f"{a['group']}:{a['name']}:{a['version']}:{a['sha1']}:{a['file']}"
+            if key in seen_keys: continue
+            seen_keys.add(key)
+            present.append({
+                "g": a["group"], "n": a["name"], "v": a["version"],
+                "sha1": a["sha1"], "fileName": a["file"],
+            })
+    print(f"  present: {len(present)} file entries (deduped)")
+
+    # ── Step 4: build manifest v3 ──────────────────────────────────────────
+    manifest = {
+        "version": 3,
+        "requester": os.environ.get("USERNAME") or os.environ.get("USER") or "lgm-cli",
+        "project": repo,
+        "ecosystem": "gradle",
+        "missing": [
+            {"ecosystem": "gradle", "group": m["g"], "name": m["n"], "version": m["v"], "classifier": ""}
+            for m in missing
+        ],
+        "present": present,
+    }
+    payload_json = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
+    print(f"  manifest size: {len(payload_json):,} bytes (plaintext json)")
+
+    if args.dry_run:
+        print("  --dry-run: not posting.")
+        return
+
+    # ── Step 5: encrypt + post ─────────────────────────────────────────────
+    encrypted = encrypt_bundle(payload_json, password)
+    print(f"  encrypted: {len(encrypted):,} bytes — posting to {base}…")
+
+    res = api_post_multipart(
+        base, "/api/deps/request", key,
+        fields={"repo": repo},
+        files={"attachment": ("manifest.bin", encrypted)},
+    )
+    if "_error" in res:
+        sys.exit(f"  POST failed: {res}")
+    print(f"  OK: id={res.get('id', '?')[:12]} size={res.get('size', 0):,} bytes")
+    print("\n  On the work machine: `python lgm.py respond` (or click "
+          "'Выдать запрошенные зависимости' in IDEA).")
+
+
+def _ensure_mavenlocal_init_script() -> bool:
+    """Install ~/.gradle/init.d/lgm-mavenlocal-fallback.gradle if absent/outdated."""
+    init_dir = Path.home() / ".gradle" / "init.d"
+    init_dir.mkdir(parents=True, exist_ok=True)
+    target = init_dir / "lgm-mavenlocal-fallback.gradle"
+    expected = (
+        "// LocalGitMirror v1 — auto-generated. Do not edit by hand: Mirror's apply\n"
+        "// step rewrites this file when its content drifts from the plugin's copy.\n"
+        "//\n"
+        "// Adds mavenLocal() to every gradle build's repositories so artifacts\n"
+        "// unpacked into ~/.m2/repository (e.g. via 'Apply received deps') are\n"
+        "// resolvable in offline mode without modifying the project's build files.\n"
+        "\n"
+        "allprojects {\n"
+        "    buildscript {\n"
+        "        repositories {\n"
+        "            mavenLocal()\n"
+        "        }\n"
+        "    }\n"
+        "    repositories {\n"
+        "        mavenLocal()\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "beforeSettings { settings ->\n"
+        "    settings.pluginManagement.repositories {\n"
+        "        mavenLocal()\n"
+        "    }\n"
+        "}\n"
+    )
+    if target.is_file() and target.read_text(encoding="utf-8") == expected:
+        return False
+    target.write_text(expected, encoding="utf-8")
+    return True
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
@@ -559,6 +991,10 @@ def main():
 
     sub.add_parser("pending", help="List pending requests on Mirror")
 
+    rq = sub.add_parser("request", help="Build manifest v3 from a project and POST it to Mirror")
+    rq.add_argument("--project", required=True, help="path to gradle project root (e.g. D:\\Sources\\kryptonit\\onyx-platform)")
+    rq.add_argument("--dry-run", action="store_true")
+
     r = sub.add_parser("respond", help="Find & ship requested deps from local cache")
     r.add_argument("--dry-run", action="store_true")
 
@@ -571,6 +1007,7 @@ def main():
 
     if args.cmd == "scan":       cmd_scan(args)
     elif args.cmd == "pending":  cmd_pending(args)
+    elif args.cmd == "request":  cmd_request(args)
     elif args.cmd == "respond":  cmd_respond(args)
     elif args.cmd == "apply":    cmd_apply(args)
     elif args.cmd == "debug":    cmd_debug(args)
