@@ -533,20 +533,60 @@ def cmd_apply(args):
         return
 
     installed = skipped = invalid = 0
+    layout_observed = None  # "gradle" or "maven", set on first usable entry
     with zipfile.ZipFile(__import__("io").BytesIO(raw)) as zf:
         for entry in zf.namelist():
-            # strip ecosystem prefix (gradle/group/name/...)
+            # Strip ecosystem prefix (gradle/<rest> or npm/<rest>).
             parts = entry.split("/", 1)
-            rel = parts[1] if len(parts) == 2 else entry
+            if len(parts) != 2:
+                invalid += 1
+                continue
+            eco, rel = parts
             if ".." in rel or rel.startswith("/"):
                 invalid += 1
                 continue
+
+            # Normalise gradle internal layout → maven-local layout for ~/.m2.
+            #
+            # Gradle (legacy v0.64 senders) ships:
+            #   <g-with-dots>/<n>/<v>/<sha1>/<file>   (5 segments; group is one
+            #                                          dir whose name contains '.')
+            # Maven local expects:
+            #   <g/with/slashes>/<n>/<v>/<file>       (depth varies by group's
+            #                                          dot-count; no sha1 dir)
+            #
+            # Two transforms, applied only when the sender used gradle layout:
+            #   1. Drop the sha1 directory (40 hex chars).
+            #   2. Replace dots in the group segment with slashes.
+            #
+            # If the sender already uses maven layout (v0.65+) — neither step
+            # is needed; we leave [rel] alone.
+            if eco == "gradle":
+                segs = rel.split("/")
+                is_gradle_layout = (
+                    len(segs) >= 5
+                    and len(segs[-2]) == 40
+                    and all(c in "0123456789abcdef" for c in segs[-2].lower())
+                )
+                if is_gradle_layout:
+                    # segs = [group_with_dots, name, version, sha1, file]
+                    group_path = segs[0].replace(".", "/")
+                    rel = "/".join([group_path] + segs[1:-2] + [segs[-1]])
+                    if layout_observed != "gradle":
+                        layout_observed = "gradle"
+                        print(f"  detected sender layout: gradle internal cache (v0.64) — normalising to maven-local")
+                else:
+                    if layout_observed != "maven":
+                        layout_observed = "maven"
+                        print(f"  detected sender layout: maven-local (v0.65+)")
+
             dest = target / rel
-            if dest.exists() and dest.stat().st_size == zf.getinfo(entry).file_size:
+            data = zf.read(entry)
+            if dest.exists() and dest.stat().st_size == len(data):
                 skipped += 1
                 continue
             dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(zf.read(entry))
+            dest.write_bytes(data)
             installed += 1
 
     print(f"  installed={installed}  skipped={skipped}  invalid={invalid}")
@@ -997,20 +1037,24 @@ def _ensure_mavenlocal_init_script() -> bool:
         "// Adds mavenLocal() to every gradle build's repositories so artifacts\n"
         "// unpacked into ~/.m2/repository (e.g. via 'Apply received deps') are\n"
         "// resolvable in offline mode without modifying the project's build files.\n"
+        "//\n"
+        "// `beforeProject` is the only hook that runs before the project's own\n"
+        "// build.gradle is evaluated, so a buildscript {} classpath declared\n"
+        "// there sees mavenLocal() in its repositories list. `allprojects { ... }`\n"
+        "// does not work for root buildscript because it fires AFTER root\n"
+        "// buildscript classpath resolution.\n"
         "\n"
-        "allprojects {\n"
-        "    buildscript {\n"
-        "        repositories {\n"
-        "            mavenLocal()\n"
-        "        }\n"
-        "    }\n"
-        "    repositories {\n"
+        "beforeSettings { settings ->\n"
+        "    settings.pluginManagement.repositories {\n"
         "        mavenLocal()\n"
         "    }\n"
         "}\n"
         "\n"
-        "beforeSettings { settings ->\n"
-        "    settings.pluginManagement.repositories {\n"
+        "gradle.beforeProject { project ->\n"
+        "    project.buildscript.repositories {\n"
+        "        mavenLocal()\n"
+        "    }\n"
+        "    project.repositories {\n"
         "        mavenLocal()\n"
         "    }\n"
         "}\n"
@@ -1019,6 +1063,92 @@ def _ensure_mavenlocal_init_script() -> bool:
         return False
     target.write_text(expected, encoding="utf-8")
     return True
+
+
+def _maven_local_jars_without_poms() -> list[tuple[str, str, str, Path]]:
+    """
+    Walk ~/.m2/repository and find every <g>/<n>/<v>/<n>-<v>.jar where the
+    sibling <n>-<v>.pom does NOT exist. Returns (group, name, version, jar_path).
+    """
+    out = []
+    root = maven_local_root()
+    if not root.is_dir():
+        return out
+    for f in root.rglob("*.jar"):
+        if not f.is_file():
+            continue
+        n = f.stem
+        if any(n.endswith(s) for s in ("-sources", "-javadoc", "-tests", "-test")):
+            continue
+        version_dir = f.parent
+        name_dir = version_dir.parent
+        if not name_dir or not name_dir.parent:
+            continue
+        try:
+            rel = name_dir.parent.relative_to(root).as_posix().strip("/")
+        except ValueError:
+            continue
+        if not rel:
+            continue
+        group = rel.replace("/", ".")
+        name = name_dir.name
+        version = version_dir.name
+        if not n.startswith(f"{name}-{version}"):
+            continue
+        pom = version_dir / f"{name}-{version}.pom"
+        if pom.is_file():
+            continue
+        out.append((group, name, version, f))
+    return out
+
+
+def cmd_fetch_poms(args):
+    """
+    For every <name>-<version>.jar under ~/.m2/repository that lacks a sibling
+    .pom, download the pom from a public Maven repository (default Maven Central).
+
+    Why: Mirror's response bundles ship jar files only — the work side's
+    pickShipableArtifacts may not include poms when gradle never cached them
+    locally. But maven-local resolution requires a pom for every artifact.
+    For PUBLIC libraries (jgit, spotless, durian, kotlin-stdlib, …) we can just
+    fetch the pom from Maven Central and avoid ping-ponging through Mirror.
+    Private artifacts (e.g. ru.kryptonite.*) won't be on Central — those are
+    skipped with a 404 and need to ship via Mirror in the next round-trip.
+    """
+    repo_url = args.repo_url.rstrip("/")
+    targets = _maven_local_jars_without_poms()
+    print(f"\n=== Maven Central pom fetch ===")
+    print(f"  repo: {repo_url}")
+    print(f"  jars without poms: {len(targets)}")
+
+    fetched = 0
+    failed = 0
+    skipped_private = 0
+    for group, name, version, jar_path in targets:
+        group_url = group.replace(".", "/")
+        url = f"{repo_url}/{group_url}/{name}/{version}/{name}-{version}.pom"
+        target_pom = jar_path.parent / f"{name}-{version}.pom"
+        if args.dry_run:
+            print(f"  [dry] would fetch {group}:{name}:{version}.pom")
+            continue
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "lgm-cli/1.0"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                target_pom.write_bytes(r.read())
+            fetched += 1
+            print(f"  [ok ] {group}:{name}:{version}")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                skipped_private += 1
+                print(f"  [404] {group}:{name}:{version}  (private — request via Mirror)")
+            else:
+                failed += 1
+                print(f"  [HTTP {e.code}] {group}:{name}:{version}")
+        except Exception as e:
+            failed += 1
+            print(f"  [ERR] {group}:{name}:{version}  {type(e).__name__}: {e}")
+
+    print(f"\n  fetched={fetched}  private/404={skipped_private}  failed={failed}")
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -1048,16 +1178,25 @@ def main():
     a = sub.add_parser("apply", help="Download & unpack deps response")
     a.add_argument("--dry-run", action="store_true")
 
+    fp = sub.add_parser("fetch-poms",
+        help="For every jar under ~/.m2/repository without a sibling .pom, "
+             "fetch the pom from Maven Central. Lets gradle resolve transitive "
+             "deps of public libraries that Mirror only shipped as jars.")
+    fp.add_argument("--repo-url", default="https://repo.maven.apache.org/maven2",
+                    help="public Maven repo to download poms from")
+    fp.add_argument("--dry-run", action="store_true")
+
     d = sub.add_parser("debug", help="Full diagnostics")
 
     args = p.parse_args()
 
-    if args.cmd == "scan":       cmd_scan(args)
-    elif args.cmd == "pending":  cmd_pending(args)
-    elif args.cmd == "request":  cmd_request(args)
-    elif args.cmd == "respond":  cmd_respond(args)
-    elif args.cmd == "apply":    cmd_apply(args)
-    elif args.cmd == "debug":    cmd_debug(args)
+    if args.cmd == "scan":         cmd_scan(args)
+    elif args.cmd == "pending":    cmd_pending(args)
+    elif args.cmd == "request":    cmd_request(args)
+    elif args.cmd == "respond":    cmd_respond(args)
+    elif args.cmd == "apply":      cmd_apply(args)
+    elif args.cmd == "fetch-poms": cmd_fetch_poms(args)
+    elif args.cmd == "debug":      cmd_debug(args)
 
 if __name__ == "__main__":
     main()
