@@ -532,6 +532,15 @@ class ApplyDepsAction : AnAction() {
           id = resp.id
         )
 
+        // Ensure ~/.gradle/init.d/lgm-mavenlocal-fallback.gradle exists so
+        // mavenLocal() is automatically declared on every gradle build's
+        // pluginManagement / buildscript / project repositories. Without this
+        // the manually-placed artifacts in ~/.m2/repository wouldn't be visible
+        // to gradle in --offline mode. Idempotent: writes only if absent or
+        // outdated, never overwrites a user-modified version.
+        runCatching { GradleEcosystem.ensureMavenLocalInitScript() }
+          .onFailure { DepsDiagnostics.event("apply: init-script write failed: ${it.message}") }
+
         // Best-effort per-ecosystem post-install (e.g. npm cache add). The
         // unpack stored display names, but postInstall needs cache-relative
         // paths, so recompute them from the npm mirror tree.

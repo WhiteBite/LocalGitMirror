@@ -132,7 +132,10 @@ object GradleEcosystem : DepsEcosystem {
         continue
       }
       for (art in toShip) {
-        val rel = "${art.group}/${art.name}/${art.version}/${art.sha1}/${art.fileName}"
+        // Bundle entries use the maven-local layout so the dome can drop the
+        // file straight into ~/.m2/repository/ and have it resolved by
+        // mavenLocal() — independent of any gradle-internal metadata.
+        val rel = MavenLocalScanner.mavenLocalRelativePath(art.group, art.name, art.version, art.fileName)
         out.add(DepFileEntry(coord, art.absolutePath, rel, art.size))
       }
     }
@@ -196,10 +199,20 @@ object GradleEcosystem : DepsEcosystem {
    * exact (g, n, v, sha1, fileName) shape the work side needs to subtract from
    * its `collect()` output.
    *
-   * Reuses the same [pickShipableArtifacts] policy as `collect()` — if the work
-   * side wouldn't ship a sources/javadoc/tests jar, we don't waste manifest
-   * bytes declaring we have it either. Both sides apply the same rules so the
-   * (sha1, fileName) keys line up exactly.
+   * Reads from BOTH locations so the work side can suppress identical content
+   * regardless of where the dome holds it:
+   *   - Gradle internal cache (caches/modules-2/files-2.1) — what gradle
+   *     downloaded itself; sha1 comes from the directory layout (which IS the
+   *     sha-1 of the file's bytes per gradle's content-address scheme).
+   *   - Maven local (~/.m2/repository) — where Mirror unpacks received files;
+   *     sha1 is computed from file bytes since the maven layout doesn't carry
+   *     it explicitly.
+   *
+   * Both scans return the same Artifact shape; we dedup by content address
+   * (sha1+filename) so an artifact present in both locations counts once.
+   *
+   * Reuses [pickShipableArtifacts] policy on each (g:n:v) group so the keys
+   * line up with what the work side would actually package.
    */
   override fun enumeratePresent(): List<PresentArtifact> {
     val extraRoots = collectProjectDir?.let { dir ->
@@ -207,32 +220,82 @@ object GradleEcosystem : DepsEcosystem {
         listOf(File(it, "caches/modules-2/files-2.1"))
       }
     } ?: emptyList()
-    val all = DepsScanner.scanAllCandidates(extraRoots = extraRoots)
+    val gradleCacheArtifacts = DepsScanner.scanAllCandidates(extraRoots = extraRoots)
+    val mavenLocalArtifacts = MavenLocalScanner.scan()
+    val all = gradleCacheArtifacts + mavenLocalArtifacts
     if (all.isEmpty()) return emptyList()
 
-    val out = ArrayList<PresentArtifact>(all.size)
+    val out = ArrayList<PresentArtifact>()
+    val seen = HashSet<String>()  // dedup key: g:n:v:sha1:fileName
     for ((_, group) in all.groupBy { "${it.group}:${it.name}:${it.version}" }) {
       for (art in pickShipableArtifacts(group)) {
+        val key = "${art.group}:${art.name}:${art.version}:${art.sha1}:${art.fileName}"
+        if (!seen.add(key)) continue
         out.add(PresentArtifact(art.group, art.name, art.version, art.sha1, art.fileName))
       }
     }
     return out
   }
 
-  override fun cacheRoot(): File {
-    // If a project-dir hint is set, ask gradle for its real gradleUserHomeDir
-    // and prefer that cache root — this is the most reliable way to find the
-    // correct cache when GRADLE_USER_HOME is not set in the IDE environment
-    // (e.g. it's set in CMD but IntelliJ was launched via a launcher that
-    // doesn't inherit it, so the default ~/.gradle would be wrong).
-    val hintDir = collectProjectDir
-    if (hintDir != null) {
-      val discovered = try { GradleResolver.discoverGradleUserHome(hintDir) } catch (_: Throwable) { null }
-      if (discovered != null) {
-        val root = File(discovered, "caches/modules-2/files-2.1")
-        if (root.isDirectory) return root
-      }
-    }
-    return DepsScanner.cacheRoot()
+  /**
+   * Gradle's offline mode requires either a fully populated `metadata-2.X`
+   * cache (which we cannot reproduce by copying files) or a real repository
+   * with the artifact. We pick the latter: maven-local. As long as the project
+   * has `mavenLocal()` on its repositories list, gradle resolves a manually-
+   * placed file under `~/.m2/repository/<g>/<n>/<v>/<file>` even with --offline.
+   *
+   * The companion init-script `lgm-mavenlocal-fallback.gradle` (installed by
+   * Mirror under `~/.gradle/init.d/`) ensures every project — including
+   * `pluginManagement.repositories` and root `buildscript.repositories` — has
+   * mavenLocal() declared, so this works without touching the project files.
+   */
+  override fun cacheRoot(): File = MavenLocalScanner.cacheRoot()
+
+  /**
+   * Lazily install the init-script that adds mavenLocal() to every gradle
+   * build's repository lists. Idempotent: if the file already has the same
+   * marker line we leave it alone (so a user-customised script survives).
+   *
+   * Lives at `~/.gradle/init.d/lgm-mavenlocal-fallback.gradle`. Gradle picks
+   * up every `*.gradle` / `*.gradle.kts` in `init.d` automatically.
+   *
+   * Returns true if the file was written (created or updated), false if it
+   * was already current.
+   */
+  fun ensureMavenLocalInitScript(): Boolean {
+    val gradleHome = File(System.getProperty("user.home") ?: ".", ".gradle")
+    val initDir = File(gradleHome, "init.d")
+    if (!initDir.exists()) initDir.mkdirs()
+    val target = File(initDir, "lgm-mavenlocal-fallback.gradle")
+    val expected = MAVENLOCAL_INIT_SCRIPT
+    if (target.isFile && target.readText() == expected) return false
+    target.writeText(expected)
+    return true
   }
+
+  private val MAVENLOCAL_INIT_SCRIPT: String = """
+    // LocalGitMirror v1 — auto-generated. Do not edit by hand: Mirror's apply
+    // step rewrites this file when its content drifts from the plugin's copy.
+    //
+    // Adds mavenLocal() to every gradle build's repositories so artifacts
+    // unpacked into ~/.m2/repository (e.g. via 'Apply received deps') are
+    // resolvable in offline mode without modifying the project's build files.
+
+    allprojects {
+        buildscript {
+            repositories {
+                mavenLocal()
+            }
+        }
+        repositories {
+            mavenLocal()
+        }
+    }
+
+    beforeSettings { settings ->
+        settings.pluginManagement.repositories {
+            mavenLocal()
+        }
+    }
+  """.trimIndent()
 }
