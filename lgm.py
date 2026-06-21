@@ -427,29 +427,49 @@ def cmd_respond(args):
     if manifest.get("version", 0) < 2 or not manifest.get("missing"):
         sys.exit("Empty or legacy manifest")
 
-    # collect from all caches
+    # collect from all caches: gradle internal cache + maven-local.
+    # Both sources participate in shipability selection, so e.g. a pom that's
+    # only in ~/.m2 still gets shipped alongside a jar that lives in the gradle
+    # cache. Each artifact is tagged with its source so we know which bundle
+    # layout to emit (gradle layout has a sha-dir; maven layout doesn't).
     all_arts = []
-    roots = gradle_candidate_roots()
-    for root in roots:
-        all_arts.extend(scan_cache(root))
-    by_gnv = {}
+    for root in gradle_candidate_roots():
+        for a in scan_cache(root):
+            a["source"] = "gradle"
+            all_arts.append(a)
+    for a in scan_maven_local():
+        a["source"] = "maven"
+        all_arts.append(a)
+    by_gnv: dict[str, list[dict]] = {}
     for a in all_arts:
         k = f"{a['group']}:{a['name']}:{a['version']}"
         by_gnv.setdefault(k, []).append(a)
 
     found, not_found = [], []
+    skipped_unshipable = 0
     for coord in manifest["missing"]:
         eco = coord.get("ecosystem", "gradle")
         if eco != "gradle":
             continue
         k = f"{coord['group']}:{coord['name']}:{coord['version']}"
         arts = by_gnv.get(k)
-        if arts:
-            for a in arts:
-                rel = f"gradle/{a['group']}/{a['name']}/{a['version']}/{a['sha1']}/{a['file']}"
-                found.append((rel, a["path"]))
-        else:
+        if not arts:
             not_found.append(k)
+            continue
+        # Same shipability rules the plugin's GradleEcosystem.pickShipableArtifacts
+        # uses: drop sources/javadoc/tests/test, then pick freshest file per kind
+        # (jar/pom/module/aar/klib). Keeps the response bundle small and avoids
+        # shipping useless jars.
+        shipable = _pick_shipable(arts)
+        skipped_unshipable += len(arts) - len(shipable)
+        for a in shipable:
+            if a["source"] == "gradle":
+                rel = f"gradle/{a['group']}/{a['name']}/{a['version']}/{a['sha1']}/{a['file']}"
+            else:  # maven-local — emit in maven layout (cmd_apply autodetects)
+                rel = f"gradle/{maven_local_relpath(a['group'], a['name'], a['version'], a['file'])}"
+            found.append((rel, a["path"]))
+    if skipped_unshipable:
+        print(f"  Filtered out {skipped_unshipable} unshipable files (sources/javadoc/tests/dupes)")
 
     print(f"  Found={len(found)}  NotFound={len(not_found)}")
     for k in not_found:
@@ -1106,32 +1126,114 @@ def cmd_fetch_poms(args):
     """
     For every <name>-<version>.jar under ~/.m2/repository that lacks a sibling
     .pom, download the pom from a public Maven repository (default Maven Central).
+    Then walk every existing pom and recursively fetch any referenced parent
+    pom that isn't on disk yet — gradle requires the full parent chain to
+    resolve metadata in offline mode.
 
-    Why: Mirror's response bundles ship jar files only — the work side's
-    pickShipableArtifacts may not include poms when gradle never cached them
-    locally. But maven-local resolution requires a pom for every artifact.
-    For PUBLIC libraries (jgit, spotless, durian, kotlin-stdlib, …) we can just
-    fetch the pom from Maven Central and avoid ping-ponging through Mirror.
-    Private artifacts (e.g. ru.kryptonite.*) won't be on Central — those are
-    skipped with a 404 and need to ship via Mirror in the next round-trip.
+    Why: Mirror's response bundles ship jar+pom (sometimes only jar) for
+    direct deps. But maven-local resolution also pulls each pom's <parent>
+    coordinate and refuses if any link in the chain is missing. For PUBLIC
+    libraries (jgit, spotless, …) we can fetch the full chain from Maven
+    Central and avoid pinging Mirror for every parent. Private artifacts
+    (e.g. ru.kryptonite.*) hit 404 and need to come via Mirror in the next
+    round-trip.
     """
     repo_url = args.repo_url.rstrip("/")
-    targets = _maven_local_jars_without_poms()
     print(f"\n=== Maven Central pom fetch ===")
     print(f"  repo: {repo_url}")
-    print(f"  jars without poms: {len(targets)}")
 
-    fetched = 0
-    failed = 0
-    skipped_private = 0
+    fetched_total = 0
+    failed_total = 0
+    skipped_private_total = 0
+
+    for pass_no in (1, 2):
+        if pass_no == 1:
+            print(f"\n  pass {pass_no}: jars without poms")
+            targets = _maven_local_jars_without_poms()
+        else:
+            print(f"\n  pass {pass_no}: missing parent poms (recursive)")
+            targets = _missing_parent_poms()
+        print(f"  candidates: {len(targets)}")
+
+        # Pass 2 needs to keep going until parent chain converges.
+        max_iters = 1 if pass_no == 1 else 8
+        iter_no = 0
+        while targets and iter_no < max_iters:
+            iter_no += 1
+            if pass_no == 2 and iter_no > 1:
+                print(f"  iteration {iter_no} ({len(targets)} parents to resolve)")
+            fetched, skipped_priv, failed = _fetch_pom_batch(repo_url, targets, args.dry_run)
+            fetched_total += fetched
+            skipped_private_total += skipped_priv
+            failed_total += failed
+            if pass_no == 1:
+                break
+            # Re-scan for newly-discovered parents
+            targets = _missing_parent_poms()
+
+    print(f"\n  TOTAL: fetched={fetched_total}  private/404={skipped_private_total}  failed={failed_total}")
+
+
+def _missing_parent_poms() -> list[tuple[str, str, str, "Path"]]:
+    """
+    Scan every .pom under ~/.m2/repository for <parent> coords that don't have
+    their own pom on disk. Returns [(group, name, version, anchor_path)] where
+    anchor_path is just a Path used by _fetch_pom_batch to derive jar_path
+    (we reuse the same code path; for parent poms there's no jar, so we only
+    need the .pom written).
+    """
+    import xml.etree.ElementTree as ET
+    out = []
+    seen = set()
+    root = maven_local_root()
+    if not root.is_dir():
+        return out
+    for pom in root.rglob("*.pom"):
+        if not pom.is_file():
+            continue
+        try:
+            tree = ET.parse(pom)
+        except Exception:
+            continue
+        rt = tree.getroot()
+        # XML namespace varies; look for any <parent> child regardless of ns.
+        parent = next((c for c in rt if c.tag.endswith("}parent") or c.tag == "parent"), None)
+        if parent is None:
+            continue
+        def _t(name):
+            for c in parent:
+                if c.tag.endswith("}" + name) or c.tag == name:
+                    return (c.text or "").strip()
+            return ""
+        g = _t("groupId"); n = _t("artifactId"); v = _t("version")
+        if not (g and n and v):
+            continue
+        target_pom = root / g.replace(".", "/") / n / v / f"{n}-{v}.pom"
+        if target_pom.is_file():
+            continue
+        key = f"{g}:{n}:{v}"
+        if key in seen:
+            continue
+        seen.add(key)
+        # Anchor a synthetic jar_path under the same parent dir so existing
+        # download code writes <name>-<version>.pom alongside it.
+        # The anchor doesn't have to exist; it's only used for path derivation.
+        anchor = target_pom.parent / f"{n}-{v}.jar"
+        out.append((g, n, v, anchor))
+    return out
+
+
+def _fetch_pom_batch(repo_url: str, targets, dry_run: bool) -> tuple[int, int, int]:
+    fetched = skipped_private = failed = 0
     for group, name, version, jar_path in targets:
         group_url = group.replace(".", "/")
         url = f"{repo_url}/{group_url}/{name}/{version}/{name}-{version}.pom"
         target_pom = jar_path.parent / f"{name}-{version}.pom"
-        if args.dry_run:
+        if dry_run:
             print(f"  [dry] would fetch {group}:{name}:{version}.pom")
             continue
         try:
+            target_pom.parent.mkdir(parents=True, exist_ok=True)
             req = urllib.request.Request(url, headers={"User-Agent": "lgm-cli/1.0"})
             with urllib.request.urlopen(req, timeout=10) as r:
                 target_pom.write_bytes(r.read())
@@ -1147,8 +1249,7 @@ def cmd_fetch_poms(args):
         except Exception as e:
             failed += 1
             print(f"  [ERR] {group}:{name}:{version}  {type(e).__name__}: {e}")
-
-    print(f"\n  fetched={fetched}  private/404={skipped_private}  failed={failed}")
+    return fetched, skipped_private, failed
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
