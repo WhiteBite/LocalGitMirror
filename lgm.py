@@ -471,6 +471,16 @@ def cmd_respond(args):
     if skipped_unshipable:
         print(f"  Filtered out {skipped_unshipable} unshipable files (sources/javadoc/tests/dupes)")
 
+    # Parent-pom closure: every shipped .pom may declare a <parent> whose own
+    # pom must also be present on the dome, or mavenLocal() resolution fails
+    # with "Could not find <parent>". The work machine's cache holds the full
+    # chain (gradle downloaded it during its successful build), including
+    # PRIVATE parents that Maven Central doesn't have. We walk it here so the
+    # dome receives a self-contained set.
+    added_parents = _expand_parent_pom_closure(found, by_gnv)
+    if added_parents:
+        print(f"  Added {added_parents} parent pom(s) to complete the chain")
+
     print(f"  Found={len(found)}  NotFound={len(not_found)}")
     for k in not_found:
         print(f"  [MISS] {k}")
@@ -1051,24 +1061,22 @@ def _ensure_mavenlocal_init_script() -> bool:
     init_dir.mkdir(parents=True, exist_ok=True)
     target = init_dir / "lgm-mavenlocal-fallback.gradle"
     expected = (
-        "// LocalGitMirror v1 — auto-generated. Do not edit by hand: Mirror's apply\n"
+        "// LocalGitMirror v3 — auto-generated. Do not edit by hand: Mirror's apply\n"
         "// step rewrites this file when its content drifts from the plugin's copy.\n"
         "//\n"
-        "// Adds mavenLocal() to every gradle build's repositories so artifacts\n"
-        "// unpacked into ~/.m2/repository (e.g. via 'Apply received deps') are\n"
-        "// resolvable in offline mode without modifying the project's build files.\n"
+        "// Makes artifacts unpacked into ~/.m2/repository (via 'Apply received deps')\n"
+        "// resolvable from every gradle build without editing project files.\n"
         "//\n"
-        "// `beforeProject` is the only hook that runs before the project's own\n"
-        "// build.gradle is evaluated, so a buildscript {} classpath declared\n"
-        "// there sees mavenLocal() in its repositories list. `allprojects { ... }`\n"
-        "// does not work for root buildscript because it fires AFTER root\n"
-        "// buildscript classpath resolution.\n"
-        "\n"
-        "beforeSettings { settings ->\n"
-        "    settings.pluginManagement.repositories {\n"
-        "        mavenLocal()\n"
-        "    }\n"
-        "}\n"
+        "// We deliberately DO NOT touch settings.pluginManagement.repositories here.\n"
+        "// Declaring any pluginManagement repository in an init script suppresses\n"
+        "// gradle's implicit default (the plugin portal), which breaks projects that\n"
+        "// rely on it (e.g. they declare no pluginManagement block of their own).\n"
+        "// Projects that need mavenLocal() for plugin/marker resolution already\n"
+        "// declare it in their own settings.gradle, so the init script only has to\n"
+        "// cover project + buildscript dependency repositories.\n"
+        "//\n"
+        "// `beforeProject` runs before each project's build.gradle is evaluated, so a\n"
+        "// buildscript {} classpath declared there sees mavenLocal() in its repo list.\n"
         "\n"
         "gradle.beforeProject { project ->\n"
         "    project.buildscript.repositories {\n"
@@ -1172,6 +1180,68 @@ def cmd_fetch_poms(args):
             targets = _missing_parent_poms()
 
     print(f"\n  TOTAL: fetched={fetched_total}  private/404={skipped_private_total}  failed={failed_total}")
+
+
+def _parent_coord_of_pom(pom: "Path") -> tuple[str, str, str] | None:
+    """Parse a .pom file's <parent> coordinate. Returns (g, n, v) or None."""
+    import xml.etree.ElementTree as ET
+    try:
+        rt = ET.parse(pom).getroot()
+    except Exception:
+        return None
+    parent = next((c for c in rt if c.tag.endswith("}parent") or c.tag == "parent"), None)
+    if parent is None:
+        return None
+    def _t(name: str) -> str:
+        for c in parent:
+            if c.tag.endswith("}" + name) or c.tag == name:
+                return (c.text or "").strip()
+        return ""
+    g, n, v = _t("groupId"), _t("artifactId"), _t("version")
+    return (g, n, v) if (g and n and v) else None
+
+
+def _ship_rel_for(a: dict) -> str:
+    """Bundle entry path for an artifact dict (gradle sha-dir vs maven layout)."""
+    if a.get("source") == "gradle":
+        return f"gradle/{a['group']}/{a['name']}/{a['version']}/{a['sha1']}/{a['file']}"
+    return f"gradle/{maven_local_relpath(a['group'], a['name'], a['version'], a['file'])}"
+
+
+def _expand_parent_pom_closure(found: list[tuple[str, str]], by_gnv: dict) -> int:
+    """
+    Walk every shipped .pom for <parent> coords and add the parent's pom
+    (recursively) from the local cache. Mutates `found` in place. Returns the
+    number of parent poms added.
+
+    Parent artifacts are pom-only (packaging=pom), so we ship just the .pom.
+    Parents not in the local cache are skipped — those are public and the dome
+    resolves them from Maven Central itself.
+    """
+    shipped_rel = {rel for rel, _ in found}
+    queue = [path for rel, path in found if path.lower().endswith(".pom")]
+    visited = set(queue)
+    added = 0
+    while queue:
+        parent = _parent_coord_of_pom(Path(queue.pop()))
+        if not parent:
+            continue
+        g, n, v = parent
+        arts = by_gnv.get(f"{g}:{n}:{v}")
+        if not arts:
+            continue  # public parent → dome gets it from Maven Central
+        for a in _pick_shipable(arts):
+            if not a["file"].lower().endswith(".pom"):
+                continue
+            rel = _ship_rel_for(a)
+            if rel not in shipped_rel:
+                shipped_rel.add(rel)
+                found.append((rel, a["path"]))
+                added += 1
+            if a["path"] not in visited:
+                visited.add(a["path"])
+                queue.append(a["path"])
+    return added
 
 
 def _missing_parent_poms() -> list[tuple[str, str, str, "Path"]]:
