@@ -456,6 +456,7 @@ object NpmEcosystem : DepsEcosystem {
 
   override fun collect(
     coordinates: List<DepCoordinate>,
+    presentIndex: Map<String, Set<String>>,
     onMissingLocally: (DepCoordinate) -> Unit
   ): List<DepFileEntry> {
     val cacacheContent = File(npmCacheDir(), "_cacache" + File.separator + "content-v2")
@@ -467,6 +468,17 @@ object NpmEcosystem : DepsEcosystem {
         onMissingLocally(coord)
         continue
       }
+      // npm's content-addressed cache uses the integrity hash as the content
+      // address, so any presentIndex entry with the same coordinate + integrity
+      // means the dome already has identical bytes — skip.
+      // Stored shape: coord.coordKey -> set of "<sha1>/<filename>". For npm we
+      // re-use the coord.classifier (integrity) as the file-key since that's
+      // what uniquely identifies the tarball on disk in npm semantics.
+      val coordKey = "${coord.group}:${coord.name}:${coord.version}"
+      val alreadyAtDome = presentIndex[coordKey].orEmpty()
+      val fileKey = "${coord.classifier}/${tarball.name}"
+      if (fileKey in alreadyAtDome) continue
+
       out.add(DepFileEntry(coord, tarball.absolutePath, mirrorRelativePath(coord), tarball.length()))
     }
     return out

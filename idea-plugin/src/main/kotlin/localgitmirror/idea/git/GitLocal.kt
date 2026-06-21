@@ -182,6 +182,26 @@ object GitLocal {
       }
   }
 
+  /**
+   * Walk a specific ref's history and return its most recent N commit hashes.
+   *
+   * Used by sync negotiation to populate negotiation-candidates for branches OTHER
+   * than HEAD: for those branches `recentCommits()` (which walks HEAD) is the wrong
+   * history, so we'd miss the chance to find a known-by-mirror common ancestor and
+   * fall back to a full bundle.
+   *
+   * Returns hashes only (no subject) since negotiation only needs the hash.
+   * Empty list on any failure (unknown ref, git error) — caller treats it as
+   * "no extra candidates" and proceeds with whatever else it has.
+   */
+  fun recentCommitsOfRef(project: Project, workDir: File, ref: String, limit: Int): List<String> {
+    if (ref.isBlank()) return emptyList()
+    val n = if (limit <= 0) 30 else limit
+    val r = run(project, workDir, 20, "log", "--format=%H", "-n", n.toString(), ref)
+    if (!r.ok()) return emptyList()
+    return r.stdout.lines().mapNotNull { it.trim().takeIf { l -> l.isNotBlank() } }
+  }
+
   fun headHash(project: Project, workDir: File): String? {
     val r = run(project, workDir, 10, "rev-parse", "HEAD")
     if (!r.ok()) return null

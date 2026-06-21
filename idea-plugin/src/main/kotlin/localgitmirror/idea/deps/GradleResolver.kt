@@ -464,8 +464,13 @@ def lgmScanResolved(out, conf) {
       // Skip the root project itself and Gradle's own virtual components
       if (id.group == 'unspecified' || id.version == 'unspecified' || id.version == '') return
       if (id.name.endsWith('.gradle.plugin')) return
-      // Check whether any cached file for this g:n:v exists in the
-      // gradle user home. If none → it's missing → request it.
+      // Only emit a "missing" line when artifactView resolved a real file but
+      // it doesn't exist on disk. We deliberately DO NOT fall back to the
+      // "artifacts.isEmpty() → missing" branch — it generated huge volumes of
+      // false-positives for BOM-only artifacts (Spring Boot BOM, jackson-bom,
+      // testcontainers-bom, …) which legitimately have no jar, only a pom that
+      // gradle has already cached. Truly missing-but-needed artifacts are still
+      // caught by Pass 2 (lenientConfiguration) and the stdout fallback parser.
       try {
         def artifacts = conf.incoming.artifactView { config ->
           config.componentFilter { c -> c.moduleVersion?.module == id.module }
@@ -476,15 +481,8 @@ def lgmScanResolved(out, conf) {
             lgmWriteMissing(out, id.group, id.name, id.version)
           }
         }
-        // If artifactView returned nothing for this component it means
-        // the file was never downloaded; still request it.
-        if (artifacts.isEmpty()) {
-          lgmWriteMissing(out, id.group, id.name, id.version)
-        }
       } catch (Throwable ignored) {
-        // Fallback: if we can't check files, emit the coordinate anyway
-        // so it at least appears in the request.
-        lgmWriteMissing(out, id.group, id.name, id.version)
+        // artifactView failed entirely → can't decide; skip rather than guess.
       }
     }
   } catch (Throwable ignored) { }

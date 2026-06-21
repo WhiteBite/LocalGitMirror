@@ -244,6 +244,9 @@ class SyncEngineFlowTest {
     override fun recentCommits(project: Project, projectDir: File, limit: Int): List<GitLocal.CommitSummary> {
       return listOf(GitLocal.CommitSummary(hash = head, subject = "msg"))
     }
+    override fun recentCommitsOfRef(project: Project, projectDir: File, ref: String, limit: Int): List<String> {
+      return listOf(head)
+    }
     override fun branchHash(project: Project, projectDir: File, branchName: String): String? = head
   }
 

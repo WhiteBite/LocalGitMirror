@@ -243,49 +243,100 @@ class SyncEngine(
     val head = git.headHash(project, projectDir) ?: return MultiBranchNegotiation(null, emptyList())
     val currentBranch = git.currentBranch(project, projectDir).orEmpty()
 
-    // Collect candidate hashes for all branches
+    // ─── Step 1. Authoritative server state via getRefs ─────────────────
+    // The mirror is a real git server — it knows its own branch tips. Asking
+    // it directly is more reliable than trying to *guess* what it has from
+    // local state files (which may not exist yet on a fresh clone, or be
+    // stale after an update by someone else).
+    //
+    // Every commit reported here is automatically a candidate for the
+    // exclude-base of any branch whose tip descends from it. This is the
+    // critical fix that prevents "full bundle" fallbacks when local state
+    // happens to be empty.
+    val serverRefs = mirror.getRefs(settings.baseUrl, settings.mirrorApiKey, repo, settings.mirrorInsecureTls)
+    val serverKnown: Set<String> = serverRefs.refs?.values
+      ?.mapNotNull { it.sha.takeIf { s -> s.isNotBlank() && hashRe.matches(s) }?.lowercase() }
+      ?.toHashSet()
+      ?: emptySet()
+
+    // ─── Step 2. Per-branch candidate lists ─────────────────────────────
+    // For every branch we want to push (current + additional) we gather a list
+    // of candidate hashes the server *might* know about. The first one that
+    // hasCommits + getRefs collectively confirm + is an ancestor of our tip
+    // becomes the bundle's ^base.
     data class BranchInfo(val name: String, val tip: String, val candidates: List<String>)
     val branchInfos = mutableListOf<BranchInfo>()
 
-    // Current branch
+    // Current branch — head + recent N reachable from HEAD + state hints
     val currentCandidates = buildNegotiationCandidates(project, projectDir, head)
     branchInfos.add(BranchInfo(currentBranch.ifBlank { "HEAD" }, head, currentCandidates))
 
-    // Additional branches
+    // Additional branches — tip + recent N OF THE BRANCH (not HEAD!) + state hints.
+    // The previous version only seeded `tip + lastForBranch`, so a branch with no
+    // recorded last_by_branch.txt entry would offer just one hash and almost
+    // certainly fail negotiation → full bundle. Walking the branch's own history
+    // gives us a proper ancestor candidate set.
+    val byBranch = state.readLastByBranch(projectDir)
     for (br in additionalBranches) {
       if (br.isBlank() || br == currentBranch) continue
       val tip = git.branchHash(project, projectDir, br) ?: continue
-      // For additional branches we collect: tip + last synced hash for that branch
-      val extras = mutableListOf(tip)
-      val byBranch = state.readLastByBranch(projectDir)
-      val lastForBr = byBranch[br]
-      if (!lastForBr.isNullOrBlank()) extras.add(lastForBr)
-      branchInfos.add(BranchInfo(br, tip, extras))
+      val extras = LinkedHashSet<String>()
+      extras.add(tip)
+      git.recentCommitsOfRef(project, projectDir, br, 50).forEach { extras.add(it) }
+      byBranch[br]?.takeIf { it.isNotBlank() }?.let { extras.add(it) }
+      val deduped = extras.filter { hashRe.matches(it) }.toList()
+      branchInfos.add(BranchInfo(br, tip, deduped))
     }
 
-    // Merge all candidates into one list for a single has-commits call
-    val allCandidates = branchInfos.flatMap { it.candidates }.distinct().take(200)
-    if (allCandidates.isEmpty()) return MultiBranchNegotiation(null, emptyList())
+    // ─── Step 3. Single hasCommits over the union ───────────────────────
+    // Server-reported tips are already known — no point asking again. We ask
+    // hasCommits about everything else so the server can confirm e.g. a fast-
+    // forward through master that's not on any tip directly.
+    val askable = branchInfos.flatMap { it.candidates }
+      .filter { it.lowercase() !in serverKnown }
+      .distinct()
+      .take(300)
 
-    val has = mirror.hasCommits(settings.baseUrl, settings.mirrorApiKey, repo, allCandidates, settings.mirrorInsecureTls)
-    if (has.code !in 200..299) return MultiBranchNegotiation(null, emptyList())
+    val knownFromHas: Set<String> = if (askable.isEmpty()) emptySet() else {
+      val has = mirror.hasCommits(settings.baseUrl, settings.mirrorApiKey, repo, askable, settings.mirrorInsecureTls)
+      if (has.code !in 200..299) emptySet() else parseKnownCommitHashes(has.body)
+    }
 
-    val known = parseKnownCommitHashes(has.body)
+    val known: Set<String> = HashSet<String>(serverKnown.size + knownFromHas.size).also {
+      it.addAll(serverKnown)
+      it.addAll(knownFromHas)
+    }
 
-    // Check if Mirror already has current HEAD (pointer-only)
-    if (known.contains(head.lowercase()) && additionalBranches.all { br ->
-        val tip = git.branchHash(project, projectDir, br)
-        tip == null || known.contains(tip.lowercase())
-      }) {
+    if (known.isEmpty()) return MultiBranchNegotiation(null, emptyList())
+
+    // ─── Step 4. Pointer-only fast path ─────────────────────────────────
+    // If the server already knows every tip we want to push, we don't even
+    // need a bundle — just call apply-known to move the refs.
+    val allTipsKnown = known.contains(head.lowercase()) && additionalBranches.all { br ->
+      val tip = git.branchHash(project, projectDir, br)
+      tip == null || known.contains(tip.lowercase())
+    }
+    if (allTipsKnown) {
       return MultiBranchNegotiation(pointerCommit = head, excludeBases = emptyList())
     }
 
-    // Find best known base for each branch
+    // ─── Step 5. Pick best ^base per branch ─────────────────────────────
+    // For each branch, search candidates (own history + ALL server tips, since
+    // a branch might descend from any other branch the server hosts). The
+    // first candidate that is in `known` AND is an ancestor of our tip wins.
     val excludeBases = mutableListOf<String>()
     for (info in branchInfos) {
-      val best = pickBestKnownBase(info.tip, info.candidates, known)
-      if (!best.isNullOrBlank() && git.isAncestor(project, projectDir, best, info.tip)) {
-        excludeBases.add(best)
+      val candidatesForThisBranch = (info.candidates + serverKnown).distinct()
+      var best = pickBestKnownBase(info.tip, candidatesForThisBranch, known)
+      while (!best.isNullOrBlank()) {
+        if (git.isAncestor(project, projectDir, best, info.tip)) {
+          excludeBases.add(best)
+          break
+        }
+        // Not an ancestor: try the next-best candidate (e.g. branch X's tip is
+        // known but X diverged from our branch — useless as ^base).
+        val remaining = candidatesForThisBranch.filter { !it.equals(best, ignoreCase = true) }
+        best = pickBestKnownBase(info.tip, remaining, known)
       }
     }
 

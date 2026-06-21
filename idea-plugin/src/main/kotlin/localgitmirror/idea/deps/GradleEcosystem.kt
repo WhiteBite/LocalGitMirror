@@ -37,17 +37,51 @@ object GradleEcosystem : DepsEcosystem {
 
   override fun resolveMissing(projectDir: File, javaHome: String?): ResolveMissingResult {
     val r = GradleResolver.resolveMissing(projectDir, javaHome = javaHome)
+
+    // Plugin's init-script has two well-known false-positive sources:
+    //   1. BOM-only artifacts (Spring Boot BOM, Testcontainers BOM, …) — `artifactView.artifacts`
+    //      returns empty for them, and the script falls into the `if (artifacts.isEmpty())`
+    //      branch and reports them missing.
+    //   2. In offline mode `ra.file.exists()` often returns false even when the artifact
+    //      *is* on disk (gradle's expected sha1-path differs from the actual one in cache).
+    // Both produce coords that ARE already cached locally — sending them wastes bandwidth.
+    // Filter them out here by scanning the real cache directories on disk.
+    val extraCacheRoots = r.gradleUserHome
+      ?.let { listOf(File(it, "caches/modules-2/files-2.1")) }
+      ?: emptyList()
+    val cachedCoords: Set<String> = DepsScanner
+      .scanAllCandidates(extraRoots = extraCacheRoots)
+      .mapTo(HashSet()) { "${it.group}:${it.name}:${it.version}" }
+
+    // Project's own subprojects never live in any artifact cache (they're built locally,
+    // not downloaded). gradle still reports them as "needing resolution" — strip them.
+    val rootName = readRootProjectName(projectDir).orEmpty()
+    fun isOwnSubproject(group: String): Boolean =
+      rootName.isNotBlank() && (group == rootName || group.startsWith("$rootName."))
+
     val coords = r.artifacts
       .map { DepCoordinate(id, it.g, it.n, it.v) }
       .distinctBy { it.key }
+      .filterNot { c ->
+        val gnv = "${c.group}:${c.name}:${c.version}"
+        gnv in cachedCoords || isOwnSubproject(c.group)
+      }
     return ResolveMissingResult(r.ok, coords, r.log, r.durationMs)
+  }
+
+  /** Parse `rootProject.name = "..."` from settings.gradle(.kts). Null if not found. */
+  private fun readRootProjectName(projectDir: File): String? {
+    val settings = listOf("settings.gradle.kts", "settings.gradle")
+      .map { File(projectDir, it) }.firstOrNull { it.isFile } ?: return null
+    val re = Regex("""rootProject\.name\s*=\s*["']([^"']+)["']""")
+    return re.find(settings.readText())?.groupValues?.get(1)
   }
 
   override fun collect(
     coordinates: List<DepCoordinate>,
+    presentIndex: Map<String, Set<String>>,
     onMissingLocally: (DepCoordinate) -> Unit
   ): List<DepFileEntry> {
-    collectProjectDir?.let { /* hint set by caller */ }
     val want = coordinates.filter { it.ecosystem == id }
       .associateBy { "${it.group}:${it.name}:${it.version}" }
     if (want.isEmpty()) return emptyList()
@@ -68,7 +102,8 @@ object GradleEcosystem : DepsEcosystem {
     val scannedRoots = DepsScanner.candidateCacheRoots()
       .filter { it.isDirectory }.joinToString(", ") { it.absolutePath }
     DepsDiagnostics.event(
-      "gradle collect: scanned cache(s)=[$scannedRoots] totalArtifacts=${allArtifacts.size} wanted=${want.size}"
+      "gradle collect: scanned cache(s)=[$scannedRoots] totalArtifacts=${allArtifacts.size} " +
+        "wanted=${want.size} presentCoords=${presentIndex.size}"
     )
 
     val out = mutableListOf<DepFileEntry>()
@@ -78,9 +113,107 @@ object GradleEcosystem : DepsEcosystem {
         onMissingLocally(coord)
         continue
       }
-      for (art in arts) {
+      // 1. Trim docs/sources/tests + dedup multiple sha-dirs per kind.
+      // 2. Subtract files the dome already has at the exact same content
+      //    address (sha1 + fileName) — gradle's sha1 dir name IS the sha1 of
+      //    the file's bytes, so identical addresses ↔ identical bytes.
+      val shipable = pickShipableArtifacts(arts)
+      val alreadyAtDome = presentIndex[gnv].orEmpty()
+      val toShip = if (alreadyAtDome.isEmpty()) shipable else shipable.filter {
+        ("${it.sha1}/${it.fileName}") !in alreadyAtDome
+      }
+      if (toShip.isEmpty()) {
+        // Two reasons we end up here:
+        //   a) nothing matched at all → genuinely missing locally (rare; should
+        //      have been caught by `arts.isNullOrEmpty()` above)
+        //   b) the dome already has every file we'd otherwise ship → this is
+        //      the desired outcome, not an error. Don't warn.
+        if (shipable.isEmpty()) onMissingLocally(coord)
+        continue
+      }
+      for (art in toShip) {
         val rel = "${art.group}/${art.name}/${art.version}/${art.sha1}/${art.fileName}"
         out.add(DepFileEntry(coord, art.absolutePath, rel, art.size))
+      }
+    }
+    return out
+  }
+
+  /**
+   * For one g:n:v, decide which cache files to ship. Pure & visible-for-tests.
+   *
+   *   - File classification — see [classifyArtifact].
+   *   - "Doc" kinds (sources/javadoc/tests) are dropped entirely.
+   *   - For every remaining kind we keep the freshest file (by mtime descending,
+   *     then by absolutePath for determinism on equal mtimes), so we ship at most
+   *     one jar + one pom + one module + one aar etc. — the exact set gradle
+   *     needs to resolve the dep offline.
+   */
+  internal fun pickShipableArtifacts(arts: List<DepsScanner.Artifact>): List<DepsScanner.Artifact> {
+    if (arts.isEmpty()) return emptyList()
+    val byKind = LinkedHashMap<ArtifactKind, MutableList<DepsScanner.Artifact>>()
+    for (a in arts) {
+      val kind = classifyArtifact(a.fileName) ?: continue   // null = drop
+      byKind.getOrPut(kind) { mutableListOf() }.add(a)
+    }
+    val out = mutableListOf<DepsScanner.Artifact>()
+    for ((_, group) in byKind) {
+      // mtime is more reliable than `version` (which is the same g:n:v string here).
+      // Fall back to absolutePath for stable ordering when mtimes tie.
+      val freshest = group.maxWithOrNull(
+        compareBy<DepsScanner.Artifact> { File(it.absolutePath).lastModified() }
+          .thenBy { it.absolutePath }
+      ) ?: continue
+      out.add(freshest)
+    }
+    return out
+  }
+
+  /** Categorise a gradle cache file. Null = exclude from the bundle. */
+  internal enum class ArtifactKind { JAR, POM, MODULE, AAR, KLIB, OTHER }
+
+  internal fun classifyArtifact(fileName: String): ArtifactKind? {
+    val lower = fileName.lowercase()
+    return when {
+      // Documentation / debug bundles — gradle does not need these to build.
+      // Per gradle convention these names are deterministic: <name>-<v>-<classifier>.jar.
+      lower.endsWith("-sources.jar") -> null
+      lower.endsWith("-javadoc.jar") -> null
+      lower.endsWith("-tests.jar") -> null
+      lower.endsWith("-test.jar") -> null
+      lower.endsWith(".jar") -> ArtifactKind.JAR
+      lower.endsWith(".pom") -> ArtifactKind.POM
+      lower.endsWith(".module") -> ArtifactKind.MODULE
+      lower.endsWith(".aar") -> ArtifactKind.AAR
+      lower.endsWith(".klib") -> ArtifactKind.KLIB
+      // Unknown extension (e.g. .zip distributions) — keep, gradle may need it.
+      else -> ArtifactKind.OTHER
+    }
+  }
+
+  /**
+   * DOME side. Enumerate every cache file gradle has on this machine, in the
+   * exact (g, n, v, sha1, fileName) shape the work side needs to subtract from
+   * its `collect()` output.
+   *
+   * Reuses the same [pickShipableArtifacts] policy as `collect()` — if the work
+   * side wouldn't ship a sources/javadoc/tests jar, we don't waste manifest
+   * bytes declaring we have it either. Both sides apply the same rules so the
+   * (sha1, fileName) keys line up exactly.
+   */
+  override fun enumeratePresent(): List<PresentArtifact> {
+    val extraRoots = collectProjectDir?.let { dir ->
+      GradleResolver.discoverGradleUserHome(dir)?.let {
+        listOf(File(it, "caches/modules-2/files-2.1"))
+      }
+    } ?: emptyList()
+    val all = DepsScanner.scanAllCandidates(extraRoots = extraRoots)
+    if (all.isEmpty()) return emptyList()
+
+    val out = ArrayList<PresentArtifact>(all.size)
+    for ((_, group) in all.groupBy { "${it.group}:${it.name}:${it.version}" }) {
+      for (art in pickShipableArtifacts(group)) {
+        out.add(PresentArtifact(art.group, art.name, art.version, art.sha1, art.fileName))
       }
     }
     return out

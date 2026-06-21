@@ -151,11 +151,17 @@ class RequestDepsAction : AnAction() {
         }
 
         val manifest = DepsRequestManifest(
-          version = 2,
+          version = 3,
           requester = System.getProperty("user.name") ?: "dome",
           project = repo,
           ecosystem = ecosystems.joinToString(",") { it.id },
-          missing = missing
+          missing = missing,
+          // Tell the work side what we ALREADY have under any coordinate it
+          // might ship. The work side will subtract these (sha1, fileName)
+          // pairs from its collect() output, so the dome only receives files
+          // it doesn't already have. Same shipability rules on both sides
+          // (see GradleEcosystem.pickShipableArtifacts) → keys line up.
+          present = ecosystems.flatMap { it.enumeratePresent() }
         )
         val encrypted = BundleCrypto.encryptBundleBytes(DepsRequestManifest.toJsonBytes(manifest), syncPwd)
 
@@ -271,11 +277,11 @@ class RespondDepsAction : AnAction() {
           runCatching { tmpManifest.delete() }
         }
 
-        if (manifest.version < 2 || manifest.missing.isEmpty()) {
+        if (manifest.version < 3 || manifest.missing.isEmpty()) {
           val detail = "v=${manifest.version} missing=${manifest.missing.size} eco='${manifest.ecosystem}'"
           notify(project,
             "Запрос пуст или в старом формате ($detail). " +
-              if (manifest.version < 2)
+              if (manifest.version < 3)
                 "Обнови плагин на домашней машине и повтори «Запросить»."
               else
                 "Домашняя машина решила что ничего не нужно. Открой Help → Show Log, найди '[deps] request:' — там будет причина.",
@@ -290,13 +296,16 @@ class RespondDepsAction : AnAction() {
         // for its REAL gradleUserHomeDir and scan that cache too.
         val workProjectDir = project.basePath?.let { File(it) }
         GradleEcosystem.collectProjectDir = workProjectDir
+        // Index what the dome already has — work side will skip identical
+        // (sha1, fileName) entries when packing.
+        val presentIndex = manifest.presentIndex()
         val byEco = manifest.missing.groupBy { it.ecosystem }
         val entries = mutableListOf<DepFileEntry>()
         val notFound = mutableListOf<DepCoordinate>()
         for ((ecoId, coords) in byEco) {
           val eco = DepsEcosystems.byId(ecoId)
           if (eco == null) { notFound.addAll(coords); continue }
-          entries.addAll(eco.collect(coords) { notFound.add(it) })
+          entries.addAll(eco.collect(coords, presentIndex) { notFound.add(it) })
         }
         GradleEcosystem.collectProjectDir = null
 

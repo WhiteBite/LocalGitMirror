@@ -58,16 +58,38 @@ interface DepsEcosystem {
 
   /**
    * WORK side. For each requested coordinate, locate the backing file(s) in the
-   * local cache and return shippable entries. Coordinates not found locally are
-   * reported via [onMissingLocally] so the UI can warn.
+   * local cache and return shippable entries.
+   *
+   * @param presentIndex  what the DOME already has, keyed by "g:n:v" → set of
+   *                      "<sha1>/<fileName>" strings. Files matching an entry
+   *                      in this index are skipped — we only ship what the
+   *                      dome actually needs to receive.
+   *                      Empty map = "ship everything you find" (legacy/test path).
+   * @param onMissingLocally  reported once per coordinate that has no shippable
+   *                          file in any local cache.
    */
   fun collect(
     coordinates: List<DepCoordinate>,
+    presentIndex: Map<String, Set<String>> = emptyMap(),
     onMissingLocally: (DepCoordinate) -> Unit = {}
   ): List<DepFileEntry>
 
   /** The local cache root this ecosystem unpacks into on the dome side. */
   fun cacheRoot(): File
+
+  /**
+   * DOME side. Enumerate every cache file the dome already has that is *or
+   * could become* relevant to a future deps request (i.e. every artifact under
+   * any coordinate the work side might be asked to ship).
+   *
+   * The work side uses this to filter [collect]: if the dome reports
+   * (g, n, v, sha1, fileName) here, the work side won't repackage that file
+   * even if it matches a missing coordinate via a different path.
+   *
+   * Default implementation = empty (= "I have nothing", work ships everything),
+   * which keeps the legacy behaviour for ecosystems that haven't enumerated yet.
+   */
+  fun enumeratePresent(): List<PresentArtifact> = emptyList()
 
   /**
    * DOME side, optional. Called after files were unpacked into [cacheRoot].
