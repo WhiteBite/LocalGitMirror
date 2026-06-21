@@ -95,7 +95,19 @@ object DepsBundler {
           val bytes = zin.readBytes()
           val displayName = displayNameFor(eco, rel)
 
-          if (target.exists() && target.length() == bytes.size.toLong()) {
+          // Skip writes when the file at `target` is byte-identical to what we
+          // received. We compare in three stages, cheap-to-expensive:
+          //   1. size (one stat call) — most mismatches die here
+          //   2. first/last 4 KiB sample (one short read)
+          //   3. full byte compare only if both samples match (rare)
+          // For gradle's content-addressed cache the directory name IS the
+          // sha1 of the file's bytes, so size-match alone is already a near-
+          // certain identity proof — but we still verify a sample, since we
+          // can't statically know every ecosystem layout follows that rule.
+          if (target.exists() &&
+              target.length() == bytes.size.toLong() &&
+              isSameContent(target, bytes)
+          ) {
             skipped++; skippedNames.add(displayName); continue
           }
           target.writeBytes(bytes)
@@ -117,6 +129,45 @@ object DepsBundler {
       "npm" -> parts.lastOrNull() ?: rel
       else -> rel
     }
+  }
+
+  /**
+   * Compare a file on disk to a byte buffer cheaply.
+   *
+   * Caller MUST have already verified that sizes match — this function does
+   * not re-check, it just decides "are the bytes equal?". Strategy:
+   *
+   *   - For files ≤ 8 KiB: read fully and compare. Tiny anyway.
+   *   - Otherwise: read the first 4 KiB and last 4 KiB. If either differs,
+   *     the files differ. If both match, fall back to a full byte-by-byte
+   *     compare to catch the rare case where only the middle differs.
+   *
+   * The sample check alone catches almost every false positive in practice
+   * because real file mismatches at identical sizes always involve different
+   * content somewhere — and zips/jars/tar.gz all have headers and trailers
+   * that sit exactly in the sampled regions.
+   */
+  internal fun isSameContent(target: File, bytes: ByteArray): Boolean {
+    val len = bytes.size
+    if (len <= 8 * 1024) {
+      return target.readBytes().contentEquals(bytes)
+    }
+    val sample = 4 * 1024
+    java.io.RandomAccessFile(target, "r").use { raf ->
+      val head = ByteArray(sample)
+      raf.seek(0)
+      raf.readFully(head)
+      for (i in 0 until sample) if (head[i] != bytes[i]) return false
+
+      val tail = ByteArray(sample)
+      raf.seek((len - sample).toLong())
+      raf.readFully(tail)
+      for (i in 0 until sample) if (tail[i] != bytes[len - sample + i]) return false
+    }
+    // Samples match — most likely the whole file is identical. Verify the
+    // middle too. Could be omitted for speed, but byte-equal correctness is
+    // cheap relative to a wasted re-write.
+    return target.readBytes().contentEquals(bytes)
   }
 
   data class UnpackResult(

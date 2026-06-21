@@ -109,3 +109,7 @@ idea-plugin/build/
 idea-plugin/bin/
 idea-plugin/detekt-rules/bin/
 idea-plugin/detekt-rules/build/
+
+# Local lgm CLI diagnostic outputs (lgm.py / lgm_diag.py)
+lgm_*.txt
+test-output.txt
