@@ -42,7 +42,18 @@ def load_env(path: Path = _HERE / ".env") -> dict:
 _ENV = load_env()
 
 def cfg(key: str, default: str = "") -> str:
-    return os.environ.get(key) or _ENV.get(key) or default
+    """
+    Resolve a config key. Project's `.env` takes priority over the process
+    environment because the env may carry an UNRELATED variable of the same
+    name (e.g. a workstation-wide `API_KEY` belonging to some other tool —
+    which is exactly the trap that bit us once with a wrong-length API key
+    silently overriding the .env one). To opt OUT for a specific key, set
+    `LGM_USE_ENV_<KEY>=1`.
+    """
+    env_override = os.environ.get(f"LGM_USE_ENV_{key}")
+    if env_override:
+        return os.environ.get(key) or _ENV.get(key) or default
+    return _ENV.get(key) or os.environ.get(key) or default
 
 # ── crypto (mirrors bundle_crypto.py) ────────────────────────────────────────
 #
@@ -588,6 +599,9 @@ def lgmScanResolved(out, conf) {
             lgmWriteMissing(out, id.group, id.name, id.version)
           }
         }
+        if (artifacts.isEmpty()) {
+          lgmWriteMissing(out, id.group, id.name, id.version)
+        }
       } catch (Throwable ignored) { }
     }
   } catch (Throwable ignored) { }
@@ -787,6 +801,7 @@ def _run_gradle_init(project: Path, java_home: str | None) -> tuple[Path, str, i
 
 def cmd_request(args):
     """Build a minimum-traffic deps request (manifest v3) and post it to Mirror."""
+    import re as _re
     base     = args.base_url or cfg("BASE_URL", "https://localhost:443")
     key      = args.api_key  or cfg("API_KEY")
     password = args.password or cfg("SYNC_PASSWORD")
@@ -802,27 +817,44 @@ def cmd_request(args):
     print(f"\n=== Resolving missing deps for {project.name} ===")
     java_home = _detect_java_home()
     print(f"  JAVA_HOME = {java_home or '(not detected)'}")
-    out_file, stdout_tail, exit_code = _run_gradle_init(project, java_home)
-    if exit_code != 0 and not out_file.exists():
-        for ln in stdout_tail.splitlines()[-15:]:
-            print(f"    {ln}")
-        sys.exit(f"gradle init-script failed (exit={exit_code})")
+    out_file, full_stdout, exit_code = _run_gradle_init(project, java_home)
 
     raw = []
     guh = None
-    for line in out_file.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
+    if out_file.exists():
+        for line in out_file.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if obj.get("g") == "__GUH__":
+                guh = obj.get("f") or None
+                continue
+            raw.append(obj)
+        out_file.unlink(missing_ok=True)
+
+    # Stdout fallback: gradle prints exact coordinates whenever buildscript
+    # resolution fails before our afterEvaluate hook runs. Two formats:
+    #   "No cached version of <g>:<n>:<v> available for offline mode"
+    #   "Could not download <file>.jar (<g>:<n>:<v>): No cached version available"
+    # We extract <g>:<n>:<v> from each, skip *.gradle.plugin markers.
+    fallback_re = _re.compile(
+        r"(?:No cached version of|Could not download[^\(]*\()"
+        r"\s*([^:\s\(]+):([^:\s]+):([^\s\)]+)"
+    )
+    fb_seen = set()
+    for m in fallback_re.finditer(full_stdout):
+        g, n, v = m.group(1), m.group(2), m.group(3)
+        if n.endswith(".gradle.plugin"):
             continue
-        try:
-            obj = json.loads(line)
-        except Exception:
+        k = f"{g}:{n}:{v}"
+        if k in fb_seen:
             continue
-        if obj.get("g") == "__GUH__":
-            guh = obj.get("f") or None
-            continue
-        raw.append(obj)
-    out_file.unlink(missing_ok=True)
+        fb_seen.add(k)
+        raw.append({"g": g, "n": n, "v": v, "f": ""})
 
     # dedup by g:n:v
     seen = set()
@@ -833,7 +865,7 @@ def cmd_request(args):
             continue
         seen.add(k)
         raw_missing.append(o)
-    print(f"  init-script reported {len(raw_missing)} candidate coord(s)")
+    print(f"  init-script + stdout fallback: {len(raw_missing)} candidate coord(s)")
     print(f"  gradle user home (reported) = {guh or '(unknown)'}")
 
     # ── Step 2: scan local cache + filter ──────────────────────────────────
@@ -845,17 +877,27 @@ def cmd_request(args):
         if r.is_dir() and r not in cache_roots:
             cache_roots.append(r)
     all_artifacts = []
-    seen_keys = set()
+    seen_artifact_keys = set()
     for r in cache_roots:
         for a in scan_cache(r):
-            key = f"{a['group']}:{a['name']}:{a['version']}/{a['sha1']}/{a['file']}"
-            if key in seen_keys:
+            art_key = f"{a['group']}:{a['name']}:{a['version']}/{a['sha1']}/{a['file']}"
+            if art_key in seen_artifact_keys:
                 continue
-            seen_keys.add(key)
+            seen_artifact_keys.add(art_key)
             all_artifacts.append(a)
+    # Also include maven-local — must be in cached_coords so already-applied
+    # artifacts don't get re-requested (and so a BOM with only a pom in
+    # ~/.m2/repository is correctly recognised as already present).
+    maven_arts = scan_maven_local()
+    for a in maven_arts:
+        art_key = f"{a['group']}:{a['name']}:{a['version']}/{a['sha1']}/{a['file']}"
+        if art_key in seen_artifact_keys:
+            continue
+        seen_artifact_keys.add(art_key)
+        all_artifacts.append(a)
     cached_coords = {f"{a['group']}:{a['name']}:{a['version']}" for a in all_artifacts}
-    print(f"  scanned {len(cache_roots)} cache root(s), {len(all_artifacts)} artifact(s), "
-          f"{len(cached_coords)} unique g:n:v")
+    print(f"  scanned {len(cache_roots)} gradle cache root(s) + maven-local, "
+          f"{len(all_artifacts)} artifact(s), {len(cached_coords)} unique g:n:v")
 
     root_name = _read_root_project_name(project)
     def _own(g: str) -> bool:
@@ -879,24 +921,18 @@ def cmd_request(args):
         print(f"    ... and {len(missing) - 10} more")
 
     # ── Step 3: build present (DOME enumerates what it has) ────────────────
-    # Scan BOTH gradle internal cache (caches/modules-2/files-2.1) AND maven
-    # local (~/.m2/repository). Same dedup key as the plugin: g:n:v:sha1:file.
+    # Same all_artifacts (gradle cache + maven-local) we built in Step 2.
     by_gnv: dict[str, list[dict]] = {}
     for a in all_artifacts:
         by_gnv.setdefault(f"{a['group']}:{a['name']}:{a['version']}", []).append(a)
-    print(f"  scanning ~/.m2/repository (sha-1 of every file — may take a few seconds)…")
-    maven_arts = scan_maven_local()
-    for a in maven_arts:
-        by_gnv.setdefault(f"{a['group']}:{a['name']}:{a['version']}", []).append(a)
-    print(f"  +{len(maven_arts)} artifact(s) from maven-local")
 
     present = []
-    seen_keys = set()
+    seen_present_keys = set()
     for arts in by_gnv.values():
         for a in _pick_shipable(arts):
-            key = f"{a['group']}:{a['name']}:{a['version']}:{a['sha1']}:{a['file']}"
-            if key in seen_keys: continue
-            seen_keys.add(key)
+            present_key = f"{a['group']}:{a['name']}:{a['version']}:{a['sha1']}:{a['file']}"
+            if present_key in seen_present_keys: continue
+            seen_present_keys.add(present_key)
             present.append({
                 "g": a["group"], "n": a["name"], "v": a["version"],
                 "sha1": a["sha1"], "fileName": a["file"],
@@ -925,12 +961,23 @@ def cmd_request(args):
     # ── Step 5: encrypt + post ─────────────────────────────────────────────
     encrypted = encrypt_bundle(payload_json, password)
     print(f"  encrypted: {len(encrypted):,} bytes — posting to {base}…")
+    print(f"  api_key present: {bool(key)} ({len(key)} chars)")
 
     res = api_post_multipart(
         base, "/api/deps/request", key,
         fields={"repo": repo},
         files={"attachment": ("manifest.bin", encrypted)},
     )
+    if "_error" in res:
+        # Retry once — we've seen sporadic 404s when the backend is busy.
+        print(f"  first POST failed ({res}), retrying after 2s…")
+        import time as _time
+        _time.sleep(2)
+        res = api_post_multipart(
+            base, "/api/deps/request", key,
+            fields={"repo": repo},
+            files={"attachment": ("manifest.bin", encrypted)},
+        )
     if "_error" in res:
         sys.exit(f"  POST failed: {res}")
     print(f"  OK: id={res.get('id', '?')[:12]} size={res.get('size', 0):,} bytes")

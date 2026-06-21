@@ -464,13 +464,15 @@ def lgmScanResolved(out, conf) {
       // Skip the root project itself and Gradle's own virtual components
       if (id.group == 'unspecified' || id.version == 'unspecified' || id.version == '') return
       if (id.name.endsWith('.gradle.plugin')) return
-      // Only emit a "missing" line when artifactView resolved a real file but
-      // it doesn't exist on disk. We deliberately DO NOT fall back to the
-      // "artifacts.isEmpty() → missing" branch — it generated huge volumes of
-      // false-positives for BOM-only artifacts (Spring Boot BOM, jackson-bom,
-      // testcontainers-bom, …) which legitimately have no jar, only a pom that
-      // gradle has already cached. Truly missing-but-needed artifacts are still
-      // caught by Pass 2 (lenientConfiguration) and the stdout fallback parser.
+      // Two failure modes both mean "the dome doesn't have a usable file":
+      //   a) artifactView resolved a path but the file is gone
+      //   b) artifactView returned nothing (unresolved in offline mode)
+      // We emit BOTH cases. False-positives (BOM-only artifacts where (b) fires
+      // but a .pom exists locally) are scrubbed downstream by the
+      // GradleEcosystem.resolveMissing cachedCoords post-filter, which scans
+      // every gradle cache root + ~/.m2/repository for ANY file under
+      // <g>/<n>/<v>/. If the dome already has SOMETHING for that coordinate,
+      // the post-filter drops it before the manifest goes out.
       try {
         def artifacts = conf.incoming.artifactView { config ->
           config.componentFilter { c -> c.moduleVersion?.module == id.module }
@@ -481,8 +483,11 @@ def lgmScanResolved(out, conf) {
             lgmWriteMissing(out, id.group, id.name, id.version)
           }
         }
+        if (artifacts.isEmpty()) {
+          lgmWriteMissing(out, id.group, id.name, id.version)
+        }
       } catch (Throwable ignored) {
-        // artifactView failed entirely → can't decide; skip rather than guess.
+        lgmWriteMissing(out, id.group, id.name, id.version)
       }
     }
   } catch (Throwable ignored) { }
