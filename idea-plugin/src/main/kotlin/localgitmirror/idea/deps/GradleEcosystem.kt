@@ -140,7 +140,62 @@ object GradleEcosystem : DepsEcosystem {
         out.add(DepFileEntry(coord, art.absolutePath, rel, art.size))
       }
     }
+
+    // Parent-pom closure: every shipped .pom may declare a <parent> whose own
+    // pom must also reach the dome, or mavenLocal() resolution fails with
+    // "Could not find <parent>". The work machine's cache holds the full chain
+    // (gradle downloaded it during its successful build), including PRIVATE
+    // parents that Maven Central doesn't have. Walk it so the dome receives a
+    // self-contained set.
+    val addedParents = expandParentPomClosure(out, byGnv)
+    if (addedParents > 0) {
+      DepsDiagnostics.event("gradle collect: added $addedParents parent pom(s) to complete the chain")
+    }
     return out
+  }
+
+  /** Parse a pom file's `<parent>` coordinate. Null if absent/malformed. */
+  internal fun parentCoordOfPom(pomText: String): Triple<String, String, String>? {
+    val block = Regex("""<parent>(.*?)</parent>""", setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE))
+      .find(pomText)?.groupValues?.get(1) ?: return null
+    fun tag(t: String): String? =
+      Regex("""<$t>\s*([^<]+?)\s*</$t>""", RegexOption.IGNORE_CASE).find(block)?.groupValues?.get(1)?.trim()
+    val g = tag("groupId") ?: return null
+    val n = tag("artifactId") ?: return null
+    val v = tag("version") ?: return null
+    return if (g.isNotBlank() && n.isNotBlank() && v.isNotBlank()) Triple(g, n, v) else null
+  }
+
+  /**
+   * Walk every shipped .pom for `<parent>` coords and append the parent's pom
+   * (recursively) from the work cache. Parent artifacts are pom-only, so we
+   * ship just the .pom. Parents absent from the cache are skipped — they're
+   * public and the dome resolves them from Maven Central. Mutates [out];
+   * returns the count of parent poms added.
+   */
+  private fun expandParentPomClosure(
+    out: MutableList<DepFileEntry>,
+    byGnv: Map<String, List<DepsScanner.Artifact>>
+  ): Int {
+    val shippedRel = out.mapTo(HashSet()) { it.relativePath }
+    val queue = ArrayDeque(out.filter { it.relativePath.endsWith(".pom", true) }.map { it.absolutePath })
+    val visited = HashSet(queue)
+    var added = 0
+    while (queue.isNotEmpty()) {
+      val pomText = runCatching { File(queue.removeFirst()).readText() }.getOrNull() ?: continue
+      val (g, n, v) = parentCoordOfPom(pomText) ?: continue
+      val arts = byGnv["$g:$n:$v"] ?: continue
+      for (a in pickShipableArtifacts(arts)) {
+        if (!a.fileName.endsWith(".pom", true)) continue
+        val rel = MavenLocalScanner.mavenLocalRelativePath(a.group, a.name, a.version, a.fileName)
+        if (shippedRel.add(rel)) {
+          out.add(DepFileEntry(DepCoordinate(id, a.group, a.name, a.version), a.absolutePath, rel, a.size))
+          added++
+        }
+        if (visited.add(a.absolutePath)) queue.addLast(a.absolutePath)
+      }
+    }
+    return added
   }
 
   /**
@@ -275,28 +330,30 @@ object GradleEcosystem : DepsEcosystem {
   }
 
   private val MAVENLOCAL_INIT_SCRIPT: String = """
-    // LocalGitMirror v1 — auto-generated. Do not edit by hand: Mirror's apply
+    // LocalGitMirror v3 — auto-generated. Do not edit by hand: Mirror's apply
     // step rewrites this file when its content drifts from the plugin's copy.
     //
-    // Adds mavenLocal() to every gradle build's repositories so artifacts
-    // unpacked into ~/.m2/repository (e.g. via 'Apply received deps') are
-    // resolvable in offline mode without modifying the project's build files.
+    // Makes artifacts unpacked into ~/.m2/repository (via 'Apply received deps')
+    // resolvable from every gradle build without editing project files.
+    //
+    // We deliberately DO NOT touch settings.pluginManagement.repositories here.
+    // Declaring any pluginManagement repository in an init script suppresses
+    // gradle's implicit default (the plugin portal), which breaks projects that
+    // rely on it (e.g. they declare no pluginManagement block of their own).
+    // Projects that need mavenLocal() for plugin/marker resolution already
+    // declare it in their own settings.gradle, so the init script only has to
+    // cover project + buildscript dependency repositories.
+    //
+    // `beforeProject` runs before each project's build.gradle is evaluated, so a
+    // buildscript {} classpath declared there sees mavenLocal() in its repo list.
 
-    allprojects {
-        buildscript {
-            repositories {
-                mavenLocal()
-            }
+    gradle.beforeProject { project ->
+        project.buildscript.repositories {
+            mavenLocal()
         }
-        repositories {
+        project.repositories {
             mavenLocal()
         }
     }
-
-    beforeSettings { settings ->
-        settings.pluginManagement.repositories {
-            mavenLocal()
-        }
-    }
-  """.trimIndent()
+  """.trimIndent() + "\n"
 }
