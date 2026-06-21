@@ -49,10 +49,28 @@ object GradleEcosystem : DepsEcosystem {
     val extraCacheRoots = r.gradleUserHome
       ?.let { listOf(File(it, "caches/modules-2/files-2.1")) }
       ?: emptyList()
-    val cachedCoords: Set<String> = (
-      DepsScanner.scanAllCandidates(extraRoots = extraCacheRoots) +
-      MavenLocalScanner.scan()
-    ).mapTo(HashSet()) { "${it.group}:${it.name}:${it.version}" }
+    val allCached = DepsScanner.scanAllCandidates(extraRoots = extraCacheRoots) + MavenLocalScanner.scan()
+
+    // A coordinate is "satisfied" (don't re-request) only if we hold the real
+    // artifact gradle needs — NOT just any file. Having only the .pom of a
+    // jar-packaged dependency does NOT satisfy it: gradle still fails with
+    // "Could not find ...jar". BOMs/parents (packaging=pom) ARE satisfied by
+    // the pom alone.
+    val coordKinds = HashMap<String, MutableSet<ArtifactKind>>()
+    val coordPom = HashMap<String, File>()
+    for (a in allCached) {
+      val gnv = "${a.group}:${a.name}:${a.version}"
+      val kind = classifyArtifact(a.fileName) ?: ArtifactKind.OTHER
+      coordKinds.getOrPut(gnv) { HashSet() }.add(kind)
+      if (a.fileName.endsWith(".pom", true)) coordPom[gnv] = File(a.absolutePath)
+    }
+    fun coordSatisfied(gnv: String): Boolean {
+      val kinds = coordKinds[gnv] ?: return false
+      if (kinds.any { it == ArtifactKind.JAR || it == ArtifactKind.AAR || it == ArtifactKind.KLIB }) return true
+      val pom = coordPom[gnv] ?: return false
+      return pomPackaging(pom) in setOf("pom", "bom")
+    }
+    val cachedCoords: Set<String> = coordKinds.keys.filterTo(HashSet()) { coordSatisfied(it) }
 
     // Project's own subprojects never live in any artifact cache (they're built locally,
     // not downloaded). gradle still reports them as "needing resolution" — strip them.
@@ -226,6 +244,13 @@ object GradleEcosystem : DepsEcosystem {
       out.add(freshest)
     }
     return out
+  }
+
+  /** Read a pom's <packaging> (Maven default 'jar'), lowercased. */
+  internal fun pomPackaging(pom: File): String {
+    val text = runCatching { pom.readText() }.getOrNull() ?: return "jar"
+    val m = Regex("""<packaging>\s*([^<]+?)\s*</packaging>""", RegexOption.IGNORE_CASE).find(text)
+    return m?.groupValues?.get(1)?.trim()?.lowercase() ?: "jar"
   }
 
   /** Categorise a gradle cache file. Null = exclude from the bundle. */

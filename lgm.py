@@ -965,9 +965,40 @@ def cmd_request(args):
             continue
         seen_artifact_keys.add(art_key)
         all_artifacts.append(a)
-    cached_coords = {f"{a['group']}:{a['name']}:{a['version']}" for a in all_artifacts}
+    # Index every present file by coordinate, tracking which artifact KINDS we
+    # hold. A coordinate is "satisfied" (don't re-request) only if we have the
+    # real artifact gradle needs — NOT just any file. Having only the .pom of a
+    # jar-packaged dependency does NOT satisfy it: gradle still fails with
+    # "Could not find ...jar". (BOMs/parents are packaging=pom and ARE satisfied
+    # by the pom alone.)
+    coord_kinds: dict[str, set] = {}
+    coord_pom: dict[str, str] = {}
+    for a in all_artifacts:
+        gnv = f"{a['group']}:{a['name']}:{a['version']}"
+        kind = _classify_artifact(a["file"]) or "doc"
+        coord_kinds.setdefault(gnv, set()).add(kind)
+        if a["file"].lower().endswith(".pom"):
+            coord_pom[gnv] = a["path"]
+
+    def _coord_satisfied(gnv: str) -> bool:
+        kinds = coord_kinds.get(gnv)
+        if not kinds:
+            return False
+        # Real binary artifact present → satisfied.
+        if kinds & {"jar", "aar", "klib"}:
+            return True
+        # Only pom/module/doc present → satisfied ONLY if the pom is itself the
+        # artifact (packaging=pom: BOM, parent, platform). A jar-packaged coord
+        # with just a pom is still missing its jar.
+        pom = coord_pom.get(gnv)
+        if pom and _pom_packaging(pom) in ("pom", "bom"):
+            return True
+        return False
+
+    cached_coords = {gnv for gnv in coord_kinds if _coord_satisfied(gnv)}
     print(f"  scanned {len(cache_roots)} gradle cache root(s) + maven-local, "
-          f"{len(all_artifacts)} artifact(s), {len(cached_coords)} unique g:n:v")
+          f"{len(all_artifacts)} artifact(s), {len(coord_kinds)} unique g:n:v, "
+          f"{len(cached_coords)} fully satisfied")
 
     root_name = _read_root_project_name(project)
     def _own(g: str) -> bool:
@@ -1180,6 +1211,19 @@ def cmd_fetch_poms(args):
             targets = _missing_parent_poms()
 
     print(f"\n  TOTAL: fetched={fetched_total}  private/404={skipped_private_total}  failed={failed_total}")
+
+
+def _pom_packaging(pom_path: str) -> str:
+    """Return a pom's <packaging> (Maven default 'jar'), lowercased."""
+    import xml.etree.ElementTree as ET
+    try:
+        rt = ET.parse(pom_path).getroot()
+    except Exception:
+        return "jar"
+    for c in rt:
+        if c.tag.endswith("}packaging") or c.tag == "packaging":
+            return (c.text or "jar").strip().lower()
+    return "jar"
 
 
 def _parent_coord_of_pom(pom: "Path") -> tuple[str, str, str] | None:
