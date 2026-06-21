@@ -49,9 +49,10 @@ object GradleEcosystem : DepsEcosystem {
     val extraCacheRoots = r.gradleUserHome
       ?.let { listOf(File(it, "caches/modules-2/files-2.1")) }
       ?: emptyList()
-    val cachedCoords: Set<String> = DepsScanner
-      .scanAllCandidates(extraRoots = extraCacheRoots)
-      .mapTo(HashSet()) { "${it.group}:${it.name}:${it.version}" }
+    val cachedCoords: Set<String> = (
+      DepsScanner.scanAllCandidates(extraRoots = extraCacheRoots) +
+      MavenLocalScanner.scan()
+    ).mapTo(HashSet()) { "${it.group}:${it.name}:${it.version}" }
 
     // Project's own subprojects never live in any artifact cache (they're built locally,
     // not downloaded). gradle still reports them as "needing resolution" — strip them.
