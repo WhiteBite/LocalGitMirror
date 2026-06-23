@@ -63,7 +63,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal val selectedAdditionalBranches = mutableSetOf<String>()
 
   // Dynamic UI containers
-  internal val badgesPanel = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply { isOpaque = false }
+  internal val badgesPanel = JPanel(WrapLayout(FlowLayout.LEFT, JBUI.scale(4), JBUI.scale(2))).apply { isOpaque = false }
   internal val actionsBox = JPanel().apply {
     layout = BoxLayout(this, BoxLayout.Y_AXIS)
     isOpaque = false
