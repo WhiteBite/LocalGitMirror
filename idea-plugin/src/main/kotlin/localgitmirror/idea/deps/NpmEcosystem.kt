@@ -101,21 +101,36 @@ object NpmEcosystem : DepsEcosystem {
    */
   private val probeCache = java.util.concurrent.ConcurrentHashMap<String, PublicAvailability>()
 
-  internal fun probePublicRegistry(coord: DepCoordinate, timeoutMs: Int = 4000): PublicAvailability {
+  internal fun probePublicRegistry(coord: DepCoordinate, timeoutMs: Int = 5000): PublicAvailability {
     val full = if (coord.group.isNotEmpty()) "${coord.group}/${coord.name}" else coord.name
     val key = "$full@${coord.version}"
     probeCache[key]?.let { return it }
-    val result = try {
+    // One retry: the public registry occasionally returns a transient non-200
+    // (e.g. a 406 from a CDN edge) which we must NOT misread as "corporate".
+    var result = PublicAvailability.UNKNOWN
+    for (attempt in 1..2) {
+      result = probeOnce(full, coord.version, timeoutMs)
+      if (result != PublicAvailability.UNKNOWN) break
+    }
+    probeCache[key] = result
+    return result
+  }
+
+  private fun probeOnce(full: String, version: String, timeoutMs: Int): PublicAvailability {
+    return try {
       // npm scoped names are URL-encoded as %2F per the registry spec.
       val encodedName = full.replace("/", "%2f")
-      val url = java.net.URL("https://registry.npmjs.org/$encodedName/${coord.version}")
+      val url = java.net.URL("https://registry.npmjs.org/$encodedName/$version")
       val conn = url.openConnection() as java.net.HttpURLConnection
       conn.requestMethod = "GET"
       conn.connectTimeout = timeoutMs
       conn.readTimeout = timeoutMs
-      conn.setRequestProperty("Accept", "application/vnd.npm.install-v1+json")
+      // NOTE: do NOT send "Accept: application/vnd.npm.install-v1+json" here — on
+      // the /<name>/<version> endpoint some npm CDN edges answer it with 406,
+      // which we'd misread as UNKNOWN and over-classify the package as corporate.
+      // A plain GET reliably yields 200 (public) / 404 (corporate).
       val code = conn.responseCode
-      conn.inputStream.use { it.readBytes() }  // drain & close (best-effort)
+      runCatching { conn.inputStream.use { it.readBytes() } }  // drain & close (best-effort)
       when {
         code == 200 -> PublicAvailability.AVAILABLE
         code == 404 -> PublicAvailability.ABSENT
@@ -126,8 +141,27 @@ object NpmEcosystem : DepsEcosystem {
     } catch (_: Throwable) {
       PublicAvailability.UNKNOWN
     }
-    probeCache[key] = result
-    return result
+  }
+
+  /**
+   * Probe every candidate against the public registry IN PARALLEL and return a
+   * key→availability map. Sequential probing of a whole dependency tree (often
+   * 1000+ packages) is far too slow; daemon threads keep it off the shutdown path.
+   */
+  private fun probeAllParallel(candidates: List<DepCoordinate>): Map<String, PublicAvailability> {
+    if (candidates.isEmpty()) return emptyMap()
+    val workers = candidates.size.coerceIn(1, 24)
+    val pool = java.util.concurrent.Executors.newFixedThreadPool(workers) { r ->
+      Thread(r, "lgm-npm-probe").apply { isDaemon = true }
+    }
+    return try {
+      val futures = candidates.map { c -> c to pool.submit<PublicAvailability> { probePublicRegistry(c) } }
+      futures.associate { (c, f) ->
+        c.key to (try { f.get() } catch (_: Throwable) { PublicAvailability.UNKNOWN })
+      }
+    } finally {
+      pool.shutdownNow()
+    }
   }
 
   // ── DOME: what does the lockfile pin to a corporate registry? ───────────────
@@ -163,7 +197,11 @@ object NpmEcosystem : DepsEcosystem {
       // to packages that genuinely don't exist on the public npm registry.
       val candidates = parse(lock.readText(Charsets.UTF_8))
       val scopes = parseScopes(npmCorporateScopesProvider())
-      val corporate = filterCorporate(candidates, scopes) { probePublicRegistry(it) }
+      // Probe the whole candidate set against public npm in parallel, then
+      // classify. A package that 404s on public npm is corporate; one that
+      // 200s the dome fetches itself (so it must NOT be requested).
+      val probed = probeAllParallel(candidates)
+      val corporate = filterCorporate(candidates, scopes) { probed[it.key] ?: PublicAvailability.UNKNOWN }
       ResolveMissingResult(
         ok = true,
         missing = corporate,
