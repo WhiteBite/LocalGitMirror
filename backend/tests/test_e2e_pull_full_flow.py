@@ -110,7 +110,7 @@ def _make_repo_with_branch(client: TestClient, storage: Path, repo_name: str,
     """
     assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
 
-    bare = storage / f"{repo_name}.git"
+    bare = storage / ".lgm" / "bare" / f"{repo_name}.git"
     work = storage / f"_scratch_{repo_name}"
     _run_git(storage.parent, "clone", str(bare), str(work))
     _run_git(work, "config", "user.email", "w@test.com")

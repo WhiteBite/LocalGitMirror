@@ -140,7 +140,7 @@ def test_cache_hit_serves_correct_content(tmp_path, monkeypatch):
     assert refs1 == refs2
 
     # Sanity: a cache file was actually written.
-    cache_dir = storage / "_export_cache"
+    cache_dir = storage / ".lgm" / "_export_cache"
     entries = [p for p in cache_dir.iterdir() if p.is_file() and not p.name.startswith(".tmp_")]
     assert len(entries) == 1, f"expected one cached bundle, found {entries}"
 
@@ -177,7 +177,7 @@ def test_cache_is_bounded(tmp_path, monkeypatch):
     client, repo, bare, work, rm, storage = _make_repo(tmp_path)
 
     cap = sync_module._EXPORT_CACHE_MAX_ENTRIES
-    cache_dir = storage / "_export_cache"
+    cache_dir = storage / ".lgm" / "_export_cache"
 
     # Each distinct commit -> distinct head -> distinct cache key.
     for i in range(cap + 5):
@@ -200,7 +200,7 @@ def test_corrupt_cache_falls_back(tmp_path, monkeypatch):
     refs1, _ = _bundle_refs(first["data"], tmp_path, "warm")
 
     # Poison every cache entry with garbage bytes.
-    cache_dir = storage / "_export_cache"
+    cache_dir = storage / ".lgm" / "_export_cache"
     poisoned = 0
     for p in cache_dir.iterdir():
         if p.is_file():

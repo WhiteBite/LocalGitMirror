@@ -172,4 +172,74 @@ class RepoResolverTest {
     assertEquals(RepoSource.PROJECT_NAME, r.source)
     assertEquals("onyx-platform", r.sanitized)
   }
+
+  // ── pinned repo (.git/config localgitmirror.repo) — the drift fix ──
+  // Once a strong identity is pinned, it must win over the weak project/dir
+  // fallbacks AND survive a transient remote-read failure, so the Mirror key
+  // never silently drifts (the onyx-platform -> phonyx bug).
+
+  @Test
+  fun `pinned wins over project name when settings and remote are empty`() {
+    val r = RepoResolver.resolveByNames(
+      projectName = "phonyx",          // IntelliJ project name differs from folder
+      directoryName = "onyx-platform",
+      configuredRepo = "",
+      remoteUrl = "",                  // remote momentarily unreadable
+      pinnedRepo = "onyx-platform"
+    )
+    assertEquals(RepoSource.PINNED, r.source)
+    assertEquals("onyx-platform", r.sanitized)
+  }
+
+  @Test
+  fun `pinned wins over a differing remote for stability`() {
+    val r = RepoResolver.resolveByNames(
+      projectName = "whatever",
+      directoryName = "whatever",
+      configuredRepo = "",
+      remoteUrl = "https://nexus.local/eaes/some-fork.git",
+      pinnedRepo = "onyx-platform"
+    )
+    assertEquals(RepoSource.PINNED, r.source)
+    assertEquals("onyx-platform", r.sanitized)
+  }
+
+  @Test
+  fun `configured settings still win over pinned`() {
+    val r = RepoResolver.resolveByNames(
+      projectName = "phonyx",
+      directoryName = "onyx-platform",
+      configuredRepo = "explicit-name",
+      remoteUrl = "",
+      pinnedRepo = "onyx-platform"
+    )
+    assertEquals(RepoSource.SETTINGS, r.source)
+    assertEquals("explicit-name", r.sanitized)
+  }
+
+  @Test
+  fun `blank pinned is ignored and remote is used`() {
+    val r = RepoResolver.resolveByNames(
+      projectName = "phonyx",
+      directoryName = "checkout",
+      configuredRepo = "",
+      remoteUrl = "https://nexus.local/eaes/onyx-platform.git",
+      pinnedRepo = "   "
+    )
+    assertEquals(RepoSource.GIT_REMOTE, r.source)
+    assertEquals("onyx-platform", r.sanitized)
+  }
+
+  @Test
+  fun `pinned value is sanitized`() {
+    val r = RepoResolver.resolveByNames(
+      projectName = "x",
+      directoryName = "y",
+      configuredRepo = "",
+      remoteUrl = "",
+      pinnedRepo = "Onyx Platform"
+    )
+    assertEquals(RepoSource.PINNED, r.source)
+    assertEquals("onyx-platform", r.sanitized)
+  }
 }
