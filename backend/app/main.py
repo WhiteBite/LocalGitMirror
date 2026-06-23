@@ -195,11 +195,16 @@ async def lifespan(app: FastAPI):
     shared_router_mod.shared_manager = shared_manager
     shared_router_mod.system_logger = system_logger
 
-    # 3. Clean up legacy hooks
+    # 3. Clean up legacy hooks (workspaces in root + bares under .lgm/bare)
     if actual_storage_path.exists():
         for item in actual_storage_path.iterdir():
             if item.is_dir() and (item / ".git").exists():
                 ensure_post_receive_hook(item.name, actual_storage_path)
+        bare_dir = actual_storage_path / ".lgm" / "bare"
+        if bare_dir.exists():
+            for item in bare_dir.iterdir():
+                if item.is_dir() and item.name.endswith(".git"):
+                    ensure_post_receive_hook(item.name, bare_dir)
 
     # Auto-start git server
     try:

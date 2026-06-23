@@ -29,8 +29,18 @@ class RepoManager:
         self._current_repo = name
 
     def _get_bare_path(self, repo_name: str) -> Path:
-        """The bare repository where git push/pull happens"""
-        return self.storage_path / f"{repo_name}.git"
+        """The bare repository where git push/pull happens.
+
+        New layout: storage/.lgm/bare/<name>.git
+        Old layout: storage/<name>.git  (fallback for un-migrated data)
+        """
+        new = self.storage_path / ".lgm" / "bare" / f"{repo_name}.git"
+        if new.exists():
+            return new
+        old = self.storage_path / f"{repo_name}.git"
+        if old.exists():
+            return old
+        return new  # new layout is the default for creation
 
     def _get_workspace_path(self, repo_name: str) -> Path:
         """The checked out workspace for editing/viewing"""
@@ -38,14 +48,25 @@ class RepoManager:
 
     def get_repos(self) -> List[str]:
         """Get list of all repositories"""
+        system_dirs = {".lgm", "bare", "logs", "shared", "deps", "_export_cache"}
         repos = set()
         if self.storage_path.exists():
-            for item in self.storage_path.iterdir():
-                if item.is_dir():
-                    if item.name.endswith(".git"):
+            # New layout: bare repos under .lgm/bare/
+            bare_dir = self.storage_path / ".lgm" / "bare"
+            if bare_dir.exists():
+                for item in bare_dir.iterdir():
+                    if item.is_dir() and item.name.endswith(".git"):
                         repos.add(item.name[:-4])
-                    elif (item / ".git").exists():
-                        repos.add(item.name)
+            # Working-project checkouts live in the storage root
+            for item in self.storage_path.iterdir():
+                if not item.is_dir():
+                    continue
+                if item.name in system_dirs or item.name.startswith("."):
+                    continue
+                if item.name.endswith(".git"):
+                    repos.add(item.name[:-4])
+                elif (item / ".git").exists():
+                    repos.add(item.name)
 
         if not repos:
             return ["default"]

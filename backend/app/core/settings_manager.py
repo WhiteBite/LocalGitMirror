@@ -5,7 +5,9 @@ from typing import Any, Dict
 
 class SettingsManager:
     def __init__(self, storage_path: Path):
-        self.settings_path = storage_path / "settings.json"
+        _lgm = storage_path / ".lgm" / "settings.json"
+        _old = storage_path / "settings.json"
+        self.settings_path = _lgm if _lgm.exists() else (_old if _old.exists() else _lgm)
         self.defaults = {
             "general": {
                 "default_repo": "default",
@@ -44,6 +46,7 @@ class SettingsManager:
 
     def save_settings(self, settings: Dict[str, Any]) -> bool:
         try:
+            self.settings_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.settings_path, "w", encoding="utf-8") as f:
                 json.dump(settings, f, indent=4)
             self.settings = settings

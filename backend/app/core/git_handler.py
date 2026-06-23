@@ -85,15 +85,23 @@ class MultiRepoBackend:
         path_str = path.decode("utf-8", errors="ignore").strip("/")
         if not path_str:
             path_str = "default"
+        name = path_str[:-4] if path_str.endswith(".git") else path_str
 
-        repo_path = self.storage_path / path_str
-
-        # If it doesn't exist, create it as a simple bare repo (fallback)
-        if not repo_path.exists():
-            repo_path.mkdir(parents=True, exist_ok=True)
-            return Repo.init(str(repo_path))
-
-        return Repo(str(repo_path))
+        # New layout: storage/.lgm/bare/<name>.git
+        bare_new = self.storage_path / ".lgm" / "bare" / f"{name}.git"
+        if bare_new.exists():
+            return Repo(str(bare_new))
+        # Old flat bare: storage/<name>.git
+        bare_old = self.storage_path / f"{name}.git"
+        if bare_old.exists():
+            return Repo(str(bare_old))
+        # Old flat workspace: storage/<name>
+        ws_old = self.storage_path / name
+        if ws_old.exists():
+            return Repo(str(ws_old))
+        # Nothing found - create a bare repo in the new location
+        bare_new.mkdir(parents=True, exist_ok=True)
+        return Repo.init_bare(str(bare_new))
 
 
 class GitHandler:
@@ -113,11 +121,13 @@ class GitHandler:
         self._init_default_repo()
 
     def _init_default_repo(self):
-        default_path = self.storage_path / "default.git"
-        if not default_path.exists():
-            default_path.mkdir(parents=True, exist_ok=True)
-            Repo.init_bare(str(default_path))
-            console.print("[green]Инициализирован репозиторий по умолчанию[/green]")
+        new_path = self.storage_path / ".lgm" / "bare" / "default.git"
+        old_path = self.storage_path / "default.git"
+        if new_path.exists() or old_path.exists():
+            return
+        new_path.mkdir(parents=True, exist_ok=True)
+        Repo.init_bare(str(new_path))
+        console.print("[green]Инициализирован репозиторий по умолчанию[/green]")
 
     def start(self) -> bool:
         logger = get_logger()
@@ -169,9 +179,14 @@ class GitHandler:
         return self._running
 
     def get_repo_names(self) -> list:
-        names = []
+        names = set()
+        bare_dir = self.storage_path / ".lgm" / "bare"
+        if bare_dir.exists():
+            for item in bare_dir.iterdir():
+                if item.is_dir() and item.name.endswith(".git"):
+                    names.add(item.name[:-4])
         if self.storage_path.exists():
             for item in self.storage_path.iterdir():
                 if item.is_dir() and item.name.endswith(".git"):
-                    names.append(item.name[:-4])
+                    names.add(item.name[:-4])
         return sorted(names) if names else ["default"]

@@ -445,7 +445,10 @@ def _export_cache_dir() -> Optional[Path]:
     try:
         if not repo_manager or not getattr(repo_manager, "storage_path", None):
             return None
-        cache_dir = Path(repo_manager.storage_path) / _EXPORT_CACHE_DIRNAME
+        storage = Path(repo_manager.storage_path)
+        _lgm = storage / ".lgm" / _EXPORT_CACHE_DIRNAME
+        _old = storage / _EXPORT_CACHE_DIRNAME
+        cache_dir = _lgm if _lgm.exists() else (_old if _old.exists() else _lgm)
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
     except Exception:
