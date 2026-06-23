@@ -1,7 +1,9 @@
 package localgitmirror.idea.sync.v2
 
+import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.settings.MirrorProjectSettingsService
 import java.io.File
 
 object RepoResolver {
@@ -62,7 +64,9 @@ object RepoResolver {
     return sanitize(withoutGit)
   }
 
-  /** Repo-local git config key used to pin the resolved Mirror repo name. */
+  /** Repo-local git config key that OLDER versions used to pin the repo name.
+   * We no longer write it; [resolve] removes it if present so stale values
+   * stop overriding the folder/remote name. */
   const val PIN_KEY = "localgitmirror.repo"
 
   fun resolve(project: Project, projectDir: File, configuredRepo: String): RepoResolution {
@@ -71,24 +75,40 @@ object RepoResolver {
       GitLocal.remoteUrl(project, projectDir, remote)
     } catch (_: Throwable) { "" }
 
-    val pinned = try {
-      GitLocal.getConfigLocal(project, projectDir, PIN_KEY) ?: ""
-    } catch (_: Throwable) { "" }
+    // Self-heal: older versions wrote a "pinned" repo name into .git/config
+    // (localgitmirror.repo). In practice that pin got STUCK — a stale value
+    // (e.g. an old "onyx-platform") kept overriding the correct folder/remote
+    // name even after the settings field was cleared. We no longer pin; strip
+    // any leftover pin so the name is always derived fresh.
+    try {
+      if (!GitLocal.getConfigLocal(project, projectDir, PIN_KEY).isNullOrBlank()) {
+        GitLocal.unsetConfigLocal(project, projectDir, PIN_KEY)
+      }
+    } catch (_: Throwable) { /* best-effort cleanup, never required */ }
 
-    val resolution = resolveByNames(project.name, projectDir.name, configuredRepo, remoteUrl, pinned)
+    // The repo name is stored PER PROJECT (workspace), never globally. An
+    // explicit arg (rare) still wins; otherwise use this project's own value.
+    val projectSettings = try {
+      project.service<MirrorProjectSettingsService>()
+    } catch (_: Throwable) { null }
+    val effective = configuredRepo.ifBlank { projectSettings?.state?.repoOverride ?: "" }
 
-    // Pin strong identities into .git/config so the key never silently drifts
-    // later (folder/project rename, cleared IDE settings, transient remote read
-    // failure). We only pin values that came from an explicit setting or the git
-    // remote — never the weak project/directory-name guesses that caused drift.
-    if (resolution.error == null &&
-      resolution.sanitized.isNotBlank() &&
-      (resolution.source == RepoSource.SETTINGS || resolution.source == RepoSource.GIT_REMOTE) &&
-      sanitize(pinned) != resolution.sanitized
+    val resolution = resolveByNames(project.name, projectDir.name, effective, remoteUrl)
+
+    // Auto-record the resolved name into THIS project's store so the open
+    // project always has its repo written down — without the user typing it.
+    // Only when nothing was set yet and the source is the deterministic git
+    // remote (identical on every machine); never a weak folder/project guess,
+    // so a stored value can't get "stuck" pointing at the wrong repo.
+    if (projectSettings != null &&
+      effective.isBlank() &&
+      resolution.error == null &&
+      resolution.source == RepoSource.GIT_REMOTE &&
+      resolution.sanitized.isNotBlank()
     ) {
       try {
-        GitLocal.setConfigLocal(project, projectDir, PIN_KEY, resolution.sanitized)
-      } catch (_: Throwable) { /* best-effort: pinning is an optimization, not required */ }
+        projectSettings.state.repoOverride = resolution.sanitized
+      } catch (_: Throwable) { /* best-effort persistence */ }
     }
 
     return resolution
@@ -98,8 +118,7 @@ object RepoResolver {
     projectName: String,
     directoryName: String,
     configuredRepo: String,
-    remoteUrl: String = "",
-    pinnedRepo: String = ""
+    remoteUrl: String = ""
   ): RepoResolution {
     // 1. Explicit user override always wins.
     val trimmed = configuredRepo.trim()
@@ -116,25 +135,15 @@ object RepoResolver {
       return RepoResolution(RepoSource.SETTINGS, trimmed, sanitized)
     }
 
-    // 2. Pinned value: a previously-resolved strong identity cached in
-    // .git/config. Survives folder/project renames and transient remote-read
-    // failures, so the key stays stable on this machine. Both machines pin the
-    // same value because both derive it from the same remote URL.
-    val pinned = sanitize(pinnedRepo)
-    if (pinned.isNotBlank()) {
-      return RepoResolution(RepoSource.PINNED, pinnedRepo.trim(), pinned)
-    }
-
-    // 3. Git remote URL: identical on every machine, so the dome and the work
+    // 2. Git remote URL: identical on every machine, so the dome and the work
     // laptop derive the SAME repo key without manual config.
     val fromRemote = repoNameFromRemoteUrl(remoteUrl)
     if (fromRemote.isNotBlank()) {
       return RepoResolution(RepoSource.GIT_REMOTE, remoteUrl.trim(), fromRemote)
     }
 
-    // 4-5. Weak fallbacks. These differ between machines and over time, so they
-    // are NEVER pinned by resolve(); they exist only so a local-only repo (no
-    // remote) still gets a usable name. The caller should surface a warning.
+    // 3-4. Weak fallbacks for a local-only repo (no remote). The caller may
+    // surface a warning since these can differ between machines.
     val fromProject = sanitize(projectName)
     if (fromProject.isNotBlank()) {
       return RepoResolution(RepoSource.PROJECT_NAME, projectName, fromProject)

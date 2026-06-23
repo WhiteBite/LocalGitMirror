@@ -6,7 +6,6 @@ import java.util.UUID
 
 enum class RepoSource {
   SETTINGS,
-  PINNED,
   GIT_REMOTE,
   PROJECT_NAME,
   DIRECTORY_NAME,
@@ -32,7 +31,10 @@ data class SettingsSnapshot(
     fun from(state: MirrorSettingsService.State, mirrorApiKey: String, syncPassword: String): SettingsSnapshot {
       return SettingsSnapshot(
         baseUrl = state.baseUrl,
-        repoConfigured = state.repo,
+        // Repo is resolved PER PROJECT now (RepoResolver reads the project's
+        // own stored override / git remote). Never seed it from the global
+        // setting, or one project's repo would leak onto every other project.
+        repoConfigured = "",
         mirrorInsecureTls = state.mirrorInsecureTls,
         offlineGenerateOnly = state.offlineGenerateOnly,
         mirrorApiKey = mirrorApiKey,

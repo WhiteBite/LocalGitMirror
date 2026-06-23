@@ -15,10 +15,11 @@
   <extensions defaultExtensionNs="com.intellij">
     <applicationService serviceImplementation="localgitmirror.idea.settings.MirrorSettingsService"/>
     <applicationService serviceImplementation="localgitmirror.idea.settings.OperationsHistoryService"/>
-    <applicationConfigurable instance="localgitmirror.idea.settings.MirrorSettingsConfigurable"
-                             id="localgitmirror.settings"
-                             displayName="LocalGitMirror"
-                             groupId="tools"/>
+    <projectService serviceImplementation="localgitmirror.idea.settings.MirrorProjectSettingsService"/>
+    <projectConfigurable instance="localgitmirror.idea.settings.MirrorSettingsConfigurable"
+                         id="localgitmirror.settings"
+                         displayName="LocalGitMirror"
+                         groupId="tools"/>
     <toolWindow id="LocalGitMirror"
                 factoryClass="localgitmirror.idea.ui.LocalGitMirrorToolWindowFactory"
                 anchor="bottom"

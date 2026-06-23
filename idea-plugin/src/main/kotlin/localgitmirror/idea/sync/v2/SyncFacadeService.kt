@@ -15,7 +15,9 @@ class SyncFacadeService(private val project: Project) {
   private val engine = SyncEngine()
 
   fun resolveRepo(projectDir: File, settings: MirrorSettingsService.State): RepoResolution {
-    return RepoResolver.resolve(project, projectDir, settings.repo)
+    // Repo is per-project: pass "" so RepoResolver uses this project's own
+    // stored override / git remote, never the global setting.
+    return RepoResolver.resolve(project, projectDir, "")
   }
 
   fun inferRepoName(projectDir: File, settings: MirrorSettingsService.State): String {

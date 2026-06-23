@@ -4,6 +4,7 @@ import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.components.service
 import com.intellij.openapi.options.Configurable
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.dsl.builder.*
@@ -13,9 +14,15 @@ import localgitmirror.idea.net.LanDiscovery
 import javax.swing.JComponent
 import javax.swing.SwingUtilities
 
-class MirrorSettingsConfigurable : Configurable {
+class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
   private val state: MirrorSettingsService.State get() = service<MirrorSettingsService>().state
+
+  // Per-project repo override. Lives in the project's workspace, so it never
+  // leaks onto other projects (unlike the old global repo field).
+  private val projectState: MirrorProjectSettingsService.State
+    get() = project.service<MirrorProjectSettingsService>().state
+
   private var dialogPanel: DialogPanel? = null
 
   // SecretsStore-backed fields — managed manually (not in PersistentStateComponent)
@@ -50,7 +57,7 @@ class MirrorSettingsConfigurable : Configurable {
 
         row(LocalGitMirrorBundle.message("settings.mirror.repo")) {
           textField()
-            .bindText(state::repo)
+            .bindText(projectState::repoOverride)
             .comment(LocalGitMirrorBundle.message("settings.mirror.repo.comment"))
         }
       }

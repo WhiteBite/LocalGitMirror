@@ -64,7 +64,7 @@ class PullCheckStartupActivity : ProjectActivity {
     if (!dir.exists()) return
 
     val repoName = localgitmirror.idea.sync.v2.RepoResolver
-      .resolve(project, dir, settings.repo).sanitized.ifBlank { project.name }
+      .resolve(project, dir, "").sanitized.ifBlank { project.name }
 
     // Startup check on a DAEMON thread — never block the startup activity / EDT.
     runDaemon("lgm-startup-check") {
@@ -95,7 +95,7 @@ class PullCheckStartupActivity : ProjectActivity {
           if (s.baseUrl.isBlank()) return
 
           val repo = localgitmirror.idea.sync.v2.RepoResolver
-            .resolve(project, dir, s.repo).sanitized.ifBlank { project.name }
+            .resolve(project, dir, "").sanitized.ifBlank { project.name }
 
           runDaemon("lgm-focus-check") {
             if (project.isDisposed) return@runDaemon

@@ -182,6 +182,15 @@ object GitLocal {
     return run(project, workDir, 10, "config", "--local", key, value)
   }
 
+  /**
+   * Remove a key from the repository-local git config (`.git/config`).
+   * Best-effort: returns the Result so callers can ignore failures (e.g. the
+   * key was already absent).
+   */
+  fun unsetConfigLocal(project: Project, workDir: File, key: String): Result {
+    return run(project, workDir, 10, "config", "--local", "--unset", key)
+  }
+
 
   fun recentCommits(project: Project, workDir: File, limit: Int): List<CommitSummary> {
     val n = if (limit <= 0) 30 else limit
