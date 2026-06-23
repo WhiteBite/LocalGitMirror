@@ -362,6 +362,20 @@ class RespondDepsAction : AnAction() {
         // Pack with ecosystem-prefixed entry names so the dome can route them.
         val prefixed = entries.map {
           it.copy(relativePath = "${it.coordinate.ecosystem}/${it.relativePath}")
+        }.toMutableList()
+        // Ship the project's npm lockfile (if present) as a meta entry so the
+        // dome can do a lockfile-driven offline `npm install` (apply rewrites
+        // its resolved URLs corporate-registry -> npmjs).
+        workProjectDir?.let { dir ->
+          val lock = File(dir, "package-lock.json")
+          if (lock.isFile) {
+            prefixed.add(DepFileEntry(
+              coordinate = DepCoordinate("npm", "", "package-lock.json", ""),
+              absolutePath = lock.absolutePath,
+              relativePath = "__meta__/package-lock.json",
+              size = lock.length()
+            ))
+          }
         }
         val diffSize = prefixed.sumOf { it.size }
         indicator.text = "Упаковываем ${prefixed.size} файлов (${humanBytes(diffSize)})…"
@@ -564,6 +578,48 @@ class ApplyDepsAction : AnAction() {
         val npmMirror = NpmEcosystem.cacheRoot()
         val npmInstalled = unpackResult.installedEntries.any { it.endsWith(".tgz") }
 
+        // npm lockfile (shipped as __meta__/package-lock.json): rewrite resolved
+        // URLs corporate-registry -> npmjs, write it into the project, and offer
+        // to run a lockfile-driven offline npm install (public from npmjs,
+        // corporate from the cache we just seeded).
+        var lockMsg = ""
+        val lockBytes = unpackResult.meta["package-lock.json"]
+        val lockProjDir = project.basePath?.let { File(it) }
+        if (lockBytes != null && lockProjDir != null && File(lockProjDir, "package.json").isFile) {
+          val nrw = runCatching {
+            val (rewritten, n) = NpmEcosystem.rewriteLockToNpmjs(String(lockBytes, Charsets.UTF_8), lockProjDir)
+            File(lockProjDir, "package-lock.json").writeText(rewritten, Charsets.UTF_8)
+            n
+          }.getOrNull()
+          if (nrw != null) {
+            lockMsg = "package-lock.json применён ($nrw ссылок → npmjs)."
+            val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
+              Messages.showYesNoDialog(
+                project,
+                "$lockMsg\nЗапустить npm install сейчас? (публичное с npmjs, корпоративное из кеша)",
+                "LocalGitMirror: npm install", "Запустить", "Позже", null
+              )
+            }
+            if (runIt == Messages.YES) {
+              indicator.text = "npm install…"
+              val code = runCatching {
+                val isWin = System.getProperty("os.name").lowercase().contains("win")
+                val cmd = (if (isWin) listOf("cmd", "/c", "npm") else listOf("npm")) +
+                  listOf("install", "--prefer-offline", "--registry",
+                         "https://registry.npmjs.org", "--no-audit", "--no-fund")
+                val proc = ProcessBuilder(cmd).directory(lockProjDir).redirectErrorStream(true).start()
+                proc.inputStream.bufferedReader().forEachLine { /* drain */ }
+                proc.waitFor()
+              }.getOrElse { -1 }
+              lockMsg += if (code == 0) " npm install: OK." else " npm install: код $code (повтори вручную)."
+            } else {
+              lockMsg += " Запусти: npm install --prefer-offline --registry https://registry.npmjs.org"
+            }
+          } else {
+            lockMsg = "package-lock.json получен, но записать не удалось."
+          }
+        }
+
         DepsDiagnostics.enabled = settings.depsDiagnosticsEnabled
         DepsDiagnostics.verbose = settings.depsDiagnosticsVerbose
         DepsDiagnostics.event("apply: installed=${unpackResult.installed} skipped=${unpackResult.skipped} invalid=${unpackResult.invalid} bytes=${unpackResult.totalBytes}")
@@ -583,6 +639,9 @@ class ApplyDepsAction : AnAction() {
             } else {
               append("npm-тарболы: ${npmMirror.absolutePath}\nставь из этой папки (npm install --offline).")
             }
+          }
+          if (lockMsg.isNotEmpty()) {
+            appendLine(); appendLine(); append(lockMsg)
           }
         }
         notify(project, msg, NotificationType.INFORMATION)

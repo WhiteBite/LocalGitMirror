@@ -63,6 +63,7 @@ object DepsBundler {
     var totalBytes = 0L
     val installedNames = mutableListOf<String>()
     val skippedNames = mutableListOf<String>()
+    val metaFiles = HashMap<String, ByteArray>()  // __meta__/* (e.g. package-lock.json)
     // Cache rootFor() results per ecosystem — rootFor() may be expensive
     // (e.g. GradleEcosystem.cacheRoot() spawns a gradle process to discover
     // GRADLE_USER_HOME). Without this cache it would be called once per ZIP
@@ -81,6 +82,10 @@ object DepsBundler {
           val eco = full.substring(0, slash)
           val rel = full.substring(slash + 1)
           if (rel.isEmpty() || rel.contains("..")) { invalid++; continue }
+
+          // Meta entries (e.g. the project's package-lock.json) are not cache
+          // artifacts — collect them for the caller, don't route to a cache.
+          if (eco == "__meta__") { metaFiles[rel] = zin.readBytes(); continue }
 
           val root = rootCache.getOrPut(eco) { rootFor(eco) } ?: run { invalid++; null } ?: continue
           if (!root.exists()) root.mkdirs()
@@ -119,7 +124,7 @@ object DepsBundler {
         }
       }
     }
-    return UnpackResult(installed, skipped, invalid, totalBytes, installedNames, skippedNames)
+    return UnpackResult(installed, skipped, invalid, totalBytes, installedNames, skippedNames, metaFiles)
   }
 
   private fun displayNameFor(eco: String, rel: String): String {
@@ -176,7 +181,8 @@ object DepsBundler {
     val invalid: Int,        // bad path / outside the cache root
     val totalBytes: Long,
     val installedEntries: List<String> = emptyList(),  // group:name:version
-    val skippedEntries: List<String> = emptyList()
+    val skippedEntries: List<String> = emptyList(),
+    val meta: Map<String, ByteArray> = emptyMap()       // __meta__/* (e.g. package-lock.json)
   )
 
   /**
