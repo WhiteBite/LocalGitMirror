@@ -55,24 +55,32 @@ console.log("npm cache dir:", cacheDir);
 console.log();
 
 let present = 0;
+let totalBytes = 0;
 const missing = [];
+const sizes = [];
 for (const [label, integrity] of WANTED) {
   const p = cacachePath(cacheDir, integrity);
-  if (fs.existsSync(p)) { present++; console.log("  [ЕСТЬ] " + label); }
-  else { missing.push(label); console.log("  [НЕТ ] " + label + "  -> " + p); }
+  if (fs.existsSync(p)) {
+    present++;
+    const sz = fs.statSync(p).size;
+    totalBytes += sz;
+    sizes.push([label, sz]);
+  } else {
+    missing.push(label);
+  }
 }
+
+const mb = (b) => (b / 1024 / 1024).toFixed(1) + " MB";
+sizes.sort((a, b) => b[1] - a[1]);
+for (const [label, sz] of sizes) console.log("  [ЕСТЬ] " + mb(sz).padStart(9) + "  " + label);
+for (const label of missing) console.log("  [НЕТ ] " + "        ?".padStart(9) + "  " + label);
 
 console.log();
 console.log(`итог: ${present}/${WANTED.length} найдено по точным integrity из запроса`);
+console.log(`СУММАРНЫЙ РАЗМЕР тарболов: ${mb(totalBytes)}  (это и есть объём, который уйдёт в respond)`);
 if (present === WANTED.length) {
-  console.log(">>> Кеш полностью совпадает с запросом. respond ОБЯЗАН их найти.");
-  console.log(">>> Если плагин всё равно пишет 0 — проблема НЕ в кеше, а в repo:");
-  console.log("    respond отвечает на запрос repo='frontend'. Проверь, что плагин");
-  console.log("    в открытом проекте резолвит repo именно 'frontend' (а не onyx-platform).");
+  console.log(">>> Кеш полностью совпадает с запросом. respond шлёт ровно эти " + present + " пакета(ов).");
+  console.log(">>> Если сумма близка к тому, что качается — всё верно, это реальный вес пакетов.");
 } else {
-  console.log(">>> ВОТ ПРИЧИНА: этих пакетов нет по integrity из запроса.");
-  console.log("    Значит твой npm i скачал ДРУГИЕ версии/тарболы, чем те, по которым");
-  console.log("    собран запрос (yarn.lock на машинах различается: 1377 vs 1430).");
-  console.log("    Решение: либо пересобрать запрос с домашней машины по ЕДИНОМУ yarn.lock,");
-  console.log("    либо на работе докинуть точные версии: npm cache add <pkg>@<version>.");
+  console.log(">>> Часть пакетов не найдена по integrity из запроса (см. [НЕТ] выше).");
 }
