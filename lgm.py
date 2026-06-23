@@ -140,6 +140,9 @@ import urllib.request
 import urllib.error
 import ssl
 
+from _lgm_npm import (npm_cache_dir, npm_offline_mirror,
+                      npm_find_tarball, _detect_npm_missing, _npm_mirror_rel)
+
 def _ssl_ctx(insecure: bool = True) -> ssl.SSLContext:
     ctx = ssl.create_default_context()
     if insecure:
@@ -445,10 +448,24 @@ def cmd_respond(args):
         k = f"{a['group']}:{a['name']}:{a['version']}"
         by_gnv.setdefault(k, []).append(a)
 
+    npm_cache_root = npm_cache_dir() / "_cacache" / "content-v2"
+
     found, not_found = [], []
     skipped_unshipable = 0
     for coord in manifest["missing"]:
         eco = coord.get("ecosystem", "gradle")
+        if eco == "npm":
+            g = coord.get("group", "")
+            n = coord["name"]
+            v = coord["version"]
+            k = f"{g}/{n}@{v}" if g else f"{n}@{v}"
+            integrity = coord.get("classifier", "")
+            tb = npm_find_tarball(integrity, npm_cache_root)
+            if tb:
+                found.append(("npm/" + _npm_mirror_rel(g, n, v), str(tb)))
+            else:
+                not_found.append(k)
+            continue
         if eco != "gradle":
             continue
         k = f"{coord['group']}:{coord['name']}:{coord['version']}"
@@ -576,6 +593,19 @@ def cmd_apply(args):
                 invalid += 1
                 continue
 
+            # npm artifacts go to the offline mirror (~/.lgm-npm-offline), not
+            # ~/.m2. They're post-installed into the npm cache after the loop.
+            if eco == "npm":
+                npm_dest = npm_offline_mirror() / rel
+                data = zf.read(entry)
+                if npm_dest.exists() and npm_dest.stat().st_size == len(data):
+                    skipped += 1
+                    continue
+                npm_dest.parent.mkdir(parents=True, exist_ok=True)
+                npm_dest.write_bytes(data)
+                installed += 1
+                continue
+
             # Normalise gradle internal layout → maven-local layout for ~/.m2.
             #
             # Gradle (legacy v0.64 senders) ships:
@@ -620,6 +650,31 @@ def cmd_apply(args):
             installed += 1
 
     print(f"  installed={installed}  skipped={skipped}  invalid={invalid}")
+
+    # npm post-install: seed every received .tgz into the local npm cache so
+    # `yarn install` / `npm install` can resolve corporate packages offline.
+    npm_mirror = npm_offline_mirror()
+    tgzs = sorted(npm_mirror.rglob("*.tgz")) if npm_mirror.is_dir() else []
+    if tgzs:
+        import subprocess
+        print(f"  npm: seeding {len(tgzs)} tarball(s) into npm cache...")
+        npm_cmd = ["cmd", "/c", "npm"] if os.name == "nt" else ["npm"]
+        npm_ok = npm_fail = 0
+        for tb in tgzs:
+            try:
+                proc = subprocess.run(
+                    npm_cmd + ["cache", "add", str(tb)],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if proc.returncode == 0:
+                    npm_ok += 1
+                else:
+                    npm_fail += 1
+                    print(f"    [fail] {tb.name}: {(proc.stderr or proc.stdout).strip()[:120]}")
+            except Exception as e:
+                npm_fail += 1
+                print(f"    [err ] {tb.name}: {type(e).__name__}: {e}")
+        print(f"  npm: cache add ok={npm_ok} fail={npm_fail}  (mirror: {npm_mirror})")
 
     # ack — DELETE /api/deps/ack?repo=...&id=...
     api_delete(base, f"/api/deps/ack?repo={repo}&id={resp_id}", key)
@@ -1013,7 +1068,25 @@ def cmd_request(args):
             continue
         missing.append(o)
     print(f"  after filter: {len(missing)} truly missing coord(s)")
-    if not missing:
+
+    # ── npm ecosystem ───────────────────────────────────────────────────────
+    # Parse the project's lockfile (yarn.lock / package-lock.json) for corporate
+    # npm packages. If --npm-scopes is given, packages are matched by scope
+    # (instant, no network). Otherwise each non-public candidate is probed
+    # against registry.npmjs.org (slow: one HTTP call per package).
+    npm_scopes = [s.strip() for s in (args.npm_scopes or "").split(",") if s.strip()]
+    npm_missing = (
+        _detect_npm_missing(project, npm_scopes)
+        if (project / "package.json").is_file() else []
+    )
+    if npm_missing:
+        for c in npm_missing[:10]:
+            full = (c["group"] + "/" + c["name"]) if c["group"] else c["name"]
+            print(f"    - {full}@{c['version']}")
+        if len(npm_missing) > 10:
+            print(f"    ... and {len(npm_missing) - 10} more")
+
+    if not missing and not npm_missing:
         print("\n  Nothing to request — all dependencies resolve locally.")
         return
     for m in missing[:10]:
@@ -1041,15 +1114,22 @@ def cmd_request(args):
     print(f"  present: {len(present)} file entries (deduped)")
 
     # ── Step 4: build manifest v3 ──────────────────────────────────────────
+    missing_entries = [
+        {"ecosystem": "gradle", "group": m["g"], "name": m["n"], "version": m["v"], "classifier": ""}
+        for m in missing
+    ]
+    missing_entries += [
+        {"ecosystem": "npm", "group": c["group"], "name": c["name"],
+         "version": c["version"], "classifier": c["classifier"]}
+        for c in npm_missing
+    ]
+    ecosystem = "gradle,npm" if npm_missing else "gradle"
     manifest = {
         "version": 3,
         "requester": os.environ.get("USERNAME") or os.environ.get("USER") or "lgm-cli",
         "project": repo,
-        "ecosystem": "gradle",
-        "missing": [
-            {"ecosystem": "gradle", "group": m["g"], "name": m["n"], "version": m["v"], "classifier": ""}
-            for m in missing
-        ],
+        "ecosystem": ecosystem,
+        "missing": missing_entries,
         "present": present,
     }
     payload_json = json.dumps(manifest, ensure_ascii=False).encode("utf-8")
@@ -1385,6 +1465,10 @@ def main():
 
     rq = sub.add_parser("request", help="Build manifest v3 from a project and POST it to Mirror")
     rq.add_argument("--project", required=True, help="path to gradle project root (e.g. D:\\Sources\\kryptonit\\onyx-platform)")
+    rq.add_argument("--npm-scopes", default="",
+                    help="comma-separated npm scopes/packages to treat as corporate, "
+                         "skipping the slow registry probe "
+                         "(e.g. @krypto-ui,@krypto-sdk,krypto-cli)")
     rq.add_argument("--dry-run", action="store_true")
 
     r = sub.add_parser("respond", help="Find & ship requested deps from local cache")
