@@ -498,6 +498,18 @@ def cmd_respond(args):
     if added_parents:
         print(f"  Added {added_parents} parent pom(s) to complete the chain")
 
+    # Bundle the project's npm lockfile (if present) so the DOME can do a
+    # lockfile-driven offline `npm install` later. apply rewrites resolved→npmjs.
+    if getattr(args, "project", ""):
+        proj = Path(args.project)
+        lock = proj / "package-lock.json"
+        if lock.is_file():
+            found.append(("__meta__/package-lock.json", str(lock)))
+            print(f"  + bundling package-lock.json ({lock.stat().st_size // 1024} KB)")
+        elif (proj / "yarn.lock").is_file():
+            print("  ! project has yarn.lock but no package-lock.json — run "
+                  "`npm install --package-lock-only` there first so it can be shipped")
+
     print(f"  Found={len(found)}  NotFound={len(not_found)}")
     for k in not_found:
         print(f"  [MISS] {k}")
@@ -529,6 +541,39 @@ def cmd_respond(args):
         print(f"  FAILED: {res}")
     else:
         print(f"  OK: {res}")
+
+def _npmrc_registries(project: Path) -> list:
+    """Collect registry base URLs from the project's .npmrc (default + scoped)."""
+    bases = []
+    npmrc = project / ".npmrc"
+    if npmrc.is_file():
+        for line in npmrc.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            if k.strip().endswith("registry"):
+                v = v.strip()
+                if v.startswith("http"):
+                    bases.append(v.rstrip("/") + "/")
+    return bases
+
+
+def _rewrite_lock_to_npmjs(text: str, project: Path) -> tuple:
+    """Rewrite npm-lockfile `resolved` URLs from the corporate registry (read
+    from the project's .npmrc) to public npmjs. nexus npm-all proxies npmjs, so
+    the tarball path tail is identical and the integrity stays valid. Corporate
+    packages 404 on npmjs but resolve from the local npm cache (cache-hit by
+    integrity), so their rewritten URL is never actually fetched."""
+    npmjs = "https://registry.npmjs.org/"
+    count = 0
+    for base in _npmrc_registries(project):
+        if base == npmjs:
+            continue
+        count += text.count(base)
+        text = text.replace(base, npmjs)
+    return text, count
+
 
 def cmd_apply(args):
     """Download deps response and unpack into gradle cache."""
@@ -581,6 +626,7 @@ def cmd_apply(args):
 
     installed = skipped = invalid = 0
     layout_observed = None  # "gradle" or "maven", set on first usable entry
+    meta_files = {}  # __meta__/* entries (e.g. package-lock.json), handled post-loop
     with zipfile.ZipFile(__import__("io").BytesIO(raw)) as zf:
         for entry in zf.namelist():
             # Strip ecosystem prefix (gradle/<rest> or npm/<rest>).
@@ -591,6 +637,12 @@ def cmd_apply(args):
             eco, rel = parts
             if ".." in rel or rel.startswith("/"):
                 invalid += 1
+                continue
+
+            # Meta entries (e.g. the project's package-lock.json) are not cache
+            # artifacts — stash them for post-loop handling.
+            if eco == "__meta__":
+                meta_files[rel] = zf.read(entry)
                 continue
 
             # npm artifacts go to the offline mirror (~/.lgm-npm-offline), not
@@ -675,6 +727,38 @@ def cmd_apply(args):
                 npm_fail += 1
                 print(f"    [err ] {tb.name}: {type(e).__name__}: {e}")
         print(f"  npm: cache add ok={npm_ok} fail={npm_fail}  (mirror: {npm_mirror})")
+
+    # npm lockfile: if the bundle carried the project's package-lock.json,
+    # rewrite its resolved URLs (corporate registry -> npmjs) and write it into
+    # the project. Then a lockfile-driven `npm install` resolves public packages
+    # from npmjs and the corporate ones from the cache we just seeded.
+    lock_bytes = meta_files.get("package-lock.json")
+    if lock_bytes is not None and getattr(args, "project", ""):
+        proj = Path(args.project)
+        if proj.is_dir():
+            text = lock_bytes.decode("utf-8", errors="replace")
+            text, nrw = _rewrite_lock_to_npmjs(text, proj)
+            (proj / "package-lock.json").write_bytes(text.encode("utf-8"))
+            print(f"  npm: wrote package-lock.json ({nrw} resolved URL(s) -> npmjs)")
+            if getattr(args, "npm_install", False):
+                import subprocess
+                npm_cmd = ["cmd", "/c", "npm"] if os.name == "nt" else ["npm"]
+                print("  npm: install (public from npmjs, corporate from cache)...")
+                proc = subprocess.run(
+                    npm_cmd + ["install", "--prefer-offline",
+                               "--registry", "https://registry.npmjs.org",
+                               "--no-audit", "--no-fund"],
+                    cwd=str(proj),
+                )
+                print(f"  npm: install exit={proc.returncode}")
+            else:
+                print("  npm: run `npm install --prefer-offline "
+                      "--registry https://registry.npmjs.org` in the project "
+                      "(or re-run apply with --npm-install)")
+        else:
+            print(f"  ! --project is not a directory: {proj}")
+    elif lock_bytes is not None:
+        print("  npm: bundle carried package-lock.json — pass --project <dir> to apply it")
 
     # ack — DELETE /api/deps/ack?repo=...&id=...
     api_delete(base, f"/api/deps/ack?repo={repo}&id={resp_id}", key)
@@ -1472,9 +1556,12 @@ def main():
     rq.add_argument("--dry-run", action="store_true")
 
     r = sub.add_parser("respond", help="Find & ship requested deps from local cache")
+    r.add_argument("--project", default="", help="project dir; if it has package-lock.json, it's bundled so DOME can npm-install offline")
     r.add_argument("--dry-run", action="store_true")
 
     a = sub.add_parser("apply", help="Download & unpack deps response")
+    a.add_argument("--project", default="", help="project dir to write the received package-lock.json into (resolved rewritten to npmjs)")
+    a.add_argument("--npm-install", action="store_true", help="after writing the lockfile, run `npm install --prefer-offline` in the project")
     a.add_argument("--dry-run", action="store_true")
 
     fp = sub.add_parser("fetch-poms",
