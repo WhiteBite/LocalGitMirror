@@ -23,25 +23,35 @@ class WindowsSafeBackend(FileSystemBackend):
 
         clean_path = path.strip("/")
         repo_name = clean_path.split("/")[0]
+        name = repo_name[:-4] if repo_name.endswith(".git") else repo_name
+        root = Path(self.root)
 
-        variants = [repo_name, repo_name.rstrip(".git"), repo_name + ".git"]
-
+        # New layout (.lgm/bare) first, then old flat bare, then old workspace.
+        candidates = [
+            root / ".lgm" / "bare" / f"{name}.git",
+            root / f"{name}.git",
+            root / name,
+        ]
         repo_full_path = None
-        for variant in variants:
-            potential_path = Path(self.root) / variant
-            if potential_path.exists():
-                repo_full_path = potential_path
+        for candidate in candidates:
+            if candidate.exists():
+                repo_full_path = candidate
                 break
 
         if not repo_full_path:
-            # Case-insensitive scan
-            try:
-                for entry in os.scandir(self.root):
-                    if entry.is_dir() and entry.name.lower() == repo_name.lower().replace(".git", ""):
-                        repo_full_path = Path(entry.path)
-                        break
-            except Exception:
-                pass
+            # Case-insensitive scan in the new bare dir and the storage root.
+            for search_dir in (root / ".lgm" / "bare", root):
+                if not search_dir.exists():
+                    continue
+                try:
+                    for entry in os.scandir(str(search_dir)):
+                        if entry.is_dir() and entry.name.lower().replace(".git", "") == name.lower():
+                            repo_full_path = Path(entry.path)
+                            break
+                except Exception:
+                    pass
+                if repo_full_path:
+                    break
 
         if not repo_full_path:
             raise KeyError(f"Repository {repo_name} not found")
