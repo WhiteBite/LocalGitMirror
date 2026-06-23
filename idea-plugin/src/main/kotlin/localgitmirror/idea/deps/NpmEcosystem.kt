@@ -547,6 +547,45 @@ object NpmEcosystem : DepsEcosystem {
 
   override fun cacheRoot(): File = npmOfflineMirror()
 
+  // ── npm lockfile relocation (corporate registry -> npmjs) ───────────────────
+
+  /** Registry base URLs declared in the project's .npmrc (default + scoped). */
+  fun npmrcRegistries(projectDir: File): List<String> {
+    val npmrc = File(projectDir, ".npmrc")
+    if (!npmrc.isFile) return emptyList()
+    val out = mutableListOf<String>()
+    for (raw in npmrc.readLines()) {
+      val line = raw.trim()
+      if (line.isEmpty() || line.startsWith("#") || !line.contains("=")) continue
+      val key = line.substringBefore('=').trim()
+      val value = line.substringAfter('=').trim()
+      if (key.endsWith("registry") && value.startsWith("http")) {
+        out.add(value.trimEnd('/') + "/")
+      }
+    }
+    return out
+  }
+
+  /**
+   * Rewrite npm-lockfile `resolved` URLs from the corporate registry (read from
+   * the project's .npmrc) to public npmjs. nexus npm-all proxies npmjs, so the
+   * tarball path tail is identical and the integrity stays valid. Corporate
+   * packages 404 on npmjs but resolve from the local npm cache (cache-hit by
+   * integrity), so their rewritten URL is never actually fetched.
+   * Returns (rewrittenText, replacedCount).
+   */
+  fun rewriteLockToNpmjs(text: String, projectDir: File): Pair<String, Int> {
+    val npmjs = "https://registry.npmjs.org/"
+    var out = text
+    var count = 0
+    for (base in npmrcRegistries(projectDir)) {
+      if (base == npmjs) continue
+      count += out.split(base).size - 1
+      out = out.replace(base, npmjs)
+    }
+    return out to count
+  }
+
   /**
    * DOME side. Feed each received tarball into npm's own cache via
    * `npm cache add <file>`, so a later `npm install` resolves them offline
