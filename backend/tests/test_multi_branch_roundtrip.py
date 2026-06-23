@@ -92,7 +92,7 @@ def test_multi_branch_roundtrip_work_to_home(tmp_path: Path, monkeypatch):
     assert created.json().get("success") is True, created.text
 
     workspace = storage / repo_name
-    bare = storage / f"{repo_name}.git"
+    bare = storage / ".lgm" / "bare" / f"{repo_name}.git"
     assert workspace.exists(), "Workspace not created"
     assert bare.exists(), "Bare repo not created"
 

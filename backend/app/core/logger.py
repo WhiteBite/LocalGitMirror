@@ -29,7 +29,9 @@ class SystemLogger:
         self._initialized = True
         self.storage_path = storage_path or Path("storage")
 
-        self.log_dir = self.storage_path / "logs"
+        _lgm = self.storage_path / ".lgm" / "logs"
+        _old = self.storage_path / "logs"
+        self.log_dir = _lgm if _lgm.exists() else (_old if _old.exists() else _lgm)
         self.log_file = self.log_dir / "system.log"
         self.websocket_connections: List[Any] = []
         self._setup_logger()

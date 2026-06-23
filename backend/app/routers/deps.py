@@ -59,7 +59,10 @@ def _validate_id(item_id: str) -> str:
 def _deps_root() -> Path:
     if not repo_manager:
         raise HTTPException(500, "Repo manager not initialised")
-    root = repo_manager.storage_path / "deps"
+    storage = repo_manager.storage_path
+    _lgm = storage / ".lgm" / "deps"
+    _old = storage / "deps"
+    root = _lgm if _lgm.exists() else (_old if _old.exists() else _lgm)
     root.mkdir(parents=True, exist_ok=True)
     return root
 

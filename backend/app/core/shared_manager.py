@@ -20,7 +20,9 @@ class SharedManager:
 
     def __init__(self, storage_path: Path):
         self.storage_path = storage_path
-        self.shared_root = storage_path / "shared"
+        _lgm = storage_path / ".lgm" / "shared"
+        _old = storage_path / "shared"
+        self.shared_root = _lgm if _lgm.exists() else (_old if _old.exists() else _lgm)
         self.shared_root.mkdir(parents=True, exist_ok=True)
         self.logger = get_logger()
         self.silent_mode = os.getenv("SILENT_GIT", "false").lower() == "true"

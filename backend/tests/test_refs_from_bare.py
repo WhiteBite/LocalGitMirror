@@ -50,7 +50,7 @@ def test_list_shows_branch_pushed_only_to_bare(tmp_path: Path, monkeypatch):
     repo_name = f"bare-branch-{int(time.time())}"
     assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
 
-    bare = storage / f"{repo_name}.git"
+    bare = storage / ".lgm" / "bare" / f"{repo_name}.git"
 
     # Clone the bare repo to a scratch dir, create a new branch, push it to bare.
     # This simulates a `git push` of a brand-new branch from a work machine.
@@ -78,7 +78,7 @@ def test_export_bundles_branch_living_only_in_bare(tmp_path: Path, monkeypatch):
     repo_name = f"bare-export-{int(time.time())}"
     assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
 
-    bare = storage / f"{repo_name}.git"
+    bare = storage / ".lgm" / "bare" / f"{repo_name}.git"
     scratch = tmp_path / "scratch2"
     _run_git(tmp_path, "clone", str(bare), str(scratch))
     _run_git(scratch, "config", "user.email", "w@test.com")

@@ -163,6 +163,25 @@ object GitLocal {
     return r.stdout.trim()
   }
 
+  /**
+   * Read a value from the repository-local git config (`.git/config`), or null
+   * if unset / not a git repo / error. Used to read the pinned Mirror repo key.
+   */
+  fun getConfigLocal(project: Project, workDir: File, key: String): String? {
+    val r = run(project, workDir, 10, "config", "--local", "--get", key)
+    if (!r.ok()) return null
+    val v = r.stdout.trim()
+    return v.ifBlank { null }
+  }
+
+  /**
+   * Write a value into the repository-local git config (`.git/config`).
+   * Best-effort: returns the Result so callers can ignore failures.
+   */
+  fun setConfigLocal(project: Project, workDir: File, key: String, value: String): Result {
+    return run(project, workDir, 10, "config", "--local", key, value)
+  }
+
 
   fun recentCommits(project: Project, workDir: File, limit: Int): List<CommitSummary> {
     val n = if (limit <= 0) 30 else limit
