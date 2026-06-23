@@ -556,13 +556,26 @@ class PullFromMirrorAction : AnAction() {
 
   private fun git(workDir: File, vararg args: String): CmdResult {
     localgitmirror.idea.sync.SyncLogger.log(workDir, "Exec: git ${args.joinToString(" ")}")
-    val p = ProcessBuilder(listOf("git", *args)).directory(workDir).redirectErrorStream(false).start()
+    val pb = ProcessBuilder(listOf("git", *args)).directory(workDir).redirectErrorStream(false)
+    // Never block on interactive prompts (credentials etc.): a hung git would
+    // freeze the background task and leave a process alive that can block IDE exit.
+    pb.environment().also {
+      it["GIT_TERMINAL_PROMPT"] = "0"
+      it["GCM_INTERACTIVE"] = "never"
+    }
+    val p = pb.start()
     val stdoutSb = StringBuilder(); val stderrSb = StringBuilder()
     val t1 = Thread { stdoutSb.append(p.inputStream.bufferedReader().readText()) }.apply { isDaemon = true }
     val t2 = Thread { stderrSb.append(p.errorStream.bufferedReader().readText()) }.apply { isDaemon = true }
     t1.start(); t2.start()
-    p.waitFor(300, TimeUnit.SECONDS)
-    t1.join(); t2.join()
+    if (!p.waitFor(300, TimeUnit.SECONDS)) {
+      // Kill the stuck process instead of leaking it (and never call exitValue()
+      // on a still-running process — that throws).
+      p.destroyForcibly()
+      localgitmirror.idea.sync.SyncLogger.log(workDir, "Git timeout: git ${args.joinToString(" ")}")
+      return CmdResult(124, "", "Timeout running: git ${args.joinToString(" ")}")
+    }
+    t1.join(2000); t2.join(2000)
     val res = CmdResult(p.exitValue(), stdoutSb.toString().trim(), stderrSb.toString().trim())
     if (res.exitCode != 0) localgitmirror.idea.sync.SyncLogger.log(workDir, "Git Failed (${res.exitCode}): ${res.stderr}")
     return res
