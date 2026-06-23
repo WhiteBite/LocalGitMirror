@@ -28,10 +28,12 @@ internal fun humanBytes(b: Long): String {
   return DecimalFormat("0.#").format(v) + " " + units[i]
 }
 
-private fun resolveRepoName(project: Project, settings: MirrorSettingsService.State): String {
+private fun resolveRepoName(project: Project): String {
   val dir = project.basePath?.let { File(it) } ?: File(".")
+  // Repo is per-project: pass "" so RepoResolver uses this project's own stored
+  // override / git remote, never the global setting.
   return localgitmirror.idea.sync.v2.RepoResolver
-    .resolve(project, dir, settings.repo)
+    .resolve(project, dir, "")
     .sanitized
     .ifBlank { project.name }
 }
@@ -106,7 +108,7 @@ class RequestDepsAction : AnAction() {
       notify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
       return
     }
-    val repo = resolveRepoName(project, settings)
+    val repo = resolveRepoName(project)
     val history = service<OperationsHistoryService>()
     val projectDir = project.basePath?.let { File(it) } ?: File(".")
     val jdkHome = projectJdkHome(project)
@@ -222,7 +224,7 @@ class RespondDepsAction : AnAction() {
       notify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
       return
     }
-    val repo = resolveRepoName(project, settings)
+    val repo = resolveRepoName(project)
     val history = service<OperationsHistoryService>()
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Выдать запрошенные зависимости", true) {
@@ -440,7 +442,7 @@ class ApplyDepsAction : AnAction() {
       notify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
       return
     }
-    val repo = resolveRepoName(project, settings)
+    val repo = resolveRepoName(project)
     val history = service<OperationsHistoryService>()
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Применить полученные deps", true) {

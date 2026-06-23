@@ -37,7 +37,7 @@ class ManageMirrorBranchesAction : AnAction() {
       return
     }
     val repo = localgitmirror.idea.sync.v2.RepoResolver
-      .resolve(project, java.io.File(project.basePath ?: "."), settings.repo)
+      .resolve(project, java.io.File(project.basePath ?: "."), "")
       .sanitized
       .ifBlank { project.name }
     val insecure = settings.mirrorInsecureTls

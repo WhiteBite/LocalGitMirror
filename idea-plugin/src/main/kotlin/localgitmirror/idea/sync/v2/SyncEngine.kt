@@ -96,7 +96,9 @@ class SyncEngine(
   }
 
   fun inferRepoName(project: Project, projectDir: File, settings: MirrorSettingsService.State): String {
-    return resolver.resolve(project, projectDir, settings.repo).sanitized
+    // Repo is per-project (RepoResolver reads the project's own override / git
+    // remote); pass "" so the global setting is never used here.
+    return resolver.resolve(project, projectDir, "").sanitized
   }
 
   fun ensureRemoteRepo(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File? = null): StepResult {

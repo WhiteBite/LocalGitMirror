@@ -41,7 +41,7 @@ class PullFromMirrorAction : AnAction() {
 
     val settings = service<MirrorSettingsService>().state
     val repoName = localgitmirror.idea.sync.v2.RepoResolver
-      .resolve(project, dir, settings.repo).sanitized.ifBlank { project.name }
+      .resolve(project, dir, "").sanitized.ifBlank { project.name }
 
     if (!GitLocal.isCleanWorkTree(project, dir)) {
       notify(project, LocalGitMirrorBundle.message("notify.worktree.dirty"), NotificationType.WARNING)
