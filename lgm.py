@@ -575,6 +575,73 @@ def _rewrite_lock_to_npmjs(text: str, project: Path) -> tuple:
     return text, count
 
 
+def _yarn_offline_mirror() -> Path:
+    return Path.home() / ".lgm-yarn-offline"
+
+
+def _yarn_tarball_name(name: str, version: str) -> str:
+    # yarn v1 offline-mirror filename: scope '/' -> '-', then '-<version>.tgz'
+    return name.replace("/", "-") + "-" + version + ".tgz"
+
+
+def _read_tgz_name_version(tgz: Path):
+    """Return (name, version) from package/package.json inside an npm tarball."""
+    import tarfile
+    try:
+        with tarfile.open(tgz, "r:gz") as tf:
+            for m in tf.getmembers():
+                if m.name.endswith("package.json") and m.name.count("/") <= 1:
+                    j = json.loads(tf.extractfile(m).read())
+                    return j.get("name"), j.get("version")
+    except Exception:
+        return None
+    return None
+
+
+def _build_yarn_mirror(tarballs_root: Path, mirror: Path) -> int:
+    """Copy corporate .tgz from the npm offline-mirror into a yarn v1
+    offline-mirror, renamed to yarn's `<name '/'->'-'>-<version>.tgz`."""
+    import shutil
+    mirror.mkdir(parents=True, exist_ok=True)
+    n = 0
+    for tgz in tarballs_root.rglob("*.tgz"):
+        nv = _read_tgz_name_version(tgz)
+        if not nv or not nv[0] or not nv[1]:
+            continue
+        shutil.copyfile(tgz, mirror / _yarn_tarball_name(nv[0], nv[1]))
+        n += 1
+    return n
+
+
+def _write_yarnrc(project: Path, mirror: Path):
+    yarnrc = project / ".yarnrc"
+    existing = yarnrc.read_text(encoding="utf-8", errors="replace") if yarnrc.is_file() else ""
+    keep = [ln for ln in existing.splitlines()
+            if not ln.strip().startswith("yarn-offline-mirror")
+            and not ln.strip().startswith("registry ")]
+    mp = str(mirror).replace("\\", "/")
+    keep += [f'yarn-offline-mirror "{mp}"',
+             'yarn-offline-mirror-pruning false',
+             'registry "https://registry.npmjs.org"']
+    yarnrc.write_text("\n".join(keep) + "\n", encoding="utf-8")
+
+
+def _rewrite_yarn_lock(project: Path) -> int:
+    lock = project / "yarn.lock"
+    if not lock.is_file():
+        return 0
+    text = lock.read_text(encoding="utf-8", errors="replace")
+    npmjs = "https://registry.npmjs.org/"
+    count = 0
+    for base in _npmrc_registries(project):
+        if base == npmjs:
+            continue
+        count += text.count(base)
+        text = text.replace(base, npmjs)
+    lock.write_text(text, encoding="utf-8")
+    return count
+
+
 def cmd_apply(args):
     """Download deps response and unpack into gradle cache."""
     import tempfile
@@ -759,6 +826,41 @@ def cmd_apply(args):
             print(f"  ! --project is not a directory: {proj}")
     elif lock_bytes is not None:
         print("  npm: bundle carried package-lock.json — pass --project <dir> to apply it")
+
+    # yarn (classic v1) support: build a yarn offline-mirror from the corporate
+    # tarballs, wire .yarnrc + bring yarn.lock resolved URLs to npmjs, so
+    # `yarn install` resolves public from npmjs and corporate from the mirror.
+    if getattr(args, "yarn", False) or getattr(args, "yarn_install", False):
+        proj = Path(args.project) if getattr(args, "project", "") else None
+        if proj and (proj / "yarn.lock").is_file():
+            ymir = _yarn_offline_mirror()
+            cnt = _build_yarn_mirror(npm_offline_mirror(), ymir)
+            _write_yarnrc(proj, ymir)
+            nrw = _rewrite_yarn_lock(proj)
+            print(f"  yarn: mirror {cnt} tarball(s) at {ymir}")
+            print(f"  yarn: .yarnrc set; yarn.lock {nrw} resolved URL(s) -> npmjs")
+            if getattr(args, "yarn_install", False):
+                import subprocess
+                env = dict(os.environ)
+                env["npm_config_registry"] = "https://registry.npmjs.org"
+                yarn_bin = os.environ.get("LGM_YARN", "yarn")
+                yarn_cmd = ["cmd", "/c", yarn_bin] if os.name == "nt" else [yarn_bin]
+                print("  yarn: install (public from npmjs, corporate from mirror)...")
+                try:
+                    proc = subprocess.run(
+                        yarn_cmd + ["install", "--frozen-lockfile", "--non-interactive"],
+                        cwd=str(proj), env=env,
+                    )
+                    print(f"  yarn: install exit={proc.returncode}")
+                except FileNotFoundError:
+                    print("  yarn: 'yarn' not on PATH — set LGM_YARN or run yarn install manually")
+            else:
+                print("  yarn: run (set npm_config_registry=https://registry.npmjs.org) "
+                      "then `yarn install --frozen-lockfile` in the project")
+        elif proj:
+            print("  yarn: no yarn.lock in project — skipping yarn setup")
+        else:
+            print("  yarn: pass --project <dir> for yarn setup")
 
     # ack — DELETE /api/deps/ack?repo=...&id=...
     api_delete(base, f"/api/deps/ack?repo={repo}&id={resp_id}", key)
@@ -1574,6 +1676,8 @@ def main():
     a = sub.add_parser("apply", help="Download & unpack deps response")
     a.add_argument("--project", default="", help="project dir to write the received package-lock.json into (resolved rewritten to npmjs)")
     a.add_argument("--npm-install", action="store_true", help="after writing the lockfile, run `npm install --prefer-offline` in the project")
+    a.add_argument("--yarn", action="store_true", help="set up a yarn (classic) offline-mirror from the corporate tarballs + wire .yarnrc/yarn.lock")
+    a.add_argument("--yarn-install", action="store_true", help="like --yarn, then run `yarn install --frozen-lockfile` (npmjs registry)")
     a.add_argument("--dry-run", action="store_true")
 
     fp = sub.add_parser("fetch-poms",
