@@ -586,6 +586,100 @@ object NpmEcosystem : DepsEcosystem {
     return out to count
   }
 
+  // ── yarn (classic v1) offline-mirror support ────────────────────────────────
+
+  fun yarnOfflineMirror(): File = File(System.getProperty("user.home"), ".lgm-yarn-offline")
+
+  /** yarn v1 offline-mirror filename: scope '/' -> '-', then '-<version>.tgz'. */
+  fun yarnTarballName(name: String, version: String): String =
+    name.replace("/", "-") + "-" + version + ".tgz"
+
+  private fun readFully(ins: java.io.InputStream, buf: ByteArray): Boolean {
+    var off = 0
+    while (off < buf.size) {
+      val r = ins.read(buf, off, buf.size - off)
+      if (r < 0) return false
+      off += r
+    }
+    return true
+  }
+
+  /**
+   * Read (name, version) from package/package.json inside an npm .tgz, using a
+   * minimal gzip+tar reader (no external dependency). Returns null on any issue.
+   */
+  fun readTgzNameVersion(tgz: File): Pair<String, String>? {
+    return try {
+      java.util.zip.GZIPInputStream(java.io.BufferedInputStream(tgz.inputStream())).use { gz ->
+        val header = ByteArray(512)
+        while (true) {
+          if (!readFully(gz, header)) break
+          if (header.all { it.toInt() == 0 }) break
+          val name = String(header, 0, 100, Charsets.US_ASCII).substringBefore('\u0000').trim()
+          if (name.isEmpty()) break
+          val sizeField = String(header, 124, 12, Charsets.US_ASCII).trim().trim('\u0000', ' ')
+          val size = sizeField.takeWhile { it in '0'..'7' }.ifEmpty { "0" }.toLong(8)
+          if (name == "package/package.json") {
+            val data = ByteArray(size.toInt())
+            if (!readFully(gz, data)) return null
+            val text = String(data, Charsets.UTF_8)
+            val nm = Regex("\"name\"\\s*:\\s*\"([^\"]+)\"").find(text)?.groupValues?.get(1)
+            val ver = Regex("\"version\"\\s*:\\s*\"([^\"]+)\"").find(text)?.groupValues?.get(1)
+            return if (nm != null && ver != null) nm to ver else null
+          }
+          // skip this entry's content, padded to 512-byte blocks
+          var toSkip = ((size + 511) / 512) * 512
+          val skip = ByteArray(8192)
+          while (toSkip > 0) {
+            val r = gz.read(skip, 0, minOf(skip.size.toLong(), toSkip).toInt())
+            if (r <= 0) break
+            toSkip -= r
+          }
+        }
+        null
+      }
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  /** Copy corporate .tgz from the npm offline-mirror into a yarn v1
+   *  offline-mirror, renamed to yarn's `<name '/'->'-'>-<version>.tgz`. */
+  fun buildYarnMirror(tarballsRoot: File, mirror: File): Int {
+    if (!tarballsRoot.isDirectory) return 0
+    mirror.mkdirs()
+    var n = 0
+    tarballsRoot.walkTopDown().filter { it.isFile && it.extension == "tgz" }.forEach { tgz ->
+      val nv = readTgzNameVersion(tgz) ?: return@forEach
+      runCatching {
+        tgz.copyTo(File(mirror, yarnTarballName(nv.first, nv.second)), overwrite = true)
+        n++
+      }
+    }
+    return n
+  }
+
+  fun writeYarnrc(project: File, mirror: File) {
+    val yarnrc = File(project, ".yarnrc")
+    val existing = if (yarnrc.isFile) yarnrc.readText() else ""
+    val keep = existing.lines().filterNot {
+      it.trim().startsWith("yarn-offline-mirror") || it.trim().startsWith("registry ")
+    }.toMutableList()
+    val mp = mirror.absolutePath.replace("\\", "/")
+    keep.add("yarn-offline-mirror \"$mp\"")
+    keep.add("yarn-offline-mirror-pruning false")
+    keep.add("registry \"https://registry.npmjs.org\"")
+    yarnrc.writeText(keep.joinToString("\n").trim('\n') + "\n")
+  }
+
+  fun rewriteYarnLock(project: File): Int {
+    val lock = File(project, "yarn.lock")
+    if (!lock.isFile) return 0
+    val (text, n) = rewriteLockToNpmjs(lock.readText(), project)
+    lock.writeText(text)
+    return n
+  }
+
   /**
    * DOME side. Feed each received tarball into npm's own cache via
    * `npm cache add <file>`, so a later `npm install` resolves them offline

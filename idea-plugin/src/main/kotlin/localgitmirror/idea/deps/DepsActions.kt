@@ -583,12 +583,51 @@ class ApplyDepsAction : AnAction() {
         // to run a lockfile-driven offline npm install (public from npmjs,
         // corporate from the cache we just seeded).
         var lockMsg = ""
+        val applyProj = project.basePath?.let { File(it) }
+        val isYarnProj = applyProj != null && File(applyProj, "yarn.lock").isFile
         val lockBytes = unpackResult.meta["package-lock.json"]
-        val lockProjDir = project.basePath?.let { File(it) }
-        if (lockBytes != null && lockProjDir != null && File(lockProjDir, "package.json").isFile) {
+
+        if (isYarnProj && applyProj != null) {
+          // yarn (classic v1): build an offline-mirror from the corporate
+          // tarballs, wire .yarnrc + bring yarn.lock resolved URLs to npmjs, and
+          // offer `yarn install` (public from npmjs, corporate from the mirror).
+          val ymir = NpmEcosystem.yarnOfflineMirror()
+          val cnt = runCatching { NpmEcosystem.buildYarnMirror(NpmEcosystem.cacheRoot(), ymir) }.getOrDefault(0)
           val nrw = runCatching {
-            val (rewritten, n) = NpmEcosystem.rewriteLockToNpmjs(String(lockBytes, Charsets.UTF_8), lockProjDir)
-            File(lockProjDir, "package-lock.json").writeText(rewritten, Charsets.UTF_8)
+            NpmEcosystem.writeYarnrc(applyProj, ymir)
+            NpmEcosystem.rewriteYarnLock(applyProj)
+          }.getOrDefault(0)
+          lockMsg = "yarn: offline-mirror $cnt пакет(ов), .yarnrc + yarn.lock ($nrw → npmjs)."
+          val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
+            Messages.showYesNoDialog(
+              project,
+              "$lockMsg\nЗапустить yarn install сейчас? (публичное с npmjs, корпоративное из mirror)",
+              "LocalGitMirror: yarn install", "Запустить", "Позже", null
+            )
+          }
+          if (runIt == Messages.YES) {
+            indicator.text = "yarn install…"
+            val code = runCatching {
+              val isWin = System.getProperty("os.name").lowercase().contains("win")
+              val cmd = (if (isWin) listOf("cmd", "/c", "yarn") else listOf("yarn")) +
+                listOf("install", "--frozen-lockfile", "--non-interactive")
+              val pb = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true)
+              pb.environment()["npm_config_registry"] = "https://registry.npmjs.org"
+              val proc = pb.start()
+              proc.inputStream.bufferedReader().forEachLine { /* drain */ }
+              proc.waitFor()
+            }.getOrElse { -1 }
+            lockMsg += if (code == 0) " yarn install: OK." else " yarn install: код $code (повтори вручную)."
+          } else {
+            lockMsg += " Запусти (npm_config_registry=https://registry.npmjs.org) yarn install --frozen-lockfile"
+          }
+        } else if (lockBytes != null && applyProj != null && File(applyProj, "package.json").isFile) {
+          // npm lockfile (shipped as __meta__/package-lock.json): rewrite resolved
+          // URLs corporate-registry -> npmjs, write it into the project, and offer
+          // a lockfile-driven npm install (public from npmjs, corporate from cache).
+          val nrw = runCatching {
+            val (rewritten, n) = NpmEcosystem.rewriteLockToNpmjs(String(lockBytes, Charsets.UTF_8), applyProj)
+            File(applyProj, "package-lock.json").writeText(rewritten, Charsets.UTF_8)
             n
           }.getOrNull()
           if (nrw != null) {
@@ -607,7 +646,7 @@ class ApplyDepsAction : AnAction() {
                 val cmd = (if (isWin) listOf("cmd", "/c", "npm") else listOf("npm")) +
                   listOf("install", "--prefer-offline", "--registry",
                          "https://registry.npmjs.org", "--no-audit", "--no-fund")
-                val proc = ProcessBuilder(cmd).directory(lockProjDir).redirectErrorStream(true).start()
+                val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
                 proc.inputStream.bufferedReader().forEachLine { /* drain */ }
                 proc.waitFor()
               }.getOrElse { -1 }
