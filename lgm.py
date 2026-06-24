@@ -1022,15 +1022,26 @@ def cmd_request(args):
     if not project.is_dir():
         sys.exit(f"project not found: {project}")
 
+    # Detect whether this is a gradle project. For npm-only projects (no gradle
+    # build files) we skip the gradle init + cache scan entirely — it's
+    # irrelevant and the local cache scan can be very slow / hang.
+    _gradle_markers = ("build.gradle", "build.gradle.kts", "settings.gradle",
+                       "settings.gradle.kts", "gradlew", "gradlew.bat")
+    is_gradle = any((project / m).exists() for m in _gradle_markers)
+
     # ── Step 1: ask gradle what's missing ──────────────────────────────────
     print(f"\n=== Resolving missing deps for {project.name} ===")
-    java_home = _detect_java_home()
-    print(f"  JAVA_HOME = {java_home or '(not detected)'}")
-    out_file, full_stdout, exit_code = _run_gradle_init(project, java_home)
+    if is_gradle:
+        java_home = _detect_java_home()
+        print(f"  JAVA_HOME = {java_home or '(not detected)'}")
+        out_file, full_stdout, exit_code = _run_gradle_init(project, java_home)
+    else:
+        print("  no gradle build files — skipping gradle scan (npm-only project)")
+        out_file, full_stdout, exit_code = None, "", 0
 
     raw = []
     guh = None
-    if out_file.exists():
+    if out_file and out_file.exists():
         for line in out_file.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:
@@ -1080,11 +1091,12 @@ def cmd_request(args):
     # ── Step 2: scan local cache + filter ──────────────────────────────────
     extra_root = Path(guh) / "caches/modules-2/files-2.1" if guh else None
     cache_roots = []
-    if extra_root and extra_root.is_dir():
-        cache_roots.append(extra_root)
-    for r in gradle_candidate_roots():
-        if r.is_dir() and r not in cache_roots:
-            cache_roots.append(r)
+    if is_gradle:
+        if extra_root and extra_root.is_dir():
+            cache_roots.append(extra_root)
+        for r in gradle_candidate_roots():
+            if r.is_dir() and r not in cache_roots:
+                cache_roots.append(r)
     all_artifacts = []
     seen_artifact_keys = set()
     for r in cache_roots:
@@ -1097,7 +1109,7 @@ def cmd_request(args):
     # Also include maven-local — must be in cached_coords so already-applied
     # artifacts don't get re-requested (and so a BOM with only a pom in
     # ~/.m2/repository is correctly recognised as already present).
-    maven_arts = scan_maven_local()
+    maven_arts = scan_maven_local() if is_gradle else []
     for a in maven_arts:
         art_key = f"{a['group']}:{a['name']}:{a['version']}/{a['sha1']}/{a['file']}"
         if art_key in seen_artifact_keys:
