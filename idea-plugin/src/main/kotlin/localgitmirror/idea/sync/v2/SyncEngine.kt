@@ -2,6 +2,7 @@ package localgitmirror.idea.sync.v2
 
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import kotlinx.serialization.json.Json
@@ -210,7 +211,7 @@ class SyncEngine(
     val candidates = buildNegotiationCandidates(project, projectDir, head)
     if (candidates.isEmpty()) return NegotiationResult(null, null)
 
-    val has = mirror.hasCommits(settings.baseUrl, settings.mirrorApiKey, repo, candidates, settings.mirrorInsecureTls)
+    val has = mirror.hasCommits(settings.baseUrl, settings.mirrorApiKey, repo, candidates, settings.syncPassword, settings.mirrorInsecureTls)
     if (has.code !in 200..299) return NegotiationResult(null, null)
 
     val known = parseKnownCommitHashes(has.body)
@@ -255,7 +256,7 @@ class SyncEngine(
     // exclude-base of any branch whose tip descends from it. This is the
     // critical fix that prevents "full bundle" fallbacks when local state
     // happens to be empty.
-    val serverRefs = mirror.getRefs(settings.baseUrl, settings.mirrorApiKey, repo, settings.mirrorInsecureTls)
+    val serverRefs = mirror.getRefs(settings.baseUrl, settings.mirrorApiKey, repo, settings.syncPassword, settings.mirrorInsecureTls)
     val serverKnown: Set<String> = serverRefs.refs?.values
       ?.mapNotNull { it.sha.takeIf { s -> s.isNotBlank() && hashRe.matches(s) }?.lowercase() }
       ?.toHashSet()
@@ -300,7 +301,7 @@ class SyncEngine(
       .take(300)
 
     val knownFromHas: Set<String> = if (askable.isEmpty()) emptySet() else {
-      val has = mirror.hasCommits(settings.baseUrl, settings.mirrorApiKey, repo, askable, settings.mirrorInsecureTls)
+      val has = mirror.hasCommits(settings.baseUrl, settings.mirrorApiKey, repo, askable, settings.syncPassword, settings.mirrorInsecureTls)
       if (has.code !in 200..299) emptySet() else parseKnownCommitHashes(has.body)
     }
 
@@ -403,14 +404,16 @@ class SyncEngine(
   }
 
   @Suppress("HttpCallOnEdt")
-  fun uploadAndApply(settings: SettingsSnapshot, repoName: String, dump: File, projectDir: File? = null): Pair<StepResult, MirrorApi.HttpResult> {
+  fun uploadAndApply(settings: SettingsSnapshot, repoName: String, dump: File, projectDir: File? = null, localBranches: List<String> = emptyList()): Pair<StepResult, MirrorApi.HttpResult> {
     val res = mirror.uploadAndApply(
       baseUrl = settings.baseUrl,
       apiKey = settings.mirrorApiKey,
       repo = repoName,
       dumpFile = dump,
+      syncPassword = settings.syncPassword,
       insecureTls = settings.mirrorInsecureTls,
-      projectDir = projectDir
+      projectDir = projectDir,
+      localBranches = localBranches
     )
     if (res.code !in 200..299) {
       return StepResult(false, "Mirror error HTTP ${res.code}", res.body.take(500)) to res
@@ -542,6 +545,9 @@ class SyncEngine(
 
       val pointerHead = negotiation.pointerCommit
       if (!pointerHead.isNullOrBlank()) {
+        // Collect all local branch names for auto-prune on server
+        val localBranches = GitLocal.localBranches(project, projectDir)
+
         // Build branch→hash map for all branches the sender has
         val branchMap = mutableMapOf<String, String>()
         val currentBranch = git.currentBranch(project, projectDir).orEmpty()
@@ -556,7 +562,7 @@ class SyncEngine(
           }
         }
 
-        val applied = mirror.applyKnown(snapshot.baseUrl, snapshot.mirrorApiKey, repoName, pointerHead, branches = branchMap, insecureTls = snapshot.mirrorInsecureTls)
+        val applied = mirror.applyKnown(snapshot.baseUrl, snapshot.mirrorApiKey, repoName, pointerHead, branches = branchMap, syncPassword = snapshot.syncPassword, insecureTls = snapshot.mirrorInsecureTls, localBranches = localBranches)
         if (applied.code in 200..299) {
           val branchName = currentBranch
           state.updateAfterSend(projectDir, branchName, pointerHead)
@@ -605,7 +611,8 @@ class SyncEngine(
         )
       }
 
-      val (uploadRes, http) = uploadAndApply(snapshot, repoName, dump, projectDir)
+      val localBranchesForUpload = GitLocal.localBranches(project, projectDir)
+      val (uploadRes, http) = uploadAndApply(snapshot, repoName, dump, projectDir, localBranchesForUpload)
       if (!uploadRes.ok) {
         diag(projectDir, diagnostics, "upload-and-apply", SyncStepOutcome.FAIL, uploadRes.message, mapOf("repo" to repoName, "httpCode" to http.code.toString()))
         return FullSyncResult(uploadRes, http, dump, repoName, traceId, diagnostics.steps)

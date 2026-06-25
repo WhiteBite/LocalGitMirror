@@ -22,7 +22,7 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
-class PullFromMirrorAction : AnAction() {
+class PullFromMirrorAction(private val preselectedBranch: String? = null) : AnAction() {
 
   companion object {
     // Process-wide guard: prevents concurrent pull/push operations from
@@ -74,6 +74,7 @@ class PullFromMirrorAction : AnAction() {
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           repo = repoName,
+          syncPassword = SecretsStore.syncPassword,
           insecureTls = settings.mirrorInsecureTls
         )
       }
@@ -94,43 +95,55 @@ class PullFromMirrorAction : AnAction() {
           return
         }
 
-        // ── Step 2: branch picker on EDT — shows MIRROR branches, including ones missing locally ──
+        // ── Step 2: choose the branch ──
+        // If the tool-window selector pre-selected a branch that exists on Mirror,
+        // use it directly and skip the picker — this makes the panel's branch combo
+        // the single source of truth for BOTH push and pull. The picker remains as a
+        // fallback (e.g. for Mirror-only branches not present in the local combo, or
+        // when invoked from the menu/keyboard with no preselection).
         val remoteBranches = remoteRefs.keys.sorted()
-        val currentBranch = GitLocal.currentBranch(project, dir)
-        val localBranches = GitLocal.listBranches(project, dir).toSet()
+        val preset = preselectedBranch?.takeIf { remoteRefs.containsKey(it) }
 
-        // Mark branches that don't exist locally with a ★ so user knows it's a new branch
-        val displayItems = remoteBranches.map { b ->
-          if (localBranches.contains(b)) b else "★ $b  (новая)"
-        }.toTypedArray()
+        val chosen: String = if (preset != null) {
+          preset
+        } else {
+          val currentBranch = GitLocal.currentBranch(project, dir)
+          val localBranches = GitLocal.listBranches(project, dir).toSet()
 
-        val preselect = if (currentBranch != null && remoteBranches.contains(currentBranch))
-          displayItems[remoteBranches.indexOf(currentBranch)]
-        else
-          displayItems.first()
+          // Mark branches that don't exist locally with a ★ so user knows it's a new branch
+          val displayItems = remoteBranches.map { b ->
+            if (localBranches.contains(b)) b else "★ $b  (новая)"
+          }.toTypedArray()
 
-        val chosenDisplay = Messages.showEditableChooseDialog(
-          "Выберите ветку для подтягивания с Mirror:\n(★ = ветки которых нет локально — будут созданы)",
-          "LocalGitMirror: Pull from Mirror",
-          null,
-          displayItems,
-          preselect,
-          null
-        )
-        if (chosenDisplay == null) {
-          operationInProgress.set(false)  // user cancelled
-          return
-        }
+          val preselect = if (currentBranch != null && remoteBranches.contains(currentBranch))
+            displayItems[remoteBranches.indexOf(currentBranch)]
+          else
+            displayItems.first()
 
-        // Strip display decoration back to plain branch name
-        val chosenIdx = displayItems.indexOf(chosenDisplay)
-        val chosen = if (chosenIdx >= 0) remoteBranches[chosenIdx]
-                     else chosenDisplay.removePrefix("★ ").substringBefore("  (")
+          val chosenDisplay = Messages.showEditableChooseDialog(
+            "Выберите ветку для подтягивания с Mirror:\n(★ = ветки которых нет локально — будут созданы)",
+            "LocalGitMirror: Pull from Mirror",
+            null,
+            displayItems,
+            preselect,
+            null
+          )
+          if (chosenDisplay == null) {
+            operationInProgress.set(false)  // user cancelled
+            return
+          }
 
-        if (!remoteRefs.containsKey(chosen)) {
-          notify(project, "Ветка «$chosen» не найдена на Mirror.", NotificationType.WARNING)
-          operationInProgress.set(false)
-          return
+          // Strip display decoration back to plain branch name
+          val chosenIdx = displayItems.indexOf(chosenDisplay)
+          val resolved = if (chosenIdx >= 0) remoteBranches[chosenIdx]
+                         else chosenDisplay.removePrefix("★ ").substringBefore("  (")
+
+          if (!remoteRefs.containsKey(resolved)) {
+            notify(project, "Ветка «$resolved» не найдена на Mirror.", NotificationType.WARNING)
+            operationInProgress.set(false)
+            return
+          }
+          resolved
         }
 
         // ── Step 3: fetch preview, then confirm, then pull ──
@@ -178,6 +191,7 @@ class PullFromMirrorAction : AnAction() {
           apiKey = SecretsStore.mirrorApiKey,
           repo = repoName,
           since = localTip,
+          syncPassword = SecretsStore.syncPassword,
           insecureTls = settings.mirrorInsecureTls,
           branch = targetBranch
         )
@@ -267,6 +281,7 @@ class PullFromMirrorAction : AnAction() {
               apiKey = SecretsStore.mirrorApiKey,
               repo = repoName,
               since = sinceHash,
+              syncPassword = SecretsStore.syncPassword,
               insecureTls = settings.mirrorInsecureTls,
               outFile = dumpOut,
               branch = targetBranch,
@@ -297,6 +312,7 @@ class PullFromMirrorAction : AnAction() {
                   apiKey = SecretsStore.mirrorApiKey,
                   repo = repoName,
                   since = null,
+                  syncPassword = SecretsStore.syncPassword,
                   insecureTls = settings.mirrorInsecureTls,
                   outFile = dumpOut,
                   branch = targetBranch

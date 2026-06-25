@@ -21,6 +21,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.core.bundle_crypto import MAGIC, decrypt_dump_to_bundle, encrypt_bundle_to_dump
+from app.core.envelope_crypto import decrypt_envelope, encrypt_envelope
 from app.routers.state import state
 
 router = APIRouter(prefix="/api", tags=["sync"])
@@ -60,6 +61,11 @@ class PreviewPullDetailsRequest(BaseModel):
 class DeleteRefRequest(BaseModel):
     repo: str
     branch: str
+
+
+class EnvelopeRequest(BaseModel):
+    """Opaque encrypted request — all metadata hidden from DLP / TLS inspection."""
+    e: str
 
 
 # Refname-safe: no spaces, no control chars, not "." or "..", no ".."
@@ -137,6 +143,73 @@ def _pick_bundle_ref(workspace_path: Path, bundle_path: Path, preferred_branch: 
     if "HEAD" in refs:
         return "HEAD"
     return refs[0]
+
+
+# ============ ENVELOPE HELPERS ============
+
+
+def _sync_password() -> str:
+    """Return SYNC_PASSWORD from env. Raises 503 when not configured."""
+    pwd = os.getenv("SYNC_PASSWORD", "")
+    if not pwd:
+        raise HTTPException(503, "Sync password not configured on server")
+    return pwd
+
+
+def _decrypt_params(e: str, password: str) -> dict:
+    """Decrypt envelope field. Raises 400 on invalid/tampered data."""
+    try:
+        return decrypt_envelope(e, password)
+    except Exception:
+        raise HTTPException(400, "Invalid request envelope")
+
+
+def _prune_stale_branches(repo_name: str, local_branches: list, password: str) -> list:
+    """Remove branches from Mirror that don't exist locally and aren't HEAD.
+
+    Returns list of pruned branch names. Safe: never deletes HEAD or the last branch.
+    """
+    if not repo_manager or not local_branches:
+        return []
+
+    bare = repo_manager._get_bare_path(repo_name)
+    if not bare.exists():
+        return []
+
+    # Get all branches on Mirror bare repo
+    proc = _git(bare, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+    if proc.returncode != 0:
+        return []
+    mirror_branches = {b.strip() for b in (proc.stdout or "").splitlines() if b.strip()}
+
+    # Get HEAD branch (protected)
+    head_proc = _git(bare, "symbolic-ref", "--short", "HEAD")
+    head_branch = (head_proc.stdout or "").strip() if head_proc.returncode == 0 else ""
+
+    # Normalize local branches for comparison
+    local_set = {b.strip() for b in local_branches if b and b.strip()}
+
+    # Candidates = on Mirror but NOT local and NOT HEAD
+    candidates = mirror_branches - local_set - {head_branch}
+
+    # Safety: never delete if it would leave zero branches
+    if len(mirror_branches) - len(candidates) < 1:
+        return []
+
+    pruned = []
+    workspace = repo_manager._get_workspace_path(repo_name)
+    for branch in candidates:
+        del_result = _git(bare, "update-ref", "-d", f"refs/heads/{branch}")
+        if del_result.returncode == 0:
+            pruned.append(branch)
+            # Best-effort: also remove from workspace
+            if workspace.exists():
+                _git(workspace, "branch", "-D", branch)
+
+    if pruned and system_logger:
+        system_logger.info("auto-pruned stale branches", {"repo": repo_name, "pruned": pruned})
+
+    return pruned
 
 
 def _ensure_clean_workspace(path: Path) -> Optional[dict]:
@@ -594,22 +667,26 @@ async def sync_password_probe():
 
 
 @router.post("/documents/check")
-def sync_has_commits(request: SyncHasCommitsRequest):
+def sync_has_commits(request: EnvelopeRequest):
     # NOTE: sync def + threadpool. Old version was async + 1 subprocess per
     # hash (~80 hashes -> ~20s of forking). Now it's a single
     # `git cat-file --batch-check` over stdin (one subprocess regardless of
     # input size).
+    password = _sync_password()
+    params = _decrypt_params(request.e, password)
+
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    repo = (request.repo or "").strip()
-    commits = [c.strip() for c in (request.commits or []) if c and c.strip()]
+    repo = (params.get("repo") or "").strip()
+    commits_raw = params.get("commits") or []
+    commits = [c.strip() for c in commits_raw if c and c.strip()]
 
     if not repo:
         raise HTTPException(400, "Repository name is required")
 
     if repo not in repo_manager.get_repos():
-        return {"success": True, "repo": repo, "known": []}
+        return {"e": encrypt_envelope({"success": True, "repo": repo, "known": []}, password)}
 
     workspace = repo_manager._get_workspace_path(repo)
     bare = repo_manager._get_bare_path(repo)
@@ -617,7 +694,7 @@ def sync_has_commits(request: SyncHasCommitsRequest):
     # Pick the source that actually has the most refs
     sources = [p for p in (bare, workspace) if p.exists()]
     if not sources:
-        return {"success": True, "repo": repo, "known": []}
+        return {"e": encrypt_envelope({"success": True, "repo": repo, "known": []}, password)}
 
     known = _batch_check_commits(sources, commits)
 
@@ -630,37 +707,42 @@ def sync_has_commits(request: SyncHasCommitsRequest):
             head = head_proc.stdout.strip()
             break
 
-    return {"success": True, "repo": repo, "known": known, "head": head}
+    return {"e": encrypt_envelope({"success": True, "repo": repo, "known": known, "head": head}, password)}
 
 
 @router.post("/documents/link")
-async def sync_apply_known(request: SyncApplyKnownRequest):
+async def sync_apply_known(request: EnvelopeRequest):
+    password = _sync_password()
+    params = _decrypt_params(request.e, password)
+
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    repo = (request.repo or "").strip()
-    commit = (request.commit or "").strip()
+    repo = (params.get("repo") or "").strip()
+    commit = (params.get("commit") or "").strip()
     if not repo or not commit:
         raise HTTPException(400, "Repository and commit are required")
 
+    branches_raw = params.get("branches") or {}
+
     if repo not in repo_manager.get_repos():
-        return {"success": False, "message": f"Repository '{repo}' not found", "repo": repo}
+        return {"e": encrypt_envelope({"success": False, "message": f"Repository '{repo}' not found", "repo": repo}, password)}
 
     workspace = repo_manager._get_workspace_path(repo)
     bare = repo_manager._get_bare_path(repo)
     if not workspace.exists():
-        return {"success": False, "message": f"Workspace for '{repo}' not found", "repo": repo}
+        return {"e": encrypt_envelope({"success": False, "message": f"Workspace for '{repo}' not found", "repo": repo}, password)}
 
     _ensure_clean_workspace(workspace)
 
     exists_proc = _git(workspace, "cat-file", "-e", f"{commit}^{{commit}}")
     if exists_proc.returncode != 0:
-        return {"success": False, "message": f"Commit not found locally: {commit}", "repo": repo}
+        return {"e": encrypt_envelope({"success": False, "message": f"Commit not found locally: {commit}", "repo": repo}, password)}
 
     # ── Collect all branch→hash mappings ──────────────────────
     branch_refs = {}  # branch_name -> commit_hash
-    if request.branches:
-        branch_refs.update(request.branches)
+    if branches_raw:
+        branch_refs.update(branches_raw)
 
     # Ensure current HEAD commit is included for the primary branch
     branch_proc = _git(workspace, "rev-parse", "--abbrev-ref", "HEAD")
@@ -669,16 +751,13 @@ async def sync_apply_known(request: SyncApplyKnownRequest):
         branch_refs[primary_branch] = commit
 
     # ── Update workspace refs to match sender's branch tips ──
-    # Detach HEAD so we can update all branch refs freely
     _git(workspace, "checkout", "--detach")
 
-    # Ensure workspace has all objects from bare
     if bare.exists():
         _git(workspace, "fetch", str(bare), "+refs/heads/*:refs/fetched/*")
 
     pushed_branches = []
     for branch_name, branch_hash in branch_refs.items():
-        # Verify this commit exists in the workspace object store
         check = _git(workspace, "cat-file", "-e", f"{branch_hash}^{{commit}}")
         if check.returncode != 0:
             if system_logger:
@@ -688,10 +767,8 @@ async def sync_apply_known(request: SyncApplyKnownRequest):
                 )
             continue
 
-        # Update the branch ref to point to the correct commit
         _git(workspace, "update-ref", f"refs/heads/{branch_name}", branch_hash)
 
-        # Push to bare repo
         if bare.exists():
             push = _git(workspace, "push", "--force", str(bare), f"refs/heads/{branch_name}:refs/heads/{branch_name}")
             if push.returncode == 0:
@@ -699,45 +776,59 @@ async def sync_apply_known(request: SyncApplyKnownRequest):
             elif system_logger:
                 system_logger.warning(f"apply-known: failed to push {branch_name}", {"repo": repo, "error": push.stderr})
 
-    # Clean up temp fetched refs
     _git(workspace, "for-each-ref", "--format=%(refname)", "refs/fetched/")
 
-    # Checkout the primary branch on workspace (for web UI)
     preferred = primary_branch or (list(branch_refs.keys())[0] if branch_refs else "master")
     _git(workspace, "checkout", "-f", preferred)
 
     if system_logger:
         system_logger.info("apply-known result", {"repo": repo, "commit": commit, "branches": pushed_branches})
 
-    return {
+    # Auto-prune stale branches if client sent its local branch list
+    local_branches = params.get("local_branches")
+    pruned = []
+    if local_branches:
+        pruned = _prune_stale_branches(repo, local_branches, password)
+
+    result = {
         "success": True,
         "repo": repo,
         "commit": commit,
         "branches": pushed_branches,
         "message": f"Applied known commit ({len(pushed_branches)} branch(es): {', '.join(pushed_branches)})",
     }
+    if pruned:
+        result["pruned"] = pruned
+
+    return {"e": encrypt_envelope(result, password)}
 
 
 @router.post("/documents/upload")
-async def sync_upload_and_apply(repo: str = Form(...), attachment: UploadFile = File(...)):
+async def sync_upload_and_apply(e: str = Form(...), attachment: UploadFile = File(...)):
+    password = _sync_password()
+    params = _decrypt_params(e, password)
+
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    repo_name = (repo or "").strip()
+    repo_name = (params.get("repo") or "").strip()
     if not repo_name:
         raise HTTPException(400, "Repository name is required")
 
     if repo_name not in repo_manager.get_repos():
-        return {"success": False, "message": f"Repository '{repo_name}' not found", "repo": repo_name}
+        return {"e": encrypt_envelope(
+            {"success": False, "message": f"Repository '{repo_name}' not found", "repo": repo_name},
+            password,
+        )}
 
     filename = attachment.filename or ""
     inferred = _infer_repo_from_dump_filename(filename)
     if inferred and inferred != repo_name:
-        return {
-            "success": False,
-            "repo": repo_name,
-            "message": f"Uploaded filename indicates repo '{inferred}' but request repo is '{repo_name}'",
-        }
+        return {"e": encrypt_envelope(
+            {"success": False, "repo": repo_name,
+             "message": f"Uploaded filename indicates repo '{inferred}' but request repo is '{repo_name}'"},
+            password,
+        )}
 
     if system_logger:
         system_logger.info("upload-and-apply requested", {"repo": repo_name, "filename": filename})
@@ -754,11 +845,20 @@ async def sync_upload_and_apply(repo: str = Form(...), attachment: UploadFile = 
         result = _apply_dump_to_repo_and_sync_bare(
             dump_path=dump_path, repo_name=repo_name, dump_filename=dump_path.name
         )
-        return result
+
+        # Auto-prune stale branches if client sent its local branch list
+        local_branches = params.get("local_branches")
+        pruned = []
+        if local_branches and result.get("success"):
+            pruned = _prune_stale_branches(repo_name, local_branches, password)
+        if pruned:
+            result["pruned"] = pruned
+
+        return {"e": encrypt_envelope(result, password)}
 
 
-@router.get("/documents/list")
-async def sync_refs(repo: str = Query(...)):
+@router.post("/documents/list")
+async def sync_refs(request: EnvelopeRequest):
     """
     Get all branch tips visible to the server.
 
@@ -769,10 +869,13 @@ async def sync_refs(repo: str = Query(...)):
 
     We merge both, with the bare repo taking precedence.
     """
+    password = _sync_password()
+    params = _decrypt_params(request.e, password)
+
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    repo_name = (repo or "").strip()
+    repo_name = (params.get("repo") or "").strip()
     if not repo_name:
         raise HTTPException(400, "Repository name is required")
     if repo_name not in repo_manager.get_repos():
@@ -810,7 +913,7 @@ async def sync_refs(repo: str = Query(...)):
     refs.update(_collect_refs(workspace))
     refs.update(_collect_refs(bare))
 
-    # HEAD sha: prefer workspace HEAD, fall back to bare (kept for response field)
+    # HEAD sha: prefer workspace HEAD, fall back to bare
     head = ""
     for path in (workspace, bare):
         if path.exists():
@@ -819,10 +922,6 @@ async def sync_refs(repo: str = Query(...)):
                 head = head_proc.stdout.strip()
                 break
 
-    # Determine the CURRENT branch name from the SAME source of truth the refs
-    # came from (bare overrides workspace). A branch pushed straight to the bare
-    # (workspace untouched) makes a SHA comparison disagree, so compare by name
-    # against the bare's symbolic HEAD instead. Matches the delete-ref guard.
     head_branch = ""
     for path in (bare, workspace):
         if path.exists():
@@ -834,16 +933,14 @@ async def sync_refs(repo: str = Query(...)):
     for name, info in refs.items():
         info["is_head"] = (name == head_branch)
 
-    return {
-        "success": True,
-        "repo": repo_name,
-        "head": head,
-        "refs": refs
-    }
+    return {"e": encrypt_envelope(
+        {"success": True, "repo": repo_name, "head": head, "refs": refs},
+        password,
+    )}
 
 
 @router.post("/documents/delete-ref")
-async def delete_ref(request: DeleteRefRequest):
+async def delete_ref(request: EnvelopeRequest):
     """
     Delete a branch from the Mirror bare repo (and workspace if present).
 
@@ -853,11 +950,14 @@ async def delete_ref(request: DeleteRefRequest):
         (would orphan it).
       - Branch name must be a valid git refname.
     """
+    password = _sync_password()
+    params = _decrypt_params(request.e, password)
+
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    repo_name = (request.repo or "").strip()
-    branch = (request.branch or "").strip()
+    repo_name = (params.get("repo") or "").strip()
+    branch = (params.get("branch") or "").strip()
 
     if not repo_name or repo_name not in repo_manager.get_repos():
         raise HTTPException(404, "Repository not found")
@@ -906,27 +1006,29 @@ async def delete_ref(request: DeleteRefRequest):
     if system_logger:
         system_logger.info("branch deleted", {"repo": repo_name, "branch": branch})
 
-    return {"success": True, "repo": repo_name, "branch": branch}
+    return {"e": encrypt_envelope({"success": True, "repo": repo_name, "branch": branch}, password)}
 
 
 @router.post("/documents/export")
-def sync_export_dump(
-    repo: str = Form(...),
-    since: Optional[str] = Form(None),
-    branch: Optional[str] = Form(None),
-    haves: Optional[str] = Form(None),
-):
+def sync_export_dump(e: str = Form(...)):
     # NOTE: intentionally a sync `def` (not async). The body does heavy blocking
     # work (git bundle, encryption, base64 of a potentially large repo). As a
     # sync handler Starlette runs it in a threadpool, keeping the event loop free.
+    password = _sync_password()
+    params = _decrypt_params(e, password)
+
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    repo_name = (repo or "").strip()
+    repo_name = (params.get("repo") or "").strip()
     if not repo_name:
         raise HTTPException(400, "Repository name is required")
     if repo_name not in repo_manager.get_repos():
         raise HTTPException(404, "Repository not found")
+
+    since = params.get("since") or None
+    branch = params.get("branch") or None
+    haves = params.get("haves") or None
 
     workspace = repo_manager._get_workspace_path(repo_name)
     bare = repo_manager._get_bare_path(repo_name)
@@ -988,7 +1090,10 @@ def sync_export_dump(
 
             if bundle_proc.returncode != 0:
                 if "Refusing to create empty bundle" in bundle_proc.stderr:
-                    return {"status": "no_content", "head": head, "repo": repo_name}
+                    return {"e": encrypt_envelope(
+                        {"status": "no_content", "head": head, "repo": repo_name},
+                        password,
+                    )}
                 raise HTTPException(500, bundle_proc.stderr.strip() or "Failed to create bundle")
 
             # Store the freshly built bundle for subsequent identical requests.
@@ -996,107 +1101,72 @@ def sync_export_dump(
                 _export_cache_store(cache_dir, cache_key, bundle_path)
                 _export_cache_prune(cache_dir)
 
-        password = os.getenv("SYNC_PASSWORD", "")
-        if not password:
-            raise HTTPException(500, "SYNC_PASSWORD not configured in environment")
-
+        # password is already obtained at the top of the function from _sync_password()
         ts = datetime.now().strftime("%Y%m%d_%H%M")
         dump_path = tmp_dir / f".tmp_{uuid.uuid4().hex[:8]}"
         try:
             encrypt_bundle_to_dump(bundle_path, dump_path, password)
-        except Exception as e:
-            raise HTTPException(500, f"Failed to create sync package: {e}")
+        except Exception as exc:
+            raise HTTPException(500, f"Failed to create sync package: {exc}")
 
         return {
-            "status": "ok",
-            "head": head,
-            "repo": repo_name,
-            "filename": dump_path.name,
-            "data": base64.b64encode(dump_path.read_bytes()).decode("ascii"),
+            "e": encrypt_envelope({"status": "ok", "head": head, "repo": repo_name}, password),
+            "d": base64.b64encode(dump_path.read_bytes()).decode("ascii"),
         }
 
 
 @router.post("/documents/preview")
-async def sync_preview_pull(request: PreviewPullRequest):
+async def sync_preview_pull(request: EnvelopeRequest):
     """Lightweight preview: are there incoming commits to pull?"""
+    password = _sync_password()
+    params = _decrypt_params(request.e, password)
+
+    def _respond(result: dict) -> dict:
+        return {"e": encrypt_envelope(result, password)}
+
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    repo_name = (request.repo or "").strip()
+    repo_name = (params.get("repo") or "").strip()
     if not repo_name:
         raise HTTPException(400, "Repository name is required")
 
     if repo_name not in repo_manager.get_repos():
-        return {
-            "success": True,
-            "repo": repo_name,
-            "remoteHead": None,
-            "hasUpdates": False,
-            "reason": "repo-not-found",
-        }
+        return _respond({"success": True, "repo": repo_name, "remoteHead": None,
+                         "hasUpdates": False, "reason": "repo-not-found"})
 
     workspace = repo_manager._get_workspace_path(repo_name)
     if not workspace.exists():
-        return {
-            "success": True,
-            "repo": repo_name,
-            "remoteHead": None,
-            "hasUpdates": False,
-            "reason": "workspace-not-found",
-        }
+        return _respond({"success": True, "repo": repo_name, "remoteHead": None,
+                         "hasUpdates": False, "reason": "workspace-not-found"})
 
     head_proc = _git(workspace, "rev-parse", "HEAD")
     if head_proc.returncode != 0:
-        return {
-            "success": True,
-            "repo": repo_name,
-            "remoteHead": None,
-            "hasUpdates": False,
-            "reason": "no-commits",
-        }
+        return _respond({"success": True, "repo": repo_name, "remoteHead": None,
+                         "hasUpdates": False, "reason": "no-commits"})
 
     head = (head_proc.stdout or "").strip()
-    since = (request.since or "").strip()
+    since = (params.get("since") or "").strip()
 
     if not since:
-        return {
-            "success": True,
-            "repo": repo_name,
-            "remoteHead": head,
-            "hasUpdates": True,
-            "reason": "full-sync-needed",
-        }
+        return _respond({"success": True, "repo": repo_name, "remoteHead": head,
+                         "hasUpdates": True, "reason": "full-sync-needed"})
 
     if since == head:
-        return {
-            "success": True,
-            "repo": repo_name,
-            "remoteHead": head,
-            "hasUpdates": False,
-            "reason": "no-new-commits",
-        }
+        return _respond({"success": True, "repo": repo_name, "remoteHead": head,
+                         "hasUpdates": False, "reason": "no-new-commits"})
 
     check_since = _git(workspace, "cat-file", "-e", f"{since}^{{commit}}")
     if check_since.returncode != 0:
-        return {
-            "success": True,
-            "repo": repo_name,
-            "remoteHead": head,
-            "hasUpdates": True,
-            "reason": "since-not-found",
-        }
+        return _respond({"success": True, "repo": repo_name, "remoteHead": head,
+                         "hasUpdates": True, "reason": "since-not-found"})
 
-    return {
-        "success": True,
-        "repo": repo_name,
-        "remoteHead": head,
-        "hasUpdates": True,
-        "reason": "ahead",
-    }
+    return _respond({"success": True, "repo": repo_name, "remoteHead": head,
+                     "hasUpdates": True, "reason": "ahead"})
 
 
 @router.post("/documents/preview-details")
-async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
+async def sync_preview_pull_details(request: EnvelopeRequest):
     """Get commit list and diffstat for incoming changes.
 
     Picks the source repo (bare or workspace) that actually has the requested
@@ -1104,10 +1174,13 @@ async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
     one checkout. Without this, preview is empty for any branch the user has
     pushed but never had checked out.
     """
+    password = _sync_password()
+    params = _decrypt_params(request.e, password)
+
     if not repo_manager:
         raise HTTPException(500, "Repo manager not initialized")
 
-    repo_name = (request.repo or "").strip()
+    repo_name = (params.get("repo") or "").strip()
     if repo_name not in repo_manager.get_repos():
         raise HTTPException(404, "Repository not found")
 
@@ -1116,8 +1189,8 @@ async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
     if not workspace.exists() and not bare.exists():
         raise HTTPException(404, "Repository data not found")
 
-    since = (request.since or "").strip()
-    target = (request.branch or "").strip() or "HEAD"
+    since = (params.get("since") or "").strip()
+    target = (params.get("branch") or "").strip() or "HEAD"
     rev_range = f"{since}..{target}" if since else target
 
     # Pick the source that actually has the target ref (bare-only branches!)
@@ -1152,12 +1225,10 @@ async def sync_preview_pull_details(request: PreviewPullDetailsRequest):
     diff_proc = _git(source, "diff", "--stat", rev_range)
     diffstat = diff_proc.stdout or ""
 
-    return {
-        "success": True,
-        "repo": repo_name,
-        "commits": commits,
-        "diffstat": diffstat
-    }
+    return {"e": encrypt_envelope(
+        {"success": True, "repo": repo_name, "commits": commits, "diffstat": diffstat},
+        password,
+    )}
 
 
 @router.post("/documents/process")
@@ -1478,37 +1549,37 @@ async def _alias_password_probe():
 
 
 @router.post("/sync/has-commits")
-async def _alias_has_commits(request: SyncHasCommitsRequest):
+async def _alias_has_commits(request: EnvelopeRequest):
     return sync_has_commits(request)
 
 
 @router.post("/sync/apply-known")
-async def _alias_apply_known(request: SyncApplyKnownRequest):
+async def _alias_apply_known(request: EnvelopeRequest):
     return await sync_apply_known(request)
 
 
 @router.post("/sync/upload-and-apply")
-async def _alias_upload_and_apply(repo: str = Form(...), dump_file: UploadFile = File(...)):
-    return await sync_upload_and_apply(repo=repo, attachment=dump_file)
+async def _alias_upload_and_apply(e: str = Form(...), dump_file: UploadFile = File(...)):
+    return await sync_upload_and_apply(e=e, attachment=dump_file)
 
 
-@router.get("/sync/refs")
-async def _alias_refs(repo: str = Query(...)):
-    return await sync_refs(repo=repo)
+@router.post("/sync/refs")
+async def _alias_refs(request: EnvelopeRequest):
+    return await sync_refs(request)
 
 
 @router.post("/sync/export-dump")
-async def _alias_export_dump(repo: str = Form(...), since: Optional[str] = Form(None)):
-    return sync_export_dump(repo=repo, since=since)
+async def _alias_export_dump(e: str = Form(...)):
+    return sync_export_dump(e=e)
 
 
 @router.post("/sync/preview-pull")
-async def _alias_preview_pull(request: PreviewPullRequest):
+async def _alias_preview_pull(request: EnvelopeRequest):
     return await sync_preview_pull(request)
 
 
 @router.post("/sync/preview-pull-details")
-async def _alias_preview_pull_details(request: PreviewPullDetailsRequest):
+async def _alias_preview_pull_details(request: EnvelopeRequest):
     return await sync_preview_pull_details(request)
 
 

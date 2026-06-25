@@ -317,19 +317,16 @@ async def sanitize_headers(request, call_next):
             del response.headers[hdr]
     return response
 
-# --- MOUNT GIT HTTP (CRITICAL: MUST BE BEFORE START) ---
-# We use a placeholder path for now, it will use absolute paths inside the middleware
-from app.routers.git_http import init_git_http
-
-# Load storage path from env for immediate mounting
-initial_storage = Path(os.getenv("STORAGE_PATH", "storage"))
-init_git_http(app, initial_storage)
+# --- GIT SMART HTTP DISABLED ---
+# Raw git protocol (/git/*) is not mounted. All data travels through the
+# encrypted /api/documents/* transport to avoid git-specific DLP signatures.
 
 
 # Include routers
 from app.routers import (
     deps_router, settings_router, web_router, websocket_router,
     system_router, repos_router, sync_router, files_router, shared_router,
+    plugin_router, buffer_router,
 )
 
 # deps router is wired to repo_manager / system_logger inside the lifespan
@@ -341,6 +338,8 @@ app.include_router(sync_router, dependencies=[Depends(get_api_key)])
 app.include_router(files_router, dependencies=[Depends(get_api_key)])
 app.include_router(shared_router, dependencies=[Depends(get_api_key)])
 app.include_router(deps_router, dependencies=[Depends(get_api_key)])
+app.include_router(plugin_router, dependencies=[Depends(get_api_key)])
+app.include_router(buffer_router, dependencies=[Depends(get_api_key)])
 app.include_router(web_router)
 app.include_router(settings_router, dependencies=[Depends(get_api_key)])
 app.include_router(websocket_router)
