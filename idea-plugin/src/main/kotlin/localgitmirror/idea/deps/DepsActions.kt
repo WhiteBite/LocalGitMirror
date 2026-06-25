@@ -588,38 +588,36 @@ class ApplyDepsAction : AnAction() {
         val lockBytes = unpackResult.meta["package-lock.json"]
 
         if (isYarnProj && applyProj != null) {
-          // yarn (classic v1): build an offline-mirror from the corporate
-          // tarballs, wire .yarnrc + bring yarn.lock resolved URLs to npmjs, and
-          // offer `yarn install` (public from npmjs, corporate from the mirror).
+          // yarn (classic v1): keep corporate tarballs in a GLOBAL offline-mirror,
+          // point GLOBAL ~/.yarnrc at it, install with --offline --pure-lockfile.
+          // The project's yarn.lock/.yarnrc are NOT touched (repo stays clean) and
+          // it survives branch switches; public packages come from yarn's global
+          // cache, corporate from the offline-mirror (by filename).
           val ymir = NpmEcosystem.yarnOfflineMirror()
           val cnt = runCatching { NpmEcosystem.buildYarnMirror(NpmEcosystem.cacheRoot(), ymir) }.getOrDefault(0)
-          val nrw = runCatching {
-            NpmEcosystem.writeYarnrc(applyProj, ymir)
-            NpmEcosystem.rewriteYarnLock(applyProj)
-          }.getOrDefault(0)
-          lockMsg = "yarn: offline-mirror $cnt пакет(ов), .yarnrc + yarn.lock ($nrw → npmjs)."
+          runCatching { NpmEcosystem.setGlobalYarnMirror(ymir) }
+          lockMsg = "yarn: offline-mirror ($cnt пакет(ов)) в глобальном ~/.yarnrc; yarn.lock не тронут."
           val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
             Messages.showYesNoDialog(
               project,
-              "$lockMsg\nЗапустить yarn install сейчас? (публичное с npmjs, корпоративное из mirror)",
+              "$lockMsg\nЗапустить yarn install --offline сейчас? (публичное из кеша yarn, корпоративное из mirror)",
               "LocalGitMirror: yarn install", "Запустить", "Позже", null
             )
           }
           if (runIt == Messages.YES) {
-            indicator.text = "yarn install…"
+            indicator.text = "yarn install --offline…"
             val code = runCatching {
               val isWin = System.getProperty("os.name").lowercase().contains("win")
               val cmd = (if (isWin) listOf("cmd", "/c", "yarn") else listOf("yarn")) +
-                listOf("install", "--frozen-lockfile", "--non-interactive")
-              val pb = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true)
-              pb.environment()["npm_config_registry"] = "https://registry.npmjs.org"
-              val proc = pb.start()
+                listOf("install", "--offline", "--pure-lockfile", "--non-interactive")
+              val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
               proc.inputStream.bufferedReader().forEachLine { /* drain */ }
               proc.waitFor()
             }.getOrElse { -1 }
-            lockMsg += if (code == 0) " yarn install: OK." else " yarn install: код $code (повтори вручную)."
+            lockMsg += if (code == 0) " yarn install: OK."
+                       else " yarn install: код $code (если не хватает публичного — один онлайн yarn install, дальше офлайн)."
           } else {
-            lockMsg += " Запусти (npm_config_registry=https://registry.npmjs.org) yarn install --frozen-lockfile"
+            lockMsg += " Запусти: yarn install --offline --pure-lockfile"
           }
         } else if (lockBytes != null && applyProj != null && File(applyProj, "package.json").isFile) {
           // npm lockfile (shipped as __meta__/package-lock.json): rewrite resolved

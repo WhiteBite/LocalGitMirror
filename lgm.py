@@ -613,33 +613,18 @@ def _build_yarn_mirror(tarballs_root: Path, mirror: Path) -> int:
     return n
 
 
-def _write_yarnrc(project: Path, mirror: Path):
-    yarnrc = project / ".yarnrc"
+def _set_global_yarn_mirror(mirror: Path):
+    """Write the offline-mirror into the GLOBAL ~/.yarnrc (outside any repo) so
+    it survives branch switches and never dirties a project. We do NOT set a
+    global registry (that could affect other projects) — `yarn install --offline`
+    doesn't need it. Other existing ~/.yarnrc lines are preserved."""
+    yarnrc = Path.home() / ".yarnrc"
     existing = yarnrc.read_text(encoding="utf-8", errors="replace") if yarnrc.is_file() else ""
     keep = [ln for ln in existing.splitlines()
-            if not ln.strip().startswith("yarn-offline-mirror")
-            and not ln.strip().startswith("registry ")]
+            if ln.strip() and not ln.strip().startswith("yarn-offline-mirror")]
     mp = str(mirror).replace("\\", "/")
-    keep += [f'yarn-offline-mirror "{mp}"',
-             'yarn-offline-mirror-pruning false',
-             'registry "https://registry.npmjs.org"']
+    keep += [f'yarn-offline-mirror "{mp}"', 'yarn-offline-mirror-pruning false']
     yarnrc.write_text("\n".join(keep) + "\n", encoding="utf-8")
-
-
-def _rewrite_yarn_lock(project: Path) -> int:
-    lock = project / "yarn.lock"
-    if not lock.is_file():
-        return 0
-    text = lock.read_text(encoding="utf-8", errors="replace")
-    npmjs = "https://registry.npmjs.org/"
-    count = 0
-    for base in _npmrc_registries(project):
-        if base == npmjs:
-            continue
-        count += text.count(base)
-        text = text.replace(base, npmjs)
-    lock.write_text(text, encoding="utf-8")
-    return count
 
 
 def cmd_apply(args):
@@ -827,36 +812,41 @@ def cmd_apply(args):
     elif lock_bytes is not None:
         print("  npm: bundle carried package-lock.json — pass --project <dir> to apply it")
 
-    # yarn (classic v1) support: build a yarn offline-mirror from the corporate
-    # tarballs, wire .yarnrc + bring yarn.lock resolved URLs to npmjs, so
-    # `yarn install` resolves public from npmjs and corporate from the mirror.
+    # yarn (classic v1) support: keep corporate tarballs in a GLOBAL offline-
+    # mirror and point the GLOBAL ~/.yarnrc at it, then `yarn install --offline`.
+    # This never touches the project's yarn.lock/.yarnrc (repo stays clean) and
+    # survives branch switches. Public packages come from yarn's own global
+    # cache; corporate from the offline-mirror (matched by filename, so the
+    # nexus URLs in yarn.lock are irrelevant offline).
     if getattr(args, "yarn", False) or getattr(args, "yarn_install", False):
         proj = Path(args.project) if getattr(args, "project", "") else None
         if proj and (proj / "yarn.lock").is_file():
             ymir = _yarn_offline_mirror()
             cnt = _build_yarn_mirror(npm_offline_mirror(), ymir)
-            _write_yarnrc(proj, ymir)
-            nrw = _rewrite_yarn_lock(proj)
-            print(f"  yarn: mirror {cnt} tarball(s) at {ymir}")
-            print(f"  yarn: .yarnrc set; yarn.lock {nrw} resolved URL(s) -> npmjs")
+            _set_global_yarn_mirror(ymir)
+            print(f"  yarn: {cnt} corporate tarball(s) -> {ymir}")
+            print(f"  yarn: global ~/.yarnrc set (project yarn.lock/.yarnrc NOT touched)")
             if getattr(args, "yarn_install", False):
                 import subprocess
-                env = dict(os.environ)
-                env["npm_config_registry"] = "https://registry.npmjs.org"
                 yarn_bin = os.environ.get("LGM_YARN", "yarn")
                 yarn_cmd = ["cmd", "/c", yarn_bin] if os.name == "nt" else [yarn_bin]
-                print("  yarn: install (public from npmjs, corporate from mirror)...")
+                print("  yarn: install --offline (public from yarn cache, corporate from mirror)...")
                 try:
                     proc = subprocess.run(
-                        yarn_cmd + ["install", "--frozen-lockfile", "--non-interactive"],
-                        cwd=str(proj), env=env,
+                        yarn_cmd + ["install", "--offline", "--pure-lockfile", "--non-interactive"],
+                        cwd=str(proj),
                     )
-                    print(f"  yarn: install exit={proc.returncode}")
+                    if proc.returncode == 0:
+                        print("  yarn: install --offline OK")
+                    else:
+                        print(f"  yarn: install --offline exit={proc.returncode}")
+                        print("  yarn: if it failed on a missing PUBLIC package, that version "
+                              "isn't in yarn's cache yet — run one ONLINE `yarn install` to "
+                              "populate it, then --offline works on every branch.")
                 except FileNotFoundError:
-                    print("  yarn: 'yarn' not on PATH — set LGM_YARN or run yarn install manually")
+                    print("  yarn: 'yarn' not on PATH — set LGM_YARN or run `yarn install --offline --pure-lockfile` manually")
             else:
-                print("  yarn: run (set npm_config_registry=https://registry.npmjs.org) "
-                      "then `yarn install --frozen-lockfile` in the project")
+                print("  yarn: run `yarn install --offline --pure-lockfile` in the project")
         elif proj:
             print("  yarn: no yarn.lock in project — skipping yarn setup")
         else:
