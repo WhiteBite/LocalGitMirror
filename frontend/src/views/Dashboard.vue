@@ -99,7 +99,7 @@
                <div class="git-url-row">
                  <input 
                    readonly 
-                   :value="`https://${localIP}:${webPort}/git/${currentRepo}`" 
+                   :value="`https://${localIP}:${webPort}`" 
                    class="git-url-input"
                    @click="$event.target.select()"
                  />
@@ -359,7 +359,7 @@ async function fetchMetrics() {
 }
 
 function copyGitCommand() {
-  const url = `https://${localIP.value}:${webPort.value}/git/${currentRepo.value}`
+  const url = `https://${localIP.value}:${webPort.value}`
   navigator.clipboard.writeText(url)
   copied.value = true
   setTimeout(() => copied.value = false, 2000)

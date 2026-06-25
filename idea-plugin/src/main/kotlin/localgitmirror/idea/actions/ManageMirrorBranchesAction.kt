@@ -50,7 +50,7 @@ class ManageMirrorBranchesAction : AnAction() {
           indicator.isIndeterminate = true
 
           // 1. Fetch ref list
-          val result = MirrorApi.getRefs(settings.baseUrl, apiKey, repo, insecure)
+          val result = MirrorApi.getRefs(settings.baseUrl, apiKey, repo, SecretsStore.syncPassword, insecure)
           if (result.code !in 200..299) {
             notify(project, "Не удалось загрузить ветки (${result.code}): ${result.message}", NotificationType.ERROR)
             return
@@ -128,7 +128,7 @@ class ManageMirrorBranchesAction : AnAction() {
           val failed  = mutableListOf<String>()
           for (branch in toDelete) {
             indicator.text = "Удаляем $branch…"
-            val r = MirrorApi.deleteRef(settings.baseUrl, apiKey, repo, branch, insecure)
+            val r = MirrorApi.deleteRef(settings.baseUrl, apiKey, repo, branch, SecretsStore.syncPassword, insecure)
             if (r.code in 200..299) deleted.add(branch)
             else failed.add("$branch (HTTP ${r.code}: ${r.body.take(120)})")
           }

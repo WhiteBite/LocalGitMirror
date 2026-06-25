@@ -140,6 +140,7 @@ class PullCheckStartupActivity : ProjectActivity {
       baseUrl = settings.baseUrl,
       apiKey = SecretsStore.mirrorApiKey,
       repo = repoName,
+      syncPassword = SecretsStore.syncPassword,
       insecureTls = settings.mirrorInsecureTls
     )
 
