@@ -680,6 +680,22 @@ object NpmEcosystem : DepsEcosystem {
     return n
   }
 
+  /** Write the offline-mirror into the GLOBAL ~/.yarnrc (outside any repo) so it
+   *  survives branch switches and never dirties a project. No registry is set
+   *  (that could affect other projects); `yarn install --offline` needs none.
+   *  Existing ~/.yarnrc lines are preserved. */
+  fun setGlobalYarnMirror(mirror: File) {
+    val yarnrc = File(System.getProperty("user.home"), ".yarnrc")
+    val existing = if (yarnrc.isFile) yarnrc.readText() else ""
+    val keep = existing.lines().filter {
+      it.isNotBlank() && !it.trim().startsWith("yarn-offline-mirror")
+    }.toMutableList()
+    val mp = mirror.absolutePath.replace("\\", "/")
+    keep.add("yarn-offline-mirror \"$mp\"")
+    keep.add("yarn-offline-mirror-pruning false")
+    yarnrc.writeText(keep.joinToString("\n") + "\n")
+  }
+
   /**
    * DOME side. Feed each received tarball into npm's own cache via
    * `npm cache add <file>`, so a later `npm install` resolves them offline
