@@ -64,15 +64,23 @@ class SyncEngine(
     if (caps.apiVersion != 1 || caps.protocolVersion != 1) {
       return StepResult(false, "Backend protocol mismatch", "api=${caps.apiVersion} sync=${caps.protocolVersion}")
     }
-    if (!caps.passwordProbe) {
-      return StepResult(false, "Backend missing password probe", "Update backend")
+
+    // v3 fast path: if the server has a hybrid key AND the client has it pinned,
+    // the password probe is redundant — data is encrypted to the server's static
+    // key, not derived from a shared password. Skip it entirely.
+    val clientHasPin = MirrorApi.isV3Pinned()
+    if (caps.v3Key && clientHasPin) {
+      return StepResult(true, "Handshake OK (v3)")
     }
 
+    // Legacy password probe.
+    if (!caps.passwordProbe) {
+      return StepResult(false, "Backend missing password probe", "Update backend or configure SYNC_PASSWORD")
+    }
     val probe = mirror.passwordProbe(settings.baseUrl, settings.mirrorApiKey, settings.mirrorInsecureTls)
     if (probe.code !in 200..299 || probe.bytes == null) {
       return StepResult(false, "Password probe unavailable", "HTTP ${probe.code}: ${probe.message.take(200)}")
     }
-
     return try {
       val plain = BundleCrypto.decryptDumpBytes(probe.bytes, settings.syncPassword)
       val ok = String(plain).trim().let { it == "LGM-PROBE" || it == "SYNC-PROBE" }

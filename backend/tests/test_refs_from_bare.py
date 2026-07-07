@@ -11,11 +11,11 @@ import subprocess
 import time
 from pathlib import Path
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
 from tests import _harness
+from tests.conftest import envelope_form_post, envelope_post, parse_envelope
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -65,9 +65,9 @@ def test_list_shows_branch_pushed_only_to_bare(tmp_path: Path, monkeypatch):
     _run_git(scratch, "push", "origin", "confluence_mcp")
 
     # The new branch exists in bare but NOT in the workspace checkout.
-    resp = client.get("/api/documents/list", params={"repo": repo_name})
+    resp = envelope_post(client, "/api/documents/list", {"repo": repo_name}, "test-pass")
     assert resp.status_code == 200, resp.text
-    refs = resp.json().get("refs", {})
+    refs = parse_envelope(resp.json(), "test-pass").get("refs", {})
     assert "confluence_mcp" in refs, (
         f"Branch pushed to bare must appear in /documents/list. Got: {list(refs.keys())}"
     )
@@ -90,10 +90,10 @@ def test_export_bundles_branch_living_only_in_bare(tmp_path: Path, monkeypatch):
     _run_git(scratch, "push", "origin", "confluence_mcp")
 
     # Export must succeed even though the branch is only in bare
-    resp = client.post(
-        "/api/documents/export",
-        data={"repo": repo_name, "branch": "confluence_mcp"},
+    resp = envelope_form_post(
+        client, "/api/documents/export", {"repo": repo_name, "branch": "confluence_mcp"}, "test-pass"
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json().get("status") == "ok"
-    assert resp.json().get("data"), "Must return a bundle for the bare-only branch"
+    inner = parse_envelope(resp.json(), "test-pass")
+    assert inner.get("status") == "ok"
+    assert resp.json().get("d"), "Must return a bundle for the bare-only branch"

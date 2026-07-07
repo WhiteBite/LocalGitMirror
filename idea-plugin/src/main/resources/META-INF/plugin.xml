@@ -94,6 +94,17 @@
             text="Apply received dependencies…"
             description="DOME: unpack the received deps into the local gradle/npm caches"/>
 
+    <!-- ── Explicit repo file sync (encrypted with SYNC_PASSWORD) ── -->
+    <action id="LocalGitMirror.FileSendSelected"
+            class="localgitmirror.idea.actions.SendSelectedFileAction"
+            text="Send selected file…"
+            description="Encrypt the selected repo file and upload it to the Mirror file postbox"/>
+
+    <action id="LocalGitMirror.FileFetch"
+            class="localgitmirror.idea.actions.FetchRepoFilesAction"
+            text="Fetch repo file…"
+            description="Download and decrypt an explicitly uploaded repo file"/>
+
     <!-- ── Branch management ── -->
     <action id="LocalGitMirror.ManageBranches"
             class="localgitmirror.idea.actions.ManageMirrorBranchesAction"
@@ -112,6 +123,22 @@
     <action id="LocalGitMirror.DryRunPull"
             class="localgitmirror.idea.actions.DryRunPullSyncAction"
             text="Dry-run (pull)" description="Preview incoming changes from Mirror"/>
+
+    <!-- ── Cross-machine clipboard buffer (encrypted with SYNC_PASSWORD) ── -->
+    <action id="LocalGitMirror.BufferSend"
+            class="localgitmirror.idea.actions.SendToBufferAction"
+            text="Send to buffer"
+            description="Encrypt the editor selection (or system clipboard) and push it to the Mirror buffer"/>
+
+    <action id="LocalGitMirror.BufferPaste"
+            class="localgitmirror.idea.actions.PasteFromBufferAction"
+            text="Paste from buffer"
+            description="Fetch the latest buffer entry from Mirror and copy it to the system clipboard"/>
+
+    <action id="LocalGitMirror.BufferHistory"
+            class="localgitmirror.idea.actions.BufferHistoryAction"
+            text="Buffer history…"
+            description="Show recent Mirror buffer entries"/>
 
     <!-- Main menu: primary actions + overflow submenus -->
     <group id="LocalGitMirror.FullGroup">
@@ -140,10 +167,21 @@
       <reference ref="LocalGitMirror.DepsApply"/>
       <separator/>
 
+      <!-- Explicit selected-file sync -->
+      <reference ref="LocalGitMirror.FileSendSelected"/>
+      <reference ref="LocalGitMirror.FileFetch"/>
+      <separator/>
+
       <!-- Diagnostics (rarely needed) -->
       <reference ref="LocalGitMirror.Preflight"/>
       <reference ref="LocalGitMirror.DryRun"/>
       <reference ref="LocalGitMirror.DryRunPull"/>
+      <separator/>
+
+      <!-- Cross-machine clipboard buffer -->
+      <reference ref="LocalGitMirror.BufferSend"/>
+      <reference ref="LocalGitMirror.BufferPaste"/>
+      <reference ref="LocalGitMirror.BufferHistory"/>
     </group>
 
     <!-- Context menu: only essentials -->

@@ -84,16 +84,16 @@ class SyncBranchToMirrorAction : AnAction() {
 
         val result = syncRes.step
         if (!result.ok) {
-          notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: settings.repo}' ${result.message}. ${result.details}", NotificationType.ERROR)
+          notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}", NotificationType.ERROR)
           return
         }
 
         if (settings.offlineGenerateOnly) {
-          notify(project, "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: settings.repo}' at ${syncRes.dump?.absolutePath ?: result.details}", NotificationType.INFORMATION)
+          notify(project, "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}' at ${syncRes.dump?.absolutePath ?: result.details}", NotificationType.INFORMATION)
           return
         }
 
-        notify(project, "[trace=${syncRes.traceId}] Synced branch '$chosen' to Mirror repo '${syncRes.repo ?: settings.repo}'. ${syncRes.http?.body?.take(500) ?: ""}", NotificationType.INFORMATION)
+        notify(project, "[trace=${syncRes.traceId}] Synced branch '$chosen' to Mirror repo '${syncRes.repo ?: "?"}'. ${syncRes.http?.body?.take(500) ?: ""}", NotificationType.INFORMATION)
       }
     })
   }

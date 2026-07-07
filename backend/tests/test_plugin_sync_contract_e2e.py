@@ -4,12 +4,12 @@ import subprocess
 import time
 from pathlib import Path
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.core.repo_manager import RepoManager
 from app.core.bundle_crypto import encrypt_bundle_to_dump
+from app.core.repo_manager import RepoManager
 from tests import _harness
+from tests.conftest import envelope_form_post, envelope_post, parse_envelope
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -66,32 +66,32 @@ def test_plugin_sync_contract_e2e(tmp_path: Path, monkeypatch):
     head = _run_git(ws, "rev-parse", "HEAD").stdout.strip()
 
     # 3) has-commits should report HEAD as known
-    has = client.post(
-        "/api/documents/check",
-        json={"repo": repo_name, "commits": [head, "deadbeef"]},
+    has = envelope_post(
+        client, "/api/documents/check",
+        {"repo": repo_name, "commits": [head, "deadbeef"]}, "e2e-password",
     )
     assert has.status_code == 200, has.text
-    payload = has.json()
+    payload = parse_envelope(has.json(), "e2e-password")
     assert payload.get("success") is True
     assert payload.get("repo") == repo_name
     assert head in payload.get("known", [])
     assert payload.get("head") == head
 
     # 4) export-dump should produce JSON with base64 data
-    export = client.post(
-        "/api/documents/export",
-        data={"repo": repo_name, "since": ""},
+    export = envelope_form_post(
+        client, "/api/documents/export",
+        {"repo": repo_name, "since": ""}, "e2e-password",
     )
     assert export.status_code == 200, export.text
-    export_json = export.json()
-    assert export_json.get("status") == "ok"
-    assert export_json.get("repo") == repo_name
-    export_head = export_json.get("head")
+    export_inner = parse_envelope(export.json(), "e2e-password")
+    assert export_inner.get("status") == "ok"
+    assert export_inner.get("repo") == repo_name
+    export_head = export_inner.get("head")
     assert export_head and len(export_head) >= 7
-    assert export_json.get("data"), "Exported dump must contain base64 data"
+    assert export.json().get("d"), "Exported dump must contain base64 data"
 
     # Decode base64 data and verify it's encrypted (v2 format, version byte 0x01)
-    raw_data = base64.b64decode(export_json["data"])
+    raw_data = base64.b64decode(export.json()["d"])
     assert raw_data[0:1] == b"\x01", "Exported dump must be v2 format (version byte 0x01)"
 
     # 5) upload-and-apply should accept dump and succeed (idempotent apply)
@@ -101,31 +101,30 @@ def test_plugin_sync_contract_e2e(tmp_path: Path, monkeypatch):
     dump = tmp_path / f"dump_{repo_name}_20260313_1200.dmp"
     encrypt_bundle_to_dump(bundle, dump, "e2e-password")
 
-    up = client.post(
-        "/api/documents/upload",
-        data={"repo": repo_name},
+    up = envelope_form_post(
+        client, "/api/documents/upload", {"repo": repo_name}, "e2e-password",
         files={"attachment": (dump.name, dump.read_bytes(), "application/octet-stream")},
     )
     assert up.status_code == 200, up.text
-    upj = up.json()
+    upj = parse_envelope(up.json(), "e2e-password")
     assert upj.get("success") is True
     assert upj.get("repo") == repo_name
 
     # 6) apply-known should reset to existing commit
-    apply_known = client.post("/api/documents/link", json={"repo": repo_name, "commit": head})
+    apply_known = envelope_post(client, "/api/documents/link", {"repo": repo_name, "commit": head}, "e2e-password")
     assert apply_known.status_code == 200, apply_known.text
-    ak = apply_known.json()
+    ak = parse_envelope(apply_known.json(), "e2e-password")
     assert ak.get("success") is True
     assert ak.get("repo") == repo_name
     assert ak.get("commit") == head
 
     # 7) export-dump since=head should return no_content
-    export2 = client.post(
-        "/api/documents/export",
-        data={"repo": repo_name, "since": head},
+    export2 = envelope_form_post(
+        client, "/api/documents/export",
+        {"repo": repo_name, "since": head}, "e2e-password",
     )
     assert export2.status_code == 200, export2.text
-    exp2_json = export2.json()
+    exp2_json = parse_envelope(export2.json(), "e2e-password")
     assert exp2_json.get("status") == "no_content"
     assert exp2_json.get("repo") == repo_name
     assert exp2_json.get("head") == head
@@ -185,13 +184,12 @@ def test_upload_and_apply_unrelated_histories_replaces_branch(tmp_path: Path, mo
     dump = tmp_path / f"dump_{repo_name}_20260313_1300.dmp"
     encrypt_bundle_to_dump(bundle, dump, "e2e-password")
 
-    up = client.post(
-        "/api/documents/upload",
-        data={"repo": repo_name},
+    up = envelope_form_post(
+        client, "/api/documents/upload", {"repo": repo_name}, "e2e-password",
         files={"attachment": (dump.name, dump.read_bytes(), "application/octet-stream")},
     )
     assert up.status_code == 200, up.text
-    body = up.json()
+    body = parse_envelope(up.json(), "e2e-password")
     assert body.get("success") is True, body
     assert body.get("repo") == repo_name
 
@@ -235,9 +233,9 @@ def test_apply_known_rejects_dirty_workspace_and_unknown_commit(tmp_path: Path, 
 
     # Dirty workspace rejection
     (ws / "k.txt").write_text("dirty\n", encoding="utf-8")
-    dirty = client.post("/api/documents/link", json={"repo": repo_name, "commit": known})
+    dirty = envelope_post(client, "/api/documents/link", {"repo": repo_name, "commit": known}, "e2e-password")
     assert dirty.status_code == 200, dirty.text
-    dj = dirty.json()
+    dj = parse_envelope(dirty.json(), "e2e-password")
     # apply-known may succeed with reset if workspace was dirty (depends on impl)
     # or may fail with "Uncommitted changes"
     if not dj.get("success"):
@@ -245,9 +243,9 @@ def test_apply_known_rejects_dirty_workspace_and_unknown_commit(tmp_path: Path, 
 
     # Clean then unknown commit rejection
     _run_git(ws, "checkout", "--", "k.txt")
-    unknown = client.post("/api/documents/link", json={"repo": repo_name, "commit": "deadbeef"})
+    unknown = envelope_post(client, "/api/documents/link", {"repo": repo_name, "commit": "deadbeef"}, "e2e-password")
     assert unknown.status_code == 200, unknown.text
-    uj = unknown.json()
+    uj = parse_envelope(unknown.json(), "e2e-password")
     assert uj.get("success") is False
     assert "Commit not found locally" in uj.get("message", "")
 
@@ -282,10 +280,10 @@ def test_export_dump_unknown_since_falls_back_to_full_dump(tmp_path: Path, monke
     _run_git(ws, "add", "f.txt")
     _run_git(ws, "commit", "-m", "export base")
 
-    ex = client.post("/api/documents/export", data={"repo": repo_name, "since": "deadbeef"})
+    ex = envelope_form_post(client, "/api/documents/export", {"repo": repo_name, "since": "deadbeef"}, "e2e-password")
     assert ex.status_code == 200, ex.text
-    ex_json = ex.json()
-    assert ex_json.get("repo") == repo_name
-    assert ex_json.get("data"), "Export must contain base64 data"
-    raw_data = base64.b64decode(ex_json["data"])
+    ex_inner = parse_envelope(ex.json(), "e2e-password")
+    assert ex_inner.get("repo") == repo_name
+    assert ex.json().get("d"), "Export must contain base64 data"
+    raw_data = base64.b64decode(ex.json()["d"])
     assert raw_data[0:1] == b"\x01", "Exported dump must be v2 format"

@@ -78,7 +78,7 @@ def start_prod():
     stop_all()
     print(f"[>] Starting in PRODUCTION mode (Port {PROD_PORT})...")
 
-    # Run backend/run.py as a detached process
+    # Run the unified launcher (run.py prod) as a detached process
     creation_flags = 0
     if os.name == "nt":
         creation_flags = subprocess.CREATE_NEW_CONSOLE
@@ -89,7 +89,7 @@ def start_prod():
 
     with open(LOG_FILE, "a") as log:
         proc = subprocess.Popen(
-            [sys.executable, str(BACKEND_DIR / "run.py")],
+            [sys.executable, str(PROJECT_ROOT / "run.py")],
             cwd=str(PROJECT_ROOT),
             env=env,
             stdout=log,

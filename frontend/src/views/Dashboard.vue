@@ -118,22 +118,50 @@
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z" /></svg>
               {{ t('dashboard.open_btn') }}
             </button>
-            <button 
-              class="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded font-bold flex items-center gap-2 transition-all shadow-md active:scale-95" 
-              :disabled="syncing" 
-              @click="prepareForWork"
-            >
-              <svg v-if="syncing" class="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              <svg v-else xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
-              </svg>
-              <span v-if="!syncing">{{ t('dashboard.prepare_btn') }}</span>
-              <span v-else>{{ t('settings.actions.saving') }}</span>
-            </button>
           </div>
+        </div>
+      </section>
+
+      <!-- Plugin Download -->
+      <section class="plugin-download-card border-l-4 border-indigo-500">
+        <div class="pd-main">
+          <div class="pd-icon">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+              <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+              <line x1="12" y1="22.08" x2="12" y2="12"/>
+            </svg>
+          </div>
+          <div class="pd-info">
+            <h3 class="pd-title">{{ t('dashboard.plugin_download.title') }}</h3>
+            <p class="pd-desc">{{ t('dashboard.plugin_download.desc') }}</p>
+            <div class="pd-meta">
+              <template v-if="plugin.available">
+                <span class="pd-badge">v{{ plugin.version || '—' }}</span>
+                <span class="pd-meta-item">{{ formatBytes(plugin.size) }}</span>
+                <span v-if="plugin.built_at" class="pd-meta-item">{{ formatBuiltAt(plugin.built_at) }}</span>
+              </template>
+              <span v-else-if="!pluginLoading" class="pd-meta-item pd-unavailable">{{ t('dashboard.plugin_download.unavailable') }}</span>
+              <span v-else class="pd-meta-item">{{ t('common.loading') }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="pd-actions">
+          <button
+            class="pd-download-btn"
+            :disabled="!plugin.available || pluginDownloading"
+            @click="downloadPlugin"
+          >
+            <svg v-if="!pluginDownloading" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            <svg v-else class="pd-spin" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+            </svg>
+            {{ pluginDownloading ? t('dashboard.plugin_download.downloading') : t('dashboard.plugin_download.download_btn') }}
+          </button>
         </div>
       </section>
 
@@ -224,47 +252,6 @@
         </details>
       </section>
 
-      <!-- Sync Wizard -->
-      <SyncWizard />
-
-      <!-- Инструкция -->
-      <section class="sync-guide-section">
-        <details>
-          <summary>
-            <span class="summary-title">{{ t('dashboard.sync_guide') }}</span>
-            <span class="chevron">▼</span>
-          </summary>
-          <div class="guide-content">
-            <div class="steps-grid">
-              <div class="guide-step">
-                <div class="step-badge">1</div>
-                <div class="step-content">
-                  <strong>{{ t('dashboard.steps.work_pc') }}</strong>
-                  <div class="code-block">git config http.sslVerify false</div>
-                  <div class="code-block" style="margin-top:4px">git remote add home https://...</div>
-                </div>
-              </div>
-              <div class="guide-step arrow">→</div>
-              <div class="guide-step">
-                <div class="step-badge">2</div>
-                <div class="step-content">
-                  <strong>{{ t('dashboard.steps.here_home') }}</strong>
-                  <div class="step-desc">{{ t('dashboard.steps.step2_desc') }} <span class="highlight">{{ t('dashboard.prepare_btn') }}</span></div>
-                </div>
-              </div>
-              <div class="guide-step arrow">→</div>
-              <div class="guide-step">
-                <div class="step-badge">3</div>
-                <div class="step-content">
-                  <strong>{{ t('dashboard.steps.work_pc') }}</strong>
-                  <div class="code-block">git pull home main</div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </details>
-      </section>
-
       <section class="log-section">
         <SystemLog />
       </section>
@@ -278,7 +265,6 @@ import { useSystemStore } from '@/stores/system'
 import { useReposStore } from '@/stores/repos'
 import { useI18n } from 'vue-i18n'
 import SystemLog from '@/components/SystemLog.vue'
-import SyncWizard from '@/components/SyncWizard.vue'
 import axios from 'axios'
 
 const { t } = useI18n()
@@ -297,10 +283,14 @@ const metrics = ref({
 })
 
 const currentRepo = computed(() => reposStore.currentRepo || 'default')
-const syncing = ref(false)
 const copied = ref(false)
 const lastActivity = ref('Никогда')
 const statusError = ref('')
+
+// Plugin download state
+const plugin = ref({ available: false, version: '', size: 0, built_at: '' })
+const pluginLoading = ref(false)
+const pluginDownloading = ref(false)
 
 // Connection info state
 const connInfo = ref({ mirror_url: '', api_key: '', sync_password: '', default_repo: '', config_line: '' })
@@ -320,6 +310,7 @@ onMounted(async () => {
   await fetchStatus()
   await fetchMetrics()
   await fetchConnectionInfo()
+  await fetchPluginInfo()
   setInterval(fetchMetrics, 30000)
 })
 
@@ -373,24 +364,57 @@ async function openExplorer() {
   }
 }
 
-async function prepareForWork() {
-  if (syncing.value) return
-  syncing.value = true
+async function fetchPluginInfo() {
+  pluginLoading.value = true
   try {
-    const minTime = new Promise(resolve => setTimeout(resolve, 800))
-    const request = axios.post('/api/git/save-and-sync')
-    
-    const [_, response] = await Promise.all([minTime, request])
-    if (response.data.success) {
-      systemStore.addNotification(t('settings.notifications.save_success'), 'success')
-      await fetchStatus()
-    } else {
-      systemStore.addNotification(t('settings.notifications.save_error') + ': ' + response.data.message, 'error')
-    }
+    const response = await axios.get('/api/plugin/info')
+    plugin.value = { available: true, ...response.data }
   } catch (error) {
-    systemStore.addNotification(t('settings.notifications.save_error'), 'error')
+    // 404 = plugin .zip not built yet; treat as "unavailable", not an error.
+    plugin.value = { available: false, version: '', size: 0, built_at: '' }
   } finally {
-    syncing.value = false
+    pluginLoading.value = false
+  }
+}
+
+async function downloadPlugin() {
+  if (!plugin.value.available || pluginDownloading.value) return
+  pluginDownloading.value = true
+  try {
+    const response = await axios.get('/api/plugin/latest', { responseType: 'blob' })
+    const filename = plugin.value.filename || `localgitmirror-plugin-${plugin.value.version || 'latest'}.zip`
+    const url = window.URL.createObjectURL(new Blob([response.data]))
+    const link = document.createElement('a')
+    link.href = url
+    link.setAttribute('download', filename)
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(url)
+  } catch (error) {
+    systemStore.addNotification(t('dashboard.plugin_download.download_error'), 'error')
+  } finally {
+    pluginDownloading.value = false
+  }
+}
+
+function formatBytes(bytes) {
+  if (!bytes || bytes <= 0) return '—'
+  const units = ['Б', 'КБ', 'МБ', 'ГБ']
+  let i = 0
+  let val = bytes
+  while (val >= 1024 && i < units.length - 1) {
+    val /= 1024
+    i++
+  }
+  return `${val.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+function formatBuiltAt(iso) {
+  try {
+    return new Date(iso).toLocaleString('ru-RU')
+  } catch {
+    return iso
   }
 }
 
@@ -475,23 +499,63 @@ async function panicMode() {
 .health-dot { position: absolute; bottom: -2px; right: -2px; width: 12px; height: 12px; border-radius: 50%; background: var(--success); border: 2px solid var(--bg-card); }
 .git-url-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
 .git-url-input { background: rgba(0,0,0,0.2); border: 1px solid var(--border-color); border-radius: 4px; color: var(--accent); font-family: monospace; font-size: 12px; padding: 4px 8px; width: 350px; outline: none; }
-.sync-guide-section { margin-bottom: 30px; border: 1px solid var(--border-color); border-radius: 6px; background: var(--bg-sidebar); overflow: hidden; }
 details summary { padding: 15px 20px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; font-weight: 500; color: var(--text-secondary); }
 .summary-title { font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
-.guide-content { padding: 20px; background: var(--bg-card); }
-.steps-grid { display: flex; align-items: center; justify-content: space-between; }
-.guide-step { display: flex; align-items: flex-start; gap: 12px; flex: 1; }
-.guide-step.arrow { flex: 0; padding: 0 20px; color: var(--text-secondary); font-size: 20px; }
-.step-badge { background: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-secondary); width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; flex-shrink: 0; }
-.code-block { background: #111; padding: 4px 8px; border-radius: 4px; font-family: monospace; font-size: 12px; color: var(--success); display: inline-block; }
-.highlight { color: var(--accent); font-weight: 500; }
+
+/* Plugin Download Card */
+.plugin-download-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  margin-bottom: 30px;
+  padding: 20px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.pd-main { display: flex; align-items: center; gap: 16px; flex: 1; min-width: 260px; }
+.pd-icon {
+  width: 48px; height: 48px; flex-shrink: 0;
+  border-radius: 10px;
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  color: #fff;
+  display: flex; align-items: center; justify-content: center;
+}
+.pd-title { margin: 0; font-size: 16px; font-weight: 600; color: var(--text-bright); }
+.pd-desc { margin: 4px 0 8px; font-size: 13px; color: var(--text-secondary); }
+.pd-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pd-badge {
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: monospace;
+}
+.pd-meta-item { font-size: 12px; color: var(--text-secondary); }
+.pd-unavailable { color: var(--warning); }
+.pd-download-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--accent); color: #fff;
+  border: none; border-radius: 6px;
+  padding: 10px 20px;
+  font-size: 14px; font-weight: 600;
+  cursor: pointer;
+  transition: filter 0.2s, opacity 0.2s;
+}
+.pd-download-btn:hover:not(:disabled) { filter: brightness(1.15); }
+.pd-download-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+@keyframes pd-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+.pd-spin { animation: pd-spin 1s linear infinite; }
 
 @media (max-width: 1020px) {
   .metrics-grid { grid-template-columns: 1fr; }
   .card-header { flex-direction: column; align-items: flex-start; gap: 16px; }
   .git-url-input { width: min(520px, 100%); }
-  .steps-grid { flex-direction: column; align-items: stretch; gap: 10px; }
-  .guide-step.arrow { display: none; }
 }
 
 @media (max-width: 640px) {

@@ -3,6 +3,7 @@ package localgitmirror.idea.actions
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -11,6 +12,18 @@ import kotlin.test.assertTrue
  * No git processes, no IntelliJ dependencies.
  */
 class PullLogicTest {
+
+  @Test
+  fun `looksLikeGitBundle detects raw v2 and v3 bundle headers`() {
+    assertTrue(PullLogic.looksLikeGitBundle("# v2 git bundle\n".toByteArray(Charsets.US_ASCII)))
+    assertTrue(PullLogic.looksLikeGitBundle("# v3 git bundle\n".toByteArray(Charsets.US_ASCII)))
+  }
+
+  @Test
+  fun `looksLikeGitBundle rejects encrypted dumps and short data`() {
+    assertFalse(PullLogic.looksLikeGitBundle(byteArrayOf(0x01, 0x02, 0x03)))
+    assertFalse(PullLogic.looksLikeGitBundle("not a git bundle".toByteArray(Charsets.US_ASCII)))
+  }
 
   // ──────────────────────────────────────────────────────────────────────────
   // applyBranch — branch already exists locally

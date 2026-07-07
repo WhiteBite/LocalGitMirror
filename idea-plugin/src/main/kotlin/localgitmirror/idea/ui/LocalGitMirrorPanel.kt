@@ -27,12 +27,13 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal val status = JBLabel("")
   internal val mirrorBadge = BadgeLabel("Mirror: ?")
   internal val lastSyncBadge = BadgeLabel("Last sync: \u2014")
-  internal val versionBadge = BadgeLabel("").apply {
+  // Plugin version string, surfaced in the gear menu / tooltip instead of a
+  // competing status badge (keeps the header row compact in a narrow tool window).
+  internal val pluginVersionText: String = run {
     // Read plugin version at runtime from the platform's plugin descriptor
     val pluginId = com.intellij.openapi.extensions.PluginId.getId("localgitmirror.idea.orchestrator")
     val descriptor = com.intellij.ide.plugins.PluginManagerCore.getPlugin(pluginId)
-    text = if (descriptor != null) "v${descriptor.version}" else "v?"
-    status = BadgeLabel.Status.NEUTRAL
+    if (descriptor != null) "v${descriptor.version}" else "v?"
   }
 
   // Progress bar + stage label shown during sync
@@ -192,6 +193,13 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val settingsState = service<MirrorSettingsService>().state
     moreMenu.removeAll()
 
+    // Version header (disabled) — replaces the old always-visible version badge.
+    val versionItem = JMenuItem("LocalGitMirror $pluginVersionText")
+    versionItem.isEnabled = false
+    moreMenu.add(versionItem)
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.downloadPlugin"), AllIcons.Actions.Download) { downloadLatestPlugin() })
+    moreMenu.addSeparator()
+
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.preflight"), AllIcons.General.InspectionsOK) { runPreflight() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.dryRunSend"), AllIcons.Actions.Preview) { runDryRun() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.dryRunPull"), AllIcons.Actions.Preview) { runPullDryRun() })
@@ -213,6 +221,17 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("deps.menu.apply"), AllIcons.Actions.OpenNewTab) {
       runRegisteredAction("LocalGitMirror.DepsApply")
+    })
+    moreMenu.addSeparator()
+    // Cross-machine clipboard buffer
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("buffer.menu.send"), AllIcons.Actions.Upload) {
+      runRegisteredAction("LocalGitMirror.BufferSend")
+    })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("buffer.menu.paste"), AllIcons.Actions.Download) {
+      runRegisteredAction("LocalGitMirror.BufferPaste")
+    })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("buffer.menu.history"), AllIcons.Vcs.History) {
+      runRegisteredAction("LocalGitMirror.BufferHistory")
     })
     moreMenu.addSeparator()
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.copyConfig"), AllIcons.Actions.Copy) { copyConfigLine() })
@@ -269,8 +288,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
     badgesPanel.add(mirrorBadge)
     badgesPanel.add(lastSyncBadge)
-    badgesPanel.add(versionBadge)
-    headerRow.add(badgesPanel, BorderLayout.CENTER)
+    badgesPanel.alignmentX = LEFT_ALIGNMENT
 
     autoPullItem.addActionListener { settingsState.autoCheckPullOnStartup = autoPullItem.isSelected }
     moreMenu.addPopupMenuListener(object : PopupMenuListener {
@@ -288,10 +306,13 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     gearBtn.isFocusPainted = false
     gearBtn.isBorderPainted = false
     gearBtn.isContentAreaFilled = false
-    gearBtn.toolTipText = LocalGitMirrorBundle.message("toolwindow.menu.settings")
+    gearBtn.toolTipText = "LocalGitMirror $pluginVersionText \u00b7 ${LocalGitMirrorBundle.message("toolwindow.menu.settings")}"
     gearBtn.addActionListener { moreMenu.show(gearBtn, 0, gearBtn.height) }
     headerRow.add(gearBtn, BorderLayout.EAST)
     topContainer.add(headerRow)
+    // Badges live on their own full-width row so the WrapLayout can wrap them
+    // onto a second line in a narrow tool window instead of truncating ("…").
+    topContainer.add(badgesPanel)
 
     // ── Status line ──
     status.font = JBUI.Fonts.smallFont()
@@ -398,7 +419,15 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       LocalGitMirrorBundle.message("panel.status.clean")
     else
       LocalGitMirrorBundle.message("panel.status.dirty")
-    status.text = "$branch · $cleanText"
+
+    // Show the RESOLVED Mirror repo (single source of truth) so it's always
+    // visible where a sync will go — and from which source it was derived.
+    val repoRes = try { syncFacade.resolveRepo(dir, s) } catch (_: Throwable) { null }
+    val repoName = repoRes?.sanitized?.takeIf { it.isNotBlank() } ?: "?"
+    status.text = "$repoName · $branch · $cleanText"
+    status.toolTipText = repoRes?.let {
+      "Mirror repo '${it.sanitized}' · source: ${it.source.name.lowercase().replace('_', ' ')}"
+    }
 
     rebuildActions()
     refreshBranchCombo()
