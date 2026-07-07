@@ -10,18 +10,78 @@ import java.util.UUID
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import localgitmirror.idea.net.HttpClient
+import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.workkit.EnvelopeCrypto
+import localgitmirror.idea.workkit.HybridCrypto
+import com.intellij.openapi.components.service
 
 object MirrorApi {
   data class HttpResult(val code: Int, val body: String)
+
+  // ─────────────────────── protocol v3 (hybrid ECIES) ───────────────────────
+  //
+  // When a server public key is pinned (MirrorSettingsService.serverPubKeyB64),
+  // every call uses an ephemeral X25519 key to seal the envelope (and, on
+  // upload, the bundle) to that key — no SYNC_PASSWORD is needed and recorded
+  // traffic stays secret even if this machine is later fully read. When no key
+  // is pinned, everything transparently falls back to the legacy password
+  // envelope, so old setups keep working unchanged.
+
+  /** Pinned server public key (32 raw bytes), or null => legacy password mode. */
+  private fun pinnedServerPub(): ByteArray? = try {
+    val b64 = service<MirrorSettingsService>().state.serverPubKeyB64
+    if (b64.isBlank()) null else HybridCrypto.decodeServerPub(b64)
+  } catch (_: Throwable) {
+    null
+  }
+
+  /** True when a server public key is pinned — i.e. v3 mode is active. */
+  fun isV3Pinned(): Boolean = pinnedServerPub() != null
+
+  /** Per-call codec: hybrid session when pinned, else password envelope. */
+  private class Codec(val session: HybridCrypto.Session?, val password: String) {
+    val epkB64: String? get() = session?.epkB64
+
+    fun sealEnvelope(obj: JsonObject): String =
+      session?.sealEnvelope(obj.toString()) ?: EnvelopeCrypto.encryptJson(obj, password)
+
+    fun openEnvelopeStr(e: String): String =
+      session?.openEnvelope(e) ?: EnvelopeCrypto.decrypt(e, password)
+
+    fun openEnvelopeJson(e: String): JsonObject =
+      session?.let { Json.parseToJsonElement(it.openEnvelope(e)).jsonObject }
+        ?: EnvelopeCrypto.decryptJson(e, password)
+
+    /**
+     * Turn the response "d" field into the bytes to write to disk.
+     * Hybrid: open the sealed bundle → raw git bundle (plaintext). Password:
+     * pass the encrypted dump through unchanged (downstream decrypts it).
+     */
+    fun bundleToDisk(rawD: ByteArray): ByteArray = session?.openBundle(rawD) ?: rawD
+
+    fun wipe() = session?.wipe()
+  }
+
+  private fun beginCall(password: String): Codec {
+    val pub = pinnedServerPub()
+    return Codec(if (pub != null) HybridCrypto.Session.create(pub) else null, password)
+  }
+
+  /** JSON request body: {"epk":"..","e":".."} in hybrid mode, else {"e":".."}. */
+  private fun envelopeBody(codec: Codec, e: String): String {
+    val epk = codec.epkB64
+    return if (epk != null) "{\"epk\":\"$epk\",\"e\":\"$e\"}" else "{\"e\":\"$e\"}"
+  }
 
   data class CapabilitiesResult(
     val code: Int,
@@ -30,7 +90,10 @@ object MirrorApi {
     val protocolVersion: Int?,
     val preflight: Boolean,
     val dryRun: Boolean,
-    val passwordProbe: Boolean
+    val passwordProbe: Boolean,
+    // v3: server has a hybrid X25519 key — clients that have pinned it can skip
+    // the password probe entirely.
+    val v3Key: Boolean = false,
   )
 
   data class ProbeResult(
@@ -87,6 +150,12 @@ object MirrorApi {
       val code = conn.responseCode
       val body = HttpClient.readBody(conn)
 
+      // On a healthy connection, pin the server's v3 public key if not yet
+      // pinned (TOFU). This is what activates hybrid mode for subsequent sync.
+      if (code in 200..299) {
+        runCatching { ensureServerKeyPinned(baseUrl, apiKey, insecureTls) }
+      }
+
       fun intField(name: String): Int? {
         val m = Regex("\"$name\"\\s*:\\s*(\\d+)", RegexOption.IGNORE_CASE).find(body)
         return m?.groupValues?.getOrNull(1)?.toIntOrNull()
@@ -104,7 +173,8 @@ object MirrorApi {
         protocolVersion = intField("protocolVersion"),
         preflight = boolField("preflight"),
         dryRun = boolField("dryRun"),
-        passwordProbe = boolField("passwordProbe")
+        passwordProbe = boolField("passwordProbe"),
+        v3Key = boolField("v3"),
       )
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)
@@ -138,6 +208,55 @@ object MirrorApi {
     }
   }
 
+  data class PubKeyResult(val code: Int, val pubB64: String?, val fp: String?, val message: String)
+
+  /** Fetch the server's long-term X25519 public key (protocol v3, GET /api/auth/pubkey). */
+  fun fetchServerPubKey(baseUrl: String, apiKey: String, insecureTls: Boolean): PubKeyResult {
+    return try {
+      val url = URL("${baseUrl.trimEnd('/')}/api/auth/pubkey")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "GET"
+      conn.connectTimeout = 15_000
+      conn.readTimeout = 15_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+      if (code !in 200..299) return PubKeyResult(code, null, null, body.take(300))
+      val obj = Json.parseToJsonElement(body).jsonObject
+      val pub = obj["pub"]?.jsonPrimitive?.contentOrNull
+      val fp = obj["fp"]?.jsonPrimitive?.contentOrNull
+      PubKeyResult(code, pub, fp, "OK")
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      PubKeyResult(0, null, null, "${e.type}: ${e.message}")
+    }
+  }
+
+  /**
+   * Trust-on-first-use pinning: when no server key is pinned yet, fetch and
+   * store it, switching all subsequent sync to protocol v3 (hybrid). Returns
+   * the pinned fingerprint so the caller can surface it for out-of-band
+   * verification against the value printed in the server console. Returns null
+   * when a key is already pinned or on any failure (stays on password mode).
+   *
+   * SECURITY: this is TOFU (like SSH known_hosts). An active MITM present on the
+   * very first connect could pin its own key; verify the fingerprint once.
+   */
+  fun ensureServerKeyPinned(baseUrl: String, apiKey: String, insecureTls: Boolean): String? {
+    return try {
+      val state = service<MirrorSettingsService>().state
+      if (state.serverPubKeyB64.isNotBlank()) return null
+      val res = fetchServerPubKey(baseUrl, apiKey, insecureTls)
+      val pub = res.pubB64 ?: return null
+      HybridCrypto.decodeServerPub(pub) // validate 32-byte key before trusting
+      state.serverPubKeyB64 = pub
+      state.serverPubKeyFp = res.fp ?: ""
+      res.fp
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
   data class RefInfo(
     val sha: String,
     val updated: String,   // ISO-8601 committer date, "" if old server
@@ -164,9 +283,10 @@ object MirrorApi {
         conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
 
-      val e = EnvelopeCrypto.encryptJson(buildJsonObject { put("repo", repo) }, syncPassword)
+      val codec = beginCall(syncPassword)
+      val e = codec.sealEnvelope(buildJsonObject { put("repo", repo) })
       conn.outputStream.use { os ->
-        os.write("{\"e\":\"$e\"}".toByteArray(StandardCharsets.UTF_8))
+        os.write(envelopeBody(codec, e).toByteArray(StandardCharsets.UTF_8))
       }
 
       val code = conn.responseCode
@@ -176,7 +296,7 @@ object MirrorApi {
         val outer = Json.parseToJsonElement(body).jsonObject
         val eField = outer["e"]?.jsonPrimitive?.contentOrNull
           ?: return RefsResult(code, "Missing envelope in response", null, null)
-        val inner = EnvelopeCrypto.decryptJson(eField, syncPassword)
+        val inner = codec.openEnvelopeJson(eField)
 
         val head = inner["head"]?.jsonPrimitive?.contentOrNull
         val refsMap = mutableMapOf<String, RefInfo>()
@@ -241,6 +361,18 @@ object MirrorApi {
           writer.flush()
         }
 
+        val pub = pinnedServerPub()
+        // Hybrid dump layout: 0x03 || ephemeralPub[32] || sealed(nonce+ct).
+        // Peek the 33-byte header to decide mode and recover the bundle ephemeral.
+        val header = dumpFile.inputStream().use { ins ->
+          val b = ByteArray(33); val r = ins.read(b); if (r >= 33) b else ByteArray(0)
+        }
+        val hybrid = pub != null && header.size == 33 && header[0] == 0x03.toByte()
+        val bundleEpk =
+          if (hybrid) JavaBase64.getUrlEncoder().withoutPadding().encodeToString(header.copyOfRange(1, 33))
+          else null
+        val codec = Codec(if (hybrid) HybridCrypto.Session.create(pub!!) else null, syncPassword)
+
         // Envelope the repo name + local branches — hides them from DLP
         val envPayload = buildJsonObject {
           put("repo", repo)
@@ -248,19 +380,39 @@ object MirrorApi {
             put("local_branches", buildJsonArray { localBranches.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
           }
         }
-        val e = EnvelopeCrypto.encryptJson(envPayload, syncPassword)
+        val e = codec.sealEnvelope(envPayload)
         partHeader("e")
         writer.write(e)
         writer.write("\r\n")
         writer.flush()
 
+        // v3: envelope ephemeral ("k") and bundle ephemeral ("kb").
+        codec.epkB64?.let { epk ->
+          partHeader("k")
+          writer.write(epk)
+          writer.write("\r\n")
+          writer.flush()
+        }
+        bundleEpk?.let { kb ->
+          partHeader("kb")
+          writer.write(kb)
+          writer.write("\r\n")
+          writer.flush()
+        }
+
         partHeader("attachment", "document.bin", "application/octet-stream")
-        dumpFile.inputStream().use { it.copyTo(os) }
+        if (hybrid) {
+          // Stream only the sealed bytes, skipping the 33-byte header.
+          dumpFile.inputStream().use { it.skip(33); it.copyTo(os) }
+        } else {
+          dumpFile.inputStream().use { it.copyTo(os) }
+        }
         writer.write("\r\n")
         writer.flush()
 
         writer.write("--$boundary--\r\n")
         writer.flush()
+        codec.wipe()
       }
 
       val code = conn.responseCode
@@ -339,9 +491,10 @@ object MirrorApi {
         put("repo", repo)
         put("commits", buildJsonArray { commits.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
       }
-      val e = EnvelopeCrypto.encryptJson(params, syncPassword)
+      val codec = beginCall(syncPassword)
+      val e = codec.sealEnvelope(params)
       conn.outputStream.use { os ->
-        os.write("{\"e\":\"$e\"}".toByteArray(StandardCharsets.UTF_8))
+        os.write(envelopeBody(codec, e).toByteArray(StandardCharsets.UTF_8))
       }
 
       val code = conn.responseCode
@@ -349,7 +502,7 @@ object MirrorApi {
       if (code in 200..299) {
         val outer = Json.parseToJsonElement(body).jsonObject
         val eField = outer["e"]?.jsonPrimitive?.contentOrNull ?: return HttpResult(code, body)
-        val inner = EnvelopeCrypto.decrypt(eField, syncPassword)
+        val inner = codec.openEnvelopeStr(eField)
         HttpResult(code, inner)
       } else {
         HttpResult(code, body)
@@ -394,9 +547,10 @@ object MirrorApi {
           put("local_branches", buildJsonArray { localBranches.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } })
         }
       }
-      val e = EnvelopeCrypto.encryptJson(params, syncPassword)
+      val codec = beginCall(syncPassword)
+      val e = codec.sealEnvelope(params)
       conn.outputStream.use { os ->
-        os.write("{\"e\":\"$e\"}".toByteArray(StandardCharsets.UTF_8))
+        os.write(envelopeBody(codec, e).toByteArray(StandardCharsets.UTF_8))
       }
 
       val code = conn.responseCode
@@ -404,7 +558,7 @@ object MirrorApi {
       if (code in 200..299) {
         val outer = Json.parseToJsonElement(body).jsonObject
         val eField = outer["e"]?.jsonPrimitive?.contentOrNull ?: return HttpResult(code, body)
-        val inner = EnvelopeCrypto.decrypt(eField, syncPassword)
+        val inner = codec.openEnvelopeStr(eField)
         HttpResult(code, inner)
       } else {
         HttpResult(code, body)
@@ -450,7 +604,8 @@ object MirrorApi {
         if (!branch.isNullOrBlank()) put("branch", branch)
         if (haves.isNotEmpty()) put("haves", haves.joinToString(","))
       }
-      val e = EnvelopeCrypto.encryptJson(params, syncPassword)
+      val codec = beginCall(syncPassword)
+      val e = codec.sealEnvelope(params)
 
       conn.outputStream.use { os ->
         val writer = OutputStreamWriter(os, StandardCharsets.UTF_8)
@@ -458,6 +613,12 @@ object MirrorApi {
         writer.write("Content-Disposition: form-data; name=\"e\"\r\n\r\n")
         writer.write(e)
         writer.write("\r\n")
+        codec.epkB64?.let { epk ->
+          writer.write("--$boundary\r\n")
+          writer.write("Content-Disposition: form-data; name=\"k\"\r\n\r\n")
+          writer.write(epk)
+          writer.write("\r\n")
+        }
         writer.write("--$boundary--\r\n")
         writer.flush()
       }
@@ -474,7 +635,7 @@ object MirrorApi {
 
       val eField = outer["e"]?.jsonPrimitive?.contentOrNull
         ?: return DownloadResult(500, null, "Missing envelope in response")
-      val inner = EnvelopeCrypto.decryptJson(eField, syncPassword)
+      val inner = codec.openEnvelopeJson(eField)
 
       val status = inner["status"]?.jsonPrimitive?.contentOrNull ?: ""
       val head = inner["head"]?.jsonPrimitive?.contentOrNull
@@ -487,7 +648,10 @@ object MirrorApi {
       val b64data = outer["d"]?.jsonPrimitive?.contentOrNull
         ?: return DownloadResult(500, null, "Missing bundle data in response", head = head, repo = hdrRepo)
 
-      outFile.writeBytes(JavaBase64.getDecoder().decode(b64data))
+      // Hybrid: openBundle yields the raw git bundle (plaintext). Password mode:
+      // bundleToDisk passes the encrypted dump through; BundleImporter decrypts.
+      outFile.writeBytes(codec.bundleToDisk(JavaBase64.getDecoder().decode(b64data)))
+      codec.wipe()
       DownloadResult(code, outFile, "OK", head = head, repo = hdrRepo)
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)
@@ -527,9 +691,10 @@ object MirrorApi {
         put("repo", repo)
         if (!since.isNullOrBlank()) put("since", since)
       }
-      val e = EnvelopeCrypto.encryptJson(params, syncPassword)
+      val codec = beginCall(syncPassword)
+      val e = codec.sealEnvelope(params)
       conn.outputStream.use { os ->
-        os.write("{\"e\":\"$e\"}".toByteArray(StandardCharsets.UTF_8))
+        os.write(envelopeBody(codec, e).toByteArray(StandardCharsets.UTF_8))
       }
 
       val code = conn.responseCode
@@ -542,7 +707,7 @@ object MirrorApi {
       val outer = Json.parseToJsonElement(body).jsonObject
       val eField = outer["e"]?.jsonPrimitive?.contentOrNull
         ?: return PreviewPullResult(code, null, false, "error", "Missing envelope")
-      val inner = EnvelopeCrypto.decryptJson(eField, syncPassword)
+      val inner = codec.openEnvelopeJson(eField)
 
       val remoteHead = inner["remoteHead"]?.jsonPrimitive?.contentOrNull
       val hasUpdates = inner["hasUpdates"]?.jsonPrimitive?.booleanOrNull ?: false
@@ -589,9 +754,10 @@ object MirrorApi {
         if (!since.isNullOrBlank()) put("since", since)
         if (!branch.isNullOrBlank()) put("branch", branch)
       }
-      val e = EnvelopeCrypto.encryptJson(params, syncPassword)
+      val codec = beginCall(syncPassword)
+      val e = codec.sealEnvelope(params)
       conn.outputStream.use { os ->
-        os.write("{\"e\":\"$e\"}".toByteArray(StandardCharsets.UTF_8))
+        os.write(envelopeBody(codec, e).toByteArray(StandardCharsets.UTF_8))
       }
 
       val code = conn.responseCode
@@ -607,7 +773,7 @@ object MirrorApi {
 
       // Decrypt to plain JSON string, then parse commits array using regex
       // (avoids complex JsonArray navigation — same approach as the original code)
-      val decryptedBody = EnvelopeCrypto.decrypt(eField, syncPassword)
+      val decryptedBody = codec.openEnvelopeStr(eField)
       val commits = mutableListOf<CommitInfo>()
       val commitRegex = Regex(""""hash"\s*:\s*"([^"]+)"\s*,\s*"message"\s*:\s*"([^"]*)"""")
       commitRegex.findAll(decryptedBody).forEach {
@@ -631,6 +797,9 @@ object MirrorApi {
   data class DepsItem(val id: String, val size: Long, val mtime: Long)
   data class DepsListResult(val code: Int, val items: List<DepsItem>, val message: String)
   data class DepsUploadResult(val code: Int, val id: String?, val size: Long, val message: String)
+  data class FileSyncItem(val id: String, val path: String, val size: Long, val plainSize: Long, val mtime: Long)
+  data class FileSyncListResult(val code: Int, val items: List<FileSyncItem>, val message: String)
+  data class FileSyncUploadResult(val code: Int, val id: String?, val path: String?, val size: Long, val message: String)
 
   private fun parseDepsList(body: String): List<DepsItem> {
     val items = mutableListOf<DepsItem>()
@@ -676,6 +845,61 @@ object MirrorApi {
         writer.write("Content-Type: application/octet-stream\r\n\r\n")
         writer.flush()
         os.write(fileBytes); os.flush()
+        writer.write("\r\n--$boundary--\r\n"); writer.flush()
+      }
+      HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  private fun multipartUploadFile(
+    baseUrl: String,
+    apiKey: String,
+    insecureTls: Boolean,
+    path: String,
+    fields: Map<String, String>,
+    fileFieldName: String,
+    fileName: String,
+    file: File,
+    onProgress: ((sent: Long, total: Long) -> Unit)? = null
+  ): HttpResult {
+    return try {
+      val boundary = "----FormBoundary${UUID.randomUUID()}"
+      val url = URL("${baseUrl.trimEnd('/')}$path")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "POST"
+      conn.doOutput = true
+      conn.connectTimeout = 60_000
+      conn.readTimeout = 600_000
+      conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+
+      conn.outputStream.use { os ->
+        val writer = OutputStreamWriter(os, StandardCharsets.UTF_8)
+        for ((name, value) in fields) {
+          writer.write("--$boundary\r\n")
+          writer.write("Content-Disposition: form-data; name=\"$name\"\r\n\r\n")
+          writer.write(value); writer.write("\r\n"); writer.flush()
+        }
+        writer.write("--$boundary\r\n")
+        writer.write("Content-Disposition: form-data; name=\"$fileFieldName\"; filename=\"$fileName\"\r\n")
+        writer.write("Content-Type: application/octet-stream\r\n\r\n")
+        writer.flush()
+        file.inputStream().use { input ->
+          val buf = ByteArray(1024 * 1024)
+          val total = file.length()
+          var sent = 0L
+          while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            os.write(buf, 0, n)
+            sent += n
+            onProgress?.invoke(sent, total)
+          }
+        }
+        os.flush()
         writer.write("\r\n--$boundary--\r\n"); writer.flush()
       }
       HttpResult(conn.responseCode, HttpClient.readBody(conn))
@@ -808,6 +1032,113 @@ object MirrorApi {
       val url = URL(
         "${baseUrl.trimEnd('/')}/api/deps/ack?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}" +
           "&id=${java.net.URLEncoder.encode(id, "UTF-8")}"
+      )
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "DELETE"
+      conn.connectTimeout = 30_000
+      conn.readTimeout = 30_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // /api/file-sync/* — repo file postbox (opaque encrypted containers)
+  // ───────────────────────────────────────────────────────────────────────
+
+  fun fileSyncUpload(
+    baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,
+    relativePath: String, plainSize: Long, encryptedFile: File,
+    onProgress: ((sent: Long, total: Long) -> Unit)? = null
+  ): FileSyncUploadResult {
+    val res = multipartUploadFile(
+      baseUrl, apiKey, insecureTls, "/api/file-sync/upload",
+      fields = mapOf("repo" to repo, "path" to relativePath, "plain_size" to plainSize.toString()),
+      fileFieldName = "attachment",
+      fileName = "file.lgm",
+      file = encryptedFile,
+      onProgress = onProgress
+    )
+    if (res.code !in 200..299) return FileSyncUploadResult(res.code, null, null, 0, res.body.take(500))
+    val id = Regex(""""id"\s*:\s*"([^"]+)"""").find(res.body)?.groupValues?.getOrNull(1)
+    val pathValue = Regex(""""path"\s*:\s*"([^"]+)"""").find(res.body)?.groupValues?.getOrNull(1)
+    val size = Regex(""""size"\s*:\s*(\d+)""").find(res.body)?.groupValues?.getOrNull(1)?.toLongOrNull() ?: 0
+    return FileSyncUploadResult(res.code, id, pathValue, size, "OK")
+  }
+
+  fun fileSyncList(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): FileSyncListResult {
+    return try {
+      val url = URL("${baseUrl.trimEnd('/')}/api/file-sync/list?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "GET"
+      conn.connectTimeout = 30_000
+      conn.readTimeout = 30_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+      if (code !in 200..299) return FileSyncListResult(code, emptyList(), body.take(500))
+      val root = Json.parseToJsonElement(body).jsonObject
+      val items = root["items"]?.jsonArray?.mapNotNull { el ->
+        val o = el.jsonObject
+        val id = o["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+        val p = o["path"]?.jsonPrimitive?.contentOrNull ?: ""
+        val size = o["size"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+        val plain = o["plain_size"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+        val mtime = o["mtime"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+        FileSyncItem(id, p, size, plain, mtime)
+      } ?: emptyList()
+      FileSyncListResult(code, items, "OK")
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      FileSyncListResult(0, emptyList(), "${e.type}: ${e.message}")
+    }
+  }
+
+  fun fileSyncDownload(
+    baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,
+    id: String, outFile: File, onProgress: ((read: Long, total: Long) -> Unit)? = null
+  ): DownloadResult {
+    return try {
+      val url = URL(
+        "${baseUrl.trimEnd('/')}/api/file-sync/download?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}" +
+          "&id=${java.net.URLEncoder.encode(id, "UTF-8")}" 
+      )
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "GET"
+      conn.connectTimeout = 60_000
+      conn.readTimeout = 600_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      val code = conn.responseCode
+      if (code !in 200..299) return DownloadResult(code, null, HttpClient.readBody(conn).take(500))
+      val total = conn.contentLengthLong
+      conn.inputStream.use { input ->
+        outFile.outputStream().use { out ->
+          val buf = ByteArray(1024 * 1024)
+          var read = 0L
+          while (true) {
+            val n = input.read(buf)
+            if (n < 0) break
+            out.write(buf, 0, n)
+            read += n
+            onProgress?.invoke(read, total)
+          }
+        }
+      }
+      DownloadResult(code, outFile, "OK")
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      DownloadResult(0, null, "${e.type}: ${e.message}")
+    }
+  }
+
+  fun fileSyncAck(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, id: String): HttpResult {
+    return try {
+      val url = URL(
+        "${baseUrl.trimEnd('/')}/api/file-sync/ack?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}" +
+          "&id=${java.net.URLEncoder.encode(id, "UTF-8")}" 
       )
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "DELETE"

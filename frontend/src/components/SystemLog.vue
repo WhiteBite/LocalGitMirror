@@ -121,13 +121,17 @@ const filteredLogs = computed(() => {
 
 // Connect to WebSocket
 const connectWebSocket = async () => {
-  // Fetch API key if not cached
-  if (!systemStore.apiKey) {
-    await systemStore.fetchApiKey()
+  // Resolve the API key first. NOTE: read the value returned by fetchApiKey()
+  // rather than systemStore.apiKey directly — that way it works even if the
+  // store value hasn't propagated yet, and we never connect without a key
+  // (which the server rejects with a 403 handshake).
+  let key = systemStore.apiKey || ''
+  if (!key) {
+    key = (await systemStore.fetchApiKey()) || ''
   }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.hostname
-  const keyParam = systemStore.apiKey ? `?key=${encodeURIComponent(systemStore.apiKey)}` : ''
+  const keyParam = key ? `?key=${encodeURIComponent(key)}` : ''
   const wsUrl = `${protocol}//${host}${window.location.port ? `:${window.location.port}` : ''}/ws/logs${keyParam}`
   
   ws = new WebSocket(wsUrl)

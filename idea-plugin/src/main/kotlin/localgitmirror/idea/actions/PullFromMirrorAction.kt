@@ -474,9 +474,14 @@ class PullFromMirrorAction(private val preselectedBranch: String? = null) : AnAc
     targetBranch: String
   ): Boolean {
     return try {
-      val decryptedBytes = BundleCrypto.decryptDumpBytes(dumpFile.readBytes(), SecretsStore.syncPassword)
+      val rawBytes = dumpFile.readBytes()
+      val bundleBytes = if (PullLogic.looksLikeGitBundle(rawBytes)) {
+        rawBytes
+      } else {
+        BundleCrypto.decryptDumpBytes(rawBytes, SecretsStore.syncPassword)
+      }
       var fetchError: String? = null
-      fetchFromBundle(dir, decryptedBytes) { err -> fetchError = err }
+      fetchFromBundle(dir, bundleBytes) { err -> fetchError = err }
       if (fetchError != null) {
         notify(project, "[trace=$traceId] $fetchError", NotificationType.ERROR)
         historyService.add("Pull from Mirror", false, "trace=$traceId $fetchError")

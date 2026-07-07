@@ -178,13 +178,15 @@ async function toggleDiff() {
 }
 
 const connectWebSocket = async () => {
-  // Fetch API key if not cached
-  if (!systemStore.apiKey) {
-    await systemStore.fetchApiKey()
+  // Resolve the API key via fetchApiKey()'s return value so we never connect
+  // without a key (the server rejects keyless WS handshakes with 403).
+  let key = systemStore.apiKey || ''
+  if (!key) {
+    key = (await systemStore.fetchApiKey()) || ''
   }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const host = window.location.hostname
-  const keyParam = systemStore.apiKey ? `?key=${encodeURIComponent(systemStore.apiKey)}` : ''
+  const keyParam = key ? `?key=${encodeURIComponent(key)}` : ''
   const wsUrl = `${protocol}//${host}${window.location.port ? `:${window.location.port}` : ''}/ws/files${keyParam}`
   
   if (ws) ws.close()

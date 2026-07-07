@@ -100,16 +100,16 @@ class PushAsAction : AnAction() {
           val syncRes = syncFacade.runFullSync(projectDir, settings)
           val result = syncRes.step
           if (!result.ok) {
-            notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: settings.repo}' ${result.message}. ${result.details}", NotificationType.ERROR)
+            notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}", NotificationType.ERROR)
             return
           }
 
           if (settings.offlineGenerateOnly) {
-            notify(project, "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: settings.repo}'", NotificationType.INFORMATION)
+            notify(project, "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}'", NotificationType.INFORMATION)
             return
           }
 
-          notify(project, "[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.pushAs.ok", targetBranch, syncRes.repo ?: settings.repo)}", NotificationType.INFORMATION)
+          notify(project, "[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.pushAs.ok", targetBranch, syncRes.repo ?: "?")}", NotificationType.INFORMATION)
         } finally {
           indicator.text = "Restoring original branch"
           if (!currentBranch.isNullOrBlank()) {

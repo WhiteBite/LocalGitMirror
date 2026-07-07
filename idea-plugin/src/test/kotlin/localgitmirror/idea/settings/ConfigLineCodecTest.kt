@@ -8,14 +8,16 @@ import kotlin.test.assertTrue
 
 class ConfigLineCodecTest {
 
+  // A connection-profile snapshot. NOTE: as of the scope refactor the config
+  // line carries ONLY connection settings — no `repo` (per-project, derived
+  // from the git remote) and no `gitRemoteName` (auto-detected).
+
   @Test
   fun `encode then decode roundtrip preserves values`() {
     val snapshot = ConfigSnapshot(
       baseUrl = "https://127.0.0.1:443",
-      repo = "onyx-platform",
       mirrorInsecureTls = true,
       offlineGenerateOnly = false,
-      gitRemoteName = "origin",
       pullBackDefaultMode = "new-branch",
       mirrorApiKey = "api-key",
       syncPassword = "dandan"
@@ -32,10 +34,8 @@ class ConfigLineCodecTest {
   fun `encoded token starts with V3 prefix`() {
     val snapshot = ConfigSnapshot(
       baseUrl = "https://127.0.0.1",
-      repo = "test",
       mirrorInsecureTls = false,
       offlineGenerateOnly = false,
-      gitRemoteName = "origin",
       pullBackDefaultMode = "new-branch",
       mirrorApiKey = "",
       syncPassword = "s3cr3t"
@@ -46,7 +46,8 @@ class ConfigLineCodecTest {
 
   @Test
   fun `extract token works from noisy clipboard text`() {
-    // V1 legacy token with old fields — should still parse base fields
+    // V1 legacy token with old fields (incl. repo/gitRemoteName) — must still
+    // parse the surviving connection fields; obsolete keys are ignored.
     val token = "LGM_CONFIG_V1:YmFzZVVybD1odHRwczovL2EKcmVwbz1yCm1pcnJvckluc2VjdXJlVGxzPXRydWUKb2ZmbGluZUdlbmVyYXRlT25seT10cnVlCmdpdExhYkJhc2VVcmw9CmdpdExhYlByb2plY3Q9CmdpdExhYkluc2VjdXJlVGxzPWZhbHNlCmdpdFJlbW90ZU5hbWU9b3JpZ2luCnB1bGxCYWNrRGVmYXVsdE1vZGU9bmV3LWJyYW5jaAptaXJyb3JBcGlLZXk9CnN5bmNQYXNzd29yZD0KZ2l0TGFiVG9rZW49"
     val noisy = "some prefix\n$token\ntrailing text"
     val extracted = ConfigLineCodec.extractToken(noisy)
@@ -62,7 +63,7 @@ class ConfigLineCodecTest {
   }
 
   @Test
-  fun `decode applies defaults for empty optional fields`() {
+  fun `decode applies defaults for empty optional fields and ignores obsolete keys`() {
     val raw = """
       baseUrl=https://x
       repo=repo1
@@ -78,15 +79,15 @@ class ConfigLineCodecTest {
     val decoded = ConfigLineCodec.decode(token)
 
     assertNotNull(decoded)
-    assertEquals("origin", decoded.gitRemoteName)
+    assertEquals("https://x", decoded.baseUrl)
     assertEquals("new-branch", decoded.pullBackDefaultMode)
     assertEquals(true, decoded.offlineGenerateOnly)
   }
 
   @Test
-  fun `backward compat - old V2 config with gitLab fields parses without crash`() {
-    // A V2-encoded payload that contains gitLab fields (from before the cleanup).
-    // These fields must be silently ignored; the core fields must parse correctly.
+  fun `backward compat - old V config with repo and gitLab fields parses without crash`() {
+    // A pre-refactor payload that contains repo / gitRemoteName / gitLab fields.
+    // All obsolete keys must be silently ignored; the connection fields parse.
     val rawOldConfig = """
       baseUrl=https://192.168.1.50:443
       repo=my-project
@@ -104,27 +105,22 @@ class ConfigLineCodecTest {
       workMode=auto
     """.trimIndent()
 
-    // Decode directly from raw key=value payload (simulates V1 decode path)
     val decoded = ConfigLineCodec.decode(rawOldConfig)
 
-    assertNotNull(decoded, "Old config with gitLab fields must parse without returning null")
+    assertNotNull(decoded, "Old config with obsolete fields must parse without returning null")
     assertEquals("https://192.168.1.50:443", decoded.baseUrl)
-    assertEquals("my-project", decoded.repo)
     assertEquals(true, decoded.mirrorInsecureTls)
-    assertEquals("origin", decoded.gitRemoteName)
     assertEquals("some-api-key", decoded.mirrorApiKey)
     assertEquals("secret123", decoded.syncPassword)
-    // gitLab fields are not present in ConfigSnapshot — silently ignored ✓
+    // repo, gitRemoteName, gitLab* are no longer part of ConfigSnapshot — ignored.
   }
 
   @Test
   fun `extract token supports markdown and case-insensitive prefix`() {
     val snapshot = ConfigSnapshot(
       baseUrl = "https://192.168.0.104:443",
-      repo = "default",
       mirrorInsecureTls = true,
       offlineGenerateOnly = false,
-      gitRemoteName = "origin",
       pullBackDefaultMode = "new-branch",
       mirrorApiKey = "k",
       syncPassword = "p"
@@ -147,7 +143,7 @@ class ConfigLineCodecTest {
     val decoded = ConfigLineCodec.decode(extracted)
     assertNotNull(decoded)
     assertEquals(snapshot.baseUrl, decoded.baseUrl)
-    assertEquals(snapshot.repo, decoded.repo)
+    assertEquals(snapshot.mirrorApiKey, decoded.mirrorApiKey)
   }
 
   @Test
@@ -166,7 +162,6 @@ class ConfigLineCodecTest {
     val decoded = ConfigLineCodec.decode(raw)
     assertNotNull(decoded)
     assertEquals("https://192.168.0.104:443", decoded.baseUrl)
-    assertEquals("default", decoded.repo)
     assertEquals("abc", decoded.mirrorApiKey)
     assertEquals("xyz", decoded.syncPassword)
   }
@@ -176,10 +171,8 @@ class ConfigLineCodecTest {
     val token = ConfigLineCodec.encode(
       ConfigSnapshot(
         baseUrl = "https://x",
-        repo = "r",
         mirrorInsecureTls = true,
         offlineGenerateOnly = false,
-        gitRemoteName = "origin",
         pullBackDefaultMode = "new-branch",
         mirrorApiKey = "k",
         syncPassword = "p"
@@ -192,7 +185,6 @@ class ConfigLineCodecTest {
     val decoded = ConfigLineCodec.decode(extracted)
     assertNotNull(decoded)
     assertEquals("https://x", decoded.baseUrl)
-    assertEquals("r", decoded.repo)
   }
 
   @Test
@@ -200,10 +192,8 @@ class ConfigLineCodecTest {
     val token = ConfigLineCodec.encode(
       ConfigSnapshot(
         baseUrl = "https://payload-only",
-        repo = "repo1",
         mirrorInsecureTls = true,
         offlineGenerateOnly = false,
-        gitRemoteName = "origin",
         pullBackDefaultMode = "new-branch",
         mirrorApiKey = "k",
         syncPassword = "p"
@@ -215,6 +205,5 @@ class ConfigLineCodecTest {
     val decoded = ConfigLineCodec.decode(extracted)
     assertNotNull(decoded)
     assertEquals("https://payload-only", decoded.baseUrl)
-    assertEquals("repo1", decoded.repo)
   }
 }

@@ -76,14 +76,14 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
           val syncRes = syncFacade.runFullSync(projectDir, settings)
           val res = syncRes.step
           if (!res.ok) {
-            notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}", NotificationType.ERROR)
+            notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}", NotificationType.ERROR)
             return
           }
           if (settings.offlineGenerateOnly) {
-            notify(project, "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: settings.repo}' at ${syncRes.dump?.absolutePath ?: res.details}", NotificationType.INFORMATION)
+            notify(project, "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}' at ${syncRes.dump?.absolutePath ?: res.details}", NotificationType.INFORMATION)
             return
           }
-          notify(project, "[trace=${syncRes.traceId}] Sent selected commits to Mirror repo '${syncRes.repo ?: settings.repo}'. ${syncRes.http?.body?.take(500) ?: ""}", NotificationType.INFORMATION)
+          notify(project, "[trace=${syncRes.traceId}] Sent selected commits to Mirror repo '${syncRes.repo ?: "?"}'. ${syncRes.http?.body?.take(500) ?: ""}", NotificationType.INFORMATION)
         } finally {
           if (!original.isNullOrBlank()) {
             GitLocal.checkout(project, projectDir, original)

@@ -4,11 +4,11 @@ import tempfile
 import time
 from pathlib import Path
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
 from tests import _harness
+from tests.conftest import envelope_form_post, parse_envelope
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -54,14 +54,13 @@ def test_upload_and_apply_reports_stale_kit_on_non_native_dump(tmp_path: Path, m
 
     # Non-native payload (not LGMSTRL1 and not 7z archive) should fail deterministically
     fake_dump = b"X" * 1024
-    res = client.post(
-        "/api/documents/upload",
-        data={"repo": repo_name},
+    res = envelope_form_post(
+        client, "/api/documents/upload", {"repo": repo_name}, "test-password",
         files={"attachment": (f"dump_{repo_name}_20260313_1200.dmp", fake_dump, "application/octet-stream")},
     )
 
     assert res.status_code == 200, res.text
-    body = res.json()
+    body = parse_envelope(res.json(), "test-password")
     assert body["success"] is False
     assert body["message"].startswith("Failed to decrypt dump:")
     assert "Unsupported" in body["message"]
@@ -100,13 +99,14 @@ def test_upload_and_apply_reports_password_mismatch_invalidtag(tmp_path: Path, m
 
         # Decrypt with different password on server
         monkeypatch.setenv("SYNC_PASSWORD", "decrypt-password")
-        up = client.post(
-            "/api/documents/upload",
-            data={"repo": repo_name},
+        # Envelope is decrypted with the SERVER password; the dump password
+        # mismatch ("encrypt-password" vs "decrypt-password") is what we test.
+        up = envelope_form_post(
+            client, "/api/documents/upload", {"repo": repo_name}, "decrypt-password",
             files={"attachment": (dump.name, dump.read_bytes(), "application/octet-stream")},
         )
         assert up.status_code == 200, up.text
-        body = up.json()
+        body = parse_envelope(up.json(), "decrypt-password")
         assert body["success"] is False
         assert "InvalidTag" in body["message"]
         assert "password mismatch" in body["message"]
@@ -152,12 +152,11 @@ def test_upload_and_apply_rejects_legacy_7z_dump(tmp_path: Path, monkeypatch):
 
         assert not legacy_dump.read_bytes().startswith(b"LGMSTRL1")
 
-        up = client.post(
-            "/api/documents/upload",
-            data={"repo": repo_name},
+        up = envelope_form_post(
+            client, "/api/documents/upload", {"repo": repo_name}, "test-password",
             files={"attachment": (legacy_dump.name, legacy_dump.read_bytes(), "application/octet-stream")},
         )
         assert up.status_code == 200, up.text
-        body = up.json()
+        body = parse_envelope(up.json(), "test-password")
         assert body["success"] is False
         assert "Unsupported" in body["message"]

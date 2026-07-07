@@ -1,10 +1,20 @@
 package localgitmirror.idea.workkit
 
+import com.intellij.openapi.components.service
 import java.io.File
+import localgitmirror.idea.settings.MirrorSettingsService
 
 object WorkKit {
   data class Result(val exitCode: Int, val stdout: String, val stderr: String) {
     fun ok(): Boolean = exitCode == 0
+  }
+
+  /** Pinned server public key (32 raw bytes), or null => legacy password mode. */
+  private fun pinnedServerPub(): ByteArray? = try {
+    val b64 = service<MirrorSettingsService>().state.serverPubKeyB64
+    if (b64.isBlank()) null else HybridCrypto.decodeServerPub(b64)
+  } catch (_: Throwable) {
+    null
   }
 
   @Suppress("UNUSED_PARAMETER")
@@ -23,12 +33,31 @@ object WorkKit {
       val bundle = NativeBundleBuilder.createBundle(workDir, excludeBases = excludeBases, additionalBranches = additionalBranches, negotiationUsed = negotiationUsed)
       val syncFile = NativeBundleBuilder.makeSyncFile(workDir, resolvedRepo)
 
-      val encryptedBytes = BundleCrypto.encryptBundleBytes(bundle.bundleBytes, password)
-      syncFile.writeBytes(encryptedBytes)
+      val pub = pinnedServerPub()
+      val modeNote: String
+      if (pub != null) {
+        // v3 (hybrid): seal the bundle to the server's static key via a throwaway
+        // ephemeral. The dump layout is  0x03 || ephemeralPub[32] || sealed  — the
+        // ephemeral PUBLIC key travels in the file, the private key is discarded
+        // immediately. No plaintext and no shared password touch the disk, and a
+        // later read of this machine cannot decrypt the dump (forward secrecy).
+        val session = HybridCrypto.Session.create(pub)
+        try {
+          val sealed = session.sealBundle(bundle.bundleBytes)
+          syncFile.writeBytes(byteArrayOf(0x03) + session.ephemeralPub + sealed)
+        } finally {
+          session.wipe()
+        }
+        modeNote = "${bundle.mode} (v3/hybrid)"
+      } else {
+        val encryptedBytes = BundleCrypto.encryptBundleBytes(bundle.bundleBytes, password)
+        syncFile.writeBytes(encryptedBytes)
+        modeNote = bundle.mode
+      }
 
       val stdout = buildString {
         appendLine("[+] Sync package ready")
-        appendLine("Mode: ${bundle.mode}")
+        appendLine("Mode: $modeNote")
         appendLine("File: ${syncFile.absolutePath} (${syncFile.length()} bytes)")
       }.trim()
       Result(0, stdout, "")

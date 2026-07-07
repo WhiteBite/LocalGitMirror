@@ -47,7 +47,7 @@ export const useSystemStore = defineStore('system', () => {
   async function fetchStatus() {
     loading.value = true
     error.value = null
-    
+
     try {
       const response = await axios.get('/api/status')
       status.value = response.data
@@ -63,7 +63,7 @@ export const useSystemStore = defineStore('system', () => {
   async function fetchLogs(limit = 100) {
     loading.value = true
     error.value = null
-    
+
     try {
       const response = await axios.get('/api/logs', {
         params: { limit }
@@ -80,7 +80,7 @@ export const useSystemStore = defineStore('system', () => {
   async function fetchSettings() {
     loading.value = true
     error.value = null
-    
+
     try {
       const response = await axios.get('/api/settings')
       settings.value = { ...settings.value, ...response.data }
@@ -95,7 +95,7 @@ export const useSystemStore = defineStore('system', () => {
   async function updateSettings(newSettings) {
     loading.value = true
     error.value = null
-    
+
     try {
       const response = await axios.put('/api/settings', newSettings)
       settings.value = { ...settings.value, ...response.data }
@@ -113,7 +113,7 @@ export const useSystemStore = defineStore('system', () => {
   async function startGit() {
     loading.value = true
     error.value = null
-    
+
     try {
       const response = await axios.post('/api/git/start')
       gitRunning.value = true
@@ -132,7 +132,7 @@ export const useSystemStore = defineStore('system', () => {
   async function stopGit() {
     loading.value = true
     error.value = null
-    
+
     try {
       const response = await axios.post('/api/git/stop')
       gitRunning.value = false
@@ -161,14 +161,14 @@ export const useSystemStore = defineStore('system', () => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const keyParam = apiKey.value ? `?key=${encodeURIComponent(apiKey.value)}` : ''
     const wsUrl = `${protocol}//${window.location.host}/ws/logs${keyParam}`
-    
+
     try {
       wsConnection.value = new WebSocket(wsUrl)
-      
+
       wsConnection.value.onopen = () => {
         console.log('WebSocket connected')
       }
-      
+
       wsConnection.value.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data)
@@ -177,11 +177,11 @@ export const useSystemStore = defineStore('system', () => {
           console.error('Error parsing WebSocket message:', err)
         }
       }
-      
+
       wsConnection.value.onerror = (error) => {
         console.error('WebSocket error:', error)
       }
-      
+
       wsConnection.value.onclose = (event) => {
         console.log('WebSocket disconnected', event.code)
         wsConnection.value = null
@@ -231,7 +231,7 @@ export const useSystemStore = defineStore('system', () => {
       timestamp: new Date().toISOString()
     }
     notifications.value.push(notification)
-    
+
     // Auto-remove after 5 seconds
     setTimeout(() => {
       removeNotification(notification.id)
@@ -278,12 +278,13 @@ export const useSystemStore = defineStore('system', () => {
     error,
     wsConnection,
     notifications,
-    
+    apiKey,
+
     // Getters
     storagePercentage,
     recentLogs,
     unreadNotifications,
-    
+
     // Actions
     fetchStatus,
     fetchLogs,

@@ -84,10 +84,9 @@ def test_key_isolation_from_bundle_crypto():
     from app.core.bundle_crypto import _derive_key as bundle_derive
 
     pwd = "shared-password"
-    # Bundle uses a random salt; envelope uses a fixed salt.
+    # Both use random salts — keys will always differ because salts differ.
     bundle_key = bundle_derive(pwd, os.urandom(16))
-    env_key = _derive_key(pwd)
-    # They cannot be the same because the salts are always different.
+    env_key = _derive_key(pwd, os.urandom(16))
     assert env_key != bundle_key
 
 

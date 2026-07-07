@@ -12,10 +12,8 @@ import java.security.SecureRandom
 
 data class ConfigSnapshot(
   val baseUrl: String,
-  val repo: String,
   val mirrorInsecureTls: Boolean,
   val offlineGenerateOnly: Boolean,
-  val gitRemoteName: String,
   val pullBackDefaultMode: String,
   val mirrorApiKey: String,
   val syncPassword: String
@@ -90,10 +88,8 @@ object ConfigLineCodec {
   fun encode(snapshot: ConfigSnapshot): String {
     val raw = listOf(
       "baseUrl=${snapshot.baseUrl}",
-      "repo=${snapshot.repo}",
       "mirrorInsecureTls=${snapshot.mirrorInsecureTls}",
       "offlineGenerateOnly=${snapshot.offlineGenerateOnly}",
-      "gitRemoteName=${snapshot.gitRemoteName}",
       "pullBackDefaultMode=${snapshot.pullBackDefaultMode}",
       "mirrorApiKey=${snapshot.mirrorApiKey}",
       "syncPassword=${snapshot.syncPassword}"
@@ -195,15 +191,14 @@ object ConfigLineCodec {
 
     return ConfigSnapshot(
       baseUrl = map["baseUrl"].orEmpty(),
-      repo = map["repo"].orEmpty(),
       mirrorInsecureTls = map["mirrorInsecureTls"].equals("true", ignoreCase = true),
       offlineGenerateOnly = map["offlineGenerateOnly"].equals("true", ignoreCase = true),
-      gitRemoteName = map["gitRemoteName"].orEmpty().ifBlank { "origin" },
       pullBackDefaultMode = map["pullBackDefaultMode"].orEmpty().ifBlank { "new-branch" },
       mirrorApiKey = map["mirrorApiKey"].orEmpty(),
       syncPassword = map["syncPassword"].orEmpty()
-      // Legacy keys (gitLabBaseUrl, gitLabProject, gitLabInsecureTls, gitLabToken,
-      // workMode, simpleUiMode) are read from map but intentionally not used here.
+      // Legacy keys (repo, gitRemoteName, gitLab*, workMode, simpleUiMode) are
+      // read from map but intentionally NOT used: repo is per-project now and
+      // gitRemoteName is auto-detected, so neither belongs in a connection profile.
     )
   }
 

@@ -10,7 +10,7 @@ from pathlib import Path
 # Config
 PID_FILE = Path("server.pid")
 LOG_FILE = Path("backend.log")
-SCRIPT_PATH = Path("backend/run.py")
+SCRIPT_PATH = Path("run.py")
 PORT = 8443
 
 
