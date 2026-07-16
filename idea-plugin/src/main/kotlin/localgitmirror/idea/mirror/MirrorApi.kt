@@ -116,7 +116,7 @@ object MirrorApi {
     insecureTls: Boolean
   ): HttpResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/session/state")
+      val url = URL(MirrorConnectionContract.authenticatedHealthUrl(baseUrl))
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 15_000

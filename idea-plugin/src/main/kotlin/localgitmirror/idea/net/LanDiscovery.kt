@@ -6,6 +6,7 @@ import java.net.InetAddress
 import javax.jmdns.JmDNS
 import javax.jmdns.ServiceEvent
 import javax.jmdns.ServiceListener
+import localgitmirror.idea.mirror.MirrorConnectionContract
 
 object LanDiscovery {
   private const val MDNS_SERVICE_TYPE = "_http._tcp.local."
@@ -169,7 +170,7 @@ object LanDiscovery {
       futures.add(executor.submit {
         for (port in SCAN_PORTS) {
           try {
-            val url = java.net.URL("https://$ip:$port/api/capabilities")
+            val url = java.net.URL("https://$ip:$port${MirrorConnectionContract.PUBLIC_CAPABILITIES_PATH}")
             val conn = url.openConnection() as javax.net.ssl.HttpsURLConnection
             conn.connectTimeout = perHostTimeout
             conn.readTimeout = perHostTimeout

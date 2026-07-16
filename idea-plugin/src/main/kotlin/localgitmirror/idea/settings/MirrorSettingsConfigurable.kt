@@ -10,6 +10,7 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.ui.dsl.builder.*
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorConnectionContract
 import localgitmirror.idea.net.LanDiscovery
 import javax.swing.JComponent
 import javax.swing.JLabel
@@ -38,9 +39,8 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
     syncPasswordLocal = SecretsStore.syncPassword
 
     val panel = panel {
-      // ── Mirror Server (always visible — 3 essentials) ──
+      // The fields needed to make a first connection stay together and visible.
       group(LocalGitMirrorBundle.message("settings.mirror.title", "Mirror Server")) {
-
         row(LocalGitMirrorBundle.message("settings.mirror.baseUrl")) {
           textField()
             .bindText(state::baseUrl)
@@ -49,6 +49,12 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           button(LocalGitMirrorBundle.message("settings.discover")) { onDiscoverClicked() }
             .gap(RightGap.SMALL)
           button(LocalGitMirrorBundle.message("settings.test")) { onTestClicked() }
+        }
+
+        row(LocalGitMirrorBundle.message("settings.mirror.apiKey")) {
+          passwordField()
+            .bindText(::mirrorApiKeyLocal)
+            .comment("Обязателен для проверки подключения и синхронизации. Скопируйте из Plugin Connection Info на Mirror-сервере.")
         }
 
         row(LocalGitMirrorBundle.message("settings.mirror.syncPassword")) {
@@ -72,13 +78,6 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
       // ── Advanced (collapsed — rarely needed) ──
       collapsibleGroup(LocalGitMirrorBundle.message("settings.advanced.title"), false) {
-
-        row(LocalGitMirrorBundle.message("settings.mirror.apiKey")) {
-          passwordField()
-            .bindText(::mirrorApiKeyLocal)
-            .comment(LocalGitMirrorBundle.message("settings.mirror.apiKey.comment"))
-        }
-
         row {
           checkBox(LocalGitMirrorBundle.message("settings.insecureTls"))
             .bindSelected(state::mirrorInsecureTls)
@@ -212,20 +211,18 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
     }, "LAN-Discovery").apply { isDaemon = true }.start()
   }
 
-  // ── Test Connection — проверяет коннект и детектирует смену ключа ──
+  // ── Test Connection — verifies access and detects key rotation ──
   private fun onTestClicked() {
     val urlToTest = resolveUrl(state.baseUrl)
-    if (urlToTest.isBlank()) {
-      Messages.showInfoMessage(
-        LocalGitMirrorBundle.message("settings.test.urlMissing"),
-        LocalGitMirrorBundle.message("settings.test.title")
-      )
+    val missingConfiguration = MirrorConnectionContract.missingConfigurationMessage(urlToTest, mirrorApiKeyLocal)
+    if (missingConfiguration != null) {
+      Messages.showInfoMessage(missingConfiguration, LocalGitMirrorBundle.message("settings.test.title"))
       return
     }
 
     Thread({
-      val apiKey     = mirrorApiKeyLocal
-      val insecure   = state.mirrorInsecureTls
+      val apiKey = mirrorApiKeyLocal
+      val insecure = state.mirrorInsecureTls
       val pingResult = runCatching { MirrorApi.ping(urlToTest, apiKey, insecure) }
         .getOrElse { MirrorApi.HttpResult(0, it.message ?: "error") }
 
@@ -242,9 +239,9 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           return@invokeLater
         }
 
-        // ── Детект смены ключа ─────────────────────────────────────────────
-        val pinnedFp  = state.serverPubKeyFp
-        val serverFp  = keyResult?.fp
+        // ── Detect a rotated server key ───────────────────────────────────────
+        val pinnedFp = state.serverPubKeyFp
+        val serverFp = keyResult?.fp
         if (!pinnedFp.isNullOrBlank() && !serverFp.isNullOrBlank() && pinnedFp != serverFp) {
           val choice = Messages.showDialog(
             LocalGitMirrorBundle.message("settings.v3.keyChanged.message", pinnedFp, serverFp),
@@ -253,13 +250,12 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
               LocalGitMirrorBundle.message("settings.v3.keyChanged.repin"),
               LocalGitMirrorBundle.message("settings.v3.keyChanged.keep")
             ),
-            1, // default: Keep
+            1,
             Messages.getWarningIcon()
           )
           if (choice == 0 && keyResult.pubB64 != null) {
-            // Пользователь выбрал Re-pin
             state.serverPubKeyB64 = keyResult.pubB64
-            state.serverPubKeyFp  = serverFp
+            state.serverPubKeyFp = serverFp
             fpLabel?.text = serverFp
           }
           return@invokeLater
@@ -298,7 +294,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           return@invokeLater
         }
         state.serverPubKeyB64 = res.pubB64
-        state.serverPubKeyFp  = res.fp
+        state.serverPubKeyFp = res.fp
         fpLabel?.text = res.fp
         Messages.showInfoMessage(
           LocalGitMirrorBundle.message("settings.v3.fetch.ok", res.fp),
@@ -311,7 +307,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   // ── Clear Pin ───────────────────────────────────────────────────────────────
   private fun onClearKeyClicked() {
     state.serverPubKeyB64 = ""
-    state.serverPubKeyFp  = ""
+    state.serverPubKeyFp = ""
     fpLabel?.text = LocalGitMirrorBundle.message("settings.v3.fingerprint.none")
     Messages.showInfoMessage(
       LocalGitMirrorBundle.message("settings.v3.clear.ok"),
@@ -319,7 +315,6 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
     )
   }
 
-  // ── Helpers ─────────────────────────────────────────────────────────────────
   private fun resolveUrl(raw: String): String {
     val u = raw.trim()
     return when {
