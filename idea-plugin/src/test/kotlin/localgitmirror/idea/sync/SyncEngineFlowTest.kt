@@ -217,21 +217,21 @@ class SyncEngineFlowTest {
       return MirrorApi.ProbeResult(200, dump, "OK")
     }
 
-    override fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, insecureTls: Boolean): MirrorApi.HttpResult {
+    override fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): MirrorApi.HttpResult {
       return MirrorApi.HttpResult(200, hasCommitsBody)
     }
 
-    override fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, branches: Map<String, String>, insecureTls: Boolean): MirrorApi.HttpResult {
+    override fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, branches: Map<String, String>, syncPassword: String, insecureTls: Boolean, localBranches: List<String>): MirrorApi.HttpResult {
       applyKnownCalls += 1
       return applyKnownResult
     }
 
-    override fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, insecureTls: Boolean, projectDir: File?): MirrorApi.HttpResult {
+    override fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, syncPassword: String, insecureTls: Boolean, projectDir: File?, localBranches: List<String>): MirrorApi.HttpResult {
       uploadCalls += 1
       return MirrorApi.HttpResult(200, """{"success":true}""")
     }
 
-    override fun getRefs(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): MirrorApi.RefsResult {
+    override fun getRefs(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean): MirrorApi.RefsResult {
       return MirrorApi.RefsResult(200, "ok", refs = emptyMap(), head = null)
     }
   }

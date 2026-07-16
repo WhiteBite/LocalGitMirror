@@ -1,9 +1,8 @@
+import json
 import subprocess
 import time
 from pathlib import Path
-import json
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
@@ -92,17 +91,22 @@ def test_full_roundtrip_work_home_work(tmp_path: Path):
         f"Home workspace did not receive pushed work changes. branch={branch}, remote={remote}"
     )
 
-    # 4) Simulate editing on "home" and save via API endpoint
+    # 4) Simulate editing on "home" and committing the change.
     home_marker = f"home-change-{int(time.time())}"
     home_file.write_text(home_file.read_text(encoding="utf-8") + f"\n{home_marker}\n", encoding="utf-8")
 
-    prepared = client.post("/api/git/save-and-sync", params={"message": "Home edits for work"})
-    assert prepared.status_code == 200, prepared.text
-    assert prepared.json().get("success") is True, prepared.text
+    # Commit the home-side edit directly in the workspace. This previously went
+    # through the /api/git/save-and-sync endpoint, which was removed together
+    # with the legacy manual-sync workflow; a plain commit reproduces exactly
+    # what that endpoint did internally (git_workspace.commit_all).
+    _run_git(home_workspace, "config", "user.email", "home@example.com")
+    _run_git(home_workspace, "config", "user.name", "Home User")
+    _run_git(home_workspace, "add", "README.md")
+    _run_git(home_workspace, "commit", "-m", "Home edits for work")
 
     # 5) Simulate "work" machine pulling back from home
     _run_git(work_dir, "pull", "origin", branch)
     final_text = work_file.read_text(encoding="utf-8")
     assert home_marker in final_text, (
-        f"Work did not receive home edits. branch={branch}, remote={remote}, prepared={prepared.json()}"
+        f"Work did not receive home edits. branch={branch}, remote={remote}"
     )

@@ -12,14 +12,13 @@ import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.net.LanDiscovery
 import javax.swing.JComponent
+import javax.swing.JLabel
 import javax.swing.SwingUtilities
 
 class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
   private val state: MirrorSettingsService.State get() = service<MirrorSettingsService>().state
 
-  // Per-project repo override. Lives in the project's workspace, so it never
-  // leaks onto other projects (unlike the old global repo field).
   private val projectState: MirrorProjectSettingsService.State
     get() = project.service<MirrorProjectSettingsService>().state
 
@@ -28,6 +27,9 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   // SecretsStore-backed fields — managed manually (not in PersistentStateComponent)
   private var mirrorApiKeyLocal = ""
   private var syncPasswordLocal = ""
+
+  // Label updated live when key is fetched / cleared
+  private var fpLabel: JLabel? = null
 
   override fun getDisplayName(): String = "LocalGitMirror"
 
@@ -59,6 +61,12 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           textField()
             .bindText(projectState::repoOverride)
             .comment(LocalGitMirrorBundle.message("settings.mirror.repo.comment"))
+        }
+
+        row {
+          checkBox("Проверять изменения на Mirror при открытии проекта")
+            .bindSelected(state::autoCheckPullOnStartup)
+            .comment("Показывает уведомление, если на Mirror есть изменения для текущей ветки.")
         }
       }
 
@@ -103,6 +111,21 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
                 "a package missing there is corporate. Use this only to force-include " +
                 "scopes, or when this machine has no public npm access."
             )
+        }
+
+        // ── v3 key pinning ───────────────────────────────────────────────────
+        group(LocalGitMirrorBundle.message("settings.v3.title")) {
+          row(LocalGitMirrorBundle.message("settings.v3.fingerprint")) {
+            val currentFp = state.serverPubKeyFp
+              .ifBlank { LocalGitMirrorBundle.message("settings.v3.fingerprint.none") }
+            val lbl = JLabel(currentFp)
+            fpLabel = lbl
+            cell(lbl)
+              .comment(LocalGitMirrorBundle.message("settings.v3.fingerprint.comment"))
+            button(LocalGitMirrorBundle.message("settings.v3.fetchPin")) { onFetchKeyClicked() }
+              .gap(RightGap.SMALL)
+            button(LocalGitMirrorBundle.message("settings.v3.clearPin")) { onClearKeyClicked() }
+          }
         }
       }
     }
@@ -189,19 +212,9 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
     }, "LAN-Discovery").apply { isDaemon = true }.start()
   }
 
-  // ── Test Connection ──
+  // ── Test Connection — проверяет коннект и детектирует смену ключа ──
   private fun onTestClicked() {
-    val urlToTest = dialogPanel?.let {
-      // Read the current field value before apply() is called
-      state.baseUrl.trim().let { u ->
-        when {
-          u.isBlank() -> ""
-          u.startsWith("http://") || u.startsWith("https://") -> u.trimEnd('/')
-          else -> "https://${u.trimEnd('/')}"
-        }
-      }
-    } ?: state.baseUrl.trim()
-
+    val urlToTest = resolveUrl(state.baseUrl)
     if (urlToTest.isBlank()) {
       Messages.showInfoMessage(
         LocalGitMirrorBundle.message("settings.test.urlMissing"),
@@ -211,27 +224,108 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
     }
 
     Thread({
-      val apiKey = mirrorApiKeyLocal
-      val insecureTls = state.mirrorInsecureTls
-      val result = try {
-        MirrorApi.ping(urlToTest, apiKey, insecureTls)
-      } catch (t: Throwable) {
-        MirrorApi.HttpResult(0, t.message ?: "error")
-      }
+      val apiKey     = mirrorApiKeyLocal
+      val insecure   = state.mirrorInsecureTls
+      val pingResult = runCatching { MirrorApi.ping(urlToTest, apiKey, insecure) }
+        .getOrElse { MirrorApi.HttpResult(0, it.message ?: "error") }
+
+      // Fetch server key for rotation detection (non-blocking, best-effort)
+      val keyResult = runCatching { MirrorApi.fetchServerPubKey(urlToTest, apiKey, insecure) }
+        .getOrNull()
 
       SwingUtilities.invokeLater {
-        if (result.code in 200..299) {
-          Messages.showInfoMessage(
-            LocalGitMirrorBundle.message("settings.test.ok"),
-            LocalGitMirrorBundle.message("settings.test.title")
-          )
-        } else {
+        if (pingResult.code !in 200..299) {
           Messages.showErrorDialog(
-            LocalGitMirrorBundle.message("settings.test.fail", result.code, result.body.take(200)),
+            LocalGitMirrorBundle.message("settings.test.fail", pingResult.code, pingResult.body.take(200)),
             LocalGitMirrorBundle.message("settings.test.title")
           )
+          return@invokeLater
         }
+
+        // ── Детект смены ключа ─────────────────────────────────────────────
+        val pinnedFp  = state.serverPubKeyFp
+        val serverFp  = keyResult?.fp
+        if (!pinnedFp.isNullOrBlank() && !serverFp.isNullOrBlank() && pinnedFp != serverFp) {
+          val choice = Messages.showDialog(
+            LocalGitMirrorBundle.message("settings.v3.keyChanged.message", pinnedFp, serverFp),
+            LocalGitMirrorBundle.message("settings.v3.keyChanged.title"),
+            arrayOf(
+              LocalGitMirrorBundle.message("settings.v3.keyChanged.repin"),
+              LocalGitMirrorBundle.message("settings.v3.keyChanged.keep")
+            ),
+            1, // default: Keep
+            Messages.getWarningIcon()
+          )
+          if (choice == 0 && keyResult.pubB64 != null) {
+            // Пользователь выбрал Re-pin
+            state.serverPubKeyB64 = keyResult.pubB64
+            state.serverPubKeyFp  = serverFp
+            fpLabel?.text = serverFp
+          }
+          return@invokeLater
+        }
+
+        Messages.showInfoMessage(
+          LocalGitMirrorBundle.message("settings.test.ok"),
+          LocalGitMirrorBundle.message("settings.test.title")
+        )
       }
     }, "Mirror-Test").apply { isDaemon = true }.start()
+  }
+
+  // ── Fetch & Pin server key ──────────────────────────────────────────────────
+  private fun onFetchKeyClicked() {
+    val url = resolveUrl(state.baseUrl)
+    if (url.isBlank()) {
+      Messages.showInfoMessage(
+        LocalGitMirrorBundle.message("settings.v3.fetch.noUrl"),
+        LocalGitMirrorBundle.message("settings.v3.title")
+      )
+      return
+    }
+
+    Thread({
+      val res = runCatching {
+        MirrorApi.fetchServerPubKey(url, mirrorApiKeyLocal, state.mirrorInsecureTls)
+      }.getOrElse { MirrorApi.PubKeyResult(0, null, null, it.message ?: "error") }
+
+      SwingUtilities.invokeLater {
+        if (res.pubB64 == null || res.fp == null) {
+          Messages.showErrorDialog(
+            LocalGitMirrorBundle.message("settings.v3.fetch.fail", res.code, res.message.take(200)),
+            LocalGitMirrorBundle.message("settings.v3.title")
+          )
+          return@invokeLater
+        }
+        state.serverPubKeyB64 = res.pubB64
+        state.serverPubKeyFp  = res.fp
+        fpLabel?.text = res.fp
+        Messages.showInfoMessage(
+          LocalGitMirrorBundle.message("settings.v3.fetch.ok", res.fp),
+          LocalGitMirrorBundle.message("settings.v3.title")
+        )
+      }
+    }, "Mirror-FetchKey").apply { isDaemon = true }.start()
+  }
+
+  // ── Clear Pin ───────────────────────────────────────────────────────────────
+  private fun onClearKeyClicked() {
+    state.serverPubKeyB64 = ""
+    state.serverPubKeyFp  = ""
+    fpLabel?.text = LocalGitMirrorBundle.message("settings.v3.fingerprint.none")
+    Messages.showInfoMessage(
+      LocalGitMirrorBundle.message("settings.v3.clear.ok"),
+      LocalGitMirrorBundle.message("settings.v3.title")
+    )
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+  private fun resolveUrl(raw: String): String {
+    val u = raw.trim()
+    return when {
+      u.isBlank() -> ""
+      u.startsWith("http://") || u.startsWith("https://") -> u.trimEnd('/')
+      else -> "https://${u.trimEnd('/')}"
+    }
   }
 }

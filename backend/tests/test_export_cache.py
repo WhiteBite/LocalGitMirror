@@ -20,6 +20,7 @@ from app.core.bundle_crypto import decrypt_dump_to_bundle
 from app.core.repo_manager import RepoManager
 from app.routers import sync as sync_module
 from tests import _harness
+from tests.conftest import envelope_form_post, parse_envelope
 
 PASSWORD = "export-cache-test-pw"
 
@@ -95,9 +96,15 @@ def _push_commit(work: Path, bare: Path, msg: str) -> str:
 
 
 def _export(client: TestClient, repo: str, **extra) -> dict:
-    res = client.post("/api/documents/export", data={"repo": repo, **extra})
-    assert res.status_code == 200, res.text
-    return res.json()
+    """Send an envelope export request and return the decrypted inner dict + raw bundle."""
+    payload = {"repo": repo, **extra}
+    resp = envelope_form_post(client, "/api/documents/export", payload, PASSWORD)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    inner = parse_envelope(body, PASSWORD)
+    # Attach bundle data at top-level for backwards-compat with existing tests
+    inner["data"] = body.get("d")
+    return inner
 
 
 def _bundle_refs(dump_b64: str, tmp_path: Path, name: str) -> tuple[dict, Path]:

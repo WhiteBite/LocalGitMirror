@@ -22,7 +22,8 @@ class GitWorkspace:
         cwd = cwd or self.workspace
         try:
             result = subprocess.run(
-                ["git"] + list(args), cwd=str(cwd), capture_output=True, text=True
+                ["git"] + list(args), cwd=str(cwd), capture_output=True, text=True,
+                encoding="utf-8", errors="replace",
             )
             return {
                 "success": result.returncode == 0,
@@ -70,11 +71,46 @@ class GitWorkspace:
             "change_count": len(changes),
         }
 
+    PUBLIC_NPM_HOST = "registry.npmjs.org"
+
+    def _restore_polluted_lockfiles(self) -> list:
+        """Home->work guard. A yarn.lock whose resolved URLs point at the public
+        npm registry breaks CI on the work side (corporate packages 404 on
+        npmjs). Home produces such a lock when it installs public packages
+        online. Before staging, restore any tracked yarn.lock that contains the
+        public-registry host back to its committed (canonical) state from HEAD,
+        so nothing polluted ever crosses the channel. Returns restored paths."""
+        if not self._run_git("rev-parse", "--verify", "HEAD")["success"]:
+            return []  # no commit yet — nothing to restore from
+        tracked = self._run_git("ls-files", "*yarn.lock")
+        if not tracked["success"] or not tracked["stdout"]:
+            return []
+        restored = []
+        for rel in tracked["stdout"].split("\n"):
+            rel = rel.strip()
+            if not rel:
+                continue
+            try:
+                text = (self.workspace / rel).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if self.PUBLIC_NPM_HOST in text and self._run_git("checkout", "HEAD", "--", rel)["success"]:
+                restored.append(rel)
+        return restored
+
     def commit_all(self, message: Optional[str] = None) -> Dict:
         """Stage all changes and commit"""
         if not message:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             message = f"Sync from Home: {timestamp}"
+
+        # Home->work guard: keep public-registry-polluted lockfiles out of the channel.
+        restored = self._restore_polluted_lockfiles()
+        if restored:
+            console.print(
+                "[yellow]LGM: restored canonical lockfile(s) from HEAD "
+                f"(public-registry pollution): {', '.join(restored)}[/yellow]"
+            )
 
         # Check if there are changes
         if not self.has_changes():

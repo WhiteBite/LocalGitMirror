@@ -25,7 +25,13 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
     return
   }
 
-  val chosenBranch = selectedBranch() ?: GitLocal.currentBranch(project, dir) ?: "(unknown)"
+  val selectedChoice = selectedBranchChoice()
+  if (selectedChoice?.isMirrorOnly == true) {
+    notify("Ветка «${selectedChoice.name}» есть только на Mirror. Нажмите «Подтянуть с Mirror».", NotificationType.INFORMATION)
+    return
+  }
+
+  val chosenBranch = selectedChoice?.name ?: GitLocal.currentBranch(project, dir) ?: "(unknown)"
   val currentBranch = GitLocal.currentBranch(project, dir)
   val additionalBranches = selectedAdditionalBranches.toList()
   val needsCheckout = chosenBranch != currentBranch && !chosenBranch.isBlank()
@@ -66,20 +72,20 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
         val res = syncRes.step
         if (!res.ok) {
           append("Failed: ${res.message} ${res.details}")
-          historyService.add("Send", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}")
-          notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}", NotificationType.ERROR)
+          historyService.add("Send", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}")
+          notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}", NotificationType.ERROR)
           markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
           refreshHistoryLog()
           return
         }
         if (settings.offlineGenerateOnly) {
           append("Offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          historyService.add("Send", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: settings.repo}'", NotificationType.INFORMATION)
+          historyService.add("Send", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
+          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}'", NotificationType.INFORMATION)
         } else {
           append("OK: ${syncRes.http?.code} ${syncRes.http?.body?.take(400) ?: ""}")
-          historyService.add("Send", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${syncRes.http?.body ?: "OK"}")
-          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.branch.ok", chosenBranch, syncRes.repo ?: settings.repo)}", NotificationType.INFORMATION)
+          historyService.add("Send", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' ${syncRes.http?.body ?: "OK"}")
+          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.branch.ok", chosenBranch, syncRes.repo ?: "?")}", NotificationType.INFORMATION)
         }
         markLastSyncOk()
         refreshHistoryLog()
@@ -143,20 +149,20 @@ internal fun LocalGitMirrorPanel.syncBranch() {
         val res = syncRes.step
         if (!res.ok) {
           append("Failed: ${res.message} ${res.details}")
-          historyService.add("Send branch", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}")
-          notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}", NotificationType.ERROR)
+          historyService.add("Send branch", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}")
+          notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}", NotificationType.ERROR)
           markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
           refreshHistoryLog()
           return
         }
         if (settings.offlineGenerateOnly) {
           append("Offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          historyService.add("Send branch", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: settings.repo}'", NotificationType.INFORMATION)
+          historyService.add("Send branch", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
+          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}'", NotificationType.INFORMATION)
         } else {
           append("OK: ${syncRes.http?.code} ${syncRes.http?.body?.take(400) ?: ""}")
-          historyService.add("Send branch", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${syncRes.http?.body ?: "OK"}")
-          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.branch.ok", chosen, syncRes.repo ?: settings.repo)}", NotificationType.INFORMATION)
+          historyService.add("Send branch", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' ${syncRes.http?.body ?: "OK"}")
+          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.branch.ok", chosen, syncRes.repo ?: "?")}", NotificationType.INFORMATION)
         }
         markLastSyncOk()
         refreshHistoryLog()
@@ -235,20 +241,20 @@ internal fun LocalGitMirrorPanel.syncSelectedCommits() {
         val res = syncRes.step
         if (!res.ok) {
           append("Failed: ${res.message} ${res.details}")
-          historyService.add("Send commits", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}")
-          notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}", NotificationType.ERROR)
+          historyService.add("Send commits", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}")
+          notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}", NotificationType.ERROR)
           markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
           refreshHistoryLog()
           return
         }
         if (settings.offlineGenerateOnly) {
           append("Offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          historyService.add("Send commits", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: settings.repo}'", NotificationType.INFORMATION)
+          historyService.add("Send commits", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
+          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}'", NotificationType.INFORMATION)
         } else {
           append("OK: ${syncRes.http?.code} ${syncRes.http?.body?.take(400) ?: ""}")
-          historyService.add("Send commits", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${syncRes.http?.body ?: "OK"}")
-          notify("[trace=${syncRes.traceId}] Sent selected commits to Mirror repo '${syncRes.repo ?: settings.repo}'", NotificationType.INFORMATION)
+          historyService.add("Send commits", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' ${syncRes.http?.body ?: "OK"}")
+          notify("[trace=${syncRes.traceId}] Sent selected commits to Mirror repo '${syncRes.repo ?: "?"}'", NotificationType.INFORMATION)
         }
         markLastSyncOk()
         refreshHistoryLog()
@@ -330,20 +336,20 @@ internal fun LocalGitMirrorPanel.pushAs() {
         val res = syncRes.step
         if (!res.ok) {
           append("Failed: ${res.message} ${res.details}")
-          historyService.add("Push as", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}")
-          notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: settings.repo}' ${res.message}. ${res.details}", NotificationType.ERROR)
+          historyService.add("Push as", false, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}")
+          notify("[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}", NotificationType.ERROR)
           markLastSync(LocalGitMirrorPanel.SyncOutcome.FAIL)
           refreshHistoryLog()
           return
         }
         if (settings.offlineGenerateOnly) {
           append("Offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          historyService.add("Push as", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: settings.repo}'", NotificationType.INFORMATION)
+          historyService.add("Push as", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
+          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}'", NotificationType.INFORMATION)
         } else {
           append("OK: ${syncRes.http?.code} ${syncRes.http?.body?.take(400) ?: ""}")
-          historyService.add("Push as", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: settings.repo}' ${syncRes.http?.body ?: "OK"}")
-          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.pushAs.ok", targetBranch, syncRes.repo ?: settings.repo)}", NotificationType.INFORMATION)
+          historyService.add("Push as", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' ${syncRes.http?.body ?: "OK"}")
+          notify("[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.pushAs.ok", targetBranch, syncRes.repo ?: "?")}", NotificationType.INFORMATION)
         }
         markLastSyncOk()
         refreshHistoryLog()

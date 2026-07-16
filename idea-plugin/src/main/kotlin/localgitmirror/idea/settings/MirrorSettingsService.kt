@@ -10,14 +10,12 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
 
   data class State(
     var baseUrl: String = "https://localhost",
-    var repo: String = "",
 
     // ui language: auto | en | ru
     var uiLanguage: String = "auto",
 
     var mirrorInsecureTls: Boolean = true,
 
-    var gitRemoteName: String = "origin",
     var pullBackDefaultMode: String = "new-branch",
 
     // If true, "Send" operations only generate encrypted dump locally.
@@ -37,7 +35,17 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     // that 404s on registry.npmjs.org is corporate). This list is an OPTIONAL
     // override for when the dome has no public-npm access, or to force-include
     // packages by scope/prefix. Empty = rely on the registry probe.
-    var npmCorporateScopes: String = ""
+    var npmCorporateScopes: String = "",
+
+    // Protocol v3 (hybrid ECIES): the pinned long-term X25519 PUBLIC key of the
+    // home server, base64. When set, sync uploads use ephemeral-key encryption
+    // to this key (forward secrecy, no shared password needed on this machine)
+    // instead of the SYNC_PASSWORD. A public key is not a secret, so storing it
+    // in plain settings (not the credential store) is fine. `serverPubKeyFp` is
+    // the fingerprint shown for out-of-band verification against the server
+    // console. Empty = fall back to the legacy password envelope.
+    var serverPubKeyB64: String = "",
+    var serverPubKeyFp: String = ""
   )
 
   private var state = State()

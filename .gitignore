@@ -113,3 +113,7 @@ idea-plugin/detekt-rules/build/
 # Local lgm CLI diagnostic outputs (lgm.py / lgm_diag.py)
 lgm_*.txt
 test-output.txt
+
+# Local scratch probes created during investigation
+/_*.py
+/yarn_home_install.py

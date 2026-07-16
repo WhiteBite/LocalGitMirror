@@ -13,11 +13,13 @@ import subprocess
 import time
 from pathlib import Path
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
 from tests import _harness
+from tests.conftest import envelope_form_post, parse_envelope
+
+PASSWORD = "test-pass"
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -34,7 +36,7 @@ def _make_client(tmp_path: Path, monkeypatch):
         json.dumps({"git": {"user_name": "Bot", "user_email": "bot@test.com"}}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("SYNC_PASSWORD", "test-pass")
+    monkeypatch.setenv("SYNC_PASSWORD", PASSWORD)
 
     rm = RepoManager(storage)
     app = _harness.build_app(
@@ -48,9 +50,19 @@ def _make_client(tmp_path: Path, monkeypatch):
     return TestClient(app), storage
 
 
-def _bundle_heads(raw_dump: bytes, tmp_path: Path) -> set:
-    """Decrypt is not needed here — we just check the export is non-empty/valid base64."""
-    return set()
+def _export(client, repo_name: str, *, branch=None, haves=None) -> dict:
+    """Send an envelope export request, return (decrypted inner dict, raw_bundle bytes)."""
+    payload = {"repo": repo_name}
+    if branch:
+        payload["branch"] = branch
+    if haves:
+        payload["haves"] = haves
+    resp = envelope_form_post(client, "/api/documents/export", payload, PASSWORD)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    inner = parse_envelope(body, PASSWORD)
+    inner["_raw_bundle"] = base64.b64decode(body["d"]) if "d" in body else None
+    return inner
 
 
 def test_export_with_branch_bundles_only_that_branch(tmp_path: Path, monkeypatch):
@@ -63,19 +75,15 @@ def test_export_with_branch_bundles_only_that_branch(tmp_path: Path, monkeypatch
     (ws / "main.txt").write_text("main\n")
     _run_git(ws, "add", "."); _run_git(ws, "commit", "-m", "main commit")
 
-    # Create a second branch with unrelated content
     _run_git(ws, "checkout", "-B", "feature")
     (ws / "feature.txt").write_text("feat\n")
     _run_git(ws, "add", "."); _run_git(ws, "commit", "-m", "feature commit")
     _run_git(ws, "checkout", "main")
 
-    # Export only `feature`
-    resp = client.post("/api/documents/export", data={"repo": repo_name, "branch": "feature"})
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body.get("status") == "ok"
-    assert body.get("data"), "Must contain base64 bundle"
-    raw = base64.b64decode(body["data"])
+    inner = _export(client, repo_name, branch="feature")
+    assert inner.get("status") == "ok"
+    raw = inner["_raw_bundle"]
+    assert raw is not None, "Must contain base64 bundle"
     assert raw[0:1] == b"\x01", "Must be encrypted v2 dump"
 
 
@@ -93,25 +101,11 @@ def test_export_with_haves_excludes_known_commits(tmp_path: Path, monkeypatch):
     (ws / "b.txt").write_text("b\n")
     _run_git(ws, "add", "."); _run_git(ws, "commit", "-m", "commit B")
 
-    # Export with haves=hash_a → bundle should be the delta after A (smaller)
-    resp_delta = client.post(
-        "/api/documents/export",
-        data={"repo": repo_name, "branch": "main", "haves": hash_a},
-    )
-    assert resp_delta.status_code == 200, resp_delta.text
-    delta = base64.b64decode(resp_delta.json()["data"])
+    delta_inner = _export(client, repo_name, branch="main", haves=hash_a)
+    full_inner = _export(client, repo_name, branch="main")
 
-    # Export full branch (no haves)
-    resp_full = client.post(
-        "/api/documents/export",
-        data={"repo": repo_name, "branch": "main"},
-    )
-    assert resp_full.status_code == 200, resp_full.text
-    full = base64.b64decode(resp_full.json()["data"])
-
-    # Delta bundle must be strictly smaller than the full bundle
-    assert len(delta) < len(full), (
-        f"Delta bundle ({len(delta)}) should be smaller than full ({len(full)})"
+    assert len(delta_inner["_raw_bundle"]) < len(full_inner["_raw_bundle"]), (
+        "Delta bundle should be smaller than full bundle"
     )
 
 
@@ -125,13 +119,9 @@ def test_export_ignores_unknown_haves(tmp_path: Path, monkeypatch):
     (ws / "a.txt").write_text("a\n")
     _run_git(ws, "add", "."); _run_git(ws, "commit", "-m", "commit A")
 
-    # Unknown hash in haves must be ignored, not crash
-    resp = client.post(
-        "/api/documents/export",
-        data={"repo": repo_name, "branch": "main", "haves": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json().get("data"), "Should still return a full bundle"
+    inner = _export(client, repo_name, branch="main",
+                    haves="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+    assert inner["_raw_bundle"] is not None, "Should return a full bundle despite unknown haves"
 
 
 def test_export_no_branch_falls_back_to_all(tmp_path: Path, monkeypatch):
@@ -143,8 +133,6 @@ def test_export_no_branch_falls_back_to_all(tmp_path: Path, monkeypatch):
     (ws / "a.txt").write_text("a\n")
     _run_git(ws, "add", "."); _run_git(ws, "commit", "-m", "commit A")
 
-    # No branch param → legacy --all behaviour
-    resp = client.post("/api/documents/export", data={"repo": repo_name})
-    assert resp.status_code == 200, resp.text
-    assert resp.json().get("status") == "ok"
-    assert resp.json().get("data")
+    inner = _export(client, repo_name)
+    assert inner.get("status") == "ok"
+    assert inner["_raw_bundle"] is not None

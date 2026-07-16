@@ -122,8 +122,13 @@ internal fun LocalGitMirrorPanel.pullFromMirror() {
   // but we also guard with a finally in actionPerformed.
   setProgress(-1.0, "Получаем список веток с Mirror…")
 
+  // Use the panel's branch selector as the single source of truth: pull the
+  // branch chosen in the combo. PullFromMirrorAction falls back to its own
+  // picker if this branch isn't present on Mirror (or selection is null).
+  val preselected = selectedBranch()
+
   try {
-    localgitmirror.idea.actions.PullFromMirrorAction().actionPerformed(
+    localgitmirror.idea.actions.PullFromMirrorAction(preselected).actionPerformed(
       com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
         "LocalGitMirrorToolWindow", null,
         com.intellij.openapi.actionSystem.DataContext { dataId ->
@@ -298,3 +303,110 @@ internal fun LocalGitMirrorPanel.runPullDryRun() {
   })
 }
 
+
+/**
+ * Pulls the freshest plugin .zip the Mirror has built and drops it into the
+ * user's Downloads folder. The IDE plugin can't install zips silently
+ * (IntelliJ requires an explicit user gesture for that), so we save the file
+ * and offer two follow-ups in the notification:
+ *  - "Open folder"          → reveal in Explorer/Finder
+ *  - "Open Plugins settings" → user clicks ⚙ → Install Plugin from Disk…
+ *
+ * Auth uses the same API_KEY/Bearer token as every other /api request,
+ * so an unconfigured Mirror gets the same scanner-resistant 404 as the rest
+ * of the API surface.
+ */
+internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
+  val settings = service<MirrorSettingsService>().state
+  if (settings.baseUrl.isBlank()) {
+    notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
+    return
+  }
+
+  isSyncing = true
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: \u0421\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u0435 \u043f\u043b\u0430\u0433\u0438\u043d\u0430", true) {
+    override fun run(indicator: ProgressIndicator) {
+      try {
+        indicator.isIndeterminate = true
+        indicator.text = "\u041f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u043c \u043d\u0430\u043b\u0438\u0447\u0438\u0435 \u0441\u0431\u043e\u0440\u043a\u0438\u2026"
+
+        val info = MirrorApi.pluginInfo(settings.baseUrl, SecretsStore.mirrorApiKey, settings.mirrorInsecureTls)
+        if (info.code == 404 || !info.available) {
+          notify(
+            "\u041d\u0430 Mirror \u043d\u0435\u0442 \u0441\u043e\u0431\u0440\u0430\u043d\u043d\u043e\u0433\u043e \u043f\u043b\u0430\u0433\u0438\u043d\u0430. \u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 'gradle buildPlugin' \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435.",
+            NotificationType.WARNING
+          )
+          return
+        }
+        if (info.code !in 200..299) {
+          notify("Mirror \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d (HTTP ${info.code}): ${info.message.take(200)}", NotificationType.ERROR)
+          return
+        }
+
+        // Where to save: ~/Downloads if it exists, otherwise user.home.
+        val home = java.io.File(System.getProperty("user.home"))
+        val downloads = java.io.File(home, "Downloads").takeIf { it.isDirectory } ?: home
+        val outName = info.filename ?: ("localgitmirror-${info.version ?: "latest"}.zip")
+        val outFile = java.io.File(downloads, outName)
+
+        indicator.isIndeterminate = false
+        indicator.text = "\u0421\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u0435 $outName\u2026"
+
+        val res = MirrorApi.pluginDownload(
+          baseUrl = settings.baseUrl,
+          apiKey = SecretsStore.mirrorApiKey,
+          insecureTls = settings.mirrorInsecureTls,
+          outFile = outFile,
+          onProgress = { read, total ->
+            if (total > 0) {
+              indicator.fraction = (read.toDouble() / total).coerceIn(0.0, 1.0)
+              val readMb = "%.1f".format(read / 1_048_576.0)
+              val totalMb = "%.1f".format(total / 1_048_576.0)
+              indicator.text = "\u0421\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u0435\u2026 $readMb / $totalMb \u041c\u0411"
+            }
+          }
+        )
+
+        if (res.code !in 200..299 || res.file == null) {
+          notify("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043a\u0430\u0447\u0430\u0442\u044c \u043f\u043b\u0430\u0433\u0438\u043d (HTTP ${res.code}): ${res.message.take(200)}", NotificationType.ERROR)
+          historyService.add("Plugin download", false, "HTTP ${res.code} ${res.message.take(200)}")
+          return
+        }
+
+        val sameVersion = info.version != null &&
+          pluginVersionText.removePrefix("v") == info.version
+        val title = if (sameVersion)
+          "\u041f\u043b\u0430\u0433\u0438\u043d \u043d\u0430 Mirror \u0441\u043e\u0432\u043f\u0430\u0434\u0430\u0435\u0442 \u0441 \u0432\u0430\u0448\u0438\u043c (v${info.version})"
+        else
+          "\u0421\u043a\u0430\u0447\u0430\u043d v${info.version ?: "?"} (\u0432\u044b: $pluginVersionText)"
+
+        val msg = "$title\n${outFile.absolutePath}"
+        val notif = com.intellij.notification.NotificationGroupManager.getInstance()
+          .getNotificationGroup("LocalGitMirror")
+          .createNotification(msg, NotificationType.INFORMATION)
+        notif.addAction(com.intellij.notification.NotificationAction.createSimpleExpiring(
+          "\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043f\u0430\u043f\u043a\u0443"
+        ) {
+          try {
+            com.intellij.ide.actions.RevealFileAction.openFile(outFile)
+          } catch (_: Throwable) {
+            try { java.awt.Desktop.getDesktop().open(downloads) } catch (_: Throwable) {}
+          }
+        })
+        notif.addAction(com.intellij.notification.NotificationAction.createSimpleExpiring(
+          "\u041d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u043f\u043b\u0430\u0433\u0438\u043d\u043e\u0432\u2026"
+        ) {
+          com.intellij.openapi.options.ShowSettingsUtil.getInstance()
+            .showSettingsDialog(project, "preferences.pluginManager")
+        })
+        notif.notify(project)
+        historyService.add("Plugin download", true, "v${info.version ?: "?"} -> ${outFile.absolutePath}")
+        append("Plugin downloaded: ${outFile.absolutePath}")
+      } finally {
+        isSyncing = false
+      }
+    }
+
+    override fun onFinished() { isSyncing = false }
+  })
+}

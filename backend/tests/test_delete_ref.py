@@ -1,7 +1,7 @@
 """
 Honest tests for branch management on the Mirror:
   - POST /api/documents/delete-ref
-  - GET  /api/documents/list   (enriched: sha / updated / is_head)
+  - POST /api/documents/list   (enriched: sha / updated / is_head)
 
 These drive the REAL endpoint against a REAL bare+workspace repo created by
 RepoManager, so they catch actual behavioural bugs (guard logic, ref removal,
@@ -13,11 +13,13 @@ import time
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
 from tests import _harness
+from tests.conftest import envelope_post, parse_envelope
+
+PASSWORD = "test-delete-ref-pw"
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -51,7 +53,7 @@ def _build_client(storage: Path) -> TestClient:
     return TestClient(app), repo_manager
 
 
-def _make_repo_with_branches(tmp_path: Path, branches: list[str]) -> tuple[TestClient, str, Path, Path, RepoManager]:
+def _make_repo_with_branches(tmp_path: Path, branches: list[str], monkeypatch=None) -> tuple[TestClient, str, Path, Path, RepoManager]:
     """Create a backend repo and push the given branches into its bare repo."""
     storage = tmp_path / "storage"
     storage.mkdir(parents=True, exist_ok=True)
@@ -59,6 +61,8 @@ def _make_repo_with_branches(tmp_path: Path, branches: list[str]) -> tuple[TestC
         json.dumps({"git": {"user_name": "Bot", "user_email": "bot@example.com"}}),
         encoding="utf-8",
     )
+    if monkeypatch is not None:
+        monkeypatch.setenv("SYNC_PASSWORD", PASSWORD)
     client, rm = _build_client(storage)
     repo = f"delref-{int(time.time()*1000)}"
     created = client.post("/api/repos/create", json={"name": repo})
@@ -90,14 +94,14 @@ def _make_repo_with_branches(tmp_path: Path, branches: list[str]) -> tuple[TestC
 
 # ── /documents/list enrichment ──────────────────────────────────────────────
 
-def test_list_returns_sha_updated_and_is_head(tmp_path):
-    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature"])
+def test_list_returns_sha_updated_and_is_head(tmp_path, monkeypatch):
+    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature"], monkeypatch)
     # Point bare HEAD at master so is_head is deterministic.
     _run_git(bare, "symbolic-ref", "HEAD", "refs/heads/master")
 
-    res = client.get("/api/documents/list", params={"repo": repo})
+    res = envelope_post(client, "/api/documents/list", {"repo": repo}, PASSWORD)
     assert res.status_code == 200, res.text
-    body = res.json()
+    body = parse_envelope(res.json(), PASSWORD)
     refs = body["refs"]
 
     assert set(refs.keys()) == {"master", "feature"}
@@ -113,69 +117,75 @@ def test_list_returns_sha_updated_and_is_head(tmp_path):
 
 # ── delete-ref: happy path ───────────────────────────────────────────────────
 
-def test_delete_ref_removes_branch_from_bare(tmp_path):
-    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "stale"])
+def test_delete_ref_removes_branch_from_bare(tmp_path, monkeypatch):
+    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "stale"], monkeypatch)
     _run_git(bare, "symbolic-ref", "HEAD", "refs/heads/master")
 
     assert "stale" in _bare_branches(bare)
-    res = client.post("/api/documents/delete-ref", json={"repo": repo, "branch": "stale"})
+    res = envelope_post(client, "/api/documents/delete-ref", {"repo": repo, "branch": "stale"}, PASSWORD)
     assert res.status_code == 200, res.text
-    assert res.json()["success"] is True
+    inner = parse_envelope(res.json(), PASSWORD)
+    assert inner["success"] is True
     assert "stale" not in _bare_branches(bare)
     assert "master" in _bare_branches(bare)
 
 
 # ── delete-ref: guards ───────────────────────────────────────────────────────
 
-def test_delete_ref_refuses_head_branch(tmp_path):
-    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature"])
+def test_delete_ref_refuses_head_branch(tmp_path, monkeypatch):
+    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature"], monkeypatch)
     _run_git(bare, "symbolic-ref", "HEAD", "refs/heads/master")
 
-    res = client.post("/api/documents/delete-ref", json={"repo": repo, "branch": "master"})
+    res = envelope_post(client, "/api/documents/delete-ref", {"repo": repo, "branch": "master"}, PASSWORD)
     assert res.status_code == 409, res.text
-    # master must still be there
     assert "master" in _bare_branches(bare)
 
 
-def test_delete_ref_refuses_last_branch(tmp_path):
-    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["only"])
+def test_delete_ref_refuses_last_branch(tmp_path, monkeypatch):
+    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["only"], monkeypatch)
     _run_git(bare, "symbolic-ref", "HEAD", "refs/heads/only")
 
-    res = client.post("/api/documents/delete-ref", json={"repo": repo, "branch": "only"})
+    res = envelope_post(client, "/api/documents/delete-ref", {"repo": repo, "branch": "only"}, PASSWORD)
     assert res.status_code == 409, res.text
     assert "only" in _bare_branches(bare)
 
 
-def test_delete_ref_unknown_branch_404(tmp_path):
-    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature"])
-    res = client.post("/api/documents/delete-ref", json={"repo": repo, "branch": "does-not-exist"})
+def test_delete_ref_unknown_branch_404(tmp_path, monkeypatch):
+    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature"], monkeypatch)
+    res = envelope_post(client, "/api/documents/delete-ref", {"repo": repo, "branch": "does-not-exist"}, PASSWORD)
     assert res.status_code == 404, res.text
 
 
-def test_delete_ref_invalid_branch_name_400(tmp_path):
-    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature"])
+def test_delete_ref_invalid_branch_name_400(tmp_path, monkeypatch):
+    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature"], monkeypatch)
     for bad in ["../escape", "bad name", "with~tilde", ".."]:
-        res = client.post("/api/documents/delete-ref", json={"repo": repo, "branch": bad})
+        res = envelope_post(client, "/api/documents/delete-ref", {"repo": repo, "branch": bad}, PASSWORD)
         assert res.status_code == 400, f"expected 400 for {bad!r}, got {res.status_code}: {res.text}"
 
 
-def test_delete_ref_unknown_repo_404(tmp_path):
-    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature"])
-    res = client.post("/api/documents/delete-ref", json={"repo": "no-such-repo", "branch": "feature"})
+def test_delete_ref_unknown_repo_404(tmp_path, monkeypatch):
+    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature"], monkeypatch)
+    res = envelope_post(client, "/api/documents/delete-ref", {"repo": "no-such-repo", "branch": "feature"}, PASSWORD)
     assert res.status_code == 404, res.text
 
 
-def test_delete_ref_then_list_no_longer_shows_it(tmp_path):
+def test_delete_ref_then_list_no_longer_shows_it(tmp_path, monkeypatch):
     """End-to-end: the deleted branch disappears from /documents/list."""
-    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature", "old"])
+    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature", "old"], monkeypatch)
     _run_git(bare, "symbolic-ref", "HEAD", "refs/heads/master")
 
-    before = client.get("/api/documents/list", params={"repo": repo}).json()["refs"]
+    before = parse_envelope(
+        envelope_post(client, "/api/documents/list", {"repo": repo}, PASSWORD).json(),
+        PASSWORD,
+    )["refs"]
     assert "old" in before
 
-    res = client.post("/api/documents/delete-ref", json={"repo": repo, "branch": "old"})
+    res = envelope_post(client, "/api/documents/delete-ref", {"repo": repo, "branch": "old"}, PASSWORD)
     assert res.status_code == 200, res.text
 
-    after = client.get("/api/documents/list", params={"repo": repo}).json()["refs"]
+    after = parse_envelope(
+        envelope_post(client, "/api/documents/list", {"repo": repo}, PASSWORD).json(),
+        PASSWORD,
+    )["refs"]
     assert "old" not in after
     assert set(after.keys()) == {"master", "feature"}
