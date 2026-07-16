@@ -337,6 +337,19 @@ async def sanitize_headers(request, call_next):
             del response.headers[hdr]
     return response
 
+@app.get("/api/capabilities", include_in_schema=False)
+async def public_capabilities():
+    """Minimal public marker for LAN discovery.
+
+    It deliberately exposes no repository names, configuration, credentials, or
+    protocol keys. Protected API operations remain behind ``get_api_key``.
+    """
+    return {
+        "service": "DocCache",
+        "discoveryVersion": 1,
+    }
+
+
 # --- GIT SMART HTTP DISABLED ---
 # Raw git protocol (/git/*) is not mounted. All data travels through the
 # encrypted /api/documents/* transport to avoid git-specific DLP signatures.
