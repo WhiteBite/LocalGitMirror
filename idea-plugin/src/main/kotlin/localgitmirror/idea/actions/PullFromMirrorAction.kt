@@ -83,14 +83,16 @@ class PullFromMirrorAction(private val preselectedBranch: String? = null) : AnAc
         val result = refsResult ?: run { operationInProgress.set(false); return }
 
         if (result.code !in 200..299 || result.refs == null) {
-          notify(project, "Не удалось получить ветки: HTTP ${result.code}: ${result.message}", NotificationType.ERROR)
+          notify(project, "Не удалось получить ветки (repo='$repoName'): HTTP ${result.code}: ${result.message}", NotificationType.ERROR)
           operationInProgress.set(false)
           return
         }
 
         val remoteRefs = result.refs ?: emptyMap()
         if (remoteRefs.isEmpty()) {
-          notify(project, "Mirror репозиторий пустой.", NotificationType.INFORMATION)
+          notify(project, "На Mirror нет веток для repo='$repoName'. Если ветку пушили с другой машины, " +
+            "проверьте, что имя репозитория (см. строку статуса в панели) совпадает на обеих машинах.",
+            NotificationType.WARNING)
           operationInProgress.set(false)
           return
         }
