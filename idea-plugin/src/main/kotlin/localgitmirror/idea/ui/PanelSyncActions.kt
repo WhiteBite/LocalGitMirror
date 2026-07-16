@@ -25,7 +25,13 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
     return
   }
 
-  val chosenBranch = selectedBranch() ?: GitLocal.currentBranch(project, dir) ?: "(unknown)"
+  val selectedChoice = selectedBranchChoice()
+  if (selectedChoice?.isMirrorOnly == true) {
+    notify("Ветка «${selectedChoice.name}» есть только на Mirror. Нажмите «Подтянуть с Mirror».", NotificationType.INFORMATION)
+    return
+  }
+
+  val chosenBranch = selectedChoice?.name ?: GitLocal.currentBranch(project, dir) ?: "(unknown)"
   val currentBranch = GitLocal.currentBranch(project, dir)
   val additionalBranches = selectedAdditionalBranches.toList()
   val needsCheckout = chosenBranch != currentBranch && !chosenBranch.isBlank()

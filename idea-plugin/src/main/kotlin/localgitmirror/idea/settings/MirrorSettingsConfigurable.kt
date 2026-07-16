@@ -62,6 +62,12 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
             .bindText(projectState::repoOverride)
             .comment(LocalGitMirrorBundle.message("settings.mirror.repo.comment"))
         }
+
+        row {
+          checkBox("Проверять изменения на Mirror при открытии проекта")
+            .bindSelected(state::autoCheckPullOnStartup)
+            .comment("Показывает уведомление, если на Mirror есть изменения для текущей ветки.")
+        }
       }
 
       // ── Advanced (collapsed — rarely needed) ──
