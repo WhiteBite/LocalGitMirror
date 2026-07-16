@@ -99,14 +99,17 @@ def test_probe_decrypt_wrong_password_fails(monkeypatch):
 
 
 def test_probe_not_available_without_password(monkeypatch):
-    """Probe endpoint should fail when SYNC_PASSWORD is not set."""
+    """A v3-only server returns 503 and directs clients to its public key."""
     monkeypatch.delenv("SYNC_PASSWORD", raising=False)
+    monkeypatch.setattr(api_router, "server_private_key", object())
     app = FastAPI()
     app.include_router(api_router.router)
     client = TestClient(app)
 
     res = client.get("/api/auth/verify")
-    assert res.status_code == 500
+    assert res.status_code == 503
+    assert "Password probe disabled" in res.json()["detail"]
+    assert "/api/auth/pubkey" in res.json()["detail"]
 
 
 def test_e2e_full_handshake_flow(monkeypatch):
