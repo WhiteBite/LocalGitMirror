@@ -11,6 +11,7 @@ if str(BACKEND_DIR) not in sys.path:
 
 from app.core.bundle_crypto import MAGIC
 from app.routers import sync as api_router
+from tests.conftest import envelope_form_post, parse_envelope
 
 
 class _FakeRepoManager:
@@ -57,9 +58,8 @@ def test_upload_and_apply_accepts_repo_names_with_underscores(monkeypatch):
     captured = {}
     client = _build_client(monkeypatch, ["upload_apply_smoke_repo"], captured)
 
-    response = client.post(
-        "/api/documents/upload",
-        data={"repo": "upload_apply_smoke_repo"},
+    response = envelope_form_post(
+        client, "/api/documents/upload", {"repo": "upload_apply_smoke_repo"}, "test-password",
         files={
             "attachment": (
                 "dump_upload_apply_smoke_repo_20260306_1200.dmp",
@@ -70,7 +70,7 @@ def test_upload_and_apply_accepts_repo_names_with_underscores(monkeypatch):
     )
 
     assert response.status_code == 200
-    payload = response.json()
+    payload = parse_envelope(response.json(), "test-password")
     assert payload["success"] is True
     assert payload["repo"] == "upload_apply_smoke_repo"
     assert payload["attachment"] == "dump_upload_apply_smoke_repo_20260306_1200.dmp"
@@ -84,9 +84,8 @@ def test_upload_and_apply_rejects_real_repo_mismatch(monkeypatch):
     captured = {}
     client = _build_client(monkeypatch, ["other_repo"], captured)
 
-    response = client.post(
-        "/api/documents/upload",
-        data={"repo": "other_repo"},
+    response = envelope_form_post(
+        client, "/api/documents/upload", {"repo": "other_repo"}, "test-password",
         files={
             "attachment": (
                 "dump_upload_apply_smoke_repo_20260306_1200.dmp",
@@ -97,7 +96,7 @@ def test_upload_and_apply_rejects_real_repo_mismatch(monkeypatch):
     )
 
     assert response.status_code == 200
-    payload = response.json()
+    payload = parse_envelope(response.json(), "test-password")
     assert payload["success"] is False
     assert "indicates repo 'upload_apply_smoke_repo'" in payload["message"]
 

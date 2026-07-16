@@ -8,13 +8,9 @@ These tests verify:
    in a threadpool and does not block the event loop.
 """
 import inspect
-import subprocess
 from pathlib import Path
 
-import pytest
-
 from app.routers.sync import _git
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1.  _git() timeout → returncode 124
@@ -74,9 +70,12 @@ def test_sync_export_dump_is_not_async():
 def test_export_empty_repo_returns_400(tmp_path: Path, monkeypatch):
     """Export of a repo with no commits returns HTTP 400."""
     import json
+
     from fastapi.testclient import TestClient
+
     from app.core.repo_manager import RepoManager
     from tests import _harness
+    from tests.conftest import envelope_form_post
 
     storage = tmp_path / "storage"
     storage.mkdir()
@@ -102,6 +101,7 @@ def test_export_empty_repo_returns_400(tmp_path: Path, monkeypatch):
     created = client.post("/api/repos/create", json={"name": repo_name})
     assert created.status_code == 200
 
-    # Force an empty-looking repo by pointing to a non-existent repo name
-    resp = client.post("/api/documents/export", data={"repo": "no-such-repo"})
+    # Export of an unknown repo must 404. Request params travel inside an
+    # encrypted envelope ("e"), matching the current plugin/server contract.
+    resp = envelope_form_post(client, "/api/documents/export", {"repo": "no-such-repo"}, "test-pass")
     assert resp.status_code == 404, f"Expected 404 for unknown repo, got {resp.status_code}: {resp.text}"

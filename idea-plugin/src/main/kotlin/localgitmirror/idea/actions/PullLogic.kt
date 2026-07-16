@@ -9,6 +9,17 @@ import java.io.File
 internal object PullLogic {
 
   /**
+   * A raw git bundle starts with "# v2 git bundle\n" or "# v3 git bundle\n".
+   * Hybrid pull writes the server response as a raw bundle, while legacy pull
+   * writes a password-encrypted dump that must be decrypted first.
+   */
+  fun looksLikeGitBundle(bytes: ByteArray): Boolean {
+    if (bytes.size < 15) return false
+    val header = String(bytes, 0, minOf(16, bytes.size), Charsets.US_ASCII)
+    return header.startsWith("# v2 git bundle") || header.startsWith("# v3 git bundle")
+  }
+
+  /**
    * Returns the best "since" hash to minimise bundle size:
    * the first local ref hash that also appears in the remote refs map.
    *

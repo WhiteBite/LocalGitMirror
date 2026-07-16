@@ -15,17 +15,14 @@ import base64
 import json
 import subprocess
 import time
-import tempfile
 from pathlib import Path
 
-import pytest
-
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.bundle_crypto import decrypt_dump_to_bundle, encrypt_bundle_to_dump
 from app.core.repo_manager import RepoManager
-from app.core.bundle_crypto import encrypt_bundle_to_dump, decrypt_dump_to_bundle
 from tests import _harness
+from tests.conftest import envelope_form_post, parse_envelope
 
 
 def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
@@ -133,13 +130,14 @@ def test_multi_branch_roundtrip_work_to_home(tmp_path: Path, monkeypatch):
     encrypt_bundle_to_dump(bundle_path, dump_path, password)
 
     # ── Step 2: Upload to backend via upload-and-apply ─────
-    upload_res = client.post(
-        "/api/documents/upload",
-        data={"repo": repo_name},
+    # Request metadata (repo) travels in an encrypted envelope ("e" form field),
+    # the dump rides as the multipart attachment — same as the IDEA plugin.
+    upload_res = envelope_form_post(
+        client, "/api/documents/upload", {"repo": repo_name}, password,
         files={"attachment": (dump_path.name, dump_path.read_bytes(), "application/octet-stream")},
     )
     assert upload_res.status_code == 200, upload_res.text
-    body = upload_res.json()
+    body = parse_envelope(upload_res.json(), password)
     assert body.get("success") is True, f"Upload failed: {body}"
 
     # ── Step 3: Verify backend workspace has BOTH branches ──
@@ -163,16 +161,13 @@ def test_multi_branch_roundtrip_work_to_home(tmp_path: Path, monkeypatch):
     assert "feature-xyz" in bare_branches, f"Bare repo missing 'feature-xyz'. Branches: {bare_branches}"
 
     # ── Step 5: Home machine calls export-dump ──────────────
-    export_res = client.post(
-        "/api/documents/export",
-        data={"repo": repo_name},
-    )
+    export_res = envelope_form_post(client, "/api/documents/export", {"repo": repo_name}, password)
     assert export_res.status_code == 200, f"Export failed: {export_res.status_code} {export_res.text}"
 
-    export_json = export_res.json()
-    assert export_json.get("status") == "ok", f"Export status: {export_json}"
+    export_inner = parse_envelope(export_res.json(), password)
+    assert export_inner.get("status") == "ok", f"Export status: {export_inner}"
     exported_dump = tmp_path / "home_exported.dmp"
-    exported_dump.write_bytes(base64.b64decode(export_json["data"]))
+    exported_dump.write_bytes(base64.b64decode(export_res.json()["d"]))
 
     # Decrypt the export dump to a bundle
     exported_bundle = tmp_path / "home_exported.bundle"

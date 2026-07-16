@@ -22,6 +22,12 @@ const router = createRouter({
       meta: { title: 'Global Search' }
     },
     {
+      path: '/buffer',
+      name: 'buffer',
+      component: () => import('@/views/BufferView.vue'),
+      meta: { title: 'Buffer' }
+    },
+    {
       path: '/history',
       name: 'history',
       component: () => import('@/views/CommitsView.vue'),

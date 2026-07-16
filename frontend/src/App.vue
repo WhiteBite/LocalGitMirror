@@ -16,6 +16,10 @@
           <span class="icon">🔍</span>
           <span class="label">{{ t('nav.search') }}</span>
         </router-link>
+        <router-link to="/buffer" class="nav-item" :title="t('nav.buffer')">
+          <span class="icon">📋</span>
+          <span class="label">{{ t('nav.buffer') }}</span>
+        </router-link>
         <router-link to="/settings" class="nav-item" :title="t('nav.settings')">
           <span class="icon">⚙️</span>
           <span class="label">{{ t('nav.settings') }}</span>

@@ -92,23 +92,6 @@ const commands = computed(() => {
       detail: t('commandPalette.configure_application_settings')
     },
     {
-      label: t('commandPalette.sync_current_volume'),
-      action: async () => {
-        if (reposStore.currentRepo) {
-           try {
-             await reposStore.syncRepo(reposStore.currentRepo)
-             systemStore.addNotification(t('commandPalette.synced', { repo: reposStore.currentRepo }), 'success')
-           } catch (e) {
-             systemStore.addNotification(t('commandPalette.sync_failed'), 'error')
-           }
-        } else {
-            systemStore.addNotification(t('commandPalette.no_volume_selected'), 'warning')
-        }
-      },
-      icon: '🔄',
-      detail: t('commandPalette.pull_latest_changes_push_local')
-    },
-    {
       label: t('commandPalette.create_new_volume'),
       action: () => {
         // We'll need to trigger the modal in App.vue or handle it here.

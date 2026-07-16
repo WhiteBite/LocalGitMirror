@@ -4,7 +4,6 @@ import base64
 import os
 import subprocess
 from datetime import datetime
-from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -396,7 +395,11 @@ async def get_commit_details(commit_hash: str):
 
 @router.post("/git/save-and-sync")
 async def save_and_sync(message: Optional[str] = Query("Sync from Home")):
-    """Commit all changes to prepare for pull on work PC"""
+    """Commit all workspace changes.
+
+    Used by the in-browser code editor (CodeEditor.vue) to auto-commit a file
+    edited through the web UI. Commits land in the non-bare workspace repo.
+    """
     global git_workspace
 
     if not git_workspace:
@@ -408,8 +411,6 @@ async def save_and_sync(message: Optional[str] = Query("Sync from Home")):
     if system_logger:
         system_logger.info("Инициирована подготовка к работе")
 
-    # Just commit changes. Since it's a non-bare repo,
-    # work PC will pull these commits.
     result = git_workspace.commit_all(message)
 
     if result["success"]:

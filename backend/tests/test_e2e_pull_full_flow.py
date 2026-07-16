@@ -3,7 +3,7 @@ Honest end-to-end test of the pull flow as the IDE plugin sees it.
 
 Simulates the full sequence the plugin makes in PullFromMirrorAction:
   1. handshake (GET /api/auth/verify)            — must reject wrong password
-  2. list refs (GET /api/documents/list)          — must include branches in BARE
+  2. list refs (POST /api/documents/list)         — must include branches in BARE
   3. preview details (POST /api/documents/preview-details)
   4. export bundle (POST /api/documents/export with branch + haves)
   5. decrypt the bundle and verify it contains the requested branch
@@ -33,6 +33,7 @@ from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
 from tests import _harness
+from tests.conftest import envelope_post, envelope_form_post, parse_envelope
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -159,9 +160,9 @@ def test_list_includes_bare_only_branch(tmp_path: Path, monkeypatch):
     repo = f"e2e-list-{int(time.time())}"
     _make_repo_with_branch(client, storage, repo, branch="confluence_mcp")
 
-    resp = client.get("/api/documents/list", params={"repo": repo})
+    resp = envelope_post(client, "/api/documents/list", {"repo": repo}, "test-pass")
     assert resp.status_code == 200, resp.text
-    refs = resp.json().get("refs", {})
+    refs = parse_envelope(resp.json(), "test-pass").get("refs", {})
     assert "confluence_mcp" in refs, (
         f"Branch pushed to bare must be listed. Got: {list(refs.keys())}"
     )
@@ -176,14 +177,14 @@ def test_preview_for_bare_only_branch(tmp_path: Path, monkeypatch):
     repo = f"e2e-preview-{int(time.time())}"
     _make_repo_with_branch(client, storage, repo, branch="confluence_mcp", commits=3)
 
-    resp = client.post(
-        "/api/documents/preview-details",
-        json={"repo": repo, "since": None, "branch": "confluence_mcp"},
+    password = "test-pass"  # default from _make_client
+    resp = envelope_post(
+        client, "/api/documents/preview-details",
+        {"repo": repo, "branch": "confluence_mcp"}, password,
     )
     assert resp.status_code == 200, resp.text
-    body = resp.json()
+    body = parse_envelope(resp.json(), password)
     assert body.get("success") is True
-    # confluence_mcp had 3 commits on top of the initial commit -> at least 3 listed
     assert len(body.get("commits", [])) >= 3, (
         f"Preview should list at least 3 commits, got {body.get('commits')}"
     )
@@ -209,19 +210,19 @@ def test_pull_happy_path_decrypts_and_contains_target_branch(tmp_path: Path, mon
     assert _decrypt_dump(probe.content, password).startswith(b"SYNC-PROBE")
 
     # Step 2: list
-    refs = client.get("/api/documents/list", params={"repo": repo}).json()["refs"]
+    list_resp = envelope_post(client, "/api/documents/list", {"repo": repo}, password)
+    refs = parse_envelope(list_resp.json(), password).get("refs", {})
     assert refs.get(target, {}).get("sha") == tip
 
     # Step 3: export with branch + empty haves -> full delta of the branch
-    export = client.post(
-        "/api/documents/export",
-        data={"repo": repo, "branch": target},
-    )
+    export = envelope_form_post(client, "/api/documents/export",
+                                {"repo": repo, "branch": target}, password)
     assert export.status_code == 200, export.text
-    assert export.json().get("status") == "ok"
+    inner = parse_envelope(export.json(), password)
+    assert inner.get("status") == "ok"
 
     # Step 4: decrypt and verify it's a valid git bundle
-    encrypted = base64.b64decode(export.json()["data"])
+    encrypted = base64.b64decode(export.json()["d"])
     bundle_bytes = _decrypt_dump(encrypted, password)
     assert _is_git_bundle(bundle_bytes), "Decrypted payload must be a git bundle"
 
@@ -270,15 +271,13 @@ def test_pull_with_wrong_password_fails_to_decrypt(tmp_path: Path, monkeypatch):
     except InvalidTag:
         pass  # expected — plugin would surface this as a clear error
 
-    # And to be really sure: a real export with wrong password is also unreadable
-    export = client.post("/api/documents/export", data={"repo": repo, "branch": "main"})
-    assert export.status_code == 200
-    encrypted = base64.b64decode(export.json()["data"])
-    try:
-        _decrypt_dump(encrypted, "wrong-pwd")
-        raise AssertionError("Bundle should not decrypt with wrong password")
-    except InvalidTag:
-        pass
+    # And to be really sure: a real export with the WRONG password is rejected
+    # at the envelope layer (server can't decrypt the request → 400).
+    wrong_export = envelope_form_post(client, "/api/documents/export",
+                                      {"repo": repo, "branch": "main"}, "wrong-pwd")
+    assert wrong_export.status_code == 400, (
+        f"Export with wrong envelope password must return 400, got {wrong_export.status_code}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -301,11 +300,12 @@ def test_check_with_many_hashes_completes_fast(tmp_path: Path, monkeypatch):
     hashes_list = [tip, *fakes]
 
     started = time.perf_counter()
-    resp = client.post("/api/documents/check", json={"repo": repo, "commits": hashes_list})
+    resp = envelope_post(client, "/api/documents/check",
+                         {"repo": repo, "commits": hashes_list}, "test-pass")
     elapsed = time.perf_counter() - started
 
     assert resp.status_code == 200
-    body = resp.json()
+    body = parse_envelope(resp.json(), "test-pass")
     assert tip in body["known"], "Real tip must be reported as known"
     # Most fakes must NOT be reported (some short-prefix collisions tolerated)
     assert len(body["known"]) <= len(hashes_list) // 2, (

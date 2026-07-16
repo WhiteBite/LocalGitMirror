@@ -152,10 +152,12 @@ async def lifespan(app: FastAPI):
     shared_manager = SharedManager(actual_storage_path)
 
     # 2. Inject dependencies into routers
-    from app.routers import deps, settings
+    from app.routers import deps, file_sync, settings
 
     deps.repo_manager = repo_manager
     deps.system_logger = system_logger
+    file_sync.repo_manager = repo_manager
+    file_sync.system_logger = system_logger
     settings.settings_manager = settings_manager
 
     from app.routers import system as system_router_mod
@@ -184,6 +186,16 @@ async def lifespan(app: FastAPI):
     sync_router_mod.shared_manager = shared_manager
     sync_router_mod.system_logger = system_logger
     sync_router_mod.config = CONFIG
+
+    # sync: load/create the server's long-term X25519 key for protocol v3
+    # (hybrid ECIES). Stored under the storage tree, raw 32 bytes, 0600.
+    try:
+        from app.core import hybrid_crypto
+        _hybrid_key_path = actual_storage_path / ".lgm" / "server_x25519.key"
+        sync_router_mod.server_private_key = hybrid_crypto.load_or_create_server_key(_hybrid_key_path)
+    except Exception as e:
+        console.print(f"[yellow][!] Failed to init hybrid (v3) key: {e}. Falling back to password-only.[/yellow]")
+        sync_router_mod.server_private_key = None
 
     # files
     files_router_mod.repo_manager = repo_manager
@@ -256,6 +268,14 @@ async def lifespan(app: FastAPI):
     console.print(f"[cyan]Mirror URL:[/cyan]      {protocol}://{local_ip}:{CONFIG['web_port']}")
     console.print(f"[cyan]API Key:[/cyan]         {api_key}")
     console.print(f"[cyan]Sync Password:[/cyan]   {sync_pass}")
+    # v3 hybrid public-key fingerprint (for out-of-band pinning verification)
+    try:
+        if getattr(sync_router_mod, "server_private_key", None) is not None:
+            from app.core import hybrid_crypto
+            _fp = hybrid_crypto.fingerprint(hybrid_crypto.public_bytes(sync_router_mod.server_private_key))
+            console.print(f"[cyan]Server Key (v3):[/cyan] {_fp}")
+    except Exception:
+        pass
     console.print(f"[cyan]Default Repo:[/cyan]    {repo_manager.current_repo if repo_manager else 'default'}")
     console.print("[bold cyan]─────────────────────────────[/bold cyan]")
     console.print("[dim]Copy these values into IDEA plugin Settings > LocalGitMirror[/dim]")
@@ -317,19 +337,16 @@ async def sanitize_headers(request, call_next):
             del response.headers[hdr]
     return response
 
-# --- MOUNT GIT HTTP (CRITICAL: MUST BE BEFORE START) ---
-# We use a placeholder path for now, it will use absolute paths inside the middleware
-from app.routers.git_http import init_git_http
-
-# Load storage path from env for immediate mounting
-initial_storage = Path(os.getenv("STORAGE_PATH", "storage"))
-init_git_http(app, initial_storage)
+# --- GIT SMART HTTP DISABLED ---
+# Raw git protocol (/git/*) is not mounted. All data travels through the
+# encrypted /api/documents/* transport to avoid git-specific DLP signatures.
 
 
 # Include routers
 from app.routers import (
     deps_router, settings_router, web_router, websocket_router,
     system_router, repos_router, sync_router, files_router, shared_router,
+    plugin_router, buffer_router, file_sync_router,
 )
 
 # deps router is wired to repo_manager / system_logger inside the lifespan
@@ -341,6 +358,9 @@ app.include_router(sync_router, dependencies=[Depends(get_api_key)])
 app.include_router(files_router, dependencies=[Depends(get_api_key)])
 app.include_router(shared_router, dependencies=[Depends(get_api_key)])
 app.include_router(deps_router, dependencies=[Depends(get_api_key)])
+app.include_router(file_sync_router, dependencies=[Depends(get_api_key)])
+app.include_router(plugin_router, dependencies=[Depends(get_api_key)])
+app.include_router(buffer_router, dependencies=[Depends(get_api_key)])
 app.include_router(web_router)
 app.include_router(settings_router, dependencies=[Depends(get_api_key)])
 app.include_router(websocket_router)
