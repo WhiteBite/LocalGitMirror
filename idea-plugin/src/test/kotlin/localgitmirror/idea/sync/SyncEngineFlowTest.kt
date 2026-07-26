@@ -241,6 +241,7 @@ class SyncEngineFlowTest {
     override fun headHash(project: Project, projectDir: File): String? = head
     override fun currentBranch(project: Project, projectDir: File): String? = "main"
     override fun isAncestor(project: Project, projectDir: File, ancestor: String, descendant: String): Boolean = true
+    override fun mergeBase(project: Project, projectDir: File, a: String, b: String): String? = null
     override fun recentCommits(project: Project, projectDir: File, limit: Int): List<GitLocal.CommitSummary> {
       return listOf(GitLocal.CommitSummary(hash = head, subject = "msg"))
     }

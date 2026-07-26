@@ -59,6 +59,7 @@ interface GitPort {
   fun headHash(project: Project, projectDir: File): String?
   fun currentBranch(project: Project, projectDir: File): String?
   fun isAncestor(project: Project, projectDir: File, ancestor: String, descendant: String): Boolean
+  fun mergeBase(project: Project, projectDir: File, a: String, b: String): String?
   fun recentCommits(project: Project, projectDir: File, limit: Int): List<GitLocal.CommitSummary>
   /** Most recent N commit hashes reachable from [ref] (a branch name, tag, or hash). */
   fun recentCommitsOfRef(project: Project, projectDir: File, ref: String, limit: Int): List<String>
@@ -71,6 +72,9 @@ object DefaultGitPort : GitPort {
   override fun currentBranch(project: Project, projectDir: File): String? = GitLocal.currentBranch(project, projectDir)
   override fun isAncestor(project: Project, projectDir: File, ancestor: String, descendant: String): Boolean {
     return GitLocal.isAncestor(project, projectDir, ancestor, descendant)
+  }
+  override fun mergeBase(project: Project, projectDir: File, a: String, b: String): String? {
+    return GitLocal.mergeBase(project, projectDir, a, b)
   }
   override fun recentCommits(project: Project, projectDir: File, limit: Int): List<GitLocal.CommitSummary> {
     return GitLocal.recentCommits(project, projectDir, limit)

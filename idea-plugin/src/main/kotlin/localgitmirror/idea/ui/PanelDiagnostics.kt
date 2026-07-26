@@ -128,7 +128,9 @@ internal fun LocalGitMirrorPanel.pullFromMirror() {
   val preselected = selectedBranch()
 
   try {
-    localgitmirror.idea.actions.PullFromMirrorAction(preselected).actionPerformed(
+    localgitmirror.idea.actions.PullFromMirrorAction(preselected) { indicator ->
+        currentIndicator = indicator
+      }.actionPerformed(
       com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
         "LocalGitMirrorToolWindow", null,
         com.intellij.openapi.actionSystem.DataContext { dataId ->

@@ -196,7 +196,7 @@ class SyncEngine(
     val byBranch = state.readLastByBranch(projectDir)
     val lastForBranch = byBranch[branch].orEmpty()
     val lastSent = state.readLastSent(projectDir).orEmpty()
-    val recent = git.recentCommits(project, projectDir, 80).map { it.hash }
+    val recent = git.recentCommits(project, projectDir, SyncConstants.RECENT_COMMITS_DEPTH).map { it.hash }
 
     val raw = mutableListOf<String>()
     raw.add(head)
@@ -293,7 +293,7 @@ class SyncEngine(
       val tip = git.branchHash(project, projectDir, br) ?: continue
       val extras = LinkedHashSet<String>()
       extras.add(tip)
-      git.recentCommitsOfRef(project, projectDir, br, 50).forEach { extras.add(it) }
+      git.recentCommitsOfRef(project, projectDir, br, SyncConstants.ADDITIONAL_BRANCH_DEPTH).forEach { extras.add(it) }
       byBranch[br]?.takeIf { it.isNotBlank() }?.let { extras.add(it) }
       val deduped = extras.filter { hashRe.matches(it) }.toList()
       branchInfos.add(BranchInfo(br, tip, deduped))
@@ -306,7 +306,7 @@ class SyncEngine(
     val askable = branchInfos.flatMap { it.candidates }
       .filter { it.lowercase() !in serverKnown }
       .distinct()
-      .take(300)
+      .take(SyncConstants.HAS_COMMITS_CANDIDATE_LIMIT)
 
     val knownFromHas: Set<String> = if (askable.isEmpty()) emptySet() else {
       val has = mirror.hasCommits(settings.baseUrl, settings.mirrorApiKey, repo, askable, settings.syncPassword, settings.mirrorInsecureTls)
@@ -332,11 +332,22 @@ class SyncEngine(
     }
 
     // ─── Step 5. Pick best ^base per branch ─────────────────────────────
-    // For each branch, search candidates (own history + ALL server tips, since
-    // a branch might descend from any other branch the server hosts). The
-    // first candidate that is in `known` AND is an ancestor of our tip wins.
+    // Fast path: if server has this branch's tip, merge-base gives optimal
+    // base in ONE git call instead of N isAncestor checks. Fallback to
+    // candidate loop if merge-base fails or server doesn't have the branch.
     val excludeBases = mutableListOf<String>()
     for (info in branchInfos) {
+      // Try merge-base with server tip first (fastest path)
+      val serverTip = serverRefs.refs?.get(info.name)?.sha
+      if (serverTip != null && known.contains(serverTip.lowercase())) {
+        val mergeBase = git.mergeBase(project, projectDir, info.tip, serverTip)
+        if (mergeBase != null && mergeBase.lowercase() != info.tip.lowercase()) {
+          excludeBases.add(mergeBase)
+          continue
+        }
+      }
+      
+      // Fallback: linear candidate search
       val candidatesForThisBranch = (info.candidates + serverKnown).distinct()
       var best = pickBestKnownBase(info.tip, candidatesForThisBranch, known)
       while (!best.isNullOrBlank()) {
@@ -344,8 +355,6 @@ class SyncEngine(
           excludeBases.add(best)
           break
         }
-        // Not an ancestor: try the next-best candidate (e.g. branch X's tip is
-        // known but X diverged from our branch — useless as ^base).
         val remaining = candidatesForThisBranch.filter { !it.equals(best, ignoreCase = true) }
         best = pickBestKnownBase(info.tip, remaining, known)
       }
