@@ -99,9 +99,9 @@ object NativeBundleBuilder {
   }
 
   private fun ensureCommitReachable(workDir: File, commit: String) {
-    val res = git(workDir, "rev-list", "HEAD...$commit", "--count")
+    val res = git(workDir, "merge-base", "--is-ancestor", commit, "HEAD")
     if (res.exitCode != 0) {
-      throw RuntimeException("Invalid sync state/base commit")
+      throw RuntimeException("Invalid sync state/base commit: $commit is not an ancestor of HEAD")
     }
   }
 

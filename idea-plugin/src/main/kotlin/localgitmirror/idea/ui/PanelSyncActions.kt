@@ -37,12 +37,14 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
   val needsCheckout = chosenBranch != currentBranch && !chosenBranch.isBlank()
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send «$chosenBranch»", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send «$chosenBranch»", true) {
     override fun run(indicator: ProgressIndicator) {
+      currentIndicator = indicator
       try {
         // If a different branch is selected in the combo — checkout first, then restore
         if (needsCheckout) {
           indicator.text = "Переключаемся на «$chosenBranch»…"
+          indicator.checkCanceled()
           val co = GitLocal.checkout(project, dir, chosenBranch)
           if (!co.ok()) {
             notify(LocalGitMirrorBundle.message("notify.checkoutFailed", co.stderr), NotificationType.ERROR)
@@ -97,6 +99,10 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
     override fun onFinished() {
       isSyncing = false
     }
+
+    override fun onCancel() {
+      isSyncing = false
+    }
   })
 }
 
@@ -121,12 +127,14 @@ internal fun LocalGitMirrorPanel.syncBranch() {
   ) ?: return
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send branch", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send branch", true) {
     override fun run(indicator: ProgressIndicator) {
+      currentIndicator = indicator
       try {
         val original = GitLocal.currentBranch(project, dir)
         append("Send branch: $chosen")
         append("Target: ${syncFacade.describeRepoTarget(dir, settings)}")
+        indicator.checkCanceled()
 
         val co = GitLocal.checkout(project, dir, chosen)
         if (!co.ok()) {
@@ -174,6 +182,10 @@ internal fun LocalGitMirrorPanel.syncBranch() {
     override fun onFinished() {
       isSyncing = false
     }
+
+    override fun onCancel() {
+      isSyncing = false
+    }
   })
 }
 
@@ -198,13 +210,15 @@ internal fun LocalGitMirrorPanel.syncSelectedCommits() {
   if (selectedHashes.isEmpty()) return
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send commits", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send commits", true) {
     override fun run(indicator: ProgressIndicator) {
+      currentIndicator = indicator
       try {
         val original = GitLocal.currentBranch(project, dir)
         val tempBranch = "sync-tmp-${System.currentTimeMillis()}"
         append("Send commits: ${selectedHashes.joinToString(" ")}")
         append("Target: ${syncFacade.describeRepoTarget(dir, settings)}")
+        indicator.checkCanceled()
 
         val create = GitLocal.checkoutNew(project, dir, tempBranch, "HEAD")
         if (!create.ok()) {
@@ -266,6 +280,10 @@ internal fun LocalGitMirrorPanel.syncSelectedCommits() {
     override fun onFinished() {
       isSyncing = false
     }
+
+    override fun onCancel() {
+      isSyncing = false
+    }
   })
 }
 
@@ -313,11 +331,13 @@ internal fun LocalGitMirrorPanel.pushAs() {
   }
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Push as '$targetBranch'", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Push as '$targetBranch'", true) {
     override fun run(indicator: ProgressIndicator) {
+      currentIndicator = indicator
       try {
         append("Push as: $currentBranch -> $targetBranch")
         append("Target: ${syncFacade.describeRepoTarget(dir, settings)}")
+        indicator.checkCanceled()
 
         val create = GitLocal.checkoutNew(project, dir, targetBranch, "HEAD")
         if (!create.ok()) {
@@ -359,6 +379,10 @@ internal fun LocalGitMirrorPanel.pushAs() {
     }
 
     override fun onFinished() {
+      isSyncing = false
+    }
+
+    override fun onCancel() {
       isSyncing = false
     }
   })

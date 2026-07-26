@@ -6,14 +6,21 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.options.ShowSettingsUtil
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBList
+import com.intellij.ui.dsl.builder.*
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.net.LanDiscovery
 import localgitmirror.idea.settings.*
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.awt.*
@@ -24,6 +31,15 @@ import java.util.concurrent.atomic.AtomicLong
 import javax.swing.*
 
 class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
+
+  // ── Quick Setup form state (local vars bound to DSL fields) ──
+  private var setupUrl: String = service<MirrorSettingsService>().state.baseUrl.let {
+    if (it.isNotBlank() && it != "https://localhost") it else ""
+  }
+  private var setupApiKey: String = SecretsStore.mirrorApiKey
+  private var setupSyncPassword: String = SecretsStore.syncPassword
+  private var setupFormPanel: com.intellij.openapi.ui.DialogPanel? = null
+
   internal val log = JTextArea()
   internal val status = JBLabel("")
   internal val mirrorBadge = BadgeLabel("Mirror: ?")
@@ -49,17 +65,52 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     isVisible = false
   }
 
+  internal val cancelButton = JButton("Cancel").apply {
+    isVisible = false
+    margin = JBUI.insets(1, 8)
+    font = JBUI.Fonts.smallFont()
+    isFocusPainted = false
+    addActionListener { cancelCurrentOperation() }
+  }
+
   internal lateinit var historyScroll: JScrollPane
 
   internal val historyService = service<OperationsHistoryService>()
   internal val syncFacade = project.getService(SyncFacadeService::class.java)
 
-  // ── Branch selector (JComboBox) ──
+  // ── Branch selector (JBList with status) ──
   // Shows local branches immediately and appends Mirror-only branches after a
-  // background refs request. BranchChoice keeps the raw name for actions.
-  internal val branchCombo = JComboBox<BranchChoice>().apply {
+  // background refs request. BranchListItem keeps the raw name + status for actions.
+  internal val branchListModel = DefaultListModel<BranchListItem>()
+  internal val branchList = JBList(branchListModel).apply {
     font = JBUI.Fonts.smallFont()
+    cellRenderer = BranchListCellRenderer()
+    selectionMode = ListSelectionModel.SINGLE_SELECTION
     toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Mirror"
+  }
+
+  private inner class BranchListCellRenderer : DefaultListCellRenderer() {
+    override fun getListCellRendererComponent(
+      list: JList<*>?,
+      value: Any?,
+      index: Int,
+      isSelected: Boolean,
+      cellHasFocus: Boolean
+    ): Component {
+      val c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
+      if (value is BranchListItem) {
+        val prefix = when (value.status) {
+          BranchStatus.SYNCED -> "\u2713 "
+          BranchStatus.AHEAD -> "\u2191 "
+          BranchStatus.BEHIND -> "\u2193 "
+          BranchStatus.MIRROR_ONLY -> "\u2605 "
+          BranchStatus.LOCAL_ONLY -> "\u25CB "
+        }
+        text = "$prefix${value.name}"
+        font = JBUI.Fonts.smallFont()
+      }
+      return c
+    }
   }
   private val branchRefreshButton = JButton(AllIcons.Actions.Refresh).apply {
     margin = JBUI.insets(1)
@@ -87,6 +138,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       updateUiState()
     }
 
+  /** Current progress indicator for cancellation support. Set by sync operations. */
+  internal var currentIndicator: ProgressIndicator? = null
+
   internal enum class SyncOutcome { OK, FAIL }
 
   // ── Progress helpers ──
@@ -104,22 +158,29 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     }
   }
 
+  /** Cancel the currently running sync operation, if any. */
+  internal fun cancelCurrentOperation() {
+    currentIndicator?.cancel()
+  }
+
   private fun updateUiState() {
     UIUtil.invokeLaterIfNeeded {
       val enabled = !isSyncing
       fun disableAll(container: java.awt.Container) {
         for (c in container.components) {
-          if (c is JButton || c is JToggleButton || c is JComboBox<*>) c.isEnabled = enabled
+          if (c is JButton || c is JToggleButton || c is JComboBox<*> || c is JList<*>) c.isEnabled = enabled
           if (c is java.awt.Container) disableAll(c)
         }
       }
       disableAll(this)
       progressBar.isVisible = isSyncing
       progressLabel.isVisible = isSyncing
+      cancelButton.isVisible = isSyncing
       if (!isSyncing) {
         progressLabel.text = ""
         progressBar.isIndeterminate = true
         progressBar.value = 0
+        currentIndicator = null
       }
     }
   }
@@ -149,12 +210,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     mi.addActionListener { action() }
     return mi
   }
-
-  private fun gearSubmenu(title: String, icon: Icon? = null, build: JMenu.() -> Unit): JMenu =
-    JMenu(title).apply {
-      this.icon = icon
-      build()
-    }
 
   /** Trigger an action registered in plugin.xml by id, in the panel's project context. */
   private fun runRegisteredAction(actionId: String) {
@@ -191,11 +246,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
     val localBranches = GitLocal.listBranches(project, dir)
     val currentBranch = GitLocal.currentBranch(project, dir)
-    replaceBranchChoices(localBranches, mirrorBranches, currentBranch)
+    replaceBranchItems(localBranches, mirrorRefs, currentBranch)
     refreshMirrorBranches(dir, localBranches, currentBranch, userInitiated)
   }
 
-  private var mirrorBranches: Set<String> = emptySet()
+  private var mirrorRefs: Map<String, String> = emptyMap()
 
   private fun refreshMirrorBranches(
     dir: File,
@@ -231,9 +286,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       UIUtil.invokeLaterIfNeeded {
         if (project.isDisposed || requestGeneration != branchRefreshGeneration.get()) return@invokeLaterIfNeeded
         if (result.code in 200..299 && result.refs != null) {
-          mirrorBranches = result.refs.keys
-          replaceBranchChoices(localBranches, mirrorBranches, currentBranch)
-          finishBranchRefresh("Mirror: ${mirrorBranches.size} веток")
+          mirrorRefs = result.refs.mapValues { it.value.sha }
+          replaceBranchItems(localBranches, mirrorRefs, currentBranch)
+          finishBranchRefresh("Mirror: ${mirrorRefs.size} веток")
         } else {
           val detail = "Mirror не ответил для repo '$repo': ${result.message.take(120)}"
           finishBranchRefresh(detail)
@@ -246,35 +301,56 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   private fun setBranchRefreshInProgress(inProgress: Boolean) {
     branchRefreshButton.isEnabled = !inProgress && !isSyncing
     branchRefreshButton.toolTipText = if (inProgress) "Обновляем ветки Mirror…" else "Обновить ветки с Mirror"
-    if (inProgress) branchCombo.toolTipText = "Загружаем ветки с Mirror…"
+    if (inProgress) branchList.toolTipText = "Загружаем ветки с Mirror…"
   }
 
   private fun finishBranchRefresh(detail: String) {
     setBranchRefreshInProgress(false)
-    branchCombo.toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Mirror. $detail"
+    branchList.toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Mirror. $detail"
   }
 
-  private fun replaceBranchChoices(
+  private fun replaceBranchItems(
     localBranches: List<String>,
-    mirrorBranches: Collection<String>,
+    mirrorRefs: Map<String, String>,
     currentBranch: String?
   ) {
+    val dir = baseDir() ?: return
     val selectedName = selectedBranchChoice()?.name
-    val choices = BranchSelectorModel.merge(localBranches, mirrorBranches)
-    val preferred = BranchSelectorModel.preferredSelection(selectedName, currentBranch, choices)
 
-    branchCombo.removeAllItems()
-    choices.forEach(branchCombo::addItem)
+    val allNames = (localBranches.toSet() + mirrorRefs.keys).toSortedSet()
+    val items = allNames.map { name ->
+      val localHash = if (name in localBranches) GitLocal.branchHash(project, dir, name) else null
+      val mirrorHash = mirrorRefs[name]
+      val status = when {
+        localHash == null -> BranchStatus.MIRROR_ONLY
+        mirrorHash == null -> BranchStatus.LOCAL_ONLY
+        localHash == mirrorHash -> BranchStatus.SYNCED
+        GitLocal.isAncestor(project, dir, mirrorHash, localHash) -> BranchStatus.AHEAD
+        GitLocal.isAncestor(project, dir, localHash, mirrorHash) -> BranchStatus.BEHIND
+        else -> BranchStatus.AHEAD // ponytail: divergent → show as ahead
+      }
+      BranchListItem(name, status, localHash, mirrorHash)
+    }
+
+    val preferred = BranchSelectorModel.preferredSelection(selectedName, currentBranch,
+      items.map { BranchChoice(it.name, it.localHash != null) })
+
+    branchListModel.clear()
+    items.forEach { branchListModel.addElement(it) }
     if (preferred != null) {
-      branchCombo.selectedItem = choices.firstOrNull { it.name == preferred }
+      val idx = items.indexOfFirst { it.name == preferred }
+      if (idx >= 0) branchList.selectedIndex = idx
     }
   }
 
-  internal fun selectedBranchChoice(): BranchChoice? = branchCombo.selectedItem as? BranchChoice
+  internal fun selectedBranchChoice(): BranchChoice? {
+    val item = branchList.selectedValue ?: return null
+    return BranchChoice(item.name, item.localHash != null)
+  }
 
   /** Returns the raw branch name currently chosen in the selector. */
   internal fun selectedBranch(): String? {
-    selectedBranchChoice()?.name?.let { return it }
+    branchList.selectedValue?.name?.let { return it }
     val dir = baseDir() ?: return null
     return GitLocal.currentBranch(project, dir)
   }
@@ -282,94 +358,17 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   /** Rebuild the concise gear menu; routine actions stay at the top, rare tools are grouped. */
   internal fun rebuildGearMenu() {
     moreMenu.removeAll()
-
-    val versionItem = JMenuItem("LocalGitMirror $pluginVersionText")
-    versionItem.isEnabled = false
-    moreMenu.add(versionItem)
     moreMenu.add(gearMenuItem("Обновить ветки Mirror", AllIcons.Actions.Refresh) { refreshBranchCombo(userInitiated = true) })
-    moreMenu.add(gearMenuItem("Управление ветками Mirror…", AllIcons.Vcs.Branch) {
-      runRegisteredAction("LocalGitMirror.ManageBranches")
-    })
     moreMenu.add(gearMenuItem("Проверить подключение", AllIcons.Actions.Checked) { testMirror() })
     moreMenu.addSeparator()
-
-    moreMenu.add(gearSubmenu("Другие операции с Git", AllIcons.Vcs.Branch) {
-      add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.sendBranch"), AllIcons.Vcs.Branch) { syncBranch() })
-      add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.sendAs"), AllIcons.Actions.Copy) { pushAs() })
-      add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.sendCommits"), AllIcons.Vcs.History) { syncSelectedCommits() })
-      addSeparator()
-      add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.pullBack"), AllIcons.Actions.Diff) { pullBack() })
-      add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.applyLocalDump"), AllIcons.Actions.OpenNewTab) { applyLocalDump() })
-    })
-    moreMenu.add(gearSubmenu("Файлы между компьютерами", AllIcons.Actions.Upload) {
-      add(gearMenuItem("Отправить выбранный файл…", AllIcons.Actions.Upload) {
-        runRegisteredAction("LocalGitMirror.FileSendSelected")
-      })
-      add(gearMenuItem("Получить файл…", AllIcons.Actions.Download) {
-        runRegisteredAction("LocalGitMirror.FileFetch")
-      })
-    })
-    moreMenu.add(gearSubmenu("Корпоративные зависимости", AllIcons.Actions.Download) {
-      add(gearMenuItem(LocalGitMirrorBundle.message("deps.menu.request"), AllIcons.Actions.Download) {
-        runRegisteredAction("LocalGitMirror.DepsRequest")
-      })
-      add(gearMenuItem(LocalGitMirrorBundle.message("deps.menu.respond"), AllIcons.Actions.Upload) {
-        runRegisteredAction("LocalGitMirror.DepsRespond")
-      })
-      add(gearMenuItem(LocalGitMirrorBundle.message("deps.menu.apply"), AllIcons.Actions.OpenNewTab) {
-        runRegisteredAction("LocalGitMirror.DepsApply")
-      })
-    })
-    moreMenu.add(gearSubmenu("Общий буфер", AllIcons.Actions.Copy) {
-      add(gearMenuItem(LocalGitMirrorBundle.message("buffer.menu.send"), AllIcons.Actions.Upload) {
-        runRegisteredAction("LocalGitMirror.BufferSend")
-      })
-      add(gearMenuItem(LocalGitMirrorBundle.message("buffer.menu.paste"), AllIcons.Actions.Download) {
-        runRegisteredAction("LocalGitMirror.BufferPaste")
-      })
-      add(gearMenuItem(LocalGitMirrorBundle.message("buffer.menu.history"), AllIcons.Vcs.History) {
-        runRegisteredAction("LocalGitMirror.BufferHistory")
-      })
-    })
-    moreMenu.add(gearSubmenu("Диагностика и конфигурация", AllIcons.General.InspectionsOK) {
-      add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.preflight"), AllIcons.General.InspectionsOK) { runPreflight() })
-      add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.dryRunSend"), AllIcons.Actions.Preview) { runDryRun() })
-      add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.dryRunPull"), AllIcons.Actions.Preview) { runPullDryRun() })
-      addSeparator()
-      add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.copyConfig"), AllIcons.Actions.Copy) { copyConfigLine() })
-      add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.pasteConfig"), AllIcons.Actions.Upload) { pasteConfigLine() })
-    })
-    moreMenu.addSeparator()
-    moreMenu.add(gearMenuItem("Скачать обновление плагина…", AllIcons.Actions.Download) { downloadLatestPlugin() })
-    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("toolwindow.menu.settings"), AllIcons.General.Settings) {
+    moreMenu.add(gearMenuItem("Настройки", AllIcons.General.Settings) {
       ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
       refreshStatus()
     })
   }
 
-  /** Rebuild action buttons. */
+  /** Rebuild action buttons (now just refreshes gear menu). */
   internal fun rebuildActions() {
-    actionsBox.removeAll()
-
-    // Selector row: label + combobox
-    val selectorRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0))
-    selectorRow.isOpaque = false
-    selectorRow.alignmentX = LEFT_ALIGNMENT
-    val branchLabel = JBLabel(LocalGitMirrorBundle.message("panel.branch.label"))
-    branchLabel.font = JBUI.Fonts.smallFont()
-    branchLabel.foreground = UIUtil.getContextHelpForeground()
-    selectorRow.add(branchLabel)
-    selectorRow.add(branchCombo)
-    selectorRow.add(branchRefreshButton)
-    actionsBox.add(selectorRow)
-    actionsBox.add(Box.createVerticalStrut(JBUI.scale(4)))
-
-    // Primary action row: Pull + Send
-    actionsBox.add(actionRow(
-      primaryBtn(LocalGitMirrorBundle.message("toolwindow.pullFromMirror"), AllIcons.Actions.Download) { pullFromMirror() },
-      primaryBtn(LocalGitMirrorBundle.message("toolwindow.sendCurrent"), AllIcons.Actions.Upload) { syncCurrentBranch() }
-    ))
-
     rebuildGearMenu()
     revalidate()
     repaint()
@@ -378,105 +377,489 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   init {
     layout = BorderLayout()
 
-    val topContainer = JPanel()
-    topContainer.layout = BoxLayout(topContainer, BoxLayout.Y_AXIS)
-    topContainer.border = JBUI.Borders.empty(JBUI.scale(4), JBUI.scale(8))
-
-    // ── Header row: badges LEFT, gear RIGHT ──
-    val headerRow = JPanel(BorderLayout(JBUI.scale(4), 0))
-    headerRow.isOpaque = false
-    headerRow.alignmentX = LEFT_ALIGNMENT
-
-    badgesPanel.add(mirrorBadge)
-    badgesPanel.add(lastSyncBadge)
-    badgesPanel.alignmentX = LEFT_ALIGNMENT
-
-    rebuildGearMenu()
-
-    val gearBtn = JButton(AllIcons.General.Settings)
-    gearBtn.margin = JBUI.insets(1)
-    gearBtn.isFocusPainted = false
-    gearBtn.isBorderPainted = false
-    gearBtn.isContentAreaFilled = false
-    gearBtn.toolTipText = "LocalGitMirror $pluginVersionText \u00b7 ${LocalGitMirrorBundle.message("toolwindow.menu.settings")}"
-    gearBtn.addActionListener { moreMenu.show(gearBtn, 0, gearBtn.height) }
-    headerRow.add(gearBtn, BorderLayout.EAST)
-    topContainer.add(headerRow)
-    // Badges live on their own full-width row so the WrapLayout can wrap them
-    // onto a second line in a narrow tool window instead of truncating ("…").
-    topContainer.add(badgesPanel)
-
-    // ── Status line ──
-    status.font = JBUI.Fonts.smallFont()
-    status.foreground = UIUtil.getContextHelpForeground()
-    status.alignmentX = LEFT_ALIGNMENT
-    status.border = JBUI.Borders.empty(2, 0)
-    topContainer.add(status)
-
-    topContainer.add(Box.createVerticalStrut(JBUI.scale(4)))
-
-    // ── Branch selector + action buttons ──
-    refreshBranchCombo()
-    rebuildActions()
-    topContainer.add(actionsBox)
-
-    topContainer.add(Box.createVerticalStrut(JBUI.scale(2)))
-
-    // ── Progress row: bar + stage label ──
-    val progressRow = JPanel(BorderLayout(JBUI.scale(4), 0))
-    progressRow.isOpaque = false
-    progressRow.alignmentX = LEFT_ALIGNMENT
-    progressRow.add(progressBar, BorderLayout.CENTER)
-    progressRow.add(progressLabel, BorderLayout.EAST)
-    topContainer.add(progressRow)
-
-    // ── History toggle + clear ──
-    val historyToggleRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
-    historyToggleRow.isOpaque = false
-    historyToggleRow.alignmentX = LEFT_ALIGNMENT
-    val historyToggle = JToggleButton(LocalGitMirrorBundle.message("toolwindow.history"))
-    historyToggle.margin = JBUI.insets(2, 4)
-    historyToggle.font = JBUI.Fonts.smallFont()
-    historyToggle.isFocusPainted = false
-    historyToggleRow.add(historyToggle)
-
-    val clearBtn = JButton(AllIcons.Actions.GC)
-    clearBtn.margin = JBUI.insets(1, 2)
-    clearBtn.isFocusPainted = false
-    clearBtn.isBorderPainted = false
-    clearBtn.isContentAreaFilled = false
-    clearBtn.toolTipText = LocalGitMirrorBundle.message("toolwindow.history.clear")
-    clearBtn.addActionListener {
-      historyService.clear()
-      refreshHistoryLog()
-      log.text = ""
-    }
-    historyToggleRow.add(clearBtn)
-    topContainer.add(historyToggleRow)
-
-    add(topContainer, BorderLayout.NORTH)
-
-    log.isEditable = false; log.lineWrap = true; log.wrapStyleWord = true
-    log.font = Font("JetBrains Mono", Font.PLAIN, JBUI.scale(11))
-    historyScroll = JScrollPane(log); historyScroll.isVisible = false
-    add(historyScroll, BorderLayout.CENTER)
-
-    historyToggle.addActionListener {
-      historyScroll.isVisible = historyToggle.isSelected
-      historyToggle.text = if (historyToggle.isSelected)
-        LocalGitMirrorBundle.message("toolwindow.history").replace("\u25be", "\u25b4")
-      else LocalGitMirrorBundle.message("toolwindow.history")
-      revalidate(); repaint()
-    }
-
-    refreshStatus()
-    refreshHistoryLog()
-
     // Auto-refresh history on any new entry, regardless of which thread added it.
+    // Registered once here so it survives rebuilds (setup → main UI transition).
     val listener: () -> Unit = {
       com.intellij.util.ui.UIUtil.invokeLaterIfNeeded { refreshHistoryLog() }
     }
     historyService.addChangeListener(listener)
+
+    val s = service<MirrorSettingsService>().state
+    if (s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()) {
+      buildMainUi()
+    } else {
+      buildSetupUi()
+    }
+  }
+
+  /** Build the full main UI (header, badges, actions, log). Called on init and after successful setup. */
+  private fun buildMainUi() {
+    removeAll()
+    
+    // Configure branch list for multi-select
+    branchList.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+    branchList.visibleRowCount = 5
+    branchList.fixedCellHeight = JBUI.scale(26)
+    
+    val branchScroll = JScrollPane(branchList).apply {
+      border = BorderFactory.createEmptyBorder()
+      viewportBorder = BorderFactory.createEmptyBorder()
+    }
+    
+    // Configure history log
+    log.isEditable = false
+    log.lineWrap = true
+    log.wrapStyleWord = true
+    log.font = Font("JetBrains Mono", Font.PLAIN, JBUI.scale(11))
+    historyScroll = JScrollPane(log).apply {
+      preferredSize = Dimension(Int.MAX_VALUE, JBUI.scale(120))
+      isVisible = false
+    }
+    
+    rebuildGearMenu()
+    
+    val mainPanel = panel {
+      // Status line with gear button
+      row {
+        status.font = JBUI.Fonts.smallFont()
+        status.foreground = UIUtil.getContextHelpForeground()
+        cell(status).resizableColumn()
+        
+        val gearBtn = JButton(AllIcons.General.Settings).apply {
+          margin = JBUI.insets(1)
+          isFocusPainted = false
+          isBorderPainted = false
+          isContentAreaFilled = false
+          toolTipText = "LocalGitMirror $pluginVersionText"
+          addActionListener { moreMenu.show(this, 0, height) }
+        }
+        cell(gearBtn)
+      }
+      
+      // Branch list (compact, no label)
+      row {
+        cell(branchScroll).resizableColumn()
+        cell(branchRefreshButton)
+      }
+      
+      // Action buttons row
+      row {
+        button("↓ Стянуть") { pullFromMirror() }
+          .applyToComponent {
+            putClientProperty("JButton.buttonType", "default")
+            font = font.deriveFont(Font.BOLD)
+          }
+        button("↑ Отправить") { syncCurrentBranch() }
+          .applyToComponent {
+            putClientProperty("JButton.buttonType", "default")
+            font = font.deriveFont(Font.BOLD)
+          }
+        button("↑↑ Отправить выбранные") { syncSelectedBranches() }
+          .applyToComponent {
+            font = font.deriveFont(Font.PLAIN)
+            toolTipText = "Отправить все выбранные ветки (Ctrl+Click для выбора)"
+          }
+      }
+      
+      // Offline mode buttons (export/import bundle)
+      row {
+        button("📦 Экспорт bundle") { exportBundle() }
+          .applyToComponent {
+            font = font.deriveFont(Font.PLAIN)
+            toolTipText = "Создать bundle файл для офлайн-передачи"
+          }
+        button("📥 Импорт bundle") { importBundle() }
+          .applyToComponent {
+            font = font.deriveFont(Font.PLAIN)
+            toolTipText = "Импортировать bundle файл"
+          }
+      }
+      
+      // Progress row (hidden by default)
+      row {
+        cell(progressBar).resizableColumn()
+        cell(cancelButton)
+        cell(progressLabel)
+      }
+      
+      // History (collapsible, collapsed by default)
+      collapsibleGroup("История", false) {
+        row {
+          cell(historyScroll).resizableColumn()
+          val clearBtn = JButton(AllIcons.Actions.GC).apply {
+            margin = JBUI.insets(1, 2)
+            isFocusPainted = false
+            isBorderPainted = false
+            isContentAreaFilled = false
+            toolTipText = "Очистить историю"
+            addActionListener {
+              historyService.clear()
+              refreshHistoryLog()
+              log.text = ""
+            }
+          }
+          cell(clearBtn)
+        }
+      }
+    }
+    
+    mainPanel.border = JBUI.Borders.empty(4, 8)
+    add(mainPanel, BorderLayout.NORTH)
+    
+    refreshBranchCombo()
+    refreshStatus()
+    refreshHistoryLog()
+  }
+  
+  /** Send all selected branches (multi-select support). */
+  private fun syncSelectedBranches() {
+    val selected = branchList.selectedValuesList
+    if (selected.isEmpty()) {
+      notify("Выберите ветки для отправки", NotificationType.WARNING)
+      return
+    }
+    val branchNames = selected.map { it.name }
+    if (branchNames.size == 1) {
+      syncCurrentBranch()
+    } else {
+      // Send multiple branches
+      syncMultipleBranches(branchNames)
+    }
+  }
+  
+  /** Send multiple branches in sequence. */
+  private fun syncMultipleBranches(branches: List<String>) {
+    if (isSyncing) {
+      notify("Операция уже выполняется", NotificationType.WARNING)
+      return
+    }
+    
+    isSyncing = true
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Отправка ${branches.size} веток", true) {
+      override fun run(indicator: ProgressIndicator) {
+        val dir = baseDir() ?: run {
+          notify("Проект не найден", NotificationType.ERROR)
+          return
+        }
+        val settings = service<MirrorSettingsService>().state
+        
+        for ((index, branch) in branches.withIndex()) {
+          indicator.checkCanceled()
+          indicator.fraction = index.toDouble() / branches.size
+          indicator.text = "Отправка $branch (${index + 1}/${branches.size})"
+          
+          try {
+            val result = syncFacade.runFullSync(dir, settings, additionalBranches = listOf(branch))
+            if (!result.step.ok) {
+              notify("Ошибка отправки $branch: ${result.step.message}", NotificationType.ERROR)
+            }
+          } catch (e: Exception) {
+            notify("Ошибка отправки $branch: ${e.message}", NotificationType.ERROR)
+          }
+        }
+        
+        notify("Отправлено ${branches.size} веток: ${branches.joinToString(", ")}", NotificationType.INFORMATION)
+      }
+      
+      override fun onSuccess() {
+        isSyncing = false
+        refreshBranchCombo()
+      }
+      
+      override fun onThrowable(error: Throwable) {
+        isSyncing = false
+        notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      }
+    })
+  }
+  
+  /** Export bundle for offline transfer. */
+  private fun exportBundle() {
+    val dir = baseDir() ?: run {
+      notify("Проект не найден", NotificationType.ERROR)
+      return
+    }
+    
+    val selected = branchList.selectedValuesList
+    if (selected.isEmpty()) {
+      notify("Выберите ветки для экспорта", NotificationType.WARNING)
+      return
+    }
+    
+    val branchNames = selected.map { it.name }
+    
+    // Ask user where to save
+    val fileChooser = JFileChooser().apply {
+      dialogTitle = "Сохранить bundle файл"
+      selectedFile = File("${project.name}-${branchNames.joinToString("-")}.bundle")
+      fileFilter = javax.swing.filechooser.FileNameExtensionFilter("Git Bundle", "bundle")
+    }
+    
+    if (fileChooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) {
+      return
+    }
+    
+    val targetFile = fileChooser.selectedFile
+    
+    isSyncing = true
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Экспорт bundle", true) {
+      override fun run(indicator: ProgressIndicator) {
+        indicator.text = "Создание bundle для ${branchNames.joinToString(", ")}"
+        
+        try {
+          // Use git bundle create
+          val refs = branchNames.map { "refs/heads/$it" }
+          val cmd = mutableListOf("git", "bundle", "create", targetFile.absolutePath) + refs
+          
+          val proc = ProcessBuilder(cmd)
+            .directory(dir)
+            .redirectErrorStream(false)
+            .start()
+          
+          val exitCode = proc.waitFor()
+          val stderr = proc.errorStream.bufferedReader().readText()
+          
+          if (exitCode != 0) {
+            notify("Ошибка экспорта: $stderr", NotificationType.ERROR)
+          } else {
+            notify("Bundle сохранён: ${targetFile.absolutePath}\nРазмер: ${targetFile.length() / 1024} KB", NotificationType.INFORMATION)
+          }
+        } catch (e: Exception) {
+          notify("Ошибка экспорта: ${e.message}", NotificationType.ERROR)
+        }
+      }
+      
+      override fun onSuccess() {
+        isSyncing = false
+      }
+      
+      override fun onThrowable(error: Throwable) {
+        isSyncing = false
+        notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      }
+    })
+  }
+  
+  /** Import bundle file. */
+  private fun importBundle() {
+    val dir = baseDir() ?: run {
+      notify("Проект не найден", NotificationType.ERROR)
+      return
+    }
+    
+    // Ask user to select bundle file
+    val fileChooser = JFileChooser().apply {
+      dialogTitle = "Выберите bundle файл"
+      fileFilter = javax.swing.filechooser.FileNameExtensionFilter("Git Bundle", "bundle")
+    }
+    
+    if (fileChooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) {
+      return
+    }
+    
+    val bundleFile = fileChooser.selectedFile
+    
+    isSyncing = true
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Импорт bundle", true) {
+      override fun run(indicator: ProgressIndicator) {
+        indicator.text = "Импорт ${bundleFile.name}"
+        
+        try {
+          // Use git bundle verify first
+          val verifyProc = ProcessBuilder("git", "bundle", "verify", bundleFile.absolutePath)
+            .directory(dir)
+            .redirectErrorStream(false)
+            .start()
+          
+          val verifyExit = verifyProc.waitFor()
+          val verifyOutput = verifyProc.inputStream.bufferedReader().readText()
+          
+          if (verifyExit != 0) {
+            notify("Bundle невалиден: $verifyOutput", NotificationType.ERROR)
+            return
+          }
+          
+          // Extract branch names from verify output
+          val branches = verifyOutput.lines()
+            .filter { it.contains("refs/heads/") }
+            .map { it.substringAfter("refs/heads/").trim() }
+          
+          // Use git fetch to import
+          val fetchProc = ProcessBuilder("git", "fetch", bundleFile.absolutePath)
+            .directory(dir)
+            .redirectErrorStream(false)
+            .start()
+          
+          val fetchExit = fetchProc.waitFor()
+          val fetchStderr = fetchProc.errorStream.bufferedReader().readText()
+          
+          if (fetchExit != 0) {
+            notify("Ошибка импорта: $fetchStderr", NotificationType.ERROR)
+          } else {
+            notify("Импортировано ${branches.size} веток: ${branches.joinToString(", ")}", NotificationType.INFORMATION)
+          }
+        } catch (e: Exception) {
+          notify("Ошибка импорта: ${e.message}", NotificationType.ERROR)
+        }
+      }
+      
+      override fun onSuccess() {
+        isSyncing = false
+        refreshBranchCombo()
+      }
+      
+      override fun onThrowable(error: Throwable) {
+        isSyncing = false
+        notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      }
+    })
+  }
+
+  /** Build the Quick Setup form shown when Mirror is not configured. */
+  private fun buildSetupUi() {
+    val form = panel {
+      row {
+        label("🔗 LocalGitMirror").bold()
+      }
+      
+      row {
+        label("URL Mirror")
+      }
+      row {
+        textField()
+          .bindText(::setupUrl)
+          .resizableColumn()
+        button("🔍 Найти") { onDiscoverSetup() }
+          .gap(RightGap.SMALL)
+      }
+      
+      row {
+        label("API Key")
+      }
+      row {
+        passwordField()
+          .bindText(::setupApiKey)
+          .resizableColumn()
+      }
+      
+      row {
+        label("Sync Password")
+      }
+      row {
+        passwordField()
+          .bindText(::setupSyncPassword)
+          .resizableColumn()
+      }
+      
+      row {
+        button("Подключиться") { onConnectSetup() }
+          .applyToComponent {
+            putClientProperty("JButton.buttonType", "default")
+            font = font.deriveFont(Font.BOLD)
+          }
+      }
+    }
+    form.border = JBUI.Borders.empty(JBUI.scale(12), JBUI.scale(16))
+    setupFormPanel = form
+    add(form, BorderLayout.NORTH)
+  }
+
+  // ── Setup form actions ──
+
+  private fun onDiscoverSetup() {
+    Thread({
+      val servers = try {
+        LanDiscovery.discover(timeoutMs = 6000)
+      } catch (_: Exception) {
+        emptyList()
+      }
+      SwingUtilities.invokeLater {
+        when {
+          servers.isEmpty() -> {
+            Messages.showInfoMessage(
+              "Серверы Mirror не найдены в локальной сети.\nПроверьте, что Mirror запущен и доступен.",
+              "Поиск Mirror"
+            )
+          }
+          servers.size == 1 -> {
+            setupUrl = servers.first().toUrl()
+            setupFormPanel?.reset()
+          }
+          else -> {
+            val options = servers.map { "${it.toUrl()} (${it.ip})" }.toTypedArray()
+            val chosen = Messages.showEditableChooseDialog(
+              "Найдено несколько серверов Mirror. Выберите:",
+              "Поиск Mirror",
+              null, options, options.first(), null
+            )
+            if (chosen != null) {
+              val idx = options.indexOf(chosen)
+              if (idx >= 0) {
+                setupUrl = servers[idx].toUrl()
+                setupFormPanel?.reset()
+              }
+            }
+          }
+        }
+      }
+    }, "LAN-Discovery").apply { isDaemon = true }.start()
+  }
+
+  private fun onConnectSetup() {
+    val url = setupUrl.trim().let {
+      if (it.isBlank()) return
+      if (it.startsWith("http://") || it.startsWith("https://")) it.trimEnd('/')
+      else "https://${it.trimEnd('/')}"
+    }
+    if (setupSyncPassword.isBlank()) {
+      notify("Введите пароль синхронизации.", NotificationType.WARNING)
+      return
+    }
+
+    val s = service<MirrorSettingsService>().state
+    isSyncing = true
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Проверка подключения", true) {
+      override fun run(indicator: ProgressIndicator) {
+        currentIndicator = indicator
+        try {
+          indicator.text = "Проверяем подключение к Mirror…"
+          val probe = MirrorApi.passwordProbe(url, setupApiKey, s.mirrorInsecureTls)
+          if (probe.code !in 200..299) {
+            val msg = if (probe.code == 0)
+              "Mirror недоступен: ${probe.message}"
+            else
+              "Ошибка подключения (HTTP ${probe.code}): ${probe.message.take(200)}"
+            notify(msg, NotificationType.ERROR)
+            return
+          }
+
+          // Save settings
+          s.baseUrl = url
+          SecretsStore.mirrorApiKey = setupApiKey
+          SecretsStore.syncPassword = setupSyncPassword
+
+          notify("Подключение к Mirror установлено успешно.", NotificationType.INFORMATION)
+
+          // Switch to main UI
+          UIUtil.invokeLaterIfNeeded {
+            removeAll()
+            buildMainUi()
+            revalidate()
+            repaint()
+          }
+        } finally {
+          isSyncing = false
+        }
+      }
+
+      override fun onFinished() {
+        isSyncing = false
+      }
+
+      override fun onCancel() {
+        isSyncing = false
+      }
+    })
   }
 
   internal fun baseDir(): File? {
@@ -495,6 +878,14 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       .getNotificationGroup("LocalGitMirror")
       .createNotification(message, type)
       .notify(project)
+  }
+
+  /** Count local branches that are ahead of their tracking branch. */
+  private fun countDivergedBranches(): Int {
+    val dir = baseDir() ?: return 0
+    val res = GitLocal.run(project, dir, 10L, "for-each-ref", "--format=%(upstream:track)", "refs/heads")
+    if (!res.ok()) return 0
+    return res.stdout.lines().count { it.trimStart().startsWith("[ahead") }
   }
 
   internal fun refreshStatus() {
@@ -516,20 +907,25 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     // visible where a sync will go — and from which source it was derived.
     val repoRes = try { syncFacade.resolveRepo(dir, s) } catch (_: Throwable) { null }
     val repoName = repoRes?.sanitized?.takeIf { it.isNotBlank() } ?: "?"
-    status.text = "$repoName · $branch · $cleanText"
+    val connected = s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+    val divergedCount = countDivergedBranches()
+    val lastSyncText = lastSyncBadge.text.removePrefix("Last sync: ").removeSuffix(" \u2705").removeSuffix(" \u274c")
+
+    status.text = if (connected) {
+      "\uD83D\uDFE2 Connected" +
+        (if (divergedCount > 0) " · $divergedCount веток ↑" else "") +
+        (if (lastSyncText != "\u2014") " · Last sync: $lastSyncText" else "")
+    } else {
+      "\uD83D\uDD34 Не подключено"
+    }
     status.toolTipText = repoRes?.let {
       "Mirror repo '${it.sanitized}' · source: ${it.source.name.lowercase().replace('_', ' ')}"
     }
 
     rebuildActions()
     refreshBranchCombo()
-
-    val mirrorConfigured = s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
-    mirrorBadge.text = if (mirrorConfigured)
-      LocalGitMirrorBundle.message("toolwindow.badge.mirrorConnected")
-    else
-      LocalGitMirrorBundle.message("toolwindow.badge.mirrorNotConfigured")
-    mirrorBadge.status = if (mirrorConfigured) BadgeLabel.Status.GOOD else BadgeLabel.Status.BAD
+    mirrorBadge.isVisible = false
+    lastSyncBadge.isVisible = false
   }
 
   internal fun ensureConfigured(settings: MirrorSettingsService.State): String? {
