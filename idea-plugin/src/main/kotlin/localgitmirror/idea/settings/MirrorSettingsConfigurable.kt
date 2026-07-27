@@ -17,16 +17,18 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
   private var dialogPanel: DialogPanel? = null
 
-  // SecretsStore-backed field — managed manually (not in PersistentStateComponent)
+  // SecretsStore-backed fields — managed manually (not in PersistentStateComponent)
+  private var mirrorApiKeyLocal = ""
   private var syncPasswordLocal = ""
 
   override fun getDisplayName(): String = "LocalGitMirror"
 
   override fun createComponent(): JComponent {
+    mirrorApiKeyLocal = SecretsStore.mirrorApiKey
     syncPasswordLocal = SecretsStore.syncPassword
 
     val panel = panel {
-      // Minimal settings: URL + Password only
+      // Minimal settings: URL + API Key + Password
       group("Mirror Server") {
         row("URL") {
           textField()
@@ -36,6 +38,12 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           button("Найти") { onDiscoverClicked() }
             .gap(RightGap.SMALL)
           button("Проверить") { onTestClicked() }
+        }
+
+        row("API Key") {
+          passwordField()
+            .bindText(::mirrorApiKeyLocal)
+            .comment("Из Plugin Connection Info на Mirror-сервере")
         }
 
         row("Пароль синхронизации") {
@@ -53,6 +61,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   override fun isModified(): Boolean {
     val panel = dialogPanel ?: return false
     if (panel.isModified()) return true
+    if (mirrorApiKeyLocal != SecretsStore.mirrorApiKey) return true
     if (syncPasswordLocal != SecretsStore.syncPassword) return true
     return false
   }
@@ -60,6 +69,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   override fun apply() {
     val panel = dialogPanel ?: return
     panel.apply()
+    SecretsStore.mirrorApiKey = mirrorApiKeyLocal
     SecretsStore.syncPassword = syncPasswordLocal
 
     // Normalize URL: add https:// if no scheme, strip trailing slash
@@ -74,6 +84,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   override fun reset() {
     val panel = dialogPanel ?: return
     panel.reset()
+    mirrorApiKeyLocal = SecretsStore.mirrorApiKey
     syncPasswordLocal = SecretsStore.syncPassword
   }
 
@@ -134,7 +145,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
     }
 
     Thread({
-      val pingResult = runCatching { MirrorApi.ping(urlToTest, "", state.mirrorInsecureTls) }
+      val pingResult = runCatching { MirrorApi.ping(urlToTest, mirrorApiKeyLocal, state.mirrorInsecureTls) }
         .getOrElse { MirrorApi.HttpResult(0, it.message ?: "error") }
 
       SwingUtilities.invokeLater {
