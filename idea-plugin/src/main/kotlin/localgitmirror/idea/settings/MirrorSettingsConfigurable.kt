@@ -14,6 +14,7 @@ import javax.swing.SwingUtilities
 class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
   private val state: MirrorSettingsService.State get() = service<MirrorSettingsService>().state
+  private val projectState: MirrorProjectSettingsService.State get() = project.service<MirrorProjectSettingsService>().state
 
   private var dialogPanel: DialogPanel? = null
 
@@ -50,6 +51,16 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           passwordField()
             .bindText(::syncPasswordLocal)
             .comment("Пароль для шифрования данных при передаче")
+        }
+      }
+
+      // Advanced settings (collapsed by default)
+      collapsibleGroup("Дополнительно", false) {
+        row("Repo Override") {
+          textField()
+            .bindText(projectState::repoOverride)
+            .resizableColumn()
+            .comment("Переопределение имени репозитория на Mirror (если папка называется иначе)")
         }
       }
     }
