@@ -17,6 +17,7 @@ import com.intellij.ui.components.JBList
 import com.intellij.ui.dsl.builder.*
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import localgitmirror.idea.actions.PullFromMirrorAction
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorApi
@@ -444,24 +445,24 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       
       // Action buttons row
       row {
-        button("↓ Стянуть") { pullFromMirror() }
+        button("↓ Стянуть") { pullSelectedBranches() }
           .applyToComponent {
             putClientProperty("JButton.buttonType", "default")
             font = font.deriveFont(Font.BOLD)
           }
-        button("↑ Отправить") { syncCurrentBranch() }
+        button("↑ Отправить") { sendSelectedBranches() }
           .applyToComponent {
             putClientProperty("JButton.buttonType", "default")
             font = font.deriveFont(Font.BOLD)
           }
-        button("↑↑ Отправить выбранные") { syncSelectedBranches() }
+        button("🗑 Удалить") { deleteSelectedBranches() }
           .applyToComponent {
             font = font.deriveFont(Font.PLAIN)
-            toolTipText = "Отправить все выбранные ветки (Ctrl+Click для выбора)"
+            toolTipText = "Удалить выбранные ветки (локально и на Mirror)"
           }
       }
       
-      // Offline mode buttons (export/import bundle)
+      // Offline mode buttons
       row {
         button("📦 Экспорт bundle") { exportBundle() }
           .applyToComponent {
@@ -472,11 +473,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           .applyToComponent {
             font = font.deriveFont(Font.PLAIN)
             toolTipText = "Импортировать bundle файл"
-          }
-        button("🗑 Удалить") { deleteSelectedBranches() }
-          .applyToComponent {
-            font = font.deriveFont(Font.PLAIN)
-            toolTipText = "Удалить выбранные ветки (локально и на Mirror)"
           }
       }
       
@@ -516,6 +512,121 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     refreshHistoryLog()
   }
   
+  /** Pull selected branches (multi-select support). Falls back to single-branch picker if nothing selected. */
+  private fun pullSelectedBranches() {
+    val selected = branchList.selectedValuesList
+    if (selected.isEmpty()) {
+      // No selection — use existing single-branch dialog
+      pullFromMirror()
+      return
+    }
+    if (selected.size == 1) {
+      pullFromMirror(selected.first().name)
+      return
+    }
+    // Multiple branches — pull each in sequence
+    pullMultipleBranches(selected.map { it.name })
+  }
+  
+  /** Send selected branches (multi-select support). Falls back to current branch if nothing selected. */
+  private fun sendSelectedBranches() {
+    val selected = branchList.selectedValuesList
+    if (selected.isEmpty()) {
+      syncCurrentBranch()
+      return
+    }
+    if (selected.size == 1) {
+      syncBranch(selected.first().name)
+      return
+    }
+    syncMultipleBranches(selected.map { it.name })
+  }
+  
+  /** Pull multiple branches in sequence. */
+  private fun pullMultipleBranches(branches: List<String>) {
+    if (isSyncing) {
+      notify("Операция уже выполняется", NotificationType.WARNING)
+      return
+    }
+    
+    isSyncing = true
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Стягивание ${branches.size} веток", true) {
+      override fun run(indicator: ProgressIndicator) {
+        for ((index, branch) in branches.withIndex()) {
+          indicator.checkCanceled()
+          indicator.fraction = index.toDouble() / branches.size
+          indicator.text = "Стягивание $branch (${index + 1}/${branches.size})"
+          
+          try {
+            PullFromMirrorAction(preselectedBranch = branch).actionPerformed(
+              com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
+                "MultiPull", null,
+                com.intellij.openapi.actionSystem.DataContext { dataId ->
+                  if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
+                }
+              )
+            )
+          } catch (e: Exception) {
+            notify("Ошибка стягивания $branch: ${e.message}", NotificationType.ERROR)
+          }
+        }
+        
+        notify("Стянуто ${branches.size} веток: ${branches.joinToString(", ")}", NotificationType.INFORMATION)
+      }
+      
+      override fun onSuccess() {
+        isSyncing = false
+        refreshBranchCombo()
+      }
+      
+      override fun onThrowable(error: Throwable) {
+        isSyncing = false
+        notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      }
+    })
+  }
+  
+  /** Sync a specific branch to Mirror. */
+  private fun syncBranch(branchName: String) {
+    if (isSyncing) {
+      notify("Операция уже выполняется", NotificationType.WARNING)
+      return
+    }
+    
+    isSyncing = true
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Отправка $branchName", true) {
+      override fun run(indicator: ProgressIndicator) {
+        val dir = baseDir() ?: run {
+          notify("Проект не найден", NotificationType.ERROR)
+          return
+        }
+        val settings = service<MirrorSettingsService>().state
+        
+        indicator.text = "Отправка $branchName"
+        try {
+          val result = syncFacade.runFullSync(dir, settings, additionalBranches = listOf(branchName))
+          if (!result.step.ok) {
+            notify("Ошибка отправки $branchName: ${result.step.message}", NotificationType.ERROR)
+          } else {
+            notify("Ветка $branchName отправлена", NotificationType.INFORMATION)
+          }
+        } catch (e: Exception) {
+          notify("Ошибка отправки $branchName: ${e.message}", NotificationType.ERROR)
+        }
+      }
+      
+      override fun onSuccess() {
+        isSyncing = false
+        refreshBranchCombo()
+      }
+      
+      override fun onThrowable(error: Throwable) {
+        isSyncing = false
+        notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      }
+    })
+  }
+
   /** Send all selected branches (multi-select support). */
   private fun syncSelectedBranches() {
     val selected = branchList.selectedValuesList

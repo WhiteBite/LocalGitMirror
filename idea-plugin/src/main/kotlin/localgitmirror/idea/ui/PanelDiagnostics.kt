@@ -145,6 +145,27 @@ internal fun LocalGitMirrorPanel.pullFromMirror() {
   }
 }
 
+/** Pull a specific branch by name (for multi-select pull). */
+internal fun LocalGitMirrorPanel.pullFromMirror(branchName: String) {
+  isSyncing = true
+  setProgress(-1.0, "Получаем список веток с Mirror…")
+
+  try {
+    localgitmirror.idea.actions.PullFromMirrorAction(branchName) { indicator ->
+        currentIndicator = indicator
+      }.actionPerformed(
+      com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
+        "LocalGitMirrorToolWindow", null,
+        com.intellij.openapi.actionSystem.DataContext { dataId ->
+          if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
+        }
+      )
+    )
+  } finally {
+    isSyncing = false
+  }
+}
+
 internal fun LocalGitMirrorPanel.applyLocalDump() {
   localgitmirror.idea.actions.ApplyLocalDumpAction().actionPerformed(
     com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
