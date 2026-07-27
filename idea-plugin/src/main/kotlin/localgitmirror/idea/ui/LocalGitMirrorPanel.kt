@@ -473,6 +473,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
             font = font.deriveFont(Font.PLAIN)
             toolTipText = "Импортировать bundle файл"
           }
+        button("🗑 Удалить") { deleteSelectedBranches() }
+          .applyToComponent {
+            font = font.deriveFont(Font.PLAIN)
+            toolTipText = "Удалить выбранные ветки (локально и на Mirror)"
+          }
       }
       
       // Progress row (hidden by default)
@@ -700,6 +705,92 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           }
         } catch (e: Exception) {
           notify("Ошибка импорта: ${e.message}", NotificationType.ERROR)
+        }
+      }
+      
+      override fun onSuccess() {
+        isSyncing = false
+        refreshBranchCombo()
+      }
+      
+      override fun onThrowable(error: Throwable) {
+        isSyncing = false
+        notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      }
+    })
+  }
+  
+  /** Delete selected branches (locally and on Mirror). */
+  private fun deleteSelectedBranches() {
+    val selected = branchList.selectedValuesList
+    if (selected.isEmpty()) {
+      notify("Выберите ветки для удаления", NotificationType.WARNING)
+      return
+    }
+    
+    val branchNames = selected.map { it.name }
+    val currentBranch = GitLocal.currentBranch(project, baseDir() ?: return)
+    
+    // Don't allow deleting current branch
+    if (branchNames.contains(currentBranch)) {
+      notify("Нельзя удалить текущую ветку '$currentBranch'", NotificationType.WARNING)
+      return
+    }
+    
+    val confirm = Messages.showYesNoDialog(
+      project,
+      "Удалить ${branchNames.size} веток локально и на Mirror?\n\n${branchNames.joinToString("\n")}",
+      "Подтверждение удаления",
+      "Удалить",
+      "Отмена",
+      Messages.getWarningIcon()
+    )
+    
+    if (confirm != Messages.YES) return
+    
+    val dir = baseDir() ?: return
+    val settings = service<MirrorSettingsService>().state
+    val repo = syncFacade.resolveRepo(dir, settings).sanitized
+    
+    isSyncing = true
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Удаление веток", true) {
+      override fun run(indicator: ProgressIndicator) {
+        val deleted = mutableListOf<String>()
+        val errors = mutableListOf<String>()
+        
+        for (branch in branchNames) {
+          indicator.checkCanceled()
+          indicator.text = "Удаление $branch"
+          
+          // Delete locally
+          val localResult = GitLocal.deleteLocalBranch(project, dir, branch, force = true)
+          if (!localResult.ok()) {
+            errors.add("$branch (локально): ${localResult.stderr}")
+          }
+          
+          // Delete on Mirror
+          val mirrorResult = MirrorApi.deleteRef(
+            baseUrl = settings.baseUrl,
+            apiKey = SecretsStore.mirrorApiKey,
+            repo = repo,
+            branch = branch,
+            syncPassword = SecretsStore.syncPassword,
+            insecureTls = settings.mirrorInsecureTls
+          )
+          if (mirrorResult.code !in 200..299) {
+            errors.add("$branch (Mirror): ${mirrorResult.body.take(100)}")
+          }
+          
+          if (localResult.ok() || mirrorResult.code in 200..299) {
+            deleted.add(branch)
+          }
+        }
+        
+        if (deleted.isNotEmpty()) {
+          notify("Удалено ${deleted.size} веток: ${deleted.joinToString(", ")}", NotificationType.INFORMATION)
+        }
+        if (errors.isNotEmpty()) {
+          notify("Ошибки: ${errors.joinToString("; ")}", NotificationType.WARNING)
         }
       }
       
