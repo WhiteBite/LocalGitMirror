@@ -4,6 +4,7 @@ Uses mDNS (Bonjour/Zeroconf) for standard service discovery — ignored by EDR.
 Falls back to low-frequency UDP broadcast if zeroconf is unavailable.
 """
 
+import ipaddress
 import json
 import socket
 import threading
@@ -24,6 +25,9 @@ class LanBeacon:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._zeroconf = None
+        # The IP clients should actually use (real LAN address, not the
+        # OS-default-route interface the UDP beacon happens to egress from).
+        self._advertised_ip = SystemMonitor.get_local_ip()
 
     # ── mDNS (preferred) ──────────────────────────────────────────────
 
@@ -70,10 +74,23 @@ class LanBeacon:
     # ── UDP fallback (low-frequency, no JSON) ─────────────────────────
 
     def _build_udp_payload(self) -> bytes:
-        """Compact binary payload: port(2) + flags(1) — no JSON, no identifiers."""
+        """Compact binary payload: port(2) + flags(1) [+ ip4(4)].
+
+        The optional 4-byte tail carries the server's chosen LAN IP. Without
+        it, multi-homed servers are discovered under the OS-default-route
+        source address, which is often a VPN/virtual adapter IP the client
+        cannot rely on. Still binary — no JSON, no identifiers.
+        """
         port_bytes = self._web_port.to_bytes(2, "big")
         flags = 0x01 if self._tls else 0x00
-        return port_bytes + bytes([flags])
+        payload = port_bytes + bytes([flags])
+        try:
+            # Never embed loopback: remote clients would pin to their own localhost.
+            if not self._advertised_ip.startswith("127."):
+                payload += ipaddress.ip_address(self._advertised_ip).packed
+        except Exception:
+            pass
+        return payload
 
     def _run_udp_fallback(self) -> None:
         try:
@@ -99,21 +116,23 @@ class LanBeacon:
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def start(self) -> None:
+    def start(self) -> str:
+        """Start discovery. Returns the active mode: "mdns" or "udp"."""
         if self._thread is not None and self._thread.is_alive():
-            return
+            return "udp"
         self._stop_event.clear()
 
         # Try mDNS first (standard, EDR-invisible)
         if self._start_mdns():
             # mDNS handles discovery — no background thread needed
-            return
+            return "mdns"
 
         # Fallback to low-frequency UDP
         self._thread = threading.Thread(
             target=self._run_udp_fallback, daemon=True, name="svc-discovery"
         )
         self._thread.start()
+        return "udp"
 
     def stop(self) -> None:
         self._stop_event.set()
