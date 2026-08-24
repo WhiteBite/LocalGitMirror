@@ -3,6 +3,8 @@ package localgitmirror.idea.workkit
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.TimeUnit
+import localgitmirror.idea.sync.SyncLogger
 
 object NativeBundleBuilder {
 
@@ -121,29 +123,66 @@ object NativeBundleBuilder {
 
   private data class CmdResult(val exitCode: Int, val stdout: String, val stderr: String)
 
+  /**
+   * Runs git with a hard timeout and concurrent stderr drain. Reading stdout
+   * to completion BEFORE stderr (the old pattern) deadlocks as soon as git
+   * writes more than the OS pipe buffer to stderr: git blocks on the stderr
+   * write, stdout never reaches EOF, and the caller blocks forever with no
+   * timeout and no log line — exactly the "send hangs for 30 minutes with
+   * zero logs" failure mode.
+   */
   private fun git(workDir: File, vararg args: String): CmdResult {
-    val pb = ProcessBuilder(listOf("git", *args))
+    SyncLogger.log(workDir, "Exec: git ${args.joinToString(" ")}")
+    val p = ProcessBuilder(listOf("git", *args))
       .directory(workDir)
       .redirectErrorStream(false)
-    val p = pb.start()
+      .start()
+    val errSb = StringBuilder()
+    val errT = Thread { errSb.append(p.errorStream.bufferedReader().readText()) }.apply { isDaemon = true }
+    errT.start()
     val stdout = p.inputStream.bufferedReader().readText().trim()
-    val stderr = p.errorStream.bufferedReader().readText().trim()
-    return CmdResult(p.waitFor(), stdout, stderr)
+    if (!p.waitFor(60, TimeUnit.SECONDS)) {
+      p.destroyForcibly()
+      SyncLogger.log(workDir, "Git TIMEOUT (60s): git ${args.joinToString(" ")}")
+      return CmdResult(124, stdout, "timeout")
+    }
+    errT.join(2000)
+    val stderr = errSb.toString().trim()
+    if (p.exitValue() != 0) {
+      SyncLogger.log(workDir, "Git failed (${p.exitValue()}): git ${args.joinToString(" ")}: $stderr")
+    }
+    return CmdResult(p.exitValue(), stdout, stderr)
   }
 
   /**
    * Runs git with stdout captured as raw bytes (for binary bundle output).
-   * Returns null if the command fails.
+   * Returns null if the command fails or times out. Stdout and stderr are
+   * drained concurrently on background threads; a hard timeout kills git so
+   * a wedged child process can never freeze the send flow again.
    */
-  private fun gitToStdout(workDir: File, args: List<String>): ByteArray? {
-    val pb = ProcessBuilder(listOf("git") + args)
+  private fun gitToStdout(workDir: File, args: List<String>, timeoutSeconds: Long = 600): ByteArray? {
+    SyncLogger.log(workDir, "Exec: git ${args.joinToString(" ")}")
+    val started = System.currentTimeMillis()
+    val p = ProcessBuilder(listOf("git") + args)
       .directory(workDir)
       .redirectErrorStream(false)
-    val p = pb.start()
+      .start()
+    val errSb = StringBuilder()
+    val errT = Thread { errSb.append(p.errorStream.bufferedReader().readText()) }.apply { isDaemon = true }
+    errT.start()
     val baos = ByteArrayOutputStream()
-    p.inputStream.use { it.copyTo(baos) }
-    val stderr = p.errorStream.bufferedReader().readText().trim()
-    val exit = p.waitFor()
+    val outT = Thread { p.inputStream.use { it.copyTo(baos) } }.apply { isDaemon = true }
+    outT.start()
+    if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+      p.destroyForcibly()
+      SyncLogger.log(workDir, "Git TIMEOUT (${timeoutSeconds}s): git ${args.joinToString(" ")}")
+      return null
+    }
+    outT.join(5000)
+    errT.join(2000)
+    val exit = p.exitValue()
+    val ms = System.currentTimeMillis() - started
+    SyncLogger.log(workDir, "Git done in ${ms} ms (exit=$exit, ${baos.size()} bytes): git ${args.take(3).joinToString(" ")}")
     if (exit != 0 || baos.size() == 0) return null
     return baos.toByteArray()
   }

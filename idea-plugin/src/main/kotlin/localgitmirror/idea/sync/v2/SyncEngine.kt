@@ -590,6 +590,23 @@ class SyncEngine(
         diag(projectDir, diagnostics, "apply-known", SyncStepOutcome.FAIL, "Pointer-only apply failed", mapOf("repo" to repoName, "httpCode" to applied.code.toString()))
       }
 
+      // Marker BEFORE the long local step (git bundle + encrypt) so the sync
+      // log shows we entered it — previously the log went silent for the
+      // whole duration of bundle generation, which read as "hung, no logs".
+      diag(
+        projectDir,
+        diagnostics,
+        id = "generate-dump-start",
+        outcome = SyncStepOutcome.OK,
+        message = "Generating sync package locally (git bundle + encrypt)",
+        fields = mapOf(
+          "repo" to repoName,
+          "branches" to (listOf(git.currentBranch(project, projectDir).orEmpty()) + additionalBranches)
+            .filter { it.isNotBlank() }.distinct().joinToString(","),
+          "excludeBases" to negotiation.excludeBases.joinToString(",")
+        )
+      )
+
       val dumpGen = generateDump(project, projectDir, snapshot, repoName, excludeBases = negotiation.excludeBases, additionalBranches = additionalBranches)
       if (!dumpGen.ok) {
         diag(projectDir, diagnostics, "generate-dump", SyncStepOutcome.FAIL, dumpGen.message, mapOf("repo" to repoName))
