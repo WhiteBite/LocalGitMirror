@@ -249,8 +249,8 @@ async def lifespan(app: FastAPI):
     tls_enabled = Path("cert.pem").exists() and Path("key.pem").exists()
     lan_beacon = LanBeacon(web_port=CONFIG["web_port"], tls=tls_enabled)
     try:
-        lan_beacon.start()
-        console.print(f"[green]Discovery service started[/green]")
+        discovery_mode = lan_beacon.start()
+        console.print(f"[green]Discovery service started[/green] [dim]({discovery_mode})[/dim]")
     except Exception as e:
         console.print(f"[yellow][!] Discovery service failed to start: {e}[/yellow]")
 

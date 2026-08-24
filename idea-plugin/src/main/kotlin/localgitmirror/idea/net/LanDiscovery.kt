@@ -125,11 +125,28 @@ object LanDiscovery {
         val data = packet.data
         val port = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
         val tls = (data[2].toInt() and 0x01) != 0
-        val ip = packet.address.hostAddress ?: continue
-        val server = DiscoveredServer(ip, port, tls)
-        val key = "${server.ip}:${server.port}"
-        if (seen.add(key)) {
-          results.add(server)
+        // v2 beacon: port(2) + flags(1) + ip4(4) — the server's chosen LAN IP.
+        // On multi-homed hosts it differs from the UDP source address (the
+        // OS default-route interface), so prefer the embedded one and keep
+        // the source as a secondary candidate. Legacy 3-byte beacons fall
+        // back to the source address only.
+        val embedded = if (packet.length >= 7) {
+          "${data[3].toInt() and 0xFF}.${data[4].toInt() and 0xFF}.${data[5].toInt() and 0xFF}.${data[6].toInt() and 0xFF}"
+        } else {
+          null
+        }
+        val source = packet.address?.hostAddress
+        val candidates = buildList {
+          if (embedded != null) add(embedded)
+          if (source != null && source != embedded) add(source)
+        }
+        if (candidates.isEmpty()) continue
+        for (ip in candidates) {
+          val server = DiscoveredServer(ip, port, tls)
+          val key = "${server.ip}:${server.port}"
+          if (seen.add(key)) {
+            results.add(server)
+          }
         }
       }
     } finally {
@@ -165,7 +182,8 @@ object LanDiscovery {
 
     for (i in 1..254) {
       val ip = "$prefix$i"
-      if (ip == localIp) continue  // skip self
+      // NOTE: do NOT skip localIp — the server commonly runs on the same
+      // machine as the IDE, and that is exactly the address we want to find.
 
       futures.add(executor.submit {
         for (port in SCAN_PORTS) {
