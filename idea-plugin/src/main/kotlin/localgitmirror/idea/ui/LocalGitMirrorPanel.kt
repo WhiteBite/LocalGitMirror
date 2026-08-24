@@ -361,6 +361,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     moreMenu.removeAll()
     moreMenu.add(gearMenuItem("Обновить ветки Mirror", AllIcons.Actions.Refresh) { refreshBranchCombo(userInitiated = true) })
     moreMenu.add(gearMenuItem("Проверить подключение", AllIcons.Actions.Checked) { testMirror() })
+    moreMenu.add(gearMenuItem("Скачать плагин с Mirror", AllIcons.Actions.Download) { downloadLatestPlugin() })
     moreMenu.addSeparator()
     moreMenu.add(gearMenuItem("Настройки", AllIcons.General.Settings) {
       ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
@@ -1151,6 +1152,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
   internal fun refreshHistoryLog() {
     val entries = historyService.latest(20)
+    // historyScroll is created with isVisible = false and nothing ever showed
+    // it, so the "История" section rendered as an empty strip with just the
+    // clear button even when entries existed. Toggle it here.
+    if (::historyScroll.isInitialized) {
+      historyScroll.isVisible = entries.isNotEmpty()
+    }
     if (entries.isEmpty()) {
       log.text = "No operations yet"
       return
