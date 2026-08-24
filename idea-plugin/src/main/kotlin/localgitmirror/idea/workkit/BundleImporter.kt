@@ -272,9 +272,17 @@ object BundleImporter {
       .directory(workDir)
       .redirectErrorStream(false)
       .start()
-    p.waitFor(300, TimeUnit.SECONDS)
+    // Drain stderr concurrently: reading stdout first and stderr after can
+    // deadlock once git writes more than the pipe buffer to stderr.
+    val errSb = StringBuilder()
+    val errT = Thread { errSb.append(p.errorStream.bufferedReader().readText()) }.apply { isDaemon = true }
+    errT.start()
     val stdout = p.inputStream.bufferedReader().readText().trim()
-    val stderr = p.errorStream.bufferedReader().readText().trim()
-    return CmdResult(p.exitValue(), stdout, stderr)
+    if (!p.waitFor(300, TimeUnit.SECONDS)) {
+      p.destroyForcibly()
+      return CmdResult(124, stdout, "timeout")
+    }
+    errT.join(2000)
+    return CmdResult(p.exitValue(), stdout, errSb.toString().trim())
   }
 }
