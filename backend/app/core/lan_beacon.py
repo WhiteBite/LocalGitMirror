@@ -4,8 +4,11 @@ Uses mDNS (Bonjour/Zeroconf) for standard service discovery — ignored by EDR.
 Falls back to low-frequency UDP broadcast if zeroconf is unavailable.
 """
 
+import hashlib
+import hmac
 import ipaddress
 import json
+import os
 import socket
 import threading
 from typing import Optional
@@ -74,23 +77,32 @@ class LanBeacon:
     # ── UDP fallback (low-frequency, no JSON) ─────────────────────────
 
     def _build_udp_payload(self) -> bytes:
-        """Compact binary payload: port(2) + flags(1) [+ ip4(4)].
+        """Compact binary payload: port(2) + flags(1) [+ ip4(4) [+ hmac(4)]].
 
-        The optional 4-byte tail carries the server's chosen LAN IP. Without
-        it, multi-homed servers are discovered under the OS-default-route
-        source address, which is often a VPN/virtual adapter IP the client
-        cannot rely on. Still binary — no JSON, no identifiers.
+        flags bit0 = TLS, bit1 = HMAC tag present. The optional 4-byte IP
+        tail carries the server's chosen LAN IP (without it, multi-homed
+        servers are discovered under the OS-default-route source address,
+        often a VPN/virtual adapter IP). The optional 4-byte tag is
+        HMAC-SHA256(SYNC_PASSWORD, port+flags+ip)[:4]: it lets a configured
+        client reject beacons spoofed by other LAN devices. No SYNC_PASSWORD
+        on the server -> no tag, legacy shape. Still binary — no JSON, no
+        identifiers.
         """
         port_bytes = self._web_port.to_bytes(2, "big")
         flags = 0x01 if self._tls else 0x00
-        payload = port_bytes + bytes([flags])
+        ip_part = b""
         try:
             # Never embed loopback: remote clients would pin to their own localhost.
             if not self._advertised_ip.startswith("127."):
-                payload += ipaddress.ip_address(self._advertised_ip).packed
+                ip_part = ipaddress.ip_address(self._advertised_ip).packed
         except Exception:
-            pass
-        return payload
+            ip_part = b""
+        key = os.getenv("SYNC_PASSWORD", "").encode()
+        if ip_part and key:
+            flags |= 0x02
+            body = port_bytes + bytes([flags]) + ip_part
+            return body + hmac.new(key, body, hashlib.sha256).digest()[:4]
+        return port_bytes + bytes([flags]) + ip_part
 
     def _run_udp_fallback(self) -> None:
         try:

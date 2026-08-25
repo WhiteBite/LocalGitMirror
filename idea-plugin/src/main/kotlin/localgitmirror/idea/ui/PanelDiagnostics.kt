@@ -391,9 +391,33 @@ internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
         )
 
         if (res.code !in 200..299 || res.file == null) {
-          notify("\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u0441\u043a\u0430\u0447\u0430\u0442\u044c \u043f\u043b\u0430\u0433\u0438\u043d (HTTP ${res.code}): ${res.message.take(200)}", NotificationType.ERROR)
+          notify("Не удалось скачать плагин (HTTP ${res.code}): ${res.message.take(200)}", NotificationType.ERROR)
           historyService.add("Plugin download", false, "HTTP ${res.code} ${res.message.take(200)}")
           return
+        }
+
+        // Integrity gate: the server publishes sha256 in /api/plugin/info;
+        // refuse (and remove) a download that doesn't match.
+        if (info.sha256 != null) {
+          val md = java.security.MessageDigest.getInstance("SHA-256")
+          outFile.inputStream().use { ins ->
+            val buf = ByteArray(64 * 1024)
+            while (true) {
+              val n = ins.read(buf)
+              if (n < 0) break
+              md.update(buf, 0, n)
+            }
+          }
+          val actual = md.digest().joinToString("") { b -> "%02x".format(b) }
+          if (!actual.equals(info.sha256, ignoreCase = true)) {
+            outFile.delete()
+            notify(
+              "Контрольная сумма плагина не совпадает с сервером (ожидалась ${info.sha256.take(16)}…, получена ${actual.take(16)}…). Файл удалён — установка небезопасна.",
+              NotificationType.ERROR
+            )
+            historyService.add("Plugin download", false, "sha256 mismatch: $actual != ${info.sha256}")
+            return
+          }
         }
 
         val sameVersion = info.version != null &&

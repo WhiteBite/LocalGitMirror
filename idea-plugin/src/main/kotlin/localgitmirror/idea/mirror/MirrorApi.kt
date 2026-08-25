@@ -794,9 +794,10 @@ object MirrorApi {
   // /api/deps/* — Gradle dependency sync (encrypted blob postbox)
   // ───────────────────────────────────────────────────────────────────────
 
-  data class DepsItem(val id: String, val size: Long, val mtime: Long)
-  data class DepsListResult(val code: Int, val items: List<DepsItem>, val message: String)
-  data class DepsUploadResult(val code: Int, val id: String?, val size: Long, val message: String)
+data class DepsItem(val id: String, val size: Long, val mtime: Long)
+data class DepsListResult(val code: Int, val items: List<DepsItem>, val message: String)
+data class DepsUploadResult(val code: Int, val id: String?, val size: Long, val message: String)
+data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, val conflicts: Int, val rejected: Int, val message: String)
   data class FileSyncItem(val id: String, val path: String, val size: Long, val plainSize: Long, val mtime: Long)
   data class FileSyncListResult(val code: Int, val items: List<FileSyncItem>, val message: String)
   data class FileSyncUploadResult(val code: Int, val id: String?, val path: String?, val size: Long, val message: String)
@@ -1045,6 +1046,63 @@ object MirrorApi {
     }
   }
 
+  /** Fetch vault inventory for delta-sync. */
+  fun mirrorIndex(
+    baseUrl: String, apiKey: String, insecureTls: Boolean
+  ): HttpResult {
+    return try {
+      val url = URL("${baseUrl.trimEnd('/')}/api/deps/mirror/index")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "GET"
+      conn.connectTimeout = 30_000
+      conn.readTimeout = 30_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  /** Fetch vault diagnostics status. */
+  fun mirrorStatus(
+    baseUrl: String, apiKey: String, insecureTls: Boolean
+  ): HttpResult {
+    return try {
+      val url = URL("${baseUrl.trimEnd('/')}/api/deps/mirror/status")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "GET"
+      conn.connectTimeout = 30_000
+      conn.readTimeout = 30_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  /** Upload encrypted publication to vault. */
+  fun mirrorPublish(
+    baseUrl: String, apiKey: String, insecureTls: Boolean,
+    encryptedPublication: ByteArray
+  ): MirrorPublishResult {
+    val res = multipartUpload(
+      baseUrl, apiKey, insecureTls, "/api/deps/mirror/publish",
+      fields = emptyMap(),
+      fileFieldName = "attachment",
+      fileName = "publication.enc",
+      fileBytes = encryptedPublication
+    )
+    if (res.code !in 200..299) return MirrorPublishResult(res.code, 0, 0, 0, 0, res.body.take(500))
+    val body = res.body
+    val added = Regex(""""added"\s*:\s*(\d+)""").find(body)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+    val existed = Regex(""""existed"\s*:\s*(\d+)""").find(body)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+    val conflicts = Regex(""""conflicts"\s*:\s*(\d+)""").find(body)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+    val rejected = Regex(""""rejected"\s*:\s*(\d+)""").find(body)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+    return MirrorPublishResult(res.code, added, existed, conflicts, rejected, "OK")
+  }
+
   // ───────────────────────────────────────────────────────────────────────
   // /api/file-sync/* — repo file postbox (opaque encrypted containers)
   // ───────────────────────────────────────────────────────────────────────
@@ -1185,7 +1243,9 @@ object MirrorApi {
     val filename: String?,
     val size: Long,
     val builtAt: String?,
-    val message: String
+    val message: String,
+    /** SHA-256 of the archive for download integrity verification (null on old servers). */
+    val sha256: String? = null
   )
 
   /** Query metadata of the freshest plugin build on the server (auth-gated). */
@@ -1210,7 +1270,8 @@ object MirrorApi {
         filename = root["filename"]?.jsonPrimitive?.contentOrNull,
         size = root["size"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L,
         builtAt = root["built_at"]?.jsonPrimitive?.contentOrNull,
-        message = "OK"
+        message = "OK",
+        sha256 = root["sha256"]?.jsonPrimitive?.contentOrNull?.takeIf { it.length == 64 }
       )
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)

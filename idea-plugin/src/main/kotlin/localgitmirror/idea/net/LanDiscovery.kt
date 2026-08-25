@@ -26,8 +26,11 @@ object LanDiscovery {
 
   /**
    * Discover servers on LAN via mDNS first, then UDP fallback, then subnet scan.
+   * [authPassword] (SYNC_PASSWORD) enables HMAC verification of UDP beacons:
+   * a configured client then ignores embedded IPs from untagged or
+   * incorrectly tagged beacons, closing the LAN spoofing hole.
    */
-  fun discover(timeoutMs: Int = 6000): List<DiscoveredServer> {
+  fun discover(timeoutMs: Int = 6000, authPassword: String? = null): List<DiscoveredServer> {
     val results = mutableListOf<DiscoveredServer>()
     val seen = mutableSetOf<String>()
 
@@ -45,7 +48,7 @@ object LanDiscovery {
 
     // 2. UDP fallback (binary payload)
     try {
-      val udpResults = discoverUdp(timeoutMs)
+      val udpResults = discoverUdp(timeoutMs, authPassword)
       for (s in udpResults) {
         val key = "${s.ip}:${s.port}"
         if (seen.add(key)) results.add(s)
@@ -95,7 +98,7 @@ object LanDiscovery {
   // ── UDP fallback (binary: port(2) + flags(1)) ──────────────────────
 
   @Suppress("HttpCallOnEdt") // always called from Thread in MirrorSettingsConfigurable
-  private fun discoverUdp(timeoutMs: Int): List<DiscoveredServer> {
+  private fun discoverUdp(timeoutMs: Int, authPassword: String?): List<DiscoveredServer> {
     val results = mutableListOf<DiscoveredServer>()
     val seen = mutableSetOf<String>()
 
@@ -124,21 +127,42 @@ object LanDiscovery {
         if (packet.length < 3) continue
         val data = packet.data
         val port = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
-        val tls = (data[2].toInt() and 0x01) != 0
-        // v2 beacon: port(2) + flags(1) + ip4(4) — the server's chosen LAN IP.
-        // On multi-homed hosts it differs from the UDP source address (the
-        // OS default-route interface), so prefer the embedded one and keep
-        // the source as a secondary candidate. Legacy 3-byte beacons fall
-        // back to the source address only.
+        val flags = data[2].toInt() and 0xFF
+        val tls = (flags and 0x01) != 0
+        val hasTag = (flags and 0x02) != 0
+        // v2 beacon: port(2) + flags(1) + ip4(4) [+ hmac(4)] — the server's
+        // chosen LAN IP. On multi-homed hosts it differs from the UDP source
+        // address (the OS default-route interface), so prefer the embedded
+        // one and keep the source as a secondary candidate. Legacy 3-byte
+        // beacons fall back to the source address only.
         val embedded = if (packet.length >= 7) {
           "${data[3].toInt() and 0xFF}.${data[4].toInt() and 0xFF}.${data[5].toInt() and 0xFF}.${data[6].toInt() and 0xFF}"
         } else {
           null
         }
+        // Anti-spoofing: a configured client (knows SYNC_PASSWORD) trusts the
+        // embedded IP only behind a valid HMAC tag; untagged/invalid beacons
+        // degrade to the packet source. Unconfigured (first-run) clients keep
+        // the legacy behavior — the user confirms the server manually anyway.
+        val clientConfigured = !authPassword.isNullOrBlank()
+        val tagValid = if (hasTag && packet.length >= 11 && clientConfigured) {
+          val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+          mac.init(javax.crypto.spec.SecretKeySpec(authPassword.orEmpty().toByteArray(Charsets.UTF_8), "HmacSHA256"))
+          mac.update(data, 0, 7)
+          mac.doFinal().copyOfRange(0, 4).contentEquals(data.copyOfRange(7, 11))
+        } else {
+          false
+        }
+        val trustedEmbedded: String? = when {
+          embedded == null -> null
+          !clientConfigured -> embedded
+          hasTag && tagValid -> embedded
+          else -> null
+        }
         val source = packet.address?.hostAddress
         val candidates = buildList {
-          if (embedded != null) add(embedded)
-          if (source != null && source != embedded) add(source)
+          if (trustedEmbedded != null) add(trustedEmbedded)
+          if (source != null && source != trustedEmbedded) add(source)
         }
         if (candidates.isEmpty()) continue
         for (ip in candidates) {

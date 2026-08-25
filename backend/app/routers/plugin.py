@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -60,6 +61,8 @@ def _expected_version() -> Optional[tuple[int, int, int]]:
             cwd=_repo_root(),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=True,
             timeout=10,
         ).stdout.strip()
@@ -98,6 +101,8 @@ def _ensure_current_zip() -> tuple[Optional[Path], Optional[str]]:
                 cwd=_repo_root() / "idea-plugin",
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=900,
             )
         except subprocess.TimeoutExpired:
@@ -121,6 +126,24 @@ def _current_zip() -> Path:
     return archive
 
 
+_SHA256_CACHE: dict[str, tuple[float, str]] = {}
+
+
+def _sha256(path: Path) -> str:
+    """SHA-256 of the archive, cached by mtime (clients verify downloads)."""
+    mtime = path.stat().st_mtime
+    cached = _SHA256_CACHE.get(str(path))
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    digest = h.hexdigest()
+    _SHA256_CACHE[str(path)] = (mtime, digest)
+    return digest
+
+
 @router.get("/info")
 def plugin_info():
     """Return the exact semantic-versioned archive available to the IDE."""
@@ -131,7 +154,8 @@ def plugin_info():
         "version": _parse_version(archive.name),
         "filename": archive.name,
         "size": stat.st_size,
-        "built_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+        "built_at": datetime.fromtimestamp(stat.mtime).isoformat(timespec="seconds"),
+        "sha256": _sha256(archive),
     }
 
 
