@@ -154,7 +154,7 @@ def plugin_info():
         "version": _parse_version(archive.name),
         "filename": archive.name,
         "size": stat.st_size,
-        "built_at": datetime.fromtimestamp(stat.mtime).isoformat(timespec="seconds"),
+        "built_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
         "sha256": _sha256(archive),
     }
 
