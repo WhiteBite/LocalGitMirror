@@ -972,7 +972,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   private fun onDiscoverSetup() {
     Thread({
       val servers = try {
-        LanDiscovery.discover(timeoutMs = 6000)
+        LanDiscovery.discover(timeoutMs = 6000, authPassword = SecretsStore.syncPassword)
       } catch (_: Exception) {
         emptyList()
       }

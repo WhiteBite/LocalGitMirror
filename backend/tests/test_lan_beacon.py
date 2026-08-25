@@ -1,4 +1,7 @@
-"""UDP discovery beacon payload: port(2) + flags(1) [+ ip4(4)]."""
+"""UDP discovery beacon payload: port(2) + flags(1) [+ ip4(4) [+ hmac(4)]]."""
+
+import hashlib
+import hmac
 
 from app.core.lan_beacon import LanBeacon
 
@@ -33,6 +36,28 @@ def test_udp_payload_omits_loopback_advertised_ip():
     beacon._advertised_ip = "127.0.0.1"
     payload = beacon._build_udp_payload()
     assert len(payload) == 3
+
+
+def test_udp_payload_tagged_when_password_set(monkeypatch):
+    # With SYNC_PASSWORD the beacon carries a 4-byte HMAC tag so configured
+    # clients can reject spoofed beacons from other LAN devices.
+    monkeypatch.setenv("SYNC_PASSWORD", "dandan")
+    beacon = LanBeacon(web_port=443, tls=True)
+    beacon._advertised_ip = "192.168.0.101"
+    payload = beacon._build_udp_payload()
+    assert len(payload) == 11
+    assert payload[2] & 0x02  # tag-present bit
+    tag = hmac.new(b"dandan", payload[:7], hashlib.sha256).digest()[:4]
+    assert payload[7:] == tag
+
+
+def test_udp_payload_untagged_without_password(monkeypatch):
+    monkeypatch.delenv("SYNC_PASSWORD", raising=False)
+    beacon = LanBeacon(web_port=443, tls=True)
+    beacon._advertised_ip = "192.168.0.101"
+    payload = beacon._build_udp_payload()
+    assert len(payload) == 7
+    assert not payload[2] & 0x02
 
 
 def test_start_reports_active_mode():
