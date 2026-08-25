@@ -10,7 +10,10 @@ def _parse_ip(payload: bytes) -> str:
     return ".".join(str(b) for b in payload[3:7])
 
 
-def test_udp_payload_embeds_advertised_ip():
+def test_udp_payload_embeds_advertised_ip(monkeypatch):
+    # app.main loads .env at import time; in a full-suite run SYNC_PASSWORD
+    # would be set and the payload tagged (11 bytes). Pin the untagged case.
+    monkeypatch.delenv("SYNC_PASSWORD", raising=False)
     beacon = LanBeacon(web_port=443, tls=True)
     beacon._advertised_ip = "192.168.0.101"
     payload = beacon._build_udp_payload()
@@ -20,7 +23,8 @@ def test_udp_payload_embeds_advertised_ip():
     assert _parse_ip(payload) == "192.168.0.101"
 
 
-def test_udp_payload_carries_port_and_tls_flag():
+def test_udp_payload_carries_port_and_tls_flag(monkeypatch):
+    monkeypatch.delenv("SYNC_PASSWORD", raising=False)
     beacon = LanBeacon(web_port=8080, tls=False)
     beacon._advertised_ip = "10.0.0.5"
     payload = beacon._build_udp_payload()
