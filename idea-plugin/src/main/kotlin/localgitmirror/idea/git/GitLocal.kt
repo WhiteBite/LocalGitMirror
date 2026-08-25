@@ -263,6 +263,25 @@ object GitLocal {
     return v
   }
 
+  data class ObjectStoreStats(val looseCount: Int, val packs: Int)
+
+  /** Loose-object / pack counts from `git count-objects -v` (fragmentation signal). */
+  fun objectStoreStats(project: Project, workDir: File): ObjectStoreStats? {
+    val r = run(project, workDir, 10, "count-objects", "-v")
+    if (!r.ok()) return null
+    var loose = -1
+    var packs = -1
+    for (line in r.stdout.lines()) {
+      val t = line.trim()
+      when {
+        t.startsWith("count:") -> loose = t.substringAfter(':').trim().toIntOrNull() ?: -1
+        t.startsWith("packs:") -> packs = t.substringAfter(':').trim().toIntOrNull() ?: -1
+      }
+    }
+    if (loose < 0 || packs < 0) return null
+    return ObjectStoreStats(loose, packs)
+  }
+
   fun commitCount(project: Project, workDir: File, range: String? = null): Int? {
     val r = if (range.isNullOrBlank()) {
       run(project, workDir, 20, "rev-list", "--count", "HEAD")
