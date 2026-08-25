@@ -39,15 +39,19 @@ object NativeBundleBuilder {
 
     val stateFile = syncStateFile(workDir)
 
-    val validExcludes = mutableListOf<String>()
-    excludeBases.filter { it.isNotBlank() }.forEach {
-      ensureCommitReachable(workDir, it)
-      validExcludes.add(it)
-    }
-
     val branch = currentBranch(workDir).ifBlank { "HEAD" }
     val refsToPack = mutableListOf(branch)
     refsToPack.addAll(additionalBranches.filter { it.isNotBlank() && it != branch })
+
+    // A ^base only needs to be an ancestor of ONE bundled ref: git bundle
+    // excludes its history from every ref independently. Checking HEAD alone
+    // wrongly rejected bases picked for additional branches that diverge
+    // from the current branch (master -> dev -> feature topology).
+    val validExcludes = mutableListOf<String>()
+    excludeBases.filter { it.isNotBlank() }.forEach {
+      ensureCommitReachable(workDir, it, refsToPack)
+      validExcludes.add(it)
+    }
 
     val mode: String
     val bundleBytes: ByteArray
@@ -65,7 +69,7 @@ object NativeBundleBuilder {
       // the mirror has none of our commits → must send full bundle.
       !negotiationUsed && stateFile.exists() -> {
         val lastHash = stateFile.readText().trim()
-        ensureCommitReachable(workDir, lastHash)
+        ensureCommitReachable(workDir, lastHash, refsToPack)
         val allArgs = listOf("bundle", "create", "-") + refsToPack + listOf("^$lastHash")
         bundleBytes = gitToStdout(workDir, allArgs)
           ?: throw RuntimeException("No new changes to sync")
@@ -100,11 +104,12 @@ object NativeBundleBuilder {
     }
   }
 
-  private fun ensureCommitReachable(workDir: File, commit: String) {
-    val res = git(workDir, "merge-base", "--is-ancestor", commit, "HEAD")
-    if (res.exitCode != 0) {
-      throw RuntimeException("Invalid sync state/base commit: $commit is not an ancestor of HEAD")
+  private fun ensureCommitReachable(workDir: File, commit: String, refs: List<String>) {
+    for (ref in refs) {
+      val res = git(workDir, "merge-base", "--is-ancestor", commit, ref)
+      if (res.exitCode == 0) return
     }
+    throw RuntimeException("Invalid sync state/base commit: $commit is not an ancestor of any bundled ref (${refs.joinToString(",")})")
   }
 
   private fun currentHead(workDir: File): String {

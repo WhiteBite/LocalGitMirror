@@ -192,11 +192,28 @@ class SyncEngine(
   }
 
   private fun buildNegotiationCandidates(project: Project, projectDir: File, head: String): List<String> {
+    return buildNegotiationCandidatesWithGuaranteed(project, projectDir, head).first
+  }
+
+  /**
+   * Returns (candidates, guaranteedAncestors).
+   *
+   * Candidates = tip + state hints + recent history. State hints (last-sent
+   * hashes from .git/lgm-sync-state) are NOT guaranteed ancestors: after a
+   * rebase/amend the recorded commit may no longer be on the branch, and
+   * feeding it to the bundle builder as an unverified ^base breaks
+   * ensureCommitReachable. Guaranteed = the tip's own recent history from
+   * `git log` — those are ancestors by construction and need no git check.
+   */
+  private fun buildNegotiationCandidatesWithGuaranteed(project: Project, projectDir: File, head: String): Pair<List<String>, List<String>> {
     val branch = git.currentBranch(project, projectDir).orEmpty()
     val byBranch = state.readLastByBranch(projectDir)
     val lastForBranch = byBranch[branch].orEmpty()
     val lastSent = state.readLastSent(projectDir).orEmpty()
-    val recent = git.recentCommits(project, projectDir, SyncConstants.RECENT_COMMITS_DEPTH).map { it.hash }
+    // Full hashes (--format=%H). Abbreviated --oneline hashes would never
+    // match the full hashes in `known` (getRefs/hasCommits), silently
+    // disabling the guaranteed-ancestor fast path for the current branch.
+    val recent = git.recentCommitsOfRef(project, projectDir, "HEAD", SyncConstants.RECENT_COMMITS_DEPTH)
 
     val raw = mutableListOf<String>()
     raw.add(head)
@@ -211,7 +228,8 @@ class SyncEngine(
       if (!hashRe.matches(h)) continue
       dedup.add(h)
     }
-    return dedup.toList().take(100)
+    val guaranteed = recent.filter { hashRe.matches(it) }
+    return dedup.toList().take(100) to guaranteed
   }
 
   private fun negotiateWithMirror(project: Project, projectDir: File, settings: SettingsSnapshot, repo: String): NegotiationResult {
@@ -275,12 +293,12 @@ class SyncEngine(
     // of candidate hashes the server *might* know about. The first one that
     // hasCommits + getRefs collectively confirm + is an ancestor of our tip
     // becomes the bundle's ^base.
-    data class BranchInfo(val name: String, val tip: String, val candidates: List<String>)
+    data class BranchInfo(val name: String, val tip: String, val candidates: List<String>, val guaranteed: List<String> = emptyList())
     val branchInfos = mutableListOf<BranchInfo>()
 
     // Current branch — head + recent N reachable from HEAD + state hints
-    val currentCandidates = buildNegotiationCandidates(project, projectDir, head)
-    branchInfos.add(BranchInfo(currentBranch.ifBlank { "HEAD" }, head, currentCandidates))
+    val (currentCandidates, currentGuaranteed) = buildNegotiationCandidatesWithGuaranteed(project, projectDir, head)
+    branchInfos.add(BranchInfo(currentBranch.ifBlank { "HEAD" }, head, currentCandidates, currentGuaranteed))
 
     // Additional branches — tip + recent N OF THE BRANCH (not HEAD!) + state hints.
     // The previous version only seeded `tip + lastForBranch`, so a branch with no
@@ -291,12 +309,13 @@ class SyncEngine(
     for (br in additionalBranches) {
       if (br.isBlank() || br == currentBranch) continue
       val tip = git.branchHash(project, projectDir, br) ?: continue
+      val recentOfBranch = git.recentCommitsOfRef(project, projectDir, br, SyncConstants.ADDITIONAL_BRANCH_DEPTH)
       val extras = LinkedHashSet<String>()
       extras.add(tip)
-      git.recentCommitsOfRef(project, projectDir, br, SyncConstants.ADDITIONAL_BRANCH_DEPTH).forEach { extras.add(it) }
+      recentOfBranch.forEach { extras.add(it) }
       byBranch[br]?.takeIf { it.isNotBlank() }?.let { extras.add(it) }
       val deduped = extras.filter { hashRe.matches(it) }.toList()
-      branchInfos.add(BranchInfo(br, tip, deduped))
+      branchInfos.add(BranchInfo(br, tip, deduped, recentOfBranch.filter { hashRe.matches(it) }))
     }
 
     // ─── Step 3. Single hasCommits over the union ───────────────────────
@@ -333,31 +352,71 @@ class SyncEngine(
 
     // ─── Step 5. Pick best ^base per branch ─────────────────────────────
     // Fast path: if server has this branch's tip, merge-base gives optimal
-    // base in ONE git call instead of N isAncestor checks. Fallback to
-    // candidate loop if merge-base fails or server doesn't have the branch.
+    // base in ONE git call instead of N isAncestor checks. Fallback: the
+    // tip's own recent history is ancestor by construction (zero git calls);
+    // state hints and OTHER branches' tips must be verified with isAncestor
+    // (they may have been rebased away or be parallel work) — state hints
+    // first, then server tips most-recent first, hard-capped, because each
+    // check is a commit-graph walk that can take seconds on fragmented repos
+    // (the uncapped loop here is what caused 30-minute hangs).
+    val serverTipsByRecency = serverRefs.refs?.values
+      ?.filter { it.sha.isNotBlank() && hashRe.matches(it.sha) }
+      ?.sortedWith(compareByDescending<MirrorApi.RefInfo> { it.updated }.thenBy { it.sha })
+      ?.map { it.sha }
+      ?: emptyList()
+
     val excludeBases = mutableListOf<String>()
     for (info in branchInfos) {
+      val startedAt = System.currentTimeMillis()
+
       // Try merge-base with server tip first (fastest path)
       val serverTip = serverRefs.refs?.get(info.name)?.sha
       if (serverTip != null && known.contains(serverTip.lowercase())) {
         val mergeBase = git.mergeBase(project, projectDir, info.tip, serverTip)
         if (mergeBase != null && mergeBase.lowercase() != info.tip.lowercase()) {
           excludeBases.add(mergeBase)
+          localgitmirror.idea.sync.SyncLogger.log(
+            projectDir,
+            "[negotiate-branch] ${info.name}: base=$mergeBase via merge-base with server tip (${System.currentTimeMillis() - startedAt} ms)"
+          )
           continue
         }
       }
-      
-      // Fallback: linear candidate search
-      val candidatesForThisBranch = (info.candidates + serverKnown).distinct()
-      var best = pickBestKnownBase(info.tip, candidatesForThisBranch, known)
-      while (!best.isNullOrBlank()) {
-        if (git.isAncestor(project, projectDir, best, info.tip)) {
-          excludeBases.add(best)
+
+      // Guaranteed ancestors (own recent history of the tip) — no git call.
+      val ownBase = pickBestKnownBase(info.tip, info.guaranteed, known)
+      if (ownBase != null) {
+        excludeBases.add(ownBase)
+        localgitmirror.idea.sync.SyncLogger.log(
+          projectDir,
+          "[negotiate-branch] ${info.name}: base=$ownBase from own history (${System.currentTimeMillis() - startedAt} ms)"
+        )
+        continue
+      }
+
+      // Verified candidates: state hints first, then other branches' tips by
+      // recency. Hard cap on git calls per branch.
+      val guaranteedSet = info.guaranteed.mapTo(HashSet()) { it.lowercase() }
+      val hints = info.candidates.filter { it.lowercase() !in guaranteedSet }
+      val toVerify = (hints + serverTipsByRecency).distinct()
+      var checks = 0
+      var base: String? = null
+      val tipLc = info.tip.lowercase()
+      for (cand in toVerify) {
+        if (checks >= SyncConstants.ANCESTRY_CHECK_CAP) break
+        val lc = cand.lowercase()
+        if (lc == tipLc || !known.contains(lc)) continue
+        checks++
+        if (git.isAncestor(project, projectDir, cand, info.tip)) {
+          base = cand
           break
         }
-        val remaining = candidatesForThisBranch.filter { !it.equals(best, ignoreCase = true) }
-        best = pickBestKnownBase(info.tip, remaining, known)
       }
+      if (base != null) excludeBases.add(base)
+      localgitmirror.idea.sync.SyncLogger.log(
+        projectDir,
+        "[negotiate-branch] ${info.name}: base=${base ?: "none (full bundle)"} after $checks ancestry check(s) (${System.currentTimeMillis() - startedAt} ms)"
+      )
     }
 
     return MultiBranchNegotiation(pointerCommit = null, excludeBases = excludeBases.distinct())

@@ -42,4 +42,12 @@ object SyncConstants {
    * Prevents payload explosion when many branches have deep history.
    */
   const val HAS_COMMITS_CANDIDATE_LIMIT = 300
+
+  /**
+   * Hard cap on `merge-base --is-ancestor` git calls per branch during
+   * exclude-base selection. Each call is a commit-graph walk that can take
+   * seconds on fragmented object stores (dozens of packs + AV scanning),
+   * so an uncapped candidate loop is what turned sends into 30-minute hangs.
+   */
+  const val ANCESTRY_CHECK_CAP = 8
 }

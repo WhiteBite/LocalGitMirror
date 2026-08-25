@@ -47,14 +47,24 @@ object GitLocal {
     env["GCM_INTERACTIVE"] = "never"
 
     val proc = pb.start()
+    // Drain both streams concurrently BEFORE waitFor: waiting first deadlocks
+    // any git whose output exceeds the OS pipe buffer (it blocks on write,
+    // waitFor never returns) and turns a valid command into a false timeout.
+    val outSb = StringBuilder()
+    val errSb = StringBuilder()
+    val outT = Thread { outSb.append(proc.inputStream.bufferedReader().readText()) }.apply { isDaemon = true }
+    val errT = Thread { errSb.append(proc.errorStream.bufferedReader().readText()) }.apply { isDaemon = true }
+    outT.start()
+    errT.start()
     if (!proc.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
       proc.destroyForcibly()
-      return Result(124, "", "Timeout running: git ${args.joinToString(" ")}")
+      outT.join(2000)
+      errT.join(2000)
+      return Result(124, outSb.toString().trim(), "Timeout running: git ${args.joinToString(" ")}")
     }
-
-    val stdout = proc.inputStream.bufferedReader().readText()
-    val stderr = proc.errorStream.bufferedReader().readText()
-    return Result(proc.exitValue(), stdout.trim(), stderr.trim())
+    outT.join(2000)
+    errT.join(2000)
+    return Result(proc.exitValue(), outSb.toString().trim(), errSb.toString().trim())
   }
 
   fun currentBranch(project: Project, workDir: File): String? {
