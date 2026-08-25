@@ -3,6 +3,7 @@ package localgitmirror.idea.sync.v2
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.git.RepoMaintenance
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import kotlinx.serialization.json.Json
@@ -644,6 +645,7 @@ class SyncEngine(
           state.updateAfterSend(projectDir, branchName, pointerHead)
           val okStep = StepResult(true, "Mirror already had all commits; applied pointer-only (${branchMap.size} branch(es))", applied.body.take(500))
           diag(projectDir, diagnostics, "apply-known", SyncStepOutcome.OK, okStep.message, mapOf("repo" to repoName, "commit" to pointerHead, "branches" to branchMap.keys.joinToString(",")))
+          RepoMaintenance.autoGcIfNeeded(project, projectDir)
           return FullSyncResult(okStep, applied, null, repoName, traceId, diagnostics.steps)
         }
         diag(projectDir, diagnostics, "apply-known", SyncStepOutcome.FAIL, "Pointer-only apply failed", mapOf("repo" to repoName, "httpCode" to applied.code.toString()))
@@ -719,6 +721,10 @@ class SyncEngine(
       }
       state.cleanupOldSyncFiles(projectDir)
       diag(projectDir, diagnostics, "update-state", SyncStepOutcome.OK, "State updated", mapOf("branch" to branchName, "head" to (headNow ?: "")))
+
+      // A successful send means new objects landed in the local store; if it
+      // is fragmented, consolidate it in the background (throttled, off-path).
+      RepoMaintenance.autoGcIfNeeded(project, projectDir)
 
       FullSyncResult(StepResult(true, "Sync completed", uploadRes.details), http, dump, repoName, traceId, diagnostics.steps)
     } catch (t: Throwable) {
