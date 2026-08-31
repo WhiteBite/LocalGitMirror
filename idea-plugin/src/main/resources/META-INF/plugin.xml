@@ -16,6 +16,7 @@
     <applicationService serviceImplementation="localgitmirror.idea.settings.MirrorSettingsService"/>
     <applicationService serviceImplementation="localgitmirror.idea.settings.OperationsHistoryService"/>
     <projectService serviceImplementation="localgitmirror.idea.settings.MirrorProjectSettingsService"/>
+    <projectService serviceImplementation="localgitmirror.idea.deps.DepsAutomationService"/>
     <projectConfigurable instance="localgitmirror.idea.settings.MirrorSettingsConfigurable"
                          id="localgitmirror.settings"
                          displayName="LocalGitMirror"
@@ -32,6 +33,7 @@
                        key="notification.group.name"/>
 
     <postStartupActivity implementation="localgitmirror.idea.startup.PullCheckStartupActivity"/>
+    <postStartupActivity implementation="localgitmirror.idea.startup.DepsAutomationStartupActivity"/>
   </extensions>
 
   <actions>
@@ -94,6 +96,11 @@
             text="Apply received dependencies…"
             description="DOME: unpack the received deps into the local gradle/npm caches"/>
 
+    <action id="LocalGitMirror.MirrorPublish"
+            class="localgitmirror.idea.deps.PublishMirrorAction"
+            text="Sync corporate mirror (publish vault)…"
+            description="WORK: scan local caches for protected corporate artifacts and publish to home vault"/>
+
     <!-- ── Explicit repo file sync (encrypted with SYNC_PASSWORD) ── -->
     <action id="LocalGitMirror.FileSendSelected"
             class="localgitmirror.idea.actions.SendSelectedFileAction"
@@ -115,6 +122,11 @@
     <action id="LocalGitMirror.Preflight"
             class="localgitmirror.idea.actions.PreflightCheckAction"
             text="Preflight" description="Run preflight diagnostics before sync"/>
+
+    <action id="LocalGitMirror.VaultDiagnostics"
+            class="localgitmirror.idea.actions.ShowVaultDiagnosticsAction"
+            text="Vault diagnostics…"
+            description="Show vault status: CAS size, artifacts, wanted, conflicts, backup"/>
 
     <action id="LocalGitMirror.DryRun"
             class="localgitmirror.idea.actions.DryRunSyncAction"
@@ -165,6 +177,7 @@
       <reference ref="LocalGitMirror.DepsRequest"/>
       <reference ref="LocalGitMirror.DepsRespond"/>
       <reference ref="LocalGitMirror.DepsApply"/>
+      <reference ref="LocalGitMirror.MirrorPublish"/>
       <separator/>
 
       <!-- Explicit selected-file sync -->
@@ -174,6 +187,7 @@
 
       <!-- Diagnostics (rarely needed) -->
       <reference ref="LocalGitMirror.Preflight"/>
+      <reference ref="LocalGitMirror.VaultDiagnostics"/>
       <reference ref="LocalGitMirror.DryRun"/>
       <reference ref="LocalGitMirror.DryRunPull"/>
       <separator/>
