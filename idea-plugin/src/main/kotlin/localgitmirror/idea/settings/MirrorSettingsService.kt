@@ -45,7 +45,25 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     // the fingerprint shown for out-of-band verification against the server
     // console. Empty = fall back to the legacy password envelope.
     var serverPubKeyB64: String = "",
-    var serverPubKeyFp: String = ""
+    var serverPubKeyFp: String = "",
+
+    // ponytail: anonymous-access Nexus URL. If auth is needed later, add a
+    // credential field in SecretsStore.
+    var nexusBaseUrl: String = "https://nexus.kryptodev.ru/repository/maven-public",
+
+    // ── Auto deps-sync (corporate-dependency transfer) ──
+    // Machine role override: "auto" (default) detects via RoleDetector;
+    // "home" / "work" forces the role manually.
+    var machineRole: String = "auto",
+
+    // HOME: automatically detect missing corporate deps and send a request.
+    var autoRequestDeps: Boolean = true,
+    // WORK: automatically respond to pending deps requests.
+    var autoRespondDeps: Boolean = true,
+    // HOME: automatically apply received deps responses.
+    var autoApplyDeps: Boolean = true,
+    // Poll interval for deps auto-sync, in seconds (15..600).
+    var depsPollSec: Int = 60
   )
 
   private var state = State()

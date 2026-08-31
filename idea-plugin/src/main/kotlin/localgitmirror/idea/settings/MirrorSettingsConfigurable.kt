@@ -6,6 +6,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.dsl.builder.*
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.net.LanDiscovery
 import javax.swing.JComponent
@@ -61,6 +62,49 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
             .bindText(projectState::repoOverride)
             .resizableColumn()
             .comment("Переопределение имени репозитория на Mirror (если папка называется иначе)")
+        }
+      }
+
+      // Auto dependency synchronization settings
+      collapsibleGroup(LocalGitMirrorBundle.message("auto.section.title"), false) {
+        row(LocalGitMirrorBundle.message("auto.role.label")) {
+          comboBox(listOf(
+            LocalGitMirrorBundle.message("auto.role.auto"),
+            LocalGitMirrorBundle.message("auto.role.home"),
+            LocalGitMirrorBundle.message("auto.role.work")
+          )).bindItem(
+            { state.machineRole.let { role ->
+              when (role.trim().lowercase()) {
+                "home" -> LocalGitMirrorBundle.message("auto.role.home")
+                "work" -> LocalGitMirrorBundle.message("auto.role.work")
+                else -> LocalGitMirrorBundle.message("auto.role.auto")
+              }
+            } },
+            { selected -> state.machineRole = when (selected) {
+              LocalGitMirrorBundle.message("auto.role.home") -> "home"
+              LocalGitMirrorBundle.message("auto.role.work") -> "work"
+              else -> "auto"
+            } }
+          )
+        }
+
+        row {
+          checkBox(LocalGitMirrorBundle.message("auto.requestDeps"))
+            .bindSelected(state::autoRequestDeps)
+        }
+        row {
+          checkBox(LocalGitMirrorBundle.message("auto.respondDeps"))
+            .bindSelected(state::autoRespondDeps)
+        }
+        row {
+          checkBox(LocalGitMirrorBundle.message("auto.applyDeps"))
+            .bindSelected(state::autoApplyDeps)
+        }
+
+        row(LocalGitMirrorBundle.message("auto.pollSec")) {
+          textField()
+            .bindIntText(state::depsPollSec)
+            .comment(LocalGitMirrorBundle.message("auto.pollSec.comment"))
         }
       }
     }

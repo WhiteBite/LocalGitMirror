@@ -15,28 +15,7 @@ import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
-import localgitmirror.idea.workkit.BundleCrypto
 import java.io.File
-import java.text.DecimalFormat
-
-internal fun humanBytes(b: Long): String {
-  if (b < 1024) return "$b B"
-  val units = arrayOf("KB", "MB", "GB", "TB")
-  var v = b.toDouble() / 1024
-  var i = 0
-  while (v >= 1024 && i < units.size - 1) { v /= 1024; i++ }
-  return DecimalFormat("0.#").format(v) + " " + units[i]
-}
-
-private fun resolveRepoName(project: Project): String {
-  val dir = project.basePath?.let { File(it) } ?: File(".")
-  // Repo is per-project: pass "" so RepoResolver uses this project's own stored
-  // override / git remote, never the global setting.
-  return localgitmirror.idea.sync.v2.RepoResolver
-    .resolve(project, dir, "")
-    .sanitized
-    .ifBlank { project.name }
-}
 
 private fun notify(project: Project, msg: String, type: NotificationType) {
   NotificationGroupManager.getInstance()
@@ -44,23 +23,6 @@ private fun notify(project: Project, msg: String, type: NotificationType) {
     .createNotification(msg, type)
     .notify(project)
 }
-
-private fun projectJdkHome(project: Project): String? = try {
-  com.intellij.openapi.roots.ProjectRootManager.getInstance(project).projectSdk?.homePath
-} catch (_: Throwable) { null }
-
-/**
- * STEALTH cleanup: earlier versions wrote `.lgm-deps-debug.txt`,
- * `.lgm-last-sent-deps.txt` and `.lgm-last-deps.txt` into the project root.
- * Those leak corporate package names into the git working tree. Remove any
- * that linger. Best-effort; never throws.
- */
-private fun sweepLegacyDepsFiles(projectDir: File) {
-  listOf(".lgm-deps-debug.txt", ".lgm-last-sent-deps.txt", ".lgm-last-deps.txt").forEach {
-    runCatching { File(projectDir, it).takeIf { f -> f.exists() }?.delete() }
-  }
-}
-
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Visibility helpers (pure functions — no network, testable without IntelliJ)
@@ -88,6 +50,7 @@ fun computeApplyEnabled(configured: Boolean, lastKnownPending: Int): Boolean =
 
 class RequestDepsAction : AnAction() {
   override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.DepsRequest")
     val project = e.project
     if (project == null) {
       e.presentation.isEnabled = false
@@ -110,82 +73,18 @@ class RequestDepsAction : AnAction() {
     }
     val repo = resolveRepoName(project)
     val history = service<OperationsHistoryService>()
-    val projectDir = project.basePath?.let { File(it) } ?: File(".")
-    val jdkHome = projectJdkHome(project)
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Запрос недостающих зависимостей", true) {
       override fun run(indicator: ProgressIndicator) {
-        indicator.isIndeterminate = true
-        sweepLegacyDepsFiles(projectDir)
-        val ecosystems = DepsEcosystems.detect(projectDir)
-        if (ecosystems.isEmpty()) {
-          notify(project, "Не найден ни gradle, ни npm проект в ${projectDir.name}.", NotificationType.WARNING)
-          return
+        val result = DepsRequester.request(project, settings, syncPwd, repo, indicator)
+        if (result.success) {
+          notify(project, result.message, NotificationType.INFORMATION)
+          history.add("Deps request", true,
+            "repo='$repo' id=${result.requestId ?: "-"} missing=${result.missingCount} eco=${result.ecosystem}")
+        } else {
+          notify(project, result.message, NotificationType.ERROR)
+          history.add("Deps request", false, result.message)
         }
-
-        val allMissing = mutableListOf<DepCoordinate>()
-        val logs = StringBuilder()
-        for (eco in ecosystems) {
-          indicator.text = "Определяем недостающие ${eco.id}-зависимости…"
-          val r = eco.resolveMissing(projectDir, jdkHome)
-          logs.appendLine("[${eco.id}] ok=${r.ok} missing=${r.missing.size} (${r.durationMs}ms)")
-          if (!r.ok && r.missing.isEmpty()) {
-            logs.appendLine("  ! ${r.log.takeLast(300)}")
-          }
-          allMissing.addAll(r.missing)
-        }
-        val missing = allMissing.distinctBy { it.key }
-
-        // Sync the stealth toggle, then emit diagnostics to the IDE log / opt-in
-        // file under the IDE log dir — NEVER into the project tree.
-        DepsDiagnostics.enabled = settings.depsDiagnosticsEnabled
-        DepsDiagnostics.verbose = settings.depsDiagnosticsVerbose
-        DepsDiagnostics.event("request: ecosystems=${ecosystems.joinToString(",") { it.id }} missing=${missing.size}")
-        for (line in logs.lineSequence()) if (line.isNotBlank()) DepsDiagnostics.event(line.trim())
-        DepsDiagnostics.detail("Missing coordinates") { missing.map { "${it.ecosystem}  ${it.label}" } }
-
-        if (missing.isEmpty()) {
-          notify(project,
-            "Всё резолвится локально — запрашивать нечего.",
-            NotificationType.INFORMATION)
-          history.add("Deps request", true, "nothing missing (${ecosystems.joinToString(",") { it.id }})")
-          return
-        }
-
-        val manifest = DepsRequestManifest(
-          version = 3,
-          requester = System.getProperty("user.name") ?: "dome",
-          project = repo,
-          ecosystem = ecosystems.joinToString(",") { it.id },
-          missing = missing,
-          // Tell the work side what we ALREADY have under any coordinate it
-          // might ship. The work side will subtract these (sha1, fileName)
-          // pairs from its collect() output, so the dome only receives files
-          // it doesn't already have. Same shipability rules on both sides
-          // (see GradleEcosystem.pickShipableArtifacts) → keys line up.
-          present = ecosystems.flatMap { it.enumeratePresent() }
-        )
-        val encrypted = BundleCrypto.encryptBundleBytes(DepsRequestManifest.toJsonBytes(manifest), syncPwd)
-
-        indicator.text = "Отправляем запрос (${missing.size} координат)…"
-        val res = MirrorApi.depsRequest(
-          baseUrl = settings.baseUrl,
-          apiKey = SecretsStore.mirrorApiKey,
-          repo = repo,
-          insecureTls = settings.mirrorInsecureTls,
-          encryptedManifest = encrypted
-        )
-        if (res.code !in 200..299 || res.id == null) {
-          val msg = "Запрос не отправлен (${res.code}): ${res.message}"
-          notify(project, msg, NotificationType.ERROR)
-          history.add("Deps request", false, msg)
-          return
-        }
-        notify(project,
-          "Запрошено ${missing.size} недостающих зависимостей (${manifest.ecosystem}).\n" +
-            "На рабочей машине нажми «Выдать запрошенные зависимости».",
-          NotificationType.INFORMATION)
-        history.add("Deps request", true, "repo='$repo' id=${res.id} missing=${missing.size} eco=${manifest.ecosystem}")
       }
     })
   }
@@ -209,6 +108,7 @@ class RespondDepsAction : AnAction() {
   }
 
   override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.DepsRespond")
     val project = e.project
     if (project == null) { e.presentation.isEnabled = false; return }
     val settings = service<MirrorSettingsService>().state
@@ -230,7 +130,6 @@ class RespondDepsAction : AnAction() {
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Выдать запрошенные зависимости", true) {
       override fun run(indicator: ProgressIndicator) {
         indicator.isIndeterminate = true
-        project.basePath?.let { sweepLegacyDepsFiles(File(it)) }
         indicator.text = "Проверяем запросы для repo='$repo'…"
         val pending = MirrorApi.depsPending(
           baseUrl = settings.baseUrl,
@@ -242,7 +141,6 @@ class RespondDepsAction : AnAction() {
           notify(project, "Не удалось получить список запросов: ${pending.message}", NotificationType.ERROR)
           return
         }
-        // Update visibility cache so update() knows the current count
         lastKnownPendingCount.set(pending.items.size)
         if (pending.items.isEmpty()) {
           notify(project,
@@ -270,154 +168,58 @@ class RespondDepsAction : AnAction() {
           return
         }
 
-        val manifest = try {
-          DepsRequestManifest.fromJsonBytes(BundleCrypto.decryptDumpBytes(tmpManifest.readBytes(), syncPwd))
-        } catch (t: Throwable) {
-          notify(project, "Ошибка расшифровки запроса: ${t.message ?: t::class.simpleName}", NotificationType.ERROR)
-          return
-        } finally {
-          runCatching { tmpManifest.delete() }
-        }
+        val manifestBlob = tmpManifest.readBytes()
+        runCatching { tmpManifest.delete() }
 
-        if (manifest.version < 3 || manifest.missing.isEmpty()) {
-          val detail = "v=${manifest.version} missing=${manifest.missing.size} eco='${manifest.ecosystem}'"
-          notify(project,
-            "Запрос пуст или в старом формате ($detail). " +
-              if (manifest.version < 3)
-                "Обнови плагин на домашней машине и повтори «Запросить»."
-              else
-                "Домашняя машина решила что ничего не нужно. Открой Help → Show Log, найди '[deps] request:' — там будет причина.",
-            NotificationType.WARNING)
-          history.add("Deps respond", false, "empty/legacy manifest $detail")
-          return
-        }
+        val result = DepsResponder.respond(project, settings, syncPwd, repo, req.id, manifestBlob, indicator)
 
-        // Collect requested coordinates from local caches, grouped by ecosystem.
-        indicator.text = "Ищем ${manifest.missing.size} координат в локальном кеше…"
-        // Hint the gradle ecosystem with the project dir so it can ask gradle
-        // for its REAL gradleUserHomeDir and scan that cache too.
-        val workProjectDir = project.basePath?.let { File(it) }
-        GradleEcosystem.collectProjectDir = workProjectDir
-        // Index what the dome already has — work side will skip identical
-        // (sha1, fileName) entries when packing.
-        val presentIndex = manifest.presentIndex()
-        val byEco = manifest.missing.groupBy { it.ecosystem }
-        val entries = mutableListOf<DepFileEntry>()
-        val notFound = mutableListOf<DepCoordinate>()
-        for ((ecoId, coords) in byEco) {
-          val eco = DepsEcosystems.byId(ecoId)
-          if (eco == null) { notFound.addAll(coords); continue }
-          entries.addAll(eco.collect(coords, presentIndex) { notFound.add(it) })
-        }
-        GradleEcosystem.collectProjectDir = null
+        if (result.success) {
+          notify(project, result.message, NotificationType.INFORMATION)
+          history.add("Deps respond", true,
+            "request=${req.id} shipped=${result.sentCount} notFound=${result.notFoundCount} size=${humanBytes(result.bytes)}")
+        } else {
+          // The "0 found" case: do the detailed history logging that the core
+          // deliberately leaves to the caller (UI concern).
+          if (result.sentCount == 0 && result.notFoundCount > 0) {
+            val scanned = DepsScanner.candidateCacheRoots()
+            val gradleEnv = System.getenv("GRADLE_USER_HOME") ?: "(не задана)"
+            val workProjectDir = project.basePath?.let { File(it) }
+            val gradleReported = workProjectDir?.let {
+              try { GradleResolver.discoverGradleUserHome(it) } catch (_: Throwable) { null }
+            } ?: "(не определён)"
 
-        if (entries.isEmpty()) {
-          // Write a full diagnostic into the History (acts as a visible log) so
-          // the user can see EXACTLY where we looked and what we wanted, without
-          // touching the IDE log files.
-          val scanned = DepsScanner.candidateCacheRoots()
-          val gradleEnv = System.getenv("GRADLE_USER_HOME") ?: "(не задана)"
-          val gradleReported = workProjectDir?.let {
-            try { GradleResolver.discoverGradleUserHome(it) } catch (_: Throwable) { null }
-          } ?: "(не определён)"
+            history.add("Deps respond", false,
+              "0 из ${result.notFoundCount} найдено. GRADLE_USER_HOME=$gradleEnv | gradle сообщил=$gradleReported")
+            history.add("Deps: кеши", false,
+              "Просканировано ${scanned.size} кеш-путей (см. ниже)")
+            scanned.forEach { root ->
+              val exists = root.isDirectory
+              val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
+              val mark = if (exists) "OK, групп=$groups" else "НЕТ такой папки"
+              history.add("Deps: кеш-путь", exists, "$mark — ${root.absolutePath}")
+            }
 
-          history.add("Deps respond", false,
-            "0 из ${manifest.missing.size} найдено. GRADLE_USER_HOME=$gradleEnv | gradle сообщил=$gradleReported")
-          history.add("Deps: кеши", false,
-            "Просканировано ${scanned.size} кеш-путей (см. ниже)")
-          scanned.forEach { root ->
-            val exists = root.isDirectory
-            val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
-            val mark = if (exists) "OK, групп=$groups" else "НЕТ такой папки"
-            history.add("Deps: кеш-путь", exists, "$mark — ${root.absolutePath}")
-          }
-          manifest.missing.take(15).forEach {
-            history.add("Deps: запрошено", false, "${it.ecosystem}: ${it.label}")
-          }
-
-          // Diagnostics sink (IDE log + optional file) too.
-          DepsDiagnostics.event("respond: 0 found. GRADLE_USER_HOME=$gradleEnv scanned=${scanned.size}")
-          DepsDiagnostics.detail("Scanned cache roots") { scanned.map { it.absolutePath } }
-          DepsDiagnostics.detail("Requested (not found)") { manifest.missing.map { "${it.ecosystem} ${it.label}" } }
-
-          val scanReport = scanned.joinToString("\n") { root ->
-            val exists = root.isDirectory
-            val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
-            "  • ${root.absolutePath} — ${if (exists) "есть ($groups групп)" else "НЕТ"}"
-          }
-          notify(project,
-            buildString {
-              appendLine("Ни одна из ${manifest.missing.size} зависимостей не найдена в кеше.")
+            // Re-scan for the notification message (same as original code)
+            val scanReport = scanned.joinToString("\n") { root ->
+              val exists = root.isDirectory
+              val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
+              "  • ${root.absolutePath} — ${if (exists) "есть ($groups групп)" else "НЕТ"}"
+            }
+            val msg = buildString {
+              appendLine("Ни одна из ${result.notFoundCount} зависимостей не найдена в кеше.")
               appendLine("Подробности записаны в Историю (панель плагина).")
               appendLine()
               appendLine("Искал в:")
               appendLine(scanReport)
               appendLine()
               append("GRADLE_USER_HOME = $gradleEnv")
-            },
-            NotificationType.WARNING)
-          return
-        }
-
-        // Pack with ecosystem-prefixed entry names so the dome can route them.
-        val prefixed = entries.map {
-          it.copy(relativePath = "${it.coordinate.ecosystem}/${it.relativePath}")
-        }.toMutableList()
-        // Ship the project's npm lockfile (if present) as a meta entry so the
-        // dome can do a lockfile-driven offline `npm install` (apply rewrites
-        // its resolved URLs corporate-registry -> npmjs).
-        workProjectDir?.let { dir ->
-          val lock = File(dir, "package-lock.json")
-          if (lock.isFile) {
-            prefixed.add(DepFileEntry(
-              coordinate = DepCoordinate("npm", "", "package-lock.json", ""),
-              absolutePath = lock.absolutePath,
-              relativePath = "__meta__/package-lock.json",
-              size = lock.length()
-            ))
+            }
+            notify(project, msg, NotificationType.WARNING)
+          } else {
+            notify(project, result.message, NotificationType.ERROR)
+            history.add("Deps respond", false, result.message)
           }
         }
-        val diffSize = prefixed.sumOf { it.size }
-        indicator.text = "Упаковываем ${prefixed.size} файлов (${humanBytes(diffSize)})…"
-        val zipBytes = DepsBundler.packEntries(prefixed)
-        val encrypted = BundleCrypto.encryptBundleBytes(zipBytes, syncPwd)
-
-        indicator.text = "Отправляем (${humanBytes(encrypted.size.toLong())})…"
-        val res = MirrorApi.depsRespond(
-          baseUrl = settings.baseUrl,
-          apiKey = SecretsStore.mirrorApiKey,
-          repo = repo,
-          insecureTls = settings.mirrorInsecureTls,
-          requestId = req.id,
-          encryptedArchive = encrypted
-        )
-        if (res.code !in 200..299 || res.id == null) {
-          val msg = "Не отправлено (${res.code}): ${res.message}"
-          notify(project, msg, NotificationType.ERROR)
-          history.add("Deps respond", false, msg)
-          return
-        }
-
-        val foundCoords = entries.map { it.coordinate.key }.toSet()
-        val notFoundUnique = notFound.distinctBy { it.key }
-        DepsDiagnostics.enabled = settings.depsDiagnosticsEnabled
-        DepsDiagnostics.verbose = settings.depsDiagnosticsVerbose
-        DepsDiagnostics.event("respond: shipped=${foundCoords.size} notFound=${notFoundUnique.size} bytes=$diffSize")
-        DepsDiagnostics.detail("Shipped coordinates") {
-          entries.map { it.coordinate.label }.distinct().sorted()
-        }
-        if (notFoundUnique.isNotEmpty()) {
-          DepsDiagnostics.detail("Requested but NOT in local cache") {
-            notFoundUnique.map { "${it.ecosystem}  ${it.label}" }
-          }
-        }
-
-        val warn = if (notFoundUnique.isNotEmpty()) " (не найдено ${notFoundUnique.size})" else ""
-        notify(project,
-          "Отправлено ${humanBytes(diffSize)} — ${foundCoords.size} зависимостей$warn.",
-          NotificationType.INFORMATION)
-        history.add("Deps respond", true,
-          "request=${req.id} shipped=${foundCoords.size} notFound=${notFoundUnique.size} size=${humanBytes(diffSize)}")
       }
     })
   }
@@ -441,6 +243,7 @@ class ApplyDepsAction : AnAction() {
   }
 
   override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.DepsApply")
     val project = e.project
     if (project == null) { e.presentation.isEnabled = false; return }
     val settings = service<MirrorSettingsService>().state
@@ -472,7 +275,6 @@ class ApplyDepsAction : AnAction() {
           notify(project, "Не удалось получить список: ${list.message}", NotificationType.ERROR)
           return
         }
-        // Update visibility cache so update() knows the current count
         lastKnownResponseCount.set(list.items.size)
         if (list.items.isEmpty()) {
           notify(project, LocalGitMirrorBundle.message("deps.notify.noResponses"), NotificationType.INFORMATION)
@@ -513,33 +315,19 @@ class ApplyDepsAction : AnAction() {
           return
         }
 
-        indicator.isIndeterminate = true
-        indicator.text = "Расшифровка и распаковка…"
-        val unpackResult = try {
-          val decrypted = BundleCrypto.decryptDumpBytes(tmpResp.readBytes(), syncPwd)
-          // Hint the gradle ecosystem with the project dir so it resolves
-          // cacheRoot() via discoverGradleUserHome — same logic as in collect().
-          // This ensures artifacts land in the REAL gradle home (e.g.
-          // D:\gradle-8.10.2\.gradle) even when GRADLE_USER_HOME isn't set in
-          // the IDE process environment.
-          val applyProjectDir = project.basePath?.let { java.io.File(it) }
-          GradleEcosystem.collectProjectDir = applyProjectDir
-          try {
-            DepsBundler.unpackRouted(decrypted) { ecoId ->
-              val eco = DepsEcosystems.byId(ecoId) ?: return@unpackRouted null
-              eco.cacheRoot()
-            }
-          } finally {
-            GradleEcosystem.collectProjectDir = null
-          }
-        } catch (t: Throwable) {
-          notify(project, "Ошибка применения: ${t.message ?: t::class.simpleName}", NotificationType.ERROR)
-          history.add("Deps apply", false, "decrypt/unpack failed: ${t.message}")
+        val responseBlob = tmpResp.readBytes()
+
+        val result = DepsApplier.apply(project, settings, syncPwd, responseBlob, indicator)
+
+        runCatching { tmpResp.delete() }
+
+        if (!result.success) {
+          notify(project, result.message, NotificationType.ERROR)
+          history.add("Deps apply", false, "decrypt/unpack failed: ${result.message}")
           return
-        } finally {
-          runCatching { tmpResp.delete() }
         }
 
+        // Ack the response on the server (one-shot: server deletes it).
         MirrorApi.depsAck(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
@@ -548,59 +336,14 @@ class ApplyDepsAction : AnAction() {
           id = resp.id
         )
 
-        // Ensure ~/.gradle/init.d/lgm-mavenlocal-fallback.gradle exists so
-        // mavenLocal() is automatically declared on every gradle build's
-        // pluginManagement / buildscript / project repositories. Without this
-        // the manually-placed artifacts in ~/.m2/repository wouldn't be visible
-        // to gradle in --offline mode. Idempotent: writes only if absent or
-        // outdated, never overwrites a user-modified version.
-        runCatching { GradleEcosystem.ensureMavenLocalInitScript() }
-          .onFailure { DepsDiagnostics.event("apply: init-script write failed: ${it.message}") }
-
-        // Best-effort per-ecosystem post-install (e.g. npm cache add). The
-        // unpack stored display names, but postInstall needs cache-relative
-        // paths, so recompute them from the npm mirror tree.
-        val postStatus = StringBuilder()
-        runCatching {
-          val npmMirrorRoot = NpmEcosystem.cacheRoot()
-          if (npmMirrorRoot.isDirectory) {
-            val tgzRel = npmMirrorRoot.walkTopDown()
-              .filter { it.isFile && it.extension == "tgz" }
-              .map { it.relativeTo(npmMirrorRoot).path.replace('\\', '/') }
-              .toList()
-            if (tgzRel.isNotEmpty()) {
-              val s = NpmEcosystem.postInstall(tgzRel)
-              if (s.isNotBlank()) postStatus.append(s)
-            }
-          }
-        }
-
-        val npmMirror = NpmEcosystem.cacheRoot()
-        val npmInstalled = unpackResult.installedEntries.any { it.endsWith(".tgz") }
-
-        // npm lockfile (shipped as __meta__/package-lock.json): rewrite resolved
-        // URLs corporate-registry -> npmjs, write it into the project, and offer
-        // to run a lockfile-driven offline npm install (public from npmjs,
-        // corporate from the cache we just seeded).
-        var lockMsg = ""
-        val applyProj = project.basePath?.let { File(it) }
-        val isYarnProj = applyProj != null && File(applyProj, "yarn.lock").isFile
-        val lockBytes = unpackResult.meta["package-lock.json"]
-
-        if (isYarnProj && applyProj != null) {
-          // yarn (classic v1): keep corporate tarballs in a GLOBAL offline-mirror,
-          // point GLOBAL ~/.yarnrc at it, install with --offline --pure-lockfile.
-          // The project's yarn.lock/.yarnrc are NOT touched (repo stays clean) and
-          // it survives branch switches; public packages come from yarn's global
-          // cache, corporate from the offline-mirror (by filename).
-          val ymir = NpmEcosystem.yarnOfflineMirror()
-          val cnt = runCatching { NpmEcosystem.buildYarnMirror(NpmEcosystem.cacheRoot(), ymir) }.getOrDefault(0)
-          runCatching { NpmEcosystem.setGlobalYarnMirror(ymir) }
-          lockMsg = "yarn: offline-mirror ($cnt пакет(ов)) в глобальном ~/.yarnrc; yarn.lock не тронут."
+        // Offer to run npm/yarn install if the core suggests it (action only;
+        // the automation service skips this dialog).
+        var finalMsg = result.message
+        if (result.suggestYarnInstall) {
           val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
             Messages.showYesNoDialog(
               project,
-              "$lockMsg\nЗапустить yarn install --offline сейчас? (публичное из кеша yarn, корпоративное из mirror)",
+              "${result.lockMsg}\nЗапустить yarn install --offline сейчас? (публичное из кеша yarn, корпоративное из mirror)",
               "LocalGitMirror: yarn install", "Запустить", "Позже", null
             )
           }
@@ -610,80 +353,45 @@ class ApplyDepsAction : AnAction() {
               val isWin = System.getProperty("os.name").lowercase().contains("win")
               val cmd = (if (isWin) listOf("cmd", "/c", "yarn") else listOf("yarn")) +
                 listOf("install", "--offline", "--pure-lockfile", "--non-interactive")
+              val applyProj = project.basePath?.let { File(it) }
               val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
               proc.inputStream.bufferedReader().forEachLine { /* drain */ }
               proc.waitFor()
             }.getOrElse { -1 }
-            lockMsg += if (code == 0) " yarn install: OK."
-                       else " yarn install: код $code (если не хватает публичного — один онлайн yarn install, дальше офлайн)."
+            finalMsg += if (code == 0) " yarn install: OK."
+                        else " yarn install: код $code (если не хватает публичного — один онлайн yarn install, дальше офлайн)."
           } else {
-            lockMsg += " Запусти: yarn install --offline --pure-lockfile"
+            finalMsg += " Запусти: yarn install --offline --pure-lockfile"
           }
-        } else if (lockBytes != null && applyProj != null && File(applyProj, "package.json").isFile) {
-          // npm lockfile (shipped as __meta__/package-lock.json): rewrite resolved
-          // URLs corporate-registry -> npmjs, write it into the project, and offer
-          // a lockfile-driven npm install (public from npmjs, corporate from cache).
-          val nrw = runCatching {
-            val (rewritten, n) = NpmEcosystem.rewriteLockToNpmjs(String(lockBytes, Charsets.UTF_8), applyProj)
-            File(applyProj, "package-lock.json").writeText(rewritten, Charsets.UTF_8)
-            n
-          }.getOrNull()
-          if (nrw != null) {
-            lockMsg = "package-lock.json применён ($nrw ссылок → npmjs)."
-            val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
-              Messages.showYesNoDialog(
-                project,
-                "$lockMsg\nЗапустить npm install сейчас? (публичное с npmjs, корпоративное из кеша)",
-                "LocalGitMirror: npm install", "Запустить", "Позже", null
-              )
-            }
-            if (runIt == Messages.YES) {
-              indicator.text = "npm install…"
-              val code = runCatching {
-                val isWin = System.getProperty("os.name").lowercase().contains("win")
-                val cmd = (if (isWin) listOf("cmd", "/c", "npm") else listOf("npm")) +
-                  listOf("install", "--prefer-offline", "--registry",
-                         "https://registry.npmjs.org", "--no-audit", "--no-fund")
-                val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
-                proc.inputStream.bufferedReader().forEachLine { /* drain */ }
-                proc.waitFor()
-              }.getOrElse { -1 }
-              lockMsg += if (code == 0) " npm install: OK." else " npm install: код $code (повтори вручную)."
-            } else {
-              lockMsg += " Запусти: npm install --prefer-offline --registry https://registry.npmjs.org"
-            }
+        } else if (result.suggestNpmInstall) {
+          val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
+            Messages.showYesNoDialog(
+              project,
+              "${result.lockMsg}\nЗапустить npm install сейчас? (публичное с npmjs, корпоративное из кеша)",
+              "LocalGitMirror: npm install", "Запустить", "Позже", null
+            )
+          }
+          if (runIt == Messages.YES) {
+            indicator.text = "npm install…"
+            val code = runCatching {
+              val isWin = System.getProperty("os.name").lowercase().contains("win")
+              val cmd = (if (isWin) listOf("cmd", "/c", "npm") else listOf("npm")) +
+                listOf("install", "--prefer-offline", "--registry",
+                       "https://registry.npmjs.org", "--no-audit", "--no-fund")
+              val applyProj = project.basePath?.let { File(it) }
+              val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
+              proc.inputStream.bufferedReader().forEachLine { /* drain */ }
+              proc.waitFor()
+            }.getOrElse { -1 }
+            finalMsg += if (code == 0) " npm install: OK." else " npm install: код $code (повтори вручную)."
           } else {
-            lockMsg = "package-lock.json получен, но записать не удалось."
+            finalMsg += " Запусти: npm install --prefer-offline --registry https://registry.npmjs.org"
           }
         }
 
-        DepsDiagnostics.enabled = settings.depsDiagnosticsEnabled
-        DepsDiagnostics.verbose = settings.depsDiagnosticsVerbose
-        DepsDiagnostics.event("apply: installed=${unpackResult.installed} skipped=${unpackResult.skipped} invalid=${unpackResult.invalid} bytes=${unpackResult.totalBytes}")
-        DepsDiagnostics.detail("Installed") { unpackResult.installedEntries }
-        if (unpackResult.skippedEntries.isNotEmpty()) {
-          DepsDiagnostics.detail("Already present") { unpackResult.skippedEntries }
-        }
-
-        val msg = buildString {
-          append("Применено: ${unpackResult.installed} установлено, ${unpackResult.skipped} уже было")
-          if (unpackResult.invalid > 0) append(", ${unpackResult.invalid} отклонено")
-          append(" (${humanBytes(unpackResult.totalBytes)}).")
-          if (npmInstalled) {
-            appendLine(); appendLine()
-            if (postStatus.isNotEmpty()) {
-              append("npm: $postStatus")
-            } else {
-              append("npm-тарболы: ${npmMirror.absolutePath}\nставь из этой папки (npm install --offline).")
-            }
-          }
-          if (lockMsg.isNotEmpty()) {
-            appendLine(); appendLine(); append(lockMsg)
-          }
-        }
-        notify(project, msg, NotificationType.INFORMATION)
+        notify(project, finalMsg, NotificationType.INFORMATION)
         history.add("Deps apply", true,
-          "installed=${unpackResult.installed} skipped=${unpackResult.skipped} invalid=${unpackResult.invalid} size=${humanBytes(unpackResult.totalBytes)}")
+          "installed=${result.installed} skipped=${result.skipped} invalid=${result.invalid} size=${humanBytes(result.bytes)}")
       }
     })
   }
