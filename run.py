@@ -139,6 +139,7 @@ def _git_commit_count() -> int | None:
         out = subprocess.run(
             ["git", "rev-list", "--count", "HEAD"],
             cwd=str(ROOT), capture_output=True, text=True, check=True,
+            encoding="utf-8", errors="replace",
         ).stdout.strip()
         return int(out) if out.isdigit() else None
     except Exception:
@@ -205,6 +206,7 @@ def _ensure_plugin_built() -> None:
         result = subprocess.run(
             [*gradle, "buildPlugin", "--no-daemon"],
             cwd=str(IDEA_PLUGIN), capture_output=True, text=True, timeout=900,
+            encoding="utf-8", errors="replace",
         )
         if result.returncode != 0:
             print("[warn] IDEA plugin build failed:")
@@ -321,7 +323,11 @@ def _spawn(cmd: list[str], cwd: Path) -> subprocess.Popen:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=1,
-        universal_newlines=True,
+        text=True,
+        # Children (uvicorn/rich, vite) emit UTF-8; the default locale codec
+        # (cp1251 on RU Windows) crashes the pump thread on Cyrillic output.
+        encoding="utf-8",
+        errors="replace",
     )
     if IS_WIN:
         # New process group so the console Ctrl+C doesn't hit children directly —
