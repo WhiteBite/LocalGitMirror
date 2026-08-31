@@ -359,6 +359,8 @@ class RepoManager:
                 cwd=str(bare_path),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
             branch = proc.stdout.strip()
             return branch if branch else None
@@ -379,6 +381,8 @@ class RepoManager:
                 cwd=str(repo_path),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
 
             if result.returncode == 0:
