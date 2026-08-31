@@ -11,10 +11,15 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
 
 class DryRunPullSyncAction : AnAction() {
+  override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.DryRunPull")
+  }
+
   override fun actionPerformed(e: AnActionEvent) {
     val project: Project = e.project ?: return
     val baseDir = project.basePath ?: return
@@ -24,6 +29,7 @@ class DryRunPullSyncAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Dry-run (Pull)", false) {
       override fun run(indicator: ProgressIndicator) {
+        val history = service<OperationsHistoryService>()
         val report = facade.runPullDryRun(dir, settings)
         val summary = if (report.ok) {
           LocalGitMirrorBundle.message("action.dryRunPull.summary", report.hasUpdates, report.remoteHead?.take(12) ?: "(empty)", report.reason)
@@ -31,6 +37,9 @@ class DryRunPullSyncAction : AnAction() {
           LocalGitMirrorBundle.message("action.dryRunPull.failed")
         }
         notify(project, summary, if (report.ok) NotificationType.INFORMATION else NotificationType.WARNING)
+        history.add(LocalGitMirrorBundle.message("history.op.dryRunPull"), report.ok,
+          if (report.ok) "hasUpdates=${report.hasUpdates} remoteHead=${report.remoteHead?.take(12) ?: "?"}"
+          else "err=fail")
       }
     })
   }

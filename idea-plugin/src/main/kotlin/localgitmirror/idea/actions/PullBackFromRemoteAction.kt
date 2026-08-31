@@ -12,9 +12,14 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.settings.OperationsHistoryService
 import java.io.File
 
 class PullBackFromRemoteAction : AnAction() {
+  override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.PullBack")
+  }
+
   override fun actionPerformed(e: AnActionEvent) {
     val project: Project = e.project ?: return
     val baseDir = project.basePath
@@ -51,9 +56,12 @@ class PullBackFromRemoteAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("action.pullBack.progress"), false) {
       override fun run(indicator: ProgressIndicator) {
+        val history = service<OperationsHistoryService>()
         val fetch = GitLocal.fetch(project, dir, remote)
         if (!fetch.ok()) {
           notify(project, LocalGitMirrorBundle.message("notify.gitFetchFailed", fetch.stderr), NotificationType.ERROR)
+          history.add(LocalGitMirrorBundle.message("history.op.pullBack"), false,
+            "err=${fetch.stderr.take(300)}")
           return
         }
 
@@ -62,14 +70,20 @@ class PullBackFromRemoteAction : AnAction() {
             val current = GitLocal.currentBranch(project, dir)
             if (current.isNullOrBlank()) {
               notify(project, LocalGitMirrorBundle.message("notify.currentBranch.missing"), NotificationType.ERROR)
+              history.add(LocalGitMirrorBundle.message("history.op.pullBack"), false,
+                "err=current branch missing")
               return
             }
             val pull = GitLocal.pullFfOnly(project, dir, remote, current)
             if (!pull.ok()) {
               notify(project, LocalGitMirrorBundle.message("notify.gitPullFailed", pull.stderr), NotificationType.ERROR)
+              history.add(LocalGitMirrorBundle.message("history.op.pullBack"), false,
+                "err=${pull.stderr.take(300)}")
               return
             }
             notify(project, LocalGitMirrorBundle.message("notify.pullBack.ok.ffonly"), NotificationType.INFORMATION)
+            history.add(LocalGitMirrorBundle.message("history.op.pullBack"), true,
+              "mode=ff-only branch=$current")
           }
 
           else -> {
@@ -87,9 +101,13 @@ class PullBackFromRemoteAction : AnAction() {
             val co = GitLocal.checkoutNew(project, dir, localName, selectedRemoteRef)
             if (!co.ok()) {
               notify(project, LocalGitMirrorBundle.message("notify.createBranchFailed", co.stderr), NotificationType.ERROR)
+              history.add(LocalGitMirrorBundle.message("history.op.pullBack"), false,
+                "err=${co.stderr.take(300)}")
               return
             }
             notify(project, LocalGitMirrorBundle.message("notify.pullBack.ok.newBranch", localName), NotificationType.INFORMATION)
+            history.add(LocalGitMirrorBundle.message("history.op.pullBack"), true,
+              "mode=new-branch name=$localName from=$selectedRemoteRef")
           }
         }
       }

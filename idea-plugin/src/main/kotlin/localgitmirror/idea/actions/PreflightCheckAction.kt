@@ -11,10 +11,15 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
 
 class PreflightCheckAction : AnAction() {
+  override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.Preflight")
+  }
+
   override fun actionPerformed(e: AnActionEvent) {
     val project: Project = e.project ?: return
     val baseDir = project.basePath ?: return
@@ -24,9 +29,12 @@ class PreflightCheckAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Preflight", false) {
       override fun run(indicator: ProgressIndicator) {
+        val history = service<OperationsHistoryService>()
         val report = facade.runPreflight(dir, settings)
         val summary = if (report.ok) LocalGitMirrorBundle.message("action.preflight.ok") else LocalGitMirrorBundle.message("action.preflight.issues")
         notify(project, LocalGitMirrorBundle.message("action.preflight.result", summary, report.targetRepo ?: "(none)"), if (report.ok) NotificationType.INFORMATION else NotificationType.WARNING)
+        history.add(LocalGitMirrorBundle.message("history.op.preflight"), report.ok,
+          "target=${report.targetRepo ?: "?"}")
       }
     })
   }

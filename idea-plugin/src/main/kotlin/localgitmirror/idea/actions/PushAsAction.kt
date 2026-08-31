@@ -13,6 +13,7 @@ import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
@@ -32,6 +33,7 @@ import java.io.File
 class PushAsAction : AnAction() {
 
   override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.PushAs")
     val project = e.project
     e.presentation.isEnabled = project != null
   }
@@ -88,10 +90,13 @@ class PushAsAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Push as '$targetBranch'", false) {
       override fun run(indicator: ProgressIndicator) {
+        val history = service<OperationsHistoryService>()
         indicator.text = "Creating temporary branch '$targetBranch'"
         val create = GitLocal.checkoutNew(project, projectDir, targetBranch, "HEAD")
         if (!create.ok()) {
           notify(project, LocalGitMirrorBundle.message("notify.createBranchFailed", create.stderr), NotificationType.ERROR)
+          history.add(LocalGitMirrorBundle.message("history.op.pushAs"), false,
+            "branch=$targetBranch err=${create.stderr.take(300)}")
           return
         }
 
@@ -101,15 +106,21 @@ class PushAsAction : AnAction() {
           val result = syncRes.step
           if (!result.ok) {
             notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}", NotificationType.ERROR)
+            history.add(LocalGitMirrorBundle.message("history.op.pushAs"), false,
+              "branch=$targetBranch err=${result.message.take(300)}")
             return
           }
 
           if (settings.offlineGenerateOnly) {
             notify(project, "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}'", NotificationType.INFORMATION)
+            history.add(LocalGitMirrorBundle.message("history.op.pushAs"), true,
+              "offline dump=${syncRes.dump?.absolutePath ?: "?"}")
             return
           }
 
           notify(project, "[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.pushAs.ok", targetBranch, syncRes.repo ?: "?")}", NotificationType.INFORMATION)
+          history.add(LocalGitMirrorBundle.message("history.op.pushAs"), true,
+            "branch=$targetBranch repo=${syncRes.repo ?: "?"}")
         } finally {
           indicator.text = "Restoring original branch"
           if (!currentBranch.isNullOrBlank()) {

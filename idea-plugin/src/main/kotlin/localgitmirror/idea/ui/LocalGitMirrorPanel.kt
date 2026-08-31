@@ -11,7 +11,10 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.JBColor
+import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.dsl.builder.*
@@ -25,6 +28,9 @@ import localgitmirror.idea.net.LanDiscovery
 import localgitmirror.idea.settings.*
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.awt.*
+import java.awt.datatransfer.StringSelection
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -41,10 +47,28 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   private var setupSyncPassword: String = SecretsStore.syncPassword
   private var setupFormPanel: com.intellij.openapi.ui.DialogPanel? = null
 
-  internal val log = JTextArea()
   internal val status = JBLabel("")
   internal val mirrorBadge = BadgeLabel("Mirror: ?")
   internal val lastSyncBadge = BadgeLabel("Last sync: \u2014")
+
+  // ── History list (one-line-per-entry, double-click for details) ──
+  internal val historyListModel = DefaultListModel<OperationsHistoryService.Entry>()
+  internal val historyList = JBList(historyListModel).apply {
+    cellRenderer = HistoryCellRenderer()
+    selectionMode = ListSelectionModel.SINGLE_SELECTION
+    fixedCellHeight = JBUI.scale(22)
+    font = JBUI.Fonts.smallFont()
+    addMouseListener(object : MouseAdapter() {
+      override fun mouseClicked(e: MouseEvent) {
+        if (e.clickCount >= 2) {
+          val idx = locationToIndex(e.point)
+          if (idx >= 0 && idx < historyListModel.size()) {
+            HistoryEntryDialog(historyListModel.getElementAt(idx)).show()
+          }
+        }
+      }
+    })
+  }
   // Plugin version string, surfaced in the gear menu / tooltip instead of a
   // competing status badge (keeps the header row compact in a narrow tool window).
   internal val pluginVersionText: String = run {
@@ -83,6 +107,18 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   // Shows local branches immediately and appends Mirror-only branches after a
   // background refs request. BranchListItem keeps the raw name + status for actions.
   internal val branchListModel = DefaultListModel<BranchListItem>()
+  // All items before filtering — used by branchFilterField to re-apply the filter.
+  private var allBranchItems: List<BranchListItem> = emptyList()
+  // Small filter field above the list (speed search fallback for this SDK).
+  private val branchFilterField = JTextField().apply {
+    font = JBUI.Fonts.smallFont()
+    toolTipText = "Фильтр веток"
+    document.addDocumentListener(object : javax.swing.event.DocumentListener {
+      override fun insertUpdate(e: javax.swing.event.DocumentEvent?) = applyBranchFilter()
+      override fun removeUpdate(e: javax.swing.event.DocumentEvent?) = applyBranchFilter()
+      override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = applyBranchFilter()
+    })
+  }
   internal val branchList = JBList(branchListModel).apply {
     font = JBUI.Fonts.smallFont()
     cellRenderer = BranchListCellRenderer()
@@ -113,10 +149,41 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       return c
     }
   }
+
+  private inner class HistoryCellRenderer : ColoredListCellRenderer<OperationsHistoryService.Entry>() {
+    override fun customizeCellRenderer(
+      list: JList<out OperationsHistoryService.Entry>,
+      value: OperationsHistoryService.Entry?,
+      index: Int,
+      selected: Boolean,
+      hasFocus: Boolean
+    ) {
+      if (value == null) return
+      val shortTime = if (value.timestamp.length >= 16) value.timestamp.substring(5, 16) else value.timestamp
+      val ok = value.status == "OK"
+      val mark = if (ok) "\u2713" else "\u2717"
+      val markAttr = SimpleTextAttributes(
+        SimpleTextAttributes.STYLE_PLAIN,
+        if (ok) JBColor(0x2E7D32, 0x66BB6A) else JBColor(0xC62828, 0xEF5350)
+      )
+      append("$shortTime  ", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+      append(mark, markAttr)
+      append("  ", SimpleTextAttributes.REGULAR_ATTRIBUTES)
+      append(
+        value.operation,
+        SimpleTextAttributes.REGULAR_ATTRIBUTES
+      )
+      val shortDetails = value.details.lineSequence().firstOrNull()?.take(60) ?: ""
+      if (shortDetails.isNotEmpty()) {
+        append("  $shortDetails", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+      }
+      toolTipText = value.details.take(1000)
+    }
+  }
   private val branchRefreshButton = JButton(AllIcons.Actions.Refresh).apply {
     margin = JBUI.insets(1)
     isFocusPainted = false
-    toolTipText = "Обновить ветки с Mirror"
+    toolTipText = LocalGitMirrorBundle.message("panel.branch.refresh.tooltip")
     addActionListener { refreshBranchCombo(userInitiated = true) }
   }
   private val branchRefreshGeneration = AtomicLong()
@@ -301,13 +368,30 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
   private fun setBranchRefreshInProgress(inProgress: Boolean) {
     branchRefreshButton.isEnabled = !inProgress && !isSyncing
-    branchRefreshButton.toolTipText = if (inProgress) "Обновляем ветки Mirror…" else "Обновить ветки с Mirror"
+    branchRefreshButton.toolTipText = if (inProgress)
+      LocalGitMirrorBundle.message("panel.branch.refresh.inprogress")
+    else
+      LocalGitMirrorBundle.message("panel.branch.refresh.tooltip")
     if (inProgress) branchList.toolTipText = "Загружаем ветки с Mirror…"
   }
 
   private fun finishBranchRefresh(detail: String) {
     setBranchRefreshInProgress(false)
     branchList.toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Mirror. $detail"
+  }
+
+  /** Re-apply the branch filter text to the list model. */
+  private fun applyBranchFilter() {
+    val filter = branchFilterField.text.trim().lowercase()
+    val selectedName = selectedBranchChoice()?.name
+    branchListModel.clear()
+    val visible = if (filter.isBlank()) allBranchItems
+                  else allBranchItems.filter { it.name.lowercase().contains(filter) }
+    visible.forEach { branchListModel.addElement(it) }
+    if (selectedName != null) {
+      val idx = (0 until branchListModel.size()).indexOfFirst { branchListModel.getElementAt(it).name == selectedName }
+      if (idx >= 0) branchList.selectedIndex = idx
+    }
   }
 
   private fun replaceBranchItems(
@@ -333,13 +417,19 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       BranchListItem(name, status, localHash, mirrorHash)
     }
 
+    allBranchItems = items
+
     val preferred = BranchSelectorModel.preferredSelection(selectedName, currentBranch,
       items.map { BranchChoice(it.name, it.localHash != null) })
 
+    // Apply current filter (if any) before populating the model.
+    val filter = branchFilterField.text.trim().lowercase()
+    val visibleItems = if (filter.isBlank()) items else items.filter { it.name.lowercase().contains(filter) }
+
     branchListModel.clear()
-    items.forEach { branchListModel.addElement(it) }
+    visibleItems.forEach { branchListModel.addElement(it) }
     if (preferred != null) {
-      val idx = items.indexOfFirst { it.name == preferred }
+      val idx = visibleItems.indexOfFirst { it.name == preferred }
       if (idx >= 0) branchList.selectedIndex = idx
     }
   }
@@ -359,14 +449,33 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   /** Rebuild the concise gear menu; routine actions stay at the top, rare tools are grouped. */
   internal fun rebuildGearMenu() {
     moreMenu.removeAll()
+    // Group 1: branch refresh + connection test
     moreMenu.add(gearMenuItem("Обновить ветки Mirror", AllIcons.Actions.Refresh) { refreshBranchCombo(userInitiated = true) })
     moreMenu.add(gearMenuItem("Проверить подключение", AllIcons.Actions.Checked) { testMirror() })
-    moreMenu.add(gearMenuItem("Скачать плагин с Mirror", AllIcons.Actions.Download) { downloadLatestPlugin() })
     moreMenu.addSeparator()
+    // Group 2: deps
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.DepsRequest.text"), AllIcons.Actions.Download) { triggerLgmAction("LocalGitMirror.DepsRequest") })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.DepsRespond.text"), AllIcons.Actions.Upload) { triggerLgmAction("LocalGitMirror.DepsRespond") })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.DepsApply.text"), AllIcons.Actions.CheckOut) { triggerLgmAction("LocalGitMirror.DepsApply") })
+    moreMenu.addSeparator()
+    // Group 3: service
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("panel.menu.exportBundle"), AllIcons.Actions.Upload) { exportBundle() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("panel.menu.importBundle"), AllIcons.Actions.Download) { importBundle() })
+    moreMenu.add(gearMenuItem("Скачать плагин с Mirror", AllIcons.Actions.Download) { downloadLatestPlugin() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.Preflight.text"), AllIcons.Actions.Preview) { triggerLgmAction("LocalGitMirror.Preflight") })
+    moreMenu.addSeparator()
+    // Group 4: settings
     moreMenu.add(gearMenuItem("Настройки", AllIcons.General.Settings) {
       ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
       refreshStatus()
     })
+    // Role now shown in header status — removed disabled «Машина: …» item.
+  }
+
+  /** Trigger a registered plugin action by id, with project context. Notifies on failure. */
+  private fun triggerLgmAction(id: String) {
+    runCatching { runRegisteredAction(id) }
+      .onFailure { notify("Не удалось запустить действие: ${it.message ?: it::class.simpleName}", NotificationType.ERROR) }
   }
 
   /** Rebuild action buttons (now just refreshes gear menu). */
@@ -400,7 +509,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     
     // Configure branch list for multi-select
     branchList.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
-    branchList.visibleRowCount = 5
+    branchList.visibleRowCount = 6
     branchList.fixedCellHeight = JBUI.scale(26)
     
     val branchScroll = JScrollPane(branchList).apply {
@@ -408,26 +517,39 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       viewportBorder = BorderFactory.createEmptyBorder()
     }
     
-    // Configure history log
-    log.isEditable = false
-    log.lineWrap = true
-    log.wrapStyleWord = true
-    log.font = Font("JetBrains Mono", Font.PLAIN, JBUI.scale(11))
-    historyScroll = JScrollPane(log).apply {
+    // Configure history list
+    historyScroll = JScrollPane(historyList).apply {
       preferredSize = Dimension(Int.MAX_VALUE, JBUI.scale(120))
       isVisible = false
+      border = BorderFactory.createEmptyBorder()
+      viewportBorder = BorderFactory.createEmptyBorder()
     }
     
     rebuildGearMenu()
     
     val mainPanel = panel {
-      // Status line with gear button
+      // Status line with ⚙ settings + ⋮ more buttons
       row {
         status.font = JBUI.Fonts.smallFont()
         status.foreground = UIUtil.getContextHelpForeground()
         cell(status).resizableColumn()
-        
-        val gearBtn = JButton(AllIcons.General.Settings).apply {
+
+        // ⚙ Settings button — opens settings dialog directly
+        val settingsBtn = JButton(AllIcons.General.Settings).apply {
+          margin = JBUI.insets(1)
+          isFocusPainted = false
+          isBorderPainted = false
+          isContentAreaFilled = false
+          toolTipText = LocalGitMirrorBundle.message("toolwindow.menu.settings")
+          addActionListener {
+            ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
+            refreshStatus()
+          }
+        }
+        cell(settingsBtn)
+
+        // ⋮ More button — shows the popup gear menu
+        val moreBtn = JButton(AllIcons.Actions.More).apply {
           margin = JBUI.insets(1)
           isFocusPainted = false
           isBorderPainted = false
@@ -435,7 +557,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           toolTipText = "LocalGitMirror $pluginVersionText"
           addActionListener { moreMenu.show(this, 0, height) }
         }
-        cell(gearBtn)
+        cell(moreBtn)
+      }
+      
+      // Branch filter (speed search fallback for this SDK)
+      row {
+        cell(branchFilterField).resizableColumn()
       }
       
       // Branch list (compact, no label)
@@ -463,20 +590,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           }
       }
       
-      // Offline mode buttons
-      row {
-        button("📦 Экспорт bundle") { exportBundle() }
-          .applyToComponent {
-            font = font.deriveFont(Font.PLAIN)
-            toolTipText = "Создать bundle файл для офлайн-передачи"
-          }
-        button("📥 Импорт bundle") { importBundle() }
-          .applyToComponent {
-            font = font.deriveFont(Font.PLAIN)
-            toolTipText = "Импортировать bundle файл"
-          }
-      }
-      
       // Progress row (hidden by default)
       row {
         cell(progressBar).resizableColumn()
@@ -497,7 +610,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
             addActionListener {
               historyService.clear()
               refreshHistoryLog()
-              log.text = ""
             }
           }
           cell(clearBtn)
@@ -738,11 +850,17 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           
           if (exitCode != 0) {
             notify("Ошибка экспорта: $stderr", NotificationType.ERROR)
+            historyService.add(LocalGitMirrorBundle.message("history.op.exportBundle"), false,
+              "branches=${branchNames.joinToString(",")} err=${stderr.take(300)}")
           } else {
             notify("Bundle сохранён: ${targetFile.absolutePath}\nРазмер: ${targetFile.length() / 1024} KB", NotificationType.INFORMATION)
+            historyService.add(LocalGitMirrorBundle.message("history.op.exportBundle"), true,
+              "branches=${branchNames.joinToString(",")} size=${targetFile.length() / 1024}KB -> ${targetFile.absolutePath}")
           }
         } catch (e: Exception) {
           notify("Ошибка экспорта: ${e.message}", NotificationType.ERROR)
+          historyService.add(LocalGitMirrorBundle.message("history.op.exportBundle"), false,
+            "branches=${branchNames.joinToString(",")} err=${e.message?.take(300)}")
         }
       }
       
@@ -793,30 +911,38 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           
           if (verifyExit != 0) {
             notify("Bundle невалиден: $verifyOutput", NotificationType.ERROR)
+            historyService.add(LocalGitMirrorBundle.message("history.op.importBundle"), false,
+              "file=${bundleFile.name} verify failed: ${verifyOutput.take(300)}")
             return
           }
-          
+
           // Extract branch names from verify output
           val branches = verifyOutput.lines()
             .filter { it.contains("refs/heads/") }
             .map { it.substringAfter("refs/heads/").trim() }
-          
+
           // Use git fetch to import
           val fetchProc = ProcessBuilder("git", "fetch", bundleFile.absolutePath)
             .directory(dir)
             .redirectErrorStream(false)
             .start()
-          
+
           val fetchExit = fetchProc.waitFor()
           val fetchStderr = fetchProc.errorStream.bufferedReader().readText()
-          
+
           if (fetchExit != 0) {
             notify("Ошибка импорта: $fetchStderr", NotificationType.ERROR)
+            historyService.add(LocalGitMirrorBundle.message("history.op.importBundle"), false,
+              "file=${bundleFile.name} fetch err=${fetchStderr.take(300)}")
           } else {
             notify("Импортировано ${branches.size} веток: ${branches.joinToString(", ")}", NotificationType.INFORMATION)
+            historyService.add(LocalGitMirrorBundle.message("history.op.importBundle"), true,
+              "file=${bundleFile.name} branches=${branches.joinToString(",")}")
           }
         } catch (e: Exception) {
           notify("Ошибка импорта: ${e.message}", NotificationType.ERROR)
+          historyService.add(LocalGitMirrorBundle.message("history.op.importBundle"), false,
+            "file=${bundleFile.name} err=${e.message?.take(300)}")
         }
       }
       
@@ -1072,8 +1198,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   }
 
   internal fun append(line: String) {
-    log.append(line)
-    log.append("\n")
+    // Diagnostic output is now captured via OperationsHistoryService entries.
   }
 
   internal fun notify(message: String, type: NotificationType) {
@@ -1097,32 +1222,25 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       status.text = LocalGitMirrorBundle.message("notify.projectDir.missing")
       return
     }
-    val branch = GitLocal.currentBranch(project, dir) ?: "(unknown)"
-    val clean = GitLocal.isCleanWorkTree(project, dir)
     val s = service<MirrorSettingsService>().state
-
-    val cleanText = if (clean)
-      LocalGitMirrorBundle.message("panel.status.clean")
-    else
-      LocalGitMirrorBundle.message("panel.status.dirty")
-
-    // Show the RESOLVED Mirror repo (single source of truth) so it's always
-    // visible where a sync will go — and from which source it was derived.
-    val repoRes = try { syncFacade.resolveRepo(dir, s) } catch (_: Throwable) { null }
-    val repoName = repoRes?.sanitized?.takeIf { it.isNotBlank() } ?: "?"
     val connected = s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+    val role = localgitmirror.idea.deps.RoleDetector.describe(s)
     val divergedCount = countDivergedBranches()
-    val lastSyncText = lastSyncBadge.text.removePrefix("Last sync: ").removeSuffix(" \u2705").removeSuffix(" \u274c")
 
-    status.text = if (connected) {
-      "\uD83D\uDFE2 Connected" +
-        (if (divergedCount > 0) " · $divergedCount веток ↑" else "") +
-        (if (lastSyncText != "\u2014") " · Last sync: $lastSyncText" else "")
+    // Resolve Mirror repo for tooltip (single source of truth)
+    val repoRes = try { syncFacade.resolveRepo(dir, s) } catch (_: Throwable) { null }
+
+    if (connected) {
+      val branchCount = GitLocal.listBranches(project, dir).size
+      val branchesWord = LocalGitMirrorBundle.message("status.branches", branchCount)
+      val arrow = if (divergedCount > 0) " \u2191" else ""
+      status.text = LocalGitMirrorBundle.message("panel.status.connected") +
+        " \u00b7 $branchCount $branchesWord$arrow \u00b7 " + role
     } else {
-      "\uD83D\uDD34 Не подключено"
+      status.text = LocalGitMirrorBundle.message("panel.status.disconnected") + " \u00b7 " + role
     }
     status.toolTipText = repoRes?.let {
-      "Mirror repo '${it.sanitized}' · source: ${it.source.name.lowercase().replace('_', ' ')}"
+      "Mirror repo '${it.sanitized}' \u00b7 source: ${it.source.name.lowercase().replace('_', ' ')}"
     }
 
     rebuildActions()
@@ -1151,20 +1269,49 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   }
 
   internal fun refreshHistoryLog() {
-    val entries = historyService.latest(20)
-    // historyScroll is created with isVisible = false and nothing ever showed
-    // it, so the "История" section rendered as an empty strip with just the
-    // clear button even when entries existed. Toggle it here.
+    val entries = historyService.latest(40)
     if (::historyScroll.isInitialized) {
       historyScroll.isVisible = entries.isNotEmpty()
     }
-    if (entries.isEmpty()) {
-      log.text = "No operations yet"
-      return
+    historyListModel.clear()
+    entries.forEach { historyListModel.addElement(it) }
+  }
+
+  /** Dialog showing full details of a history entry, with a Copy button. */
+  private inner class HistoryEntryDialog(private val entry: OperationsHistoryService.Entry) : DialogWrapper(project, false) {
+    init {
+      title = LocalGitMirrorBundle.message("history.dialog.title")
+      init()
     }
-    log.text = entries.joinToString("\n") { e ->
-      "${e.timestamp} [${e.status}] ${e.operation}: ${e.details}"
+
+    override fun createCenterPanel(): JComponent {
+      val fullText = "${entry.timestamp} [${entry.status}] ${entry.operation}\n\n${entry.details}"
+      val ta = JTextArea(fullText).apply {
+        isEditable = false
+        font = Font("JetBrains Mono", Font.PLAIN, JBUI.scale(12))
+        lineWrap = true
+        wrapStyleWord = true
+        caretPosition = 0
+      }
+      return JScrollPane(ta).apply {
+        preferredSize = Dimension(JBUI.scale(500), JBUI.scale(300))
+      }
     }
-    log.caretPosition = 0
+
+    override fun createActions(): Array<javax.swing.Action> {
+      val copyAction = object : javax.swing.AbstractAction(LocalGitMirrorBundle.message("history.dialog.copy")) {
+        override fun actionPerformed(e: java.awt.event.ActionEvent?) {
+          val fullText = "${entry.timestamp} [${entry.status}] ${entry.operation}\n\n${entry.details}"
+          val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+          clipboard.setContents(StringSelection(fullText), null)
+        }
+      }
+      val closeAction = object : javax.swing.AbstractAction(LocalGitMirrorBundle.message("history.dialog.close")) {
+        override fun actionPerformed(e: java.awt.event.ActionEvent?) {
+          close(OK_EXIT_CODE)
+        }
+      }
+      return arrayOf(copyAction, closeAction)
+    }
   }
 }

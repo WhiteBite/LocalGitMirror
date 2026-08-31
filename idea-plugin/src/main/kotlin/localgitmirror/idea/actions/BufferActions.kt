@@ -91,6 +91,7 @@ private fun setSystemClipboard(text: String) {
 /** Send: encrypt the editor selection (or system clipboard) and push to /api/buffer. */
 class SendToBufferAction : AnAction() {
   override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.BufferSend")
     e.presentation.isEnabled = true
   }
 
@@ -137,6 +138,7 @@ class SendToBufferAction : AnAction() {
 /** Paste: fetch the newest entry from /api/buffer, decrypt, copy into the system clipboard. */
 class PasteFromBufferAction : AnAction() {
   override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.BufferPaste")
     e.presentation.isEnabled = true
   }
 
@@ -168,6 +170,7 @@ class PasteFromBufferAction : AnAction() {
 /** History: show last N entries in a popup; clicking one copies it into the clipboard. */
 class BufferHistoryAction : AnAction() {
   override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.BufferHistory")
     e.presentation.isEnabled = true
   }
 

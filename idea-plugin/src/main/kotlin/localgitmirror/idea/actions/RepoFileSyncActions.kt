@@ -86,6 +86,7 @@ private fun formatFileSyncTs(epochSec: Long): String =
 
 class SendSelectedFileAction : AnAction() {
   override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.FileSendSelected")
     val project = e.project
     val basePath = project?.basePath
     val vf = e.getData(CommonDataKeys.VIRTUAL_FILE)
@@ -142,6 +143,10 @@ class SendSelectedFileAction : AnAction() {
 }
 
 class FetchRepoFilesAction : AnAction() {
+  override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.FileFetch")
+  }
+
   override fun actionPerformed(e: AnActionEvent) {
     val project = e.project ?: return
     val ctx = fileSyncContext(project) ?: return

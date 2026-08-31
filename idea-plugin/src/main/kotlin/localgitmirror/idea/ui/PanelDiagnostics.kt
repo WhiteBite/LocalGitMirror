@@ -226,9 +226,13 @@ internal fun LocalGitMirrorPanel.testMirror() {
           else
             LocalGitMirrorBundle.message("notify.mirror.testFail", res.code.toString())
           notify(msg, NotificationType.ERROR)
+          historyService.add(LocalGitMirrorBundle.message("history.op.testMirror"), false,
+            "HTTP ${res.code} ${res.body.take(300)}")
           return
         }
         notify(LocalGitMirrorBundle.message("notify.mirror.testOk"), NotificationType.INFORMATION)
+        historyService.add(LocalGitMirrorBundle.message("history.op.testMirror"), true,
+          "HTTP ${res.code}")
       } finally {
         isSyncing = false
       }
@@ -392,7 +396,7 @@ internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
 
         if (res.code !in 200..299 || res.file == null) {
           notify("Не удалось скачать плагин (HTTP ${res.code}): ${res.message.take(200)}", NotificationType.ERROR)
-          historyService.add("Plugin download", false, "HTTP ${res.code} ${res.message.take(200)}")
+          historyService.add(LocalGitMirrorBundle.message("history.op.pluginDownload"), false, "HTTP ${res.code} ${res.message.take(200)}")
           return
         }
 
@@ -415,7 +419,7 @@ internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
               "Контрольная сумма плагина не совпадает с сервером (ожидалась ${info.sha256.take(16)}…, получена ${actual.take(16)}…). Файл удалён — установка небезопасна.",
               NotificationType.ERROR
             )
-            historyService.add("Plugin download", false, "sha256 mismatch: $actual != ${info.sha256}")
+            historyService.add(LocalGitMirrorBundle.message("history.op.pluginDownload"), false, "sha256 mismatch: $actual != ${info.sha256}")
             return
           }
         }
@@ -447,7 +451,7 @@ internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
             .showSettingsDialog(project, "preferences.pluginManager")
         })
         notif.notify(project)
-        historyService.add("Plugin download", true, "v${info.version ?: "?"} -> ${outFile.absolutePath}")
+        historyService.add(LocalGitMirrorBundle.message("history.op.pluginDownload"), true, "v${info.version ?: "?"} -> ${outFile.absolutePath}")
         append("Plugin downloaded: ${outFile.absolutePath}")
       } finally {
         isSyncing = false

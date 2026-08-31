@@ -35,6 +35,7 @@ class PullFromMirrorAction(
   }
 
   override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.SyncPull")
     e.presentation.isEnabled = e.project != null
   }
 
