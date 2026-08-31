@@ -175,13 +175,17 @@ async def browse_folder():
     """Open folder browser dialog (Windows)"""
     try:
         ps_script = """
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
         Add-Type -AssemblyName System.Windows.Forms
         $browser = New-Object System.Windows.Forms.FolderBrowserDialog
         $browser.Description = "Выберите папку для хранения"
         $browser.ShowNewFolderButton = $true
         if ($browser.ShowDialog() -eq "OK") { $browser.SelectedPath }
         """
-        result = subprocess.run(["powershell", "-Command", ps_script], capture_output=True, text=True)
+        result = subprocess.run(
+            ["powershell", "-Command", ps_script], capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+        )
         path = result.stdout.strip()
         if path:
             return {"success": True, "path": path}

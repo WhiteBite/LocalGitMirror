@@ -49,16 +49,15 @@ def _derive_key(password: str, salt: bytes) -> bytes:
     return kdf.derive(password.encode("utf-8"))
 
 
-def encrypt_bundle_to_dump(bundle_path: Path, dump_path: Path, password: str) -> None:
-    """Encrypt bundle to v2 format (no magic bytes — pure random noise to scanners)."""
-    data = bundle_path.read_bytes()
+def encrypt_bundle_bytes(data: bytes, password: str) -> bytes:
+    """Encrypt raw bytes to v2 format (no magic bytes — pure noise to scanners)."""
     salt = os.urandom(SALT_SIZE)
     nonce = os.urandom(NONCE_SIZE)
     key = _derive_key(password, salt)
     aesgcm = AESGCM(key)
     ciphertext = aesgcm.encrypt(nonce, data, None)
 
-    payload = b"".join(
+    return b"".join(
         [
             bytes([FORMAT_VERSION]),
             salt,
@@ -67,13 +66,19 @@ def encrypt_bundle_to_dump(bundle_path: Path, dump_path: Path, password: str) ->
             ciphertext,
         ]
     )
-    dump_path.write_bytes(payload)
 
 
-def decrypt_dump_to_bundle(dump_path: Path, out_bundle_path: Path, password: str) -> None:
-    """Decrypt dump file — auto-detects v1 (LGMSTRL1 magic) or v2 (version byte) format."""
-    raw = dump_path.read_bytes()
+def encrypt_bundle_to_dump(bundle_path: Path, dump_path: Path, password: str) -> None:
+    """Encrypt bundle file to v2 format."""
+    dump_path.write_bytes(encrypt_bundle_bytes(bundle_path.read_bytes(), password))
 
+
+def decrypt_dump_bytes(raw: bytes, password: str) -> bytes:
+    """Decrypt in-memory dump — auto-detects v1 (LGMSTRL1 magic) or v2 (version byte).
+
+    Bytes-level twin of :func:`decrypt_dump_to_bundle`, needed by callers that
+    receive a payload over HTTP and have no reason to touch the filesystem.
+    """
     min_len = 1 + SALT_SIZE + NONCE_SIZE + 8 + 16  # minimum overhead
     if len(raw) < min_len:
         raise ValueError("File too small")
@@ -108,5 +113,9 @@ def decrypt_dump_to_bundle(dump_path: Path, out_bundle_path: Path, password: str
 
     key = _derive_key(password, salt)
     aesgcm = AESGCM(key)
-    plaintext = aesgcm.decrypt(nonce, ciphertext, None)
-    out_bundle_path.write_bytes(plaintext)
+    return aesgcm.decrypt(nonce, ciphertext, None)
+
+
+def decrypt_dump_to_bundle(dump_path: Path, out_bundle_path: Path, password: str) -> None:
+    """Decrypt dump file — auto-detects v1 (LGMSTRL1 magic) or v2 (version byte) format."""
+    out_bundle_path.write_bytes(decrypt_dump_bytes(dump_path.read_bytes(), password))

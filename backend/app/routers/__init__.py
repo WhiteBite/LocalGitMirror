@@ -6,6 +6,7 @@ from app.routers.buffer import router as buffer_router
 from app.routers.deps import router as deps_router
 from app.routers.file_sync import router as file_sync_router
 from app.routers.files import router as files_router
+from app.routers.mirror import router as mirror_router
 from app.routers.plugin import router as plugin_router
 from app.routers.repos import router as repos_router
 from app.routers.settings import router as settings_router
@@ -20,6 +21,7 @@ __all__ = [
     "deps_router",
     "file_sync_router",
     "files_router",
+    "mirror_router",
     "plugin_router",
     "repos_router",
     "settings_router",

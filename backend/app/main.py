@@ -3,8 +3,10 @@ DocCache FastAPI Application
 Main application setup and configuration
 """
 
+import asyncio
 import os
 import stat
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -133,9 +135,44 @@ def on_repo_receive(repo_name: str):
         threading.Thread(target=run_sync, args=(repo_manager, repo_name), daemon=True).start()
 
 
+def _install_quiet_disconnect_handler() -> None:
+    """Windows proactor loop noise filter.
+
+    When a client (browser, IDEA plugin) drops a TCP connection without a
+    proper close, asyncio's own ``_ProactorBasePipeTransport._call_connection_lost``
+    raises ``ConnectionResetError`` ([WinError 10054]) and the loop prints a
+    scary-but-harmless traceback. Suppress exactly that case; everything else
+    still goes to the default handler.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    default_handler = loop.get_exception_handler()
+
+    def _handler(loop_, context):
+        exc = context.get("exception")
+        handle = context.get("handle")
+        if isinstance(exc, (ConnectionResetError, ConnectionAbortedError)) and (
+            handle is None or "_call_connection_lost" in repr(handle)
+        ):
+            return  # client vanished mid-request — nothing to do
+        if default_handler is not None:
+            default_handler(loop_, context)
+        else:
+            loop_.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global git_handler, repo_manager, git_workspace, settings_manager, shared_manager, system_logger, lan_beacon
+
+    _install_quiet_disconnect_handler()
 
     # 1. Initialize core managers
     base_storage = Path(CONFIG["storage_path"])
@@ -152,13 +189,16 @@ async def lifespan(app: FastAPI):
     shared_manager = SharedManager(actual_storage_path)
 
     # 2. Inject dependencies into routers
-    from app.routers import deps, file_sync, settings
+    from app.routers import deps, file_sync, mirror, settings
 
     deps.repo_manager = repo_manager
     deps.system_logger = system_logger
     file_sync.repo_manager = repo_manager
     file_sync.system_logger = system_logger
     settings.settings_manager = settings_manager
+    # Зеркало корп-артефактов: тот же паттерн инъекции, что и у deps.
+    mirror.repo_manager = repo_manager
+    mirror.system_logger = system_logger
 
     from app.routers import system as system_router_mod
     from app.routers import repos as repos_router_mod
@@ -359,7 +399,7 @@ async def public_capabilities():
 from app.routers import (
     deps_router, settings_router, web_router, websocket_router,
     system_router, repos_router, sync_router, files_router, shared_router,
-    plugin_router, buffer_router, file_sync_router,
+    plugin_router, buffer_router, file_sync_router, mirror_router,
 )
 
 # deps router is wired to repo_manager / system_logger inside the lifespan
@@ -371,6 +411,10 @@ app.include_router(sync_router, dependencies=[Depends(get_api_key)])
 app.include_router(files_router, dependencies=[Depends(get_api_key)])
 app.include_router(shared_router, dependencies=[Depends(get_api_key)])
 app.include_router(deps_router, dependencies=[Depends(get_api_key)])
+# Зеркало корп-артефактов. Maven data plane внутри дополнительно ограничен
+# loopback-адресами (см. mirror._guard_data_plane): API-ключа для него мало,
+# потому что его URL по природе попадает в конфиги сборки и логи.
+app.include_router(mirror_router, dependencies=[Depends(get_api_key)])
 app.include_router(file_sync_router, dependencies=[Depends(get_api_key)])
 app.include_router(plugin_router, dependencies=[Depends(get_api_key)])
 app.include_router(buffer_router, dependencies=[Depends(get_api_key)])
