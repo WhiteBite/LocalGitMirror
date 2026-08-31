@@ -13,11 +13,16 @@ import com.intellij.openapi.progress.Task
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
 
 class SyncBranchToMirrorAction : AnAction() {
+  override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.SyncBranch")
+  }
+
   override fun actionPerformed(e: AnActionEvent) {
     val project: Project = e.project ?: return
     val baseDir = project.basePath
@@ -62,12 +67,15 @@ class SyncBranchToMirrorAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("action.syncBranch.progress", chosen), false) {
       override fun run(indicator: ProgressIndicator) {
+        val history = service<OperationsHistoryService>()
         notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
         val originalBranch = GitLocal.currentBranch(project, projectDir)
         indicator.text = "Checking out '$chosen'"
         val co = GitLocal.checkout(project, projectDir, chosen)
         if (!co.ok()) {
           notify(project, LocalGitMirrorBundle.message("action.syncBranch.checkoutFailed", chosen, co.stderr), NotificationType.ERROR)
+          history.add(LocalGitMirrorBundle.message("history.op.sendBranch"), false,
+            "branch=$chosen err=${co.stderr.take(300)}")
           return
         }
 
@@ -85,15 +93,21 @@ class SyncBranchToMirrorAction : AnAction() {
         val result = syncRes.step
         if (!result.ok) {
           notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}", NotificationType.ERROR)
+          history.add(LocalGitMirrorBundle.message("history.op.sendBranch"), false,
+            "branch=$chosen err=${result.message.take(300)}")
           return
         }
 
         if (settings.offlineGenerateOnly) {
           notify(project, "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}' at ${syncRes.dump?.absolutePath ?: result.details}", NotificationType.INFORMATION)
+          history.add(LocalGitMirrorBundle.message("history.op.sendBranch"), true,
+            "offline dump=${syncRes.dump?.absolutePath ?: "?"}")
           return
         }
 
         notify(project, "[trace=${syncRes.traceId}] Synced branch '$chosen' to Mirror repo '${syncRes.repo ?: "?"}'. ${syncRes.http?.body?.take(500) ?: ""}", NotificationType.INFORMATION)
+        history.add(LocalGitMirrorBundle.message("history.op.sendBranch"), true,
+          "branch=$chosen repo=${syncRes.repo ?: "?"}")
       }
     })
   }

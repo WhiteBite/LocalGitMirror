@@ -4,6 +4,7 @@ import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.components.service
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptor
 import com.intellij.openapi.progress.ProgressIndicator
@@ -14,11 +15,16 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.LocalFileSystem
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.workkit.WorkKit
 import java.io.File
 
 class ApplyLocalDumpAction : AnAction() {
+  override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.ApplyLocalSync")
+  }
+
   override fun actionPerformed(e: AnActionEvent) {
     val project: Project = e.project ?: return
     val baseDir = project.basePath
@@ -68,6 +74,7 @@ class ApplyLocalDumpAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Apply sync package", false) {
       override fun run(indicator: ProgressIndicator) {
+        val history = service<OperationsHistoryService>()
         indicator.text = LocalGitMirrorBundle.message("action.applyLocal.progress.preparing")
         indicator.text = LocalGitMirrorBundle.message("action.applyLocal.progress.applying")
         val res = WorkKit.applySyncPackage(
@@ -79,9 +86,13 @@ class ApplyLocalDumpAction : AnAction() {
         )
         if (!res.ok()) {
           notify(project, LocalGitMirrorBundle.message("action.applyLocal.failed", res.stderr.take(500)), NotificationType.ERROR)
+          history.add(LocalGitMirrorBundle.message("history.op.applyLocalDump"), false,
+            "file=${dumpFile.name} err=${res.stderr.take(300)}")
           return
         }
         notify(project, LocalGitMirrorBundle.message("action.applyLocal.success"), NotificationType.INFORMATION)
+        history.add(LocalGitMirrorBundle.message("history.op.applyLocalDump"), true,
+          "file=${dumpFile.name} mode=$mode")
       }
     })
   }

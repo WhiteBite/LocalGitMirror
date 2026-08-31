@@ -13,10 +13,15 @@ import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
 
 class SendSelectedCommitsToMirrorAction : AnAction() {
+  override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.SendSelectedCommits")
+  }
+
   override fun actionPerformed(e: AnActionEvent) {
     val project: Project = e.project ?: return
     val baseDir = project.basePath
@@ -53,6 +58,7 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("action.sendCommits.dialogTitle"), false) {
       override fun run(indicator: ProgressIndicator) {
+        val history = service<OperationsHistoryService>()
         notify(project, LocalGitMirrorBundle.message("action.sendCommits.starting", repoInfo), NotificationType.INFORMATION)
         val original = GitLocal.currentBranch(project, projectDir)
         val tempBranch = "sync-tmp-${System.currentTimeMillis()}"
@@ -60,6 +66,8 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
         val create = GitLocal.checkoutNew(project, projectDir, tempBranch, "HEAD")
         if (!create.ok()) {
           notify(project, LocalGitMirrorBundle.message("action.sendCommits.tempBranchFailed", create.stderr), NotificationType.ERROR)
+          history.add(LocalGitMirrorBundle.message("history.op.sendCommits"), false,
+            "err=${create.stderr.take(300)}")
           return
         }
 
@@ -69,6 +77,8 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
             if (!cp.ok()) {
               GitLocal.cherryPickAbort(project, projectDir)
               notify(project, LocalGitMirrorBundle.message("action.sendCommits.cherryPickFailed", hash, cp.stderr), NotificationType.ERROR)
+              history.add(LocalGitMirrorBundle.message("history.op.sendCommits"), false,
+                "hash=$hash err=${cp.stderr.take(300)}")
               return
             }
           }
@@ -77,13 +87,19 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
           val res = syncRes.step
           if (!res.ok) {
             notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}", NotificationType.ERROR)
+            history.add(LocalGitMirrorBundle.message("history.op.sendCommits"), false,
+              "err=${res.message.take(300)}")
             return
           }
           if (settings.offlineGenerateOnly) {
             notify(project, "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}' at ${syncRes.dump?.absolutePath ?: res.details}", NotificationType.INFORMATION)
+            history.add(LocalGitMirrorBundle.message("history.op.sendCommits"), true,
+              "offline dump=${syncRes.dump?.absolutePath ?: "?"}")
             return
           }
           notify(project, "[trace=${syncRes.traceId}] Sent selected commits to Mirror repo '${syncRes.repo ?: "?"}'. ${syncRes.http?.body?.take(500) ?: ""}", NotificationType.INFORMATION)
+          history.add(LocalGitMirrorBundle.message("history.op.sendCommits"), true,
+            "hashes=${hashes.joinToString(",")} repo=${syncRes.repo ?: "?"}")
         } finally {
           if (!original.isNullOrBlank()) {
             GitLocal.checkout(project, projectDir, original)

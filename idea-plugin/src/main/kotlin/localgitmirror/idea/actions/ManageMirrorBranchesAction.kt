@@ -11,6 +11,7 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.util.ui.UIUtil
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
@@ -27,7 +28,10 @@ import localgitmirror.idea.settings.SecretsStore
  *  - Explicit confirmation required before each deletion batch.
  */
 class ManageMirrorBranchesAction : AnAction() {
-  override fun update(e: AnActionEvent) { e.presentation.isEnabled = e.project != null }
+  override fun update(e: AnActionEvent) {
+    LocalGitMirrorBundle.localizePresentation(e, "LocalGitMirror.ManageBranches")
+    e.presentation.isEnabled = e.project != null
+  }
 
   override fun actionPerformed(e: AnActionEvent) {
     val project = e.project ?: return
