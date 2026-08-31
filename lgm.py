@@ -1429,6 +1429,315 @@ def _maven_local_jars_without_poms() -> list[tuple[str, str, str, Path]]:
     return out
 
 
+def scan_maven_local(repo_root: Path, protected_groups: tuple) -> list[dict]:
+    """Сканировать ~/.m2/repository на защищённые артефакты.
+
+    Возвращает список с полной Maven-идентичностью: group, artifact, version,
+    classifier, extension. Это важно, потому что foo-1.0.jar и foo-1.0-linux.jar
+    — это РАЗНЫЕ артефакты, и оба должны попасть в зеркало.
+
+    Структура ~/.m2/repository:
+        <group-dirs>/<artifact>/<version>/<artifact>-<version>[-<classifier>].<ext>
+    """
+    if not repo_root.is_dir():
+        return []
+
+    arts = []
+    for g_path in repo_root.iterdir():
+        if not g_path.is_dir():
+            continue
+        group = g_path.name.replace("/", ".")  # Maven хранит группы как пути
+        if not any(group == g or group.startswith(g + ".") for g in protected_groups):
+            continue
+
+        for a_path in g_path.iterdir():
+            if not a_path.is_dir():
+                continue
+            artifact = a_path.name
+
+            for v_path in a_path.iterdir():
+                if not v_path.is_dir():
+                    continue
+                version = v_path.name
+
+                # Ищем все файлы артефактов (jar, pom, aar, module, etc.)
+                for f in v_path.iterdir():
+                    if not f.is_file():
+                        continue
+                    name = f.name
+                    # Пропускаем метаданные и checksums
+                    if name.startswith("maven-metadata") or name.endswith((".sha1", ".md5", ".sha256", ".sha512")):
+                        continue
+
+                    # Парсим classifier и extension из имени файла
+                    # Формат: <artifact>-<version>[-<classifier>].<extension>
+                    prefix = f"{artifact}-{version}"
+                    if not name.startswith(prefix):
+                        continue
+
+                    remainder = name[len(prefix):]
+                    if not remainder:
+                        continue
+
+                    # remainder начинается с "-" (classifier) или "." (только extension)
+                    if remainder.startswith("."):
+                        classifier = ""
+                        extension = remainder[1:]
+                    elif remainder.startswith("-"):
+                        # После "-" идёт classifier, затем ".extension"
+                        rest = remainder[1:]
+                        dot_pos = rest.rfind(".")
+                        if dot_pos == -1:
+                            continue
+                        classifier = rest[:dot_pos]
+                        extension = rest[dot_pos + 1:]
+                    else:
+                        continue
+
+                    if not extension:
+                        continue
+
+                    arts.append({
+                        "group": group,
+                        "artifact": artifact,
+                        "version": version,
+                        "classifier": classifier,
+                        "extension": extension,
+                        "path": str(f),
+                        "size": f.stat().st_size,
+                    })
+
+    return arts
+
+
+def scan_gradle_cache(cache_root: Path, protected_groups: tuple) -> list[dict]:
+    """Сканировать Gradle files-2.1 на защищённые артефакты.
+
+    Gradle хранит артефакты в структуре:
+        <group>/<artifact>/<version>/<sha1>/<file>
+
+    Файл может быть jar, pom, aar, module, etc. Classifier и extension
+    извлекаются из имени файла.
+    """
+    if not cache_root.is_dir():
+        return []
+
+    arts = []
+    for g_dir in cache_root.iterdir():
+        if not g_dir.is_dir():
+            continue
+        group = g_dir.name
+        if not any(group == g or group.startswith(g + ".") for g in protected_groups):
+            continue
+
+        for n_dir in g_dir.iterdir():
+            if not n_dir.is_dir():
+                continue
+            artifact = n_dir.name
+
+            for v_dir in n_dir.iterdir():
+                if not v_dir.is_dir():
+                    continue
+                version = v_dir.name
+
+                for sha_dir in v_dir.iterdir():
+                    if not sha_dir.is_dir():
+                        continue
+
+                    for f in sha_dir.iterdir():
+                        if not f.is_file() or f.name.startswith("_") or f.name == ".lock":
+                            continue
+
+                        name = f.name
+                        # Парсим classifier и extension
+                        prefix = f"{artifact}-{version}"
+                        if not name.startswith(prefix):
+                            continue
+
+                        remainder = name[len(prefix):]
+                        if not remainder:
+                            continue
+
+                        if remainder.startswith("."):
+                            classifier = ""
+                            extension = remainder[1:]
+                        elif remainder.startswith("-"):
+                            rest = remainder[1:]
+                            dot_pos = rest.rfind(".")
+                            if dot_pos == -1:
+                                continue
+                            classifier = rest[:dot_pos]
+                            extension = rest[dot_pos + 1:]
+                        else:
+                            continue
+
+                        if not extension:
+                            continue
+
+                        arts.append({
+                            "group": group,
+                            "artifact": artifact,
+                            "version": version,
+                            "classifier": classifier,
+                            "extension": extension,
+                            "path": str(f),
+                            "size": f.stat().st_size,
+                        })
+
+    return arts
+
+
+def build_publication_zip(artifacts: list[dict]) -> tuple[bytes, dict]:
+    """Собрать ZIP-публикацию из списка артефактов.
+
+    Возвращает (zip_bytes, manifest). Manifest содержит sha256 для сверки.
+    """
+    buf = io.BytesIO()
+    manifest = {"schema": 1, "maven": []}
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for art in artifacts:
+            path = Path(art["path"])
+            data = path.read_bytes()
+            digest = hashlib.sha256(data).hexdigest()
+
+            # Maven path: group/artifact/version/[classifier/]artifact-version[-classifier].ext
+            group_path = art["group"].replace(".", "/")
+            filename = f"{art['artifact']}-{art['version']}"
+            if art["classifier"]:
+                filename += f"-{art['classifier']}"
+            filename += f".{art['extension']}"
+
+            maven_path = f"{group_path}/{art['artifact']}/{art['version']}/{filename}"
+            zip_entry = f"maven/{maven_path}"
+
+            zf.writestr(zip_entry, data)
+            manifest["maven"].append({
+                "path": maven_path,
+                "sha256": digest,
+                "group": art["group"],
+                "artifact": art["artifact"],
+                "version": art["version"],
+                "classifier": art["classifier"],
+                "extension": art["extension"],
+            })
+
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+    return buf.getvalue(), manifest
+
+
+def cmd_publish(args):
+    """Публикация защищённых артефактов в домашнее зеркало.
+
+    Сканирует локальные кеши (Gradle, Maven local), собирает артефакты
+    защищённых namespace, шифрует и отправляет на сервер. Дома ничего
+    нажимать не нужно — сервер сам расшифрует и зальёт в CAS.
+    """
+    base = args.base_url or cfg("BASE_URL", "https://localhost:443")
+    key = args.api_key or cfg("API_KEY")
+    password = cfg("SYNC_PASSWORD")
+
+    if not password:
+        print("ERROR: SYNC_PASSWORD не задан в .env или окружении")
+        sys.exit(1)
+
+    # Защищённые группы — те же, что и на сервере
+    protected_raw = cfg("LGM_PROTECTED_MAVEN_GROUPS", "ru.kryptonite")
+    protected_groups = tuple(g.strip() for g in protected_raw.split(",") if g.strip())
+
+    print(f"=== Публикация корпоративных артефактов ===")
+    print(f"  сервер: {base}")
+    print(f"  защищённые группы: {', '.join(protected_groups)}")
+
+    # Сканируем Maven local
+    m2_root = Path.home() / ".m2" / "repository"
+    print(f"\n  сканирование Maven local: {m2_root}")
+    m2_arts = scan_maven_local(m2_root, protected_groups)
+    print(f"    найдено: {len(m2_arts)} артефактов")
+
+    # Сканируем Gradle cache
+    gradle_roots = gradle_candidate_roots()
+    gradle_arts = []
+    for root in gradle_roots:
+        if not root.is_dir():
+            continue
+        print(f"  сканирование Gradle cache: {root}")
+        arts = scan_gradle_cache(root, protected_groups)
+        print(f"    найдено: {len(arts)} артефактов")
+        gradle_arts.extend(arts)
+
+    # Дедупликация по (group, artifact, version, classifier, extension, sha256)
+    seen = {}
+    all_arts = []
+    for art in m2_arts + gradle_arts:
+        path = Path(art["path"])
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        key_tuple = (art["group"], art["artifact"], art["version"],
+                     art["classifier"], art["extension"], digest)
+        if key_tuple not in seen:
+            seen[key_tuple] = True
+            all_arts.append(art)
+
+    print(f"\n  всего уникальных: {len(all_arts)} артефактов")
+
+    if not all_arts:
+        print("  нечего публиковать")
+        return
+
+    if args.dry_run:
+        print("\n  DRY RUN — список артефактов:")
+        for art in all_arts[:20]:
+            print(f"    {art['group']}:{art['artifact']}:{art['version']}"
+                  f"{'-' + art['classifier'] if art['classifier'] else ''}.{art['extension']}")
+        if len(all_arts) > 20:
+            print(f"    ... и ещё {len(all_arts) - 20}")
+        return
+
+    # Строим публикацию
+    print("\n  сборка публикации...")
+    zip_bytes, manifest = build_publication_zip(all_arts)
+    print(f"    размер ZIP: {len(zip_bytes)} байт")
+
+    # Шифруем
+    print("  шифрование...")
+    encrypted = encrypt_bundle(zip_bytes, password)
+    print(f"    размер encrypted: {len(encrypted)} байт")
+
+    # Отправляем
+    print(f"  отправка на {base}/api/deps/mirror/publish...")
+    import requests
+    try:
+        resp = requests.post(
+            f"{base}/api/deps/mirror/publish",
+            files={"attachment": ("publication.enc", encrypted, "application/octet-stream")},
+            data={"repo": "lgm-cli"},
+            headers={"X-Session-ID": key} if key else {},
+            timeout=300,
+            verify=False,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+    except Exception as e:
+        print(f"  ERROR: {e}")
+        sys.exit(1)
+
+    print(f"\n  ✓ публикация принята")
+    print(f"    добавлено: {body.get('added', 0)}")
+    print(f"    уже было: {body.get('existed', 0)}")
+    print(f"    конфликты: {len(body.get('conflicts', []))}")
+    print(f"    отвергнуто: {len(body.get('rejected', []))}")
+    if body.get("wantedResolved"):
+        print(f"    закрыто wanted: {body['wantedResolved']}")
+
+    if body.get("conflicts"):
+        print(f"\n  ВНИМАНИЕ: обнаружены конфликты байтов:")
+        for c in body["conflicts"]:
+            print(f"    {c['artifact']}")
+            print(f"      активный: {c['active_sha256'][:16]}...")
+            print(f"      входящий: {c['incoming_sha256'][:16]}...")
+
+
 def cmd_fetch_poms(args):
     """
     For every <name>-<version>.jar under ~/.m2/repository that lacks a sibling
@@ -1678,6 +1987,12 @@ def main():
                     help="public Maven repo to download poms from")
     fp.add_argument("--dry-run", action="store_true")
 
+    pub = sub.add_parser("publish",
+        help="Scan local caches for protected artifacts, encrypt, and publish to Mirror vault. "
+             "One-button sync: scan → encrypt → upload. Home server decrypts and imports to CAS.")
+    pub.add_argument("--dry-run", action="store_true",
+                     help="show what would be published without actually sending")
+
     d = sub.add_parser("debug", help="Full diagnostics")
 
     args = p.parse_args()
@@ -1688,6 +2003,7 @@ def main():
     elif args.cmd == "respond":    cmd_respond(args)
     elif args.cmd == "apply":      cmd_apply(args)
     elif args.cmd == "fetch-poms": cmd_fetch_poms(args)
+    elif args.cmd == "publish":    cmd_publish(args)
     elif args.cmd == "debug":      cmd_debug(args)
 
 if __name__ == "__main__":

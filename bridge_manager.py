@@ -32,6 +32,8 @@ def start_server():
                 f'tasklist /FI "PID eq {pid}"',
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 shell=True,
             )
             if str(pid) in result.stdout:
@@ -115,6 +117,8 @@ def status_server():
                 f'tasklist /FI "PID eq {pid}"',
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 shell=True,
             )
             if str(pid) in res.stdout:
