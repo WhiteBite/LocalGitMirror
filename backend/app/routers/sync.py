@@ -1145,6 +1145,157 @@ async def delete_ref(request: EnvelopeRequest):
     return {"e": encrypt_envelope({"success": True, "repo": repo_name, "branch": branch}, password)}
 
 
+@router.post("/documents/prune-branches")
+async def prune_branches(request: EnvelopeRequest):
+    """
+    List (dry-run) or delete merged/stale branches from the Mirror bare repo.
+
+    Envelope plaintext params:
+      repo       (str)  mirror repo name
+      bases      (list) base refs — a branch merged into ANY existing base
+                        (git merge-base --is-ancestor branch base) is a
+                        candidate. Bases missing from the bare repo are
+                        ignored.
+      older_days (int)  also treat branches whose committerdate is older than
+                        now - older_days as candidates (0 = off).
+      keep       (list) branches to never delete. Defaults to
+                        ["master", "develop", "plan_fix"] when empty.
+      apply      (bool) false = dry-run (report candidates, delete nothing);
+                        true  = delete candidates from bare (+ best-effort
+                        workspace branch -D, like _prune_stale_branches).
+
+    Guards (same family as delete-ref / _prune_stale_branches):
+      - HEAD branch of the bare repo is always protected.
+      - Never delete if it would leave < 1 branch in the bare repo.
+      - keep/bases entries must be valid git refnames.
+    """
+    password = _sync_password()
+    params = _decrypt_params(request.e, password, request.epk)
+
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager not initialized")
+
+    repo_name = (params.get("repo") or "").strip()
+    if not repo_name or repo_name not in repo_manager.get_repos():
+        raise HTTPException(404, "Repository not found")
+
+    bases_raw = params.get("bases") or []
+    bases = [b.strip() for b in bases_raw if isinstance(b, str) and b.strip()]
+
+    try:
+        older_days = int(params.get("older_days") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "older_days must be an integer")
+    if older_days < 0:
+        raise HTTPException(400, "older_days must be >= 0")
+
+    keep_raw = params.get("keep") or []
+    keep = [k.strip() for k in keep_raw if isinstance(k, str) and k.strip()]
+    if not keep:
+        keep = ["master", "develop", "plan_fix"]
+
+    apply = bool(params.get("apply"))
+
+    # Branch-name safety for keep/bases entries (same rule as delete-ref).
+    for name in bases + keep:
+        if ".." in name or not _SAFE_BRANCH.match(name):
+            raise HTTPException(400, f"Invalid branch name: {name!r}")
+
+    bare = repo_manager._get_bare_path(repo_name)
+    workspace = repo_manager._get_workspace_path(repo_name)
+    if not bare.exists():
+        raise HTTPException(404, "Repository data not found")
+
+    # All branches in the bare repo (source of truth, like _prune_stale_branches).
+    branches_proc = _git(bare, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
+    if branches_proc.returncode != 0:
+        raise HTTPException(500, "Failed to list branches in bare repo")
+    all_branches = [line.strip() for line in (branches_proc.stdout or "").splitlines() if line.strip()]
+    branch_set = set(all_branches)
+
+    # HEAD branch (always protected).
+    head_proc = _git(bare, "symbolic-ref", "--short", "HEAD")
+    head_branch = (head_proc.stdout or "").strip() if head_proc.returncode == 0 else ""
+
+    # Bases that actually exist in the bare repo — the rest are ignored.
+    existing_bases = [b for b in bases if b in branch_set]
+
+    # Committer dates (unix seconds) for the older_days rule.
+    branch_dates: dict = {}
+    date_proc = _git(bare, "for-each-ref",
+                     "--format=%(refname:short) %(committerdate:unix)", "refs/heads/")
+    if date_proc.returncode == 0:
+        for line in (date_proc.stdout or "").splitlines():
+            parts = line.strip().split()
+            if len(parts) == 2 and parts[1].isdigit():
+                branch_dates[parts[0]] = int(parts[1])
+    cutoff = (time.time() - older_days * 86400) if older_days > 0 else None
+
+    candidates = []
+    for branch in all_branches:
+        if branch == head_branch or branch in keep:
+            continue
+        merged = any(
+            _git(bare, "merge-base", "--is-ancestor", branch, base).returncode == 0
+            for base in existing_bases
+        )
+        old = False
+        if cutoff is not None:
+            d = branch_dates.get(branch)
+            old = d is not None and d < cutoff
+        if merged or old:
+            candidates.append(branch)
+
+    # Guard: never delete if it would leave < 1 branch in the bare repo.
+    guard_fired = False
+    if len(all_branches) - len(candidates) < 1:
+        candidates = []
+        guard_fired = True
+
+    # protected: HEAD + keep branches actually present in the repo.
+    seen: set = set()
+    protected = [
+        b for b in ([head_branch] + keep)
+        if b and b in branch_set and not (b in seen or seen.add(b))
+    ]
+
+    pruned: list = []
+    if apply and candidates:
+        for branch in candidates:
+            del_result = _git(bare, "update-ref", "-d", f"refs/heads/{branch}")
+            if del_result.returncode == 0:
+                pruned.append(branch)
+                # Best-effort: also remove from workspace (like _prune_stale_branches).
+                if workspace.exists():
+                    _git(workspace, "branch", "-D", branch)
+
+    if system_logger:
+        system_logger.info("prune-branches", {
+            "repo": repo_name,
+            "apply": apply,
+            "candidates": len(candidates),
+            "pruned": len(pruned),
+            "protected": len(protected),
+        })
+
+    if guard_fired:
+        message = "Refusing to prune: it would leave no branches in the bare repo"
+    elif apply:
+        message = f"Pruned {len(pruned)} branch(es)" if pruned else "Nothing to prune"
+    else:
+        message = f"{len(candidates)} candidate(s) for pruning (dry-run)"
+
+    return {"e": encrypt_envelope({
+        "success": True,
+        "repo": repo_name,
+        "apply": apply,
+        "candidates": candidates,
+        "pruned": pruned,
+        "protected": protected,
+        "message": message,
+    }, password)}
+
+
 @router.post("/documents/export")
 def sync_export_dump(e: str = Form(...), k: Optional[str] = Form(None)):
     # NOTE: intentionally a sync `def` (not async). The body does heavy blocking
