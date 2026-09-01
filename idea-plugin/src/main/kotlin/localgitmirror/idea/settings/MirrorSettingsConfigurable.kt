@@ -22,12 +22,14 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   // SecretsStore-backed fields — managed manually (not in PersistentStateComponent)
   private var mirrorApiKeyLocal = ""
   private var syncPasswordLocal = ""
+  private var gitlabTokenLocal = ""
 
   override fun getDisplayName(): String = "LocalGitMirror"
 
   override fun createComponent(): JComponent {
     mirrorApiKeyLocal = SecretsStore.mirrorApiKey
     syncPasswordLocal = SecretsStore.syncPassword
+    gitlabTokenLocal = SecretsStore.gitlabToken
 
     val panel = panel {
       // Minimal settings: URL + API Key + Password
@@ -62,6 +64,33 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
             .bindText(projectState::repoOverride)
             .resizableColumn()
             .comment("Переопределение имени репозитория на Mirror (если папка называется иначе)")
+        }
+      }
+
+      // GitLab MR transfer: URL/project overrides + API token
+      collapsibleGroup(LocalGitMirrorBundle.message("settings.gitlab.title"), false) {
+        row(LocalGitMirrorBundle.message("settings.gitlab.url.label")) {
+          textField()
+            .bindText(state::gitlabUrl)
+            .resizableColumn()
+            .comment(LocalGitMirrorBundle.message("settings.gitlab.url.comment"))
+        }
+
+        row(LocalGitMirrorBundle.message("settings.gitlab.project.label")) {
+          textField()
+            .bindText(state::gitlabProject)
+            .resizableColumn()
+            .comment(LocalGitMirrorBundle.message("settings.gitlab.project.comment"))
+        }
+
+        row(LocalGitMirrorBundle.message("settings.gitlab.token.label")) {
+          passwordField()
+            .bindText(::gitlabTokenLocal)
+            .comment(LocalGitMirrorBundle.message("settings.gitlab.token.comment"))
+        }
+
+        row {
+          label(LocalGitMirrorBundle.message("settings.gitlab.autoHint"))
         }
       }
 
@@ -118,6 +147,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
     if (panel.isModified()) return true
     if (mirrorApiKeyLocal != SecretsStore.mirrorApiKey) return true
     if (syncPasswordLocal != SecretsStore.syncPassword) return true
+    if (gitlabTokenLocal != SecretsStore.gitlabToken) return true
     return false
   }
 
@@ -126,6 +156,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
     panel.apply()
     SecretsStore.mirrorApiKey = mirrorApiKeyLocal
     SecretsStore.syncPassword = syncPasswordLocal
+    SecretsStore.gitlabToken = gitlabTokenLocal
 
     // Normalize URL: add https:// if no scheme, strip trailing slash
     val url = state.baseUrl.trim()
@@ -141,6 +172,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
     panel.reset()
     mirrorApiKeyLocal = SecretsStore.mirrorApiKey
     syncPasswordLocal = SecretsStore.syncPassword
+    gitlabTokenLocal = SecretsStore.gitlabToken
   }
 
   override fun disposeUIResources() {
