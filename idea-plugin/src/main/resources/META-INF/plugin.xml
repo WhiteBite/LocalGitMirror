@@ -67,6 +67,10 @@
             class="localgitmirror.idea.actions.PushAsAction"
             text="Send as…" description="Send current HEAD to Mirror under a different branch name"/>
 
+    <action id="LocalGitMirror.SendGitLabMr"
+            class="localgitmirror.idea.actions.SendGitLabMrAction"
+            text="Send MR branch to Mirror…" description="Fetch a GitLab MR source branch and send it to Mirror"/>
+
     <!-- ── Pull actions ── -->
     <action id="LocalGitMirror.SyncPull"
             class="localgitmirror.idea.actions.PullFromMirrorAction"
@@ -118,6 +122,11 @@
             text="Manage Mirror branches…"
             description="View and delete stale branches on the Mirror server"/>
 
+    <action id="LocalGitMirror.PruneMirrorBranches"
+            class="localgitmirror.idea.actions.PruneMirrorBranchesAction"
+            text="Prune merged branches on Mirror…"
+            description="Find branches already merged into master/develop/plan_fix and delete them on the Mirror server"/>
+
     <!-- ── Diagnostics ── -->
     <action id="LocalGitMirror.Preflight"
             class="localgitmirror.idea.actions.PreflightCheckAction"
@@ -165,12 +174,14 @@
       <reference ref="LocalGitMirror.SyncBranch"/>
       <reference ref="LocalGitMirror.SendSelectedCommits"/>
       <reference ref="LocalGitMirror.PushAs"/>
+      <reference ref="LocalGitMirror.SendGitLabMr"/>
       <reference ref="LocalGitMirror.PullBack"/>
       <reference ref="LocalGitMirror.ApplyLocalSync"/>
       <separator/>
 
       <!-- Branch management -->
       <reference ref="LocalGitMirror.ManageBranches"/>
+      <reference ref="LocalGitMirror.PruneMirrorBranches"/>
       <separator/>
 
       <!-- Deps sync -->

@@ -32,4 +32,9 @@ object SecretsStore {
   var syncPassword: String
     get() = get("mirror.syncPassword")
     set(value) = set("mirror.syncPassword", value)
+
+  /** GitLab personal access token (MR transfer). Never stored in plain State. */
+  var gitlabToken: String
+    get() = get("gitlab.token")
+    set(value) = set("gitlab.token", value)
 }
