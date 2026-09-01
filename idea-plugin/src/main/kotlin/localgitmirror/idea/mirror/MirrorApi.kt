@@ -9,8 +9,10 @@ import java.util.Base64 as JavaBase64
 import java.util.UUID
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -1230,6 +1232,90 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
       val e = HttpClient.classifyError(t)
       HttpResult(0, "${e.type}: ${e.message}")
     }
+  }
+
+  /**
+   * Result of a prune-branches call. With apply=false only [candidates] is
+   * filled (dry-run); with apply=true [pruned] lists the branches the server
+   * actually deleted and [protected] the ones it refused to touch (HEAD, last
+   * branch, keep-list).
+   */
+  data class PruneResult(
+    val code: Int,
+    val success: Boolean,
+    val candidates: List<String>,
+    val pruned: List<String>,
+    val `protected`: List<String>,
+    val message: String
+  )
+
+  /**
+   * Ask the server which branches are already merged into [bases] (and thus
+   * prunable). With apply=false the server only computes the candidate list;
+   * with apply=true it deletes them. Transport mirrors [deleteRef]: password
+   * envelope request {"e": ...} and an envelope-wrapped JSON response.
+   */
+  fun pruneBranches(
+    baseUrl: String,
+    apiKey: String,
+    repo: String,
+    bases: List<String>,
+    olderDays: Int,
+    keep: List<String>,
+    apply: Boolean,
+    insecureTls: Boolean,
+    syncPassword: String
+  ): PruneResult {
+    return try {
+      val url = URL("${baseUrl.trimEnd('/')}/api/sync/documents/prune-branches")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "POST"
+      conn.doOutput = true
+      conn.connectTimeout = 30_000
+      conn.readTimeout = 60_000
+      conn.setRequestProperty("Content-Type", "application/json")
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+
+      val params = buildJsonObject {
+        put("repo", repo)
+        put("bases", buildJsonArray { bases.forEach { add(JsonPrimitive(it)) } })
+        put("older_days", olderDays)
+        put("keep", buildJsonArray { keep.forEach { add(JsonPrimitive(it)) } })
+        put("apply", apply)
+      }
+      val e = EnvelopeCrypto.encryptJson(params, syncPassword)
+      conn.outputStream.use { it.write("{\"e\":\"$e\"}".toByteArray(StandardCharsets.UTF_8)) }
+
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+      if (code !in 200..299) {
+        return PruneResult(code, false, emptyList(), emptyList(), emptyList(), body.take(500))
+      }
+
+      val outer = Json.parseToJsonElement(body).jsonObject
+      val eField = outer["e"]?.jsonPrimitive?.contentOrNull
+        ?: return PruneResult(code, false, emptyList(), emptyList(), emptyList(), "Missing envelope in response")
+      val inner = EnvelopeCrypto.decryptJson(eField, syncPassword)
+
+      PruneResult(
+        code = code,
+        success = inner["success"]?.jsonPrimitive?.booleanOrNull ?: false,
+        candidates = stringList(inner, "candidates"),
+        pruned = stringList(inner, "pruned"),
+        `protected` = stringList(inner, "protected"),
+        message = inner["message"]?.jsonPrimitive?.contentOrNull ?: ""
+      )
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      PruneResult(0, false, emptyList(), emptyList(), emptyList(), "${e.type}: ${e.message}")
+    }
+  }
+
+  /** Read a JSON array of strings, tolerating missing/null/non-array fields. */
+  private fun stringList(obj: JsonObject, field: String): List<String> {
+    val el = obj[field] ?: return emptyList()
+    if (el !is JsonArray) return emptyList()
+    return el.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
   }
 
   // ───────────────────────────────────────────────────────────────────────
