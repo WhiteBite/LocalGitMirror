@@ -2,13 +2,13 @@
 """
 lgm_mcp — dependency-free MCP server over stdio for LocalGitMirror.
 
-Implements a JSON-RPC 2.0 subset with LSP-style Content-Length framing
-(the MCP stdio standard).  Tools are generated from ``lgm_core.ops.REGISTRY``
-— the SAME registry that drives the ``lgm.py`` CLI.
+Implements a JSON-RPC 2.0 subset.  Tools are generated from
+``lgm_core.ops.REGISTRY`` — the SAME registry that drives the ``lgm.py`` CLI.
 
-Protocol:
-  - Incoming: Content-Length headers + body (LSP framing).
-  - Outgoing: same framing.
+Protocol (MCP stdio):
+  - Outgoing: one JSON message per line (newline-delimited), per MCP spec.
+  - Incoming: newline-delimited JSON; LSP-style Content-Length framed input
+    is also accepted for clients that use that style.
   - stdout is the protocol channel — nothing else may write to stdout.
   - Diagnostics go to stderr only.
 
@@ -53,53 +53,58 @@ def _server_version() -> str:
     return "1.0.0"
 
 
-# ── Content-Length framing (LSP style, binary I/O) ────────────────────────────
+# ── stdio transport (binary I/O) ─────────────────────────────────────────────
 #
-# We use binary I/O (sys.stdin.buffer / sys.stdout.buffer) to avoid Windows
-# text-mode newline translation (\r\n -> \n) which corrupts Content-Length
-# framing.  Binary mode gives us exact byte counts.
+# Binary I/O (sys.stdin.buffer / sys.stdout.buffer) avoids Windows text-mode
+# newline translation.  Outgoing messages are newline-delimited JSON (the MCP
+# stdio standard); incoming accepts NDJSON and, for compatibility, LSP-style
+# Content-Length framed messages.
 
 
 def _read_message(stdin_bin) -> dict | None:
-    """Read one Content-Length-framed JSON-RPC message from a binary stream.
+    """Read one JSON-RPC message from a binary stream.
 
-    Returns the parsed dict, or None on EOF.
+    NDJSON first (MCP spec); falls back to Content-Length framing when the
+    line looks like an LSP header.  Returns the parsed dict, or None on EOF.
     """
-    headers: dict[str, str] = {}
     while True:
         raw_line = stdin_bin.readline()
         if not raw_line:
             return None  # EOF
-        line = raw_line.decode("ascii", errors="replace").strip()
+        line = raw_line.decode("utf-8", errors="replace").strip()
         if not line:
-            break  # End of header block (blank line)
-        if ":" in line:
-            key, _, val = line.partition(":")
-            headers[key.strip().lower()] = val.strip()
+            continue  # skip blank lines between messages
 
-    length_str = headers.get("content-length")
-    if not length_str:
-        return None
-    try:
-        length = int(length_str)
-    except ValueError:
-        return None
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue  # garbage line — keep reading
 
-    body = stdin_bin.read(length)
-    if len(body) < length:
-        return None  # truncated
-    try:
-        return json.loads(body.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return None
+        if not line.lower().startswith("content-length:"):
+            continue  # unknown non-JSON line — ignore
+        try:
+            length = int(line.split(":", 1)[1].strip())
+        except ValueError:
+            continue
+        # Consume the rest of the header block (until blank line).
+        while True:
+            header_line = stdin_bin.readline()
+            if not header_line or not header_line.strip():
+                break
+        body = stdin_bin.read(length)
+        if len(body) < length:
+            return None  # truncated
+        try:
+            return json.loads(body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
 
 
 def _write_message(stdout_bin, msg: dict) -> None:
-    """Write one Content-Length-framed JSON-RPC message to a binary stream."""
-    body = json.dumps(msg, ensure_ascii=False).encode("utf-8")
-    header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-    stdout_bin.write(header)
-    stdout_bin.write(body)
+    """Write one newline-delimited JSON message (MCP stdio standard)."""
+    payload = json.dumps(msg, ensure_ascii=False).encode("utf-8")
+    stdout_bin.write(payload + b"\n")
     stdout_bin.flush()
 
 
@@ -261,7 +266,7 @@ def serve() -> int:
     stdout_bin = sys.stdout.buffer
 
     # Diagnostics only to stderr.
-    print(f"[{_SERVER_NAME}] v{_server_version()} starting (Content-Length framing)", file=sys.stderr)
+    print(f"[{_SERVER_NAME}] v{_server_version()} starting (NDJSON stdio)", file=sys.stderr)
 
     while True:
         msg = _read_message(stdin_bin)
