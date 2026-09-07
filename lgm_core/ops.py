@@ -1280,8 +1280,11 @@ def op_request(ctx: Ctx, args: dict) -> dict:
         kinds = coord_kinds.get(gnv)
         if not kinds:
             return False
+        has_meta = bool(kinds & {"pom", "module"})
         if kinds & {"jar", "aar", "klib"}:
-            return True
+            # mavenLocal() resolves metadata from the pom; a bare jar without
+            # pom/module leaves the coordinate unresolvable for Gradle.
+            return has_meta
         pom = coord_pom.get(gnv)
         if pom and _pom_packaging(pom) in ("pom", "bom"):
             return True
