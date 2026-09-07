@@ -66,7 +66,10 @@ object GradleEcosystem : DepsEcosystem {
     }
     fun coordSatisfied(gnv: String): Boolean {
       val kinds = coordKinds[gnv] ?: return false
-      if (kinds.any { it == ArtifactKind.JAR || it == ArtifactKind.AAR || it == ArtifactKind.KLIB }) return true
+      val hasMeta = kinds.any { it == ArtifactKind.POM || it == ArtifactKind.MODULE }
+      // A bare jar without pom/module does NOT satisfy mavenLocal() resolution:
+      // gradle reads metadata from the pom and fails with "Could not find ...pom".
+      if (kinds.any { it == ArtifactKind.JAR || it == ArtifactKind.AAR || it == ArtifactKind.KLIB }) return hasMeta
       val pom = coordPom[gnv] ?: return false
       return pomPackaging(pom) in setOf("pom", "bom")
     }
