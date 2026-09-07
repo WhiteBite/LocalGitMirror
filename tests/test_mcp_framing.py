@@ -1,4 +1,4 @@
-"""Test MCP framing (Content-Length encode/decode) and in-process dispatch."""
+"""Test MCP stdio transport (NDJSON out; NDJSON + Content-Length in) and dispatch."""
 import io
 import json
 import sys
@@ -26,23 +26,30 @@ def _encode(msg: dict) -> bytes:
     return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
 
 
-def test_framing_encode_decode_roundtrip():
-    """A message encoded with Content-Length framing must decode back identically."""
+def test_ndjson_roundtrip():
+    """A newline-delimited JSON message (MCP spec) must decode back identically."""
     original = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
-    encoded = _encode(original)
-    # Simulate binary stdin.
-    fake_stdin = io.BytesIO(encoded)
+    fake_stdin = io.BytesIO(json.dumps(original).encode("utf-8") + b"\n")
+    decoded = lgm_mcp._read_message(fake_stdin)
+    assert decoded is not None
+    assert decoded == original
+
+
+def test_content_length_input_still_supported():
+    """Legacy LSP-style Content-Length framed input must still decode."""
+    original = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+    fake_stdin = io.BytesIO(_encode(original))
     decoded = lgm_mcp._read_message(fake_stdin)
     assert decoded is not None
     assert decoded == original
 
 
 def test_framing_multiple_messages():
-    """Multiple framed messages in sequence must each decode correctly."""
+    """NDJSON and framed messages mixed in sequence must each decode correctly."""
     msg1 = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
     msg2 = {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}
-    encoded = _encode(msg1) + _encode(msg2)
-    fake_stdin = io.BytesIO(encoded)
+    stream = json.dumps(msg1).encode("utf-8") + b"\n" + _encode(msg2)
+    fake_stdin = io.BytesIO(stream)
     d1 = lgm_mcp._read_message(fake_stdin)
     d2 = lgm_mcp._read_message(fake_stdin)
     assert d1 == msg1
@@ -55,17 +62,15 @@ def test_framing_eof_returns_none():
     assert lgm_mcp._read_message(fake_stdin) is None
 
 
-def test_write_message_produces_framed_output():
-    """_write_message must produce Content-Length-framed output."""
+def test_write_message_produces_ndjson():
+    """_write_message must emit one JSON line terminated by \\n (MCP stdio)."""
     msg = {"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}
     fake_stdout = io.BytesIO()
     lgm_mcp._write_message(fake_stdout, msg)
     output = fake_stdout.getvalue()
-    assert b"Content-Length:" in output
-    assert b"\r\n\r\n" in output
-    # The body after the header block must be valid JSON.
-    body = output.split(b"\r\n\r\n", 1)[1]
-    assert json.loads(body) == msg
+    assert output.endswith(b"\n")
+    assert b"Content-Length:" not in output
+    assert json.loads(output.decode("utf-8")) == msg
 
 
 def test_framing_unicode_content():
