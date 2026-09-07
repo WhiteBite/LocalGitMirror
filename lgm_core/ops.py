@@ -808,6 +808,14 @@ def _client(ctx: Ctx) -> MirrorClient:
     return c
 
 
+def _repo_arg(args: dict) -> str:
+    """Resolve the mirror repo name; the legacy dead default is gone."""
+    repo = (args.get("repo") or "").strip()
+    if not repo:
+        raise LgmError("config", "--repo is required (mirror repository name)")
+    return repo
+
+
 def _role_guess(caps: dict, repos: dict) -> str:
     """Guess whether this machine is 'work' or 'home' from capabilities/repos."""
     features = caps.get("sync", {}).get("features", {})
@@ -1770,14 +1778,15 @@ REGISTRY: list[Op] = [
     Op(
         name="pending",
         summary="List pending dependency requests on the Mirror server.",
-        params=[Param("repo", "str", "onyx-platform", "Repository name")],
+        params=[Param("repo", "str", "", "Repository name")],
         run=op_pending,
     ),
     Op(
         name="request",
-        summary="Build a manifest v3 from a project and POST it to Mirror.",
-        params=[
-            Param("project", "str", "", "Path to gradle project root", required=True),
+            summary="Build a manifest v3 from a project and POST it to Mirror.",
+            params=[
+                Param("repo", "str", "", "Mirror repository name", required=True),
+                Param("project", "str", "", "Path to gradle project root", required=True),
             Param("npm_scopes", "str", "", "Comma-separated npm scopes to treat as corporate"),
             Param("dry_run", "bool", False, "Show what would be requested without posting"),
         ],
@@ -1786,8 +1795,9 @@ REGISTRY: list[Op] = [
     Op(
         name="respond",
         summary="Find requested deps in local cache and ship them to Mirror.",
-        params=[
-            Param("project", "str", "", "Project dir (for package-lock.json bundling)"),
+            params=[
+                Param("repo", "str", "", "Mirror repository name", required=True),
+                Param("project", "str", "", "Project dir (for package-lock.json bundling)"),
             Param("dry_run", "bool", False, "Show what would be sent without posting"),
         ],
         run=op_respond,
@@ -1796,7 +1806,8 @@ REGISTRY: list[Op] = [
         name="apply",
         summary="Download and unpack a deps response into the local cache.",
         params=[
-            Param("project", "str", "", "Project dir to write package-lock.json into"),
+                Param("repo", "str", "", "Mirror repository name", required=True),
+                Param("project", "str", "", "Project dir to write package-lock.json into"),
             Param("npm_install", "bool", False, "Run npm install after writing lockfile"),
             Param("yarn", "bool", False, "Set up yarn offline-mirror from corporate tarballs"),
             Param("yarn_install", "bool", False, "Like --yarn, then run yarn install --offline"),
@@ -1823,7 +1834,7 @@ REGISTRY: list[Op] = [
     Op(
         name="debug",
         summary="Full diagnostics: env vars, cache roots, mirror connectivity.",
-        params=[Param("repo", "str", "onyx-platform", "Repository name")],
+        params=[Param("repo", "str", "", "Repository name")],
         run=op_debug,
     ),
     # ── New ops ──────────────────────────────────────────────────────────
@@ -1873,7 +1884,7 @@ REGISTRY: list[Op] = [
         name="deps_request",
         summary="Post a pre-built encrypted manifest file to /api/deps/request.",
         params=[
-            Param("repo", "str", "onyx-platform", "Repository name"),
+            Param("repo", "str", "", "Repository name"),
             Param("manifest", "str", "", "Path to encrypted manifest file", required=True),
         ],
         run=op_deps_request,
