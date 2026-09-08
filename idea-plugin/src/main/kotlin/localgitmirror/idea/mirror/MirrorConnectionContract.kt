@@ -13,8 +13,8 @@ internal object MirrorConnectionContract {
     baseUrl.trimEnd('/') + AUTHENTICATED_HEALTH_PATH
 
   fun missingConfigurationMessage(baseUrl: String, apiKey: String): String? = when {
-    baseUrl.isBlank() -> "Укажите Mirror URL."
-    apiKey.isBlank() -> "Укажите API key из консоли Mirror-сервера."
+    baseUrl.isBlank() -> "Укажите URL сервера."
+    apiKey.isBlank() -> "Укажите API key из консоли сервера."
     else -> null
   }
 }

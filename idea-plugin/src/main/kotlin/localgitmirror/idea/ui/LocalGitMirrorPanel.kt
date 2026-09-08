@@ -27,6 +27,7 @@ import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.net.LanDiscovery
 import localgitmirror.idea.settings.*
+import localgitmirror.idea.sync.HandshakeCache
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.awt.*
 import java.awt.datatransfer.StringSelection
@@ -49,7 +50,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   private var setupFormPanel: com.intellij.openapi.ui.DialogPanel? = null
 
   internal val status = JBLabel("")
-  internal val mirrorBadge = BadgeLabel("Mirror: ?")
+  internal val mirrorBadge = BadgeLabel("Cache: ?")
   internal val lastSyncBadge = BadgeLabel("Last sync: \u2014")
 
   // ── History list (one-line-per-entry, double-click for details) ──
@@ -126,7 +127,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     font = JBUI.Fonts.smallFont()
     cellRenderer = BranchListCellRenderer()
     selectionMode = ListSelectionModel.SINGLE_SELECTION
-    toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Mirror"
+    toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Cache"
   }
 
   private inner class BranchListCellRenderer : DefaultListCellRenderer() {
@@ -334,15 +335,15 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   ) {
     val settings = service<MirrorSettingsService>().state
     if (settings.baseUrl.isBlank()) {
-      finishBranchRefresh("Mirror не настроен")
-      if (userInitiated) notify("Укажите адрес Mirror в настройках плагина.", NotificationType.WARNING)
+      finishBranchRefresh("Cache не настроен")
+      if (userInitiated) notify("Укажите адрес сервера в настройках плагина.", NotificationType.WARNING)
       return
     }
 
     val repo = try { syncFacade.resolveRepo(dir, settings).sanitized } catch (_: Throwable) { "" }
     if (repo.isBlank()) {
-      finishBranchRefresh("Не удалось определить репозиторий Mirror")
-      if (userInitiated) notify("Не удалось определить имя репозитория Mirror.", NotificationType.WARNING)
+      finishBranchRefresh("Не удалось определить репозиторий сервера")
+      if (userInitiated) notify("Не удалось определить имя репозитория сервера.", NotificationType.WARNING)
       return
     }
 
@@ -362,9 +363,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         if (result.code in 200..299 && result.refs != null) {
           mirrorRefs = result.refs.mapValues { it.value.sha }
           replaceBranchItems(localBranches, mirrorRefs, currentBranch)
-          finishBranchRefresh("Mirror: ${mirrorRefs.size} веток")
+          finishBranchRefresh("Cache: ${mirrorRefs.size} веток")
         } else {
-          val detail = "Mirror не ответил для repo '$repo': ${result.message.take(120)}"
+          val detail = "Сервер не ответил: ${result.message.take(120)}"
           finishBranchRefresh(detail)
           if (userInitiated) notify(detail, NotificationType.WARNING)
         }
@@ -378,12 +379,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       LocalGitMirrorBundle.message("panel.branch.refresh.inprogress")
     else
       LocalGitMirrorBundle.message("panel.branch.refresh.tooltip")
-    if (inProgress) branchList.toolTipText = "Загружаем ветки с Mirror…"
+    if (inProgress) branchList.toolTipText = "Загружаем ветки с сервера…"
   }
 
   private fun finishBranchRefresh(detail: String) {
     setBranchRefreshInProgress(false)
-    branchList.toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Mirror. $detail"
+    branchList.toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Cache. $detail"
   }
 
   /** Re-apply the branch filter text to the list model. */
@@ -456,7 +457,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal fun rebuildGearMenu() {
     moreMenu.removeAll()
     // Group 1: branch refresh + connection test
-    moreMenu.add(gearMenuItem("Обновить ветки Mirror", AllIcons.Actions.Refresh) { refreshBranchCombo(userInitiated = true, withMirror = true) })
+    moreMenu.add(gearMenuItem("Обновить ветки Cache", AllIcons.Actions.Refresh) { refreshBranchCombo(userInitiated = true, withMirror = true) })
     moreMenu.add(gearMenuItem("Проверить подключение", AllIcons.Actions.Checked) { testMirror() })
     moreMenu.addSeparator()
     // Group 2: deps
@@ -467,7 +468,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     // Group 3: service
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("panel.menu.exportBundle"), AllIcons.Actions.Upload) { exportBundle() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("panel.menu.importBundle"), AllIcons.Actions.Download) { importBundle() })
-    moreMenu.add(gearMenuItem("Скачать плагин с Mirror", AllIcons.Actions.Download) { downloadLatestPlugin() })
+    moreMenu.add(gearMenuItem("Скачать плагин с сервера", AllIcons.Actions.Download) { downloadLatestPlugin() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.Preflight.text"), AllIcons.Actions.Preview) { triggerLgmAction("LocalGitMirror.Preflight") })
     moreMenu.addSeparator()
     // Group 4: settings
@@ -560,7 +561,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           isFocusPainted = false
           isBorderPainted = false
           isContentAreaFilled = false
-          toolTipText = "LocalGitMirror $pluginVersionText"
+          toolTipText = "DocCache $pluginVersionText"
           addActionListener { moreMenu.show(this, 0, height) }
         }
         cell(moreBtn)
@@ -592,7 +593,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         button("🗑 Удалить") { deleteSelectedBranches() }
           .applyToComponent {
             font = font.deriveFont(Font.PLAIN)
-            toolTipText = "Удалить выбранные ветки (локально и на Mirror)"
+            toolTipText = "Удалить выбранные ветки (локально и на Cache)"
           }
       }
       
@@ -999,7 +1000,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     
     val confirm = Messages.showYesNoDialog(
       project,
-      "Удалить ${branchNames.size} веток локально и на Mirror?\n\n${branchNames.joinToString("\n")}",
+      "Удалить ${branchNames.size} веток локально и на Cache?\n\n${branchNames.joinToString("\n")}",
       "Подтверждение удаления",
       "Удалить",
       "Отмена",
@@ -1038,7 +1039,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
             insecureTls = settings.mirrorInsecureTls
           )
           if (mirrorResult.code !in 200..299) {
-            errors.add("$branch (Mirror): ${mirrorResult.body.take(100)}")
+            errors.add("$branch (Cache): ${mirrorResult.body.take(100)}")
           }
           
           if (localResult.ok() || mirrorResult.code in 200..299) {
@@ -1070,11 +1071,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   private fun buildSetupUi() {
     val form = panel {
       row {
-        label("🔗 LocalGitMirror").bold()
+        label("🔗 DocCache").bold()
       }
-      
+
       row {
-        label("URL Mirror")
+        label("URL сервера")
       }
       row {
         textField()
@@ -1128,8 +1129,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         when {
           servers.isEmpty() -> {
             Messages.showInfoMessage(
-              "Серверы Mirror не найдены в локальной сети.\nПроверьте, что Mirror запущен и доступен.",
-              "Поиск Mirror"
+              "Серверы не найдены в локальной сети.\nПроверьте, что сервер запущен и доступен.",
+              "Поиск сервера"
             )
           }
           servers.size == 1 -> {
@@ -1139,8 +1140,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           else -> {
             val options = servers.map { "${it.toUrl()} (${it.ip})" }.toTypedArray()
             val chosen = Messages.showEditableChooseDialog(
-              "Найдено несколько серверов Mirror. Выберите:",
-              "Поиск Mirror",
+              "Найдено несколько серверов. Выберите:",
+              "Поиск сервера",
               null, options, options.first(), null
             )
             if (chosen != null) {
@@ -1173,11 +1174,16 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       override fun run(indicator: ProgressIndicator) {
         currentIndicator = indicator
         try {
-          indicator.text = "Проверяем подключение к Mirror…"
-          val probe = MirrorApi.passwordProbe(url, setupApiKey, s.mirrorInsecureTls)
+          indicator.text = "Проверяем подключение к серверу…"
+          val probe = HandshakeCache.passwordProbe(
+            baseUrl = url,
+            apiKey = setupApiKey,
+            syncPassword = setupSyncPassword,
+            insecureTls = s.mirrorInsecureTls
+          )
           if (probe.code !in 200..299) {
             val msg = if (probe.code == 0)
-              "Mirror недоступен: ${probe.message}"
+              "Сервер недоступен: ${probe.message}"
             else
               "Ошибка подключения (HTTP ${probe.code}): ${probe.message.take(200)}"
             notify(msg, NotificationType.ERROR)
@@ -1189,7 +1195,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           SecretsStore.mirrorApiKey = setupApiKey
           SecretsStore.syncPassword = setupSyncPassword
 
-          notify("Подключение к Mirror установлено успешно.", NotificationType.INFORMATION)
+          notify("Подключение к серверу установлено.", NotificationType.INFORMATION)
 
           // Switch to main UI
           UIUtil.invokeLaterIfNeeded {
@@ -1262,7 +1268,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       status.text = LocalGitMirrorBundle.message("panel.status.disconnected") + " \u00b7 " + role
     }
     status.toolTipText = repoRes?.let {
-      "Mirror repo '${it.sanitized}' \u00b7 source: ${it.source.name.lowercase().replace('_', ' ')}"
+      "Repo \u00b7 source: ${it.source.name.lowercase().replace('_', ' ')}"
     }
 
     rebuildActions()

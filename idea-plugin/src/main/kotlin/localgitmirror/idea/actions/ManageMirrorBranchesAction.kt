@@ -37,7 +37,7 @@ class ManageMirrorBranchesAction : AnAction() {
     val project = e.project ?: return
     val settings = service<MirrorSettingsService>().state
     if (settings.baseUrl.isBlank()) {
-      notify(project, "Настройте Mirror URL в настройках.", NotificationType.WARNING)
+      notify(project, "Настройте URL сервера в настройках.", NotificationType.WARNING)
       return
     }
     val repo = localgitmirror.idea.sync.v2.RepoResolver
@@ -61,7 +61,7 @@ class ManageMirrorBranchesAction : AnAction() {
           }
           val refs = result.refs
           if (refs.isNullOrEmpty()) {
-            notify(project, "На Mirror нет веток для репозитория '$repo'.", NotificationType.INFORMATION)
+            notify(project, "На Cache нет веток.", NotificationType.INFORMATION)
             return
           }
 
@@ -81,7 +81,7 @@ class ManageMirrorBranchesAction : AnAction() {
           val headBranch = all.firstOrNull { it.info.isHead }?.name ?: "(HEAD неизвестен)"
 
           if (deletable.isEmpty()) {
-            notify(project, "Все ветки на Mirror — HEAD-ветка ('$headBranch'). Удалять нечего.", NotificationType.INFORMATION)
+            notify(project, "Все ветки на Cache — HEAD-ветка ('$headBranch'). Удалять нечего.", NotificationType.INFORMATION)
             return
           }
 
@@ -92,7 +92,7 @@ class ManageMirrorBranchesAction : AnAction() {
 
             val chosen = Messages.showEditableChooseDialog(
               buildString {
-                appendLine("Выберите ветку для удаления с Mirror (repo='$repo').")
+                appendLine("Выберите ветку для удаления с Cache.")
                 appendLine()
                 appendLine("★ HEAD = текущая ветка ('$headBranch') — удалить нельзя.")
                 append("Всего веток: ${all.size}")
@@ -120,7 +120,7 @@ class ManageMirrorBranchesAction : AnAction() {
           val confirmed = UIUtil.invokeAndWaitIfNeeded<Int> {
             Messages.showYesNoDialog(
               project,
-              "Удалить ветку «${toDelete.first()}» с Mirror?\n\nЭто действие необратимо.",
+              "Удалить ветку «${toDelete.first()}» с Cache?\n\nЭто действие необратимо.",
               "DocCache: удалить ветку",
               "Удалить", "Отмена", null
             )
@@ -142,7 +142,7 @@ class ManageMirrorBranchesAction : AnAction() {
             if (failed.isNotEmpty()) { if (deleted.isNotEmpty()) append("\n"); append("Ошибка: ${failed.joinToString("; ")}") }
           }
           notify(project, msg.ifBlank { "Готово." }, if (failed.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING)
-          history.add("Delete Mirror branch", failed.isEmpty(),
+          history.add("Delete Cache branch", failed.isEmpty(),
             "deleted=${deleted.size} failed=${failed.size} branches=${(deleted + toDelete).distinct()} repo='$repo'")
         }
       }

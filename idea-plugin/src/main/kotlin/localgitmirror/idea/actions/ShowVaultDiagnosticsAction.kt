@@ -31,7 +31,7 @@ class ShowVaultDiagnosticsAction : AnAction() {
         val project: Project = e.project ?: return
         val settings = service<MirrorSettingsService>().state
         if (settings.baseUrl.isBlank()) {
-            notify(project, "Mirror not configured. Set up Mirror URL in settings.", NotificationType.WARNING)
+            notify(project, "Cache not configured. Set up server URL in settings.", NotificationType.WARNING)
             return
         }
 

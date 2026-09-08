@@ -59,15 +59,15 @@ class PublishMirrorAction : AnAction() {
         indicator.isIndeterminate = true
 
         // 1. Fetch current inventory from vault
-        indicator.text = "Запрашиваем инвентарь зеркала…"
+        indicator.text = "Запрашиваем инвентарь сервера…"
         val indexRes = MirrorApi.mirrorIndex(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           insecureTls = settings.mirrorInsecureTls
         )
         if (indexRes.code !in 200..299) {
-          notify(project, "Не удалось получить инвентарь зеркала: ${indexRes.body.take(500)}", NotificationType.ERROR)
-          history.add("Mirror publish", false, "index failed: ${indexRes.code}")
+          notify(project, "Не удалось получить инвентарь сервера: ${indexRes.body.take(500)}", NotificationType.ERROR)
+          history.add("Cache publish", false, "index failed: ${indexRes.code}")
           return
         }
         val inventory = parseInventory(indexRes.body)
@@ -123,9 +123,9 @@ class PublishMirrorAction : AnAction() {
 
         if (protectedArtifacts.isEmpty() && nexusFetched.isEmpty()) {
           notify(project,
-            "Не найдено корпоративных артефактов (ru.kryptonite.*) в локальных кешах.",
+            "Не найдено защищённых артефактов в локальных кешах.",
             NotificationType.INFORMATION)
-          history.add("Mirror publish", true, "no protected artifacts found")
+          history.add("Cache publish", true, "no protected artifacts found")
           return
         }
 
@@ -158,14 +158,14 @@ class PublishMirrorAction : AnAction() {
 
         if (entries.isEmpty()) {
           notify(project,
-            "Все ${protectedArtifacts.size} корпоративных артефактов имеют нераспознанные имена.",
+            "Все ${protectedArtifacts.size} артефактов имеют нераспознанные имена.",
             NotificationType.WARNING)
-          history.add("Mirror publish", false, "all ${protectedArtifacts.size} artifacts unparseable")
+          history.add("Cache publish", false, "all ${protectedArtifacts.size} artifacts unparseable")
           return
         }
 
         // 7. Build delta: skip artifacts already in inventory with matching sha256
-        indicator.text = "Сравниваем с инвентарём зеркала…"
+        indicator.text = "Сравниваем с инвентарём сервера…"
         val newEntries = entries.filter { entry ->
           val path = mavenPath(entry.group, entry.artifact, entry.version, entry.fileName)
           inventory[path] != entry.sha256
@@ -174,9 +174,9 @@ class PublishMirrorAction : AnAction() {
 
         if (newEntries.isEmpty()) {
           notify(project,
-            "Все ${entries.size} корпоративных артефактов уже есть в зеркале.",
+            "Все ${entries.size} артефактов уже есть на сервере.",
             NotificationType.INFORMATION)
-          history.add("Mirror publish", true, "all ${entries.size} already in vault (delta=0)")
+          history.add("Cache publish", true, "all ${entries.size} already in vault (delta=0)")
           return
         }
 
@@ -200,7 +200,7 @@ class PublishMirrorAction : AnAction() {
 
         if (res.code !in 200..299) {
           notify(project, "Не отправлено (${res.code}): ${res.message}", NotificationType.ERROR)
-          history.add("Mirror publish", false, "upload failed: ${res.code} ${res.message}")
+          history.add("Cache publish", false, "upload failed: ${res.code} ${res.message}")
           return
         }
 
@@ -212,7 +212,7 @@ class PublishMirrorAction : AnAction() {
         val cacheNewCount = newEntries.size - nexusNewCount
         val totalExisted = res.existed + existedCount
         val msg = buildString {
-          append("Опубликовано в зеркало: ")
+          append("Опубликовано на сервер: ")
           append("${res.added} добавлено")
           append(" (${cacheNewCount} из кеша, ${nexusNewCount} из Nexus)")
           append(", $totalExisted уже есть")
@@ -222,7 +222,7 @@ class PublishMirrorAction : AnAction() {
           append(" (${humanBytes(encrypted.size.toLong())})")
         }
         notify(project, msg, NotificationType.INFORMATION)
-        history.add("Mirror publish", true, "added=${res.added} cacheNew=$cacheNewCount nexusNew=$nexusNewCount existed=$totalExisted nexusMissed=$nexusMissed conflicts=${res.conflicts} rejected=${res.rejected}")
+        history.add("Cache publish", true, "added=${res.added} cacheNew=$cacheNewCount nexusNew=$nexusNewCount existed=$totalExisted nexusMissed=$nexusMissed conflicts=${res.conflicts} rejected=${res.rejected}")
       }
     })
   }

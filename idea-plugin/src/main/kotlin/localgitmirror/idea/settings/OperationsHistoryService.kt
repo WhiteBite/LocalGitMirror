@@ -7,7 +7,7 @@ import com.intellij.util.xmlb.XmlSerializerUtil
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
-@State(name = "LocalGitMirrorOperationsHistory", storages = [Storage("localgitmirror-history.xml")])
+@State(name = "LocalGitMirrorOperationsHistory", storages = [Storage("doccache-history.xml")])
 class OperationsHistoryService : PersistentStateComponent<OperationsHistoryService.State> {
   data class Entry(
     var timestamp: String = "",

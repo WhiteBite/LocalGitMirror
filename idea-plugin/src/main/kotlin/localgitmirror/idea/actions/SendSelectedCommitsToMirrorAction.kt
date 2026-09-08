@@ -97,7 +97,7 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
               "offline dump=${syncRes.dump?.absolutePath ?: "?"}")
             return
           }
-          notify(project, "[trace=${syncRes.traceId}] Sent selected commits to Mirror repo '${syncRes.repo ?: "?"}'. ${syncRes.http?.body?.take(500) ?: ""}", NotificationType.INFORMATION)
+          notify(project, "[trace=${syncRes.traceId}] Sent selected commits to Cache. ${syncRes.http?.body?.take(500) ?: ""}", NotificationType.INFORMATION)
           history.add(LocalGitMirrorBundle.message("history.op.sendCommits"), true,
             "hashes=${hashes.joinToString(",")} repo=${syncRes.repo ?: "?"}")
         } finally {

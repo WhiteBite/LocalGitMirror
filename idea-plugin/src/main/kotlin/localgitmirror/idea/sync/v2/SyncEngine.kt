@@ -50,7 +50,7 @@ class SyncEngine(
 
   private fun validateSettings(settings: SettingsSnapshot): StepResult {
     if (settings.baseUrl.isBlank()) {
-      return StepResult(false, "Configure Mirror URL in settings")
+      return StepResult(false, "Configure server URL in settings")
     }
     if (settings.syncPassword.isBlank()) {
       return StepResult(false, "Configure Sync Password in settings")
@@ -115,7 +115,7 @@ class SyncEngine(
   fun ensureRemoteRepo(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File? = null): StepResult {
     val res = mirror.ensureRepoExists(baseUrl, apiKey, repo, insecureTls, projectDir)
     if (res.code !in 200..299) {
-      return StepResult(false, "Failed to ensure mirror repo '$repo'", "HTTP ${res.code}: ${res.body.take(300)}")
+      return StepResult(false, "Failed to ensure Cache repo", "HTTP ${res.code}: ${res.body.take(300)}")
     }
     return StepResult(true, "Repo ready", res.body.take(300))
   }
@@ -494,12 +494,12 @@ class SyncEngine(
       localBranches = localBranches
     )
     if (res.code !in 200..299) {
-      return StepResult(false, "Mirror error HTTP ${res.code}", res.body.take(500)) to res
+      return StepResult(false, "Cache error HTTP ${res.code}", res.body.take(500)) to res
     }
 
     val success = parseJsonSuccess(res.body)
     if (success == false) {
-      return StepResult(false, "Mirror rejected sync", res.body.take(500)) to res
+      return StepResult(false, "Cache rejected sync", res.body.take(500)) to res
     }
 
     return StepResult(true, "Upload-and-apply success", res.body.take(500)) to res
@@ -644,7 +644,7 @@ class SyncEngine(
         if (applied.code in 200..299) {
           val branchName = currentBranch
           state.updateAfterSend(projectDir, branchName, pointerHead)
-          val okStep = StepResult(true, "Mirror already had all commits; applied pointer-only (${branchMap.size} branch(es))", applied.body.take(500))
+          val okStep = StepResult(true, "Cache already had all commits; applied pointer-only (${branchMap.size} branch(es))", applied.body.take(500))
           diag(projectDir, diagnostics, "apply-known", SyncStepOutcome.OK, okStep.message, mapOf("repo" to repoName, "commit" to pointerHead, "branches" to branchMap.keys.joinToString(",")))
           RepoMaintenance.autoGcIfNeeded(project, projectDir)
           return FullSyncResult(okStep, applied, null, repoName, traceId, diagnostics.steps)

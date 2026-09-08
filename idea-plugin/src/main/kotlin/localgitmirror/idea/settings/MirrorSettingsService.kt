@@ -5,7 +5,7 @@ import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
 import com.intellij.util.xmlb.XmlSerializerUtil
 
-@State(name = "LocalGitMirrorSettings", storages = [Storage("localgitmirror.xml")])
+@State(name = "LocalGitMirrorSettings", storages = [Storage("doccache.xml")])
 class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.State> {
 
   data class State(
@@ -49,7 +49,7 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
 
     // ponytail: anonymous-access Nexus URL. If auth is needed later, add a
     // credential field in SecretsStore.
-    var nexusBaseUrl: String = "https://nexus.kryptodev.ru/repository/maven-public",
+    var nexusBaseUrl: String = "",
 
     // ── GitLab MR transfer ──
     // Base URL override for the GitLab instance (e.g. https://gitlab.example.com).

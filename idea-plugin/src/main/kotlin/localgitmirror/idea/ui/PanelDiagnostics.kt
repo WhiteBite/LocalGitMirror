@@ -120,7 +120,7 @@ internal fun LocalGitMirrorPanel.pullFromMirror() {
   // PullFromMirrorAction handles its own Task lifecycle.
   // isSyncing will be reset in onFinished/onCancel of the inner task,
   // but we also guard with a finally in actionPerformed.
-  setProgress(-1.0, "Получаем список веток с Mirror…")
+  setProgress(-1.0, "Получаем список веток с сервера…")
 
   // Use the panel's branch selector as the single source of truth: pull the
   // branch chosen in the combo. PullFromMirrorAction falls back to its own
@@ -148,7 +148,7 @@ internal fun LocalGitMirrorPanel.pullFromMirror() {
 /** Pull a specific branch by name (for multi-select pull). */
 internal fun LocalGitMirrorPanel.pullFromMirror(branchName: String) {
   isSyncing = true
-  setProgress(-1.0, "Получаем список веток с Mirror…")
+  setProgress(-1.0, "Получаем список веток с сервера…")
 
   try {
     localgitmirror.idea.actions.PullFromMirrorAction(branchName) { indicator ->
@@ -219,7 +219,7 @@ internal fun LocalGitMirrorPanel.testMirror() {
     override fun run(indicator: ProgressIndicator) {
       try {
         val res = MirrorApi.ping(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls)
-        append("Mirror test HTTP ${res.code}: ${res.body.take(300)}")
+        append("Cache test HTTP ${res.code}: ${res.body.take(300)}")
         if (res.code !in 200..299) {
           val msg = if (res.code == 0)
             LocalGitMirrorBundle.message("notify.mirror.unreachable", res.body)
@@ -360,13 +360,13 @@ internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
         val info = MirrorApi.pluginInfo(settings.baseUrl, SecretsStore.mirrorApiKey, settings.mirrorInsecureTls)
         if (info.code == 404 || !info.available) {
           notify(
-            "\u041d\u0430 Mirror \u043d\u0435\u0442 \u0441\u043e\u0431\u0440\u0430\u043d\u043d\u043e\u0433\u043e \u043f\u043b\u0430\u0433\u0438\u043d\u0430. \u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 'gradle buildPlugin' \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435.",
+            "\u0412 Cache \u043d\u0435\u0442 \u0441\u043e\u0431\u0440\u0430\u043d\u043d\u043e\u0433\u043e \u043f\u043b\u0430\u0433\u0438\u043d\u0430. \u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 'gradle buildPlugin' \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435.",
             NotificationType.WARNING
           )
           return
         }
         if (info.code !in 200..299) {
-          notify("Mirror \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d (HTTP ${info.code}): ${info.message.take(200)}", NotificationType.ERROR)
+          notify("Cache \u043d\u0435\u0434\u043e\u0441\u0442\u0443\u043f\u0435\u043d (HTTP ${info.code}): ${info.message.take(200)}", NotificationType.ERROR)
           return
         }
 
@@ -427,7 +427,7 @@ internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
         val sameVersion = info.version != null &&
           pluginVersionText.removePrefix("v") == info.version
         val title = if (sameVersion)
-          "\u041f\u043b\u0430\u0433\u0438\u043d \u043d\u0430 Mirror \u0441\u043e\u0432\u043f\u0430\u0434\u0430\u0435\u0442 \u0441 \u0432\u0430\u0448\u0438\u043c (v${info.version})"
+          "\u041f\u043b\u0430\u0433\u0438\u043d \u0432 Cache \u0441\u043e\u0432\u043f\u0430\u0434\u0430\u0435\u0442 \u0441 \u0432\u0430\u0448\u0438\u043c (v${info.version})"
         else
           "\u0421\u043a\u0430\u0447\u0430\u043d v${info.version ?: "?"} (\u0432\u044b: $pluginVersionText)"
 
