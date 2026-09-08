@@ -54,7 +54,7 @@ def test_full_roundtrip_work_home_work(tmp_path: Path):
     client = TestClient(app)
 
     # 1) Create/select test repo ("home")
-    created = client.post("/api/repos/create", json={"name": repo_name})
+    created = client.post("/api/documents/collection", json={"name": repo_name})
     assert created.status_code == 200, created.text
     assert created.json().get("success") is True, created.text
 

@@ -373,7 +373,7 @@ async def sanitize_headers(request, call_next):
     # Replace Server header to avoid fingerprinting
     response.headers["Server"] = "nginx"
     # Strip any custom tracking headers that might leak identity
-    for hdr in ("X-Ref", "X-Ref-Id", "X-LGM-Head", "X-LGM-Repo"):
+    for hdr in ("X-Ref", "X-Ref-Id", "X-Doc-Ref"):
         if hdr in response.headers:
             del response.headers[hdr]
     return response

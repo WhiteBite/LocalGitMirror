@@ -8,6 +8,7 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.SyncStateStore
 import localgitmirror.idea.workkit.BundleCrypto
+import localgitmirror.idea.sync.HandshakeCache
 import java.io.File
 
 @Service(Service.Level.PROJECT)
@@ -76,7 +77,7 @@ class SyncFacadeService(private val project: Project) {
     }
 
     if (settings.baseUrl.isNotBlank()) {
-      val caps = MirrorApi.capabilities(settings.baseUrl, SecretsStore.mirrorApiKey, settings.mirrorInsecureTls)
+      val caps = HandshakeCache.capabilities(settings.baseUrl, SecretsStore.mirrorApiKey, SecretsStore.syncPassword, settings.mirrorInsecureTls)
       if (caps.code !in 200..299) {
         diags += Diagnostic(Severity.ERROR, "CAPABILITIES_UNAVAILABLE", "Backend capabilities unavailable (HTTP ${caps.code})", "Update backend to latest")
       } else {
@@ -87,7 +88,7 @@ class SyncFacadeService(private val project: Project) {
         }
 
         if (caps.passwordProbe && SecretsStore.syncPassword.isNotBlank()) {
-          val probe = MirrorApi.passwordProbe(settings.baseUrl, SecretsStore.mirrorApiKey, settings.mirrorInsecureTls)
+          val probe = HandshakeCache.passwordProbe(settings.baseUrl, SecretsStore.mirrorApiKey, SecretsStore.syncPassword, settings.mirrorInsecureTls)
           if (probe.code in 200..299 && probe.bytes != null) {
             try {
               val plain = BundleCrypto.decryptDumpBytes(probe.bytes, SecretsStore.syncPassword)

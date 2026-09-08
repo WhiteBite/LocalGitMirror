@@ -30,6 +30,14 @@ import com.intellij.openapi.components.service
 object MirrorApi {
   data class HttpResult(val code: Int, val body: String)
 
+  private fun rid(repoName: String): String {
+    val md = java.security.MessageDigest.getInstance("SHA-256")
+    val bytes = md.digest(("lgm-repo-id:" + repoName).toByteArray(StandardCharsets.UTF_8))
+    val hex = StringBuilder(bytes.size * 2)
+    for (b in bytes) hex.append("%02x".format(b))
+    return hex.toString().take(16)
+  }
+
   // ─────────────────────── protocol v3 (hybrid ECIES) ───────────────────────
   //
   // When a server public key is pinned (MirrorSettingsService.serverPubKeyB64),
@@ -438,7 +446,7 @@ object MirrorApi {
     projectDir: File? = null
   ): HttpResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/repos/create")
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/collection")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
       conn.doOutput = true
@@ -449,7 +457,7 @@ object MirrorApi {
         conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
 
-      val payload = "{\"name\":\"$repo\"}"
+      val payload = "{\"rid\":\"${rid(repo)}\"}"
       conn.outputStream.use { os ->
         os.write(payload.toByteArray(StandardCharsets.UTF_8))
       }
@@ -792,9 +800,6 @@ object MirrorApi {
     }
   }
 
-  // ───────────────────────────────────────────────────────────────────────
-  // /api/deps/* — Gradle dependency sync (encrypted blob postbox)
-  // ───────────────────────────────────────────────────────────────────────
 
 data class DepsItem(val id: String, val size: Long, val mtime: Long)
 data class DepsListResult(val code: Int, val items: List<DepsItem>, val message: String)
@@ -918,8 +923,8 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     encryptedManifest: ByteArray
   ): DepsUploadResult {
     val res = multipartUpload(
-      baseUrl, apiKey, insecureTls, "/api/deps/request",
-      fields = mapOf("repo" to repo),
+      baseUrl, apiKey, insecureTls, "/api/documents/submit",
+      fields = mapOf("rid" to rid(repo)),
       fileFieldName = "attachment",
       fileName = "data.bin",
       fileBytes = encryptedManifest
@@ -933,18 +938,19 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
   /** Work side: list pending requests. */
   fun depsPending(
     baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean
-  ): DepsListResult = depsList(baseUrl, apiKey, repo, insecureTls, path = "/api/deps/pending")
+  ): DepsListResult = depsList(baseUrl, apiKey, repo, insecureTls, path = "/api/documents/queue")
 
   /** Dome side: list ready responses. */
   fun depsResponses(
     baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean
-  ): DepsListResult = depsList(baseUrl, apiKey, repo, insecureTls, path = "/api/deps/responses")
+  ): DepsListResult = depsList(baseUrl, apiKey, repo, insecureTls, path = "/api/documents/ready")
 
   private fun depsList(
     baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, path: String
   ): DepsListResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}$path?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}")
+      val r = rid(repo)
+      val url = URL("${baseUrl.trimEnd('/')}$path?rid=${java.net.URLEncoder.encode(r, "UTF-8")}")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 30_000
@@ -966,10 +972,11 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     id: String, kind: DepsKind, outFile: File,
     onProgress: ((read: Long, total: Long) -> Unit)? = null
   ): DownloadResult {
-    val pathBase = if (kind == DepsKind.MANIFEST) "/api/deps/manifest" else "/api/deps/fetch"
+    val pathBase = if (kind == DepsKind.MANIFEST) "/api/documents/queue-item" else "/api/documents/ready-item"
     return try {
+      val r = rid(repo)
       val url = URL(
-        "${baseUrl.trimEnd('/')}$pathBase?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}" +
+        "${baseUrl.trimEnd('/')}$pathBase?rid=${java.net.URLEncoder.encode(r, "UTF-8")}" +
           "&id=${java.net.URLEncoder.encode(id, "UTF-8")}"
       )
       val conn = HttpClient.open(url, insecureTls)
@@ -1015,8 +1022,8 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     requestId: String, encryptedArchive: ByteArray
   ): DepsUploadResult {
     val res = multipartUpload(
-      baseUrl, apiKey, insecureTls, "/api/deps/respond",
-      fields = mapOf("repo" to repo, "request_id" to requestId),
+      baseUrl, apiKey, insecureTls, "/api/documents/fulfill",
+      fields = mapOf("rid" to rid(repo), "request_id" to requestId),
       fileFieldName = "attachment",
       fileName = "data.bin",
       fileBytes = encryptedArchive
@@ -1032,8 +1039,9 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, id: String
   ): HttpResult {
     return try {
+      val r = rid(repo)
       val url = URL(
-        "${baseUrl.trimEnd('/')}/api/deps/ack?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}" +
+        "${baseUrl.trimEnd('/')}/api/documents/ack?rid=${java.net.URLEncoder.encode(r, "UTF-8")}" +
           "&id=${java.net.URLEncoder.encode(id, "UTF-8")}"
       )
       val conn = HttpClient.open(url, insecureTls)
@@ -1053,7 +1061,7 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     baseUrl: String, apiKey: String, insecureTls: Boolean
   ): HttpResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/deps/mirror/index")
+      val url = URL("${baseUrl.trimEnd('/')}/api/cache/index")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 30_000
@@ -1071,7 +1079,7 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     baseUrl: String, apiKey: String, insecureTls: Boolean
   ): HttpResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/deps/mirror/status")
+      val url = URL("${baseUrl.trimEnd('/')}/api/cache/status")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 30_000
@@ -1090,7 +1098,7 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     encryptedPublication: ByteArray
   ): MirrorPublishResult {
     val res = multipartUpload(
-      baseUrl, apiKey, insecureTls, "/api/deps/mirror/publish",
+      baseUrl, apiKey, insecureTls, "/api/cache/publish",
       fields = emptyMap(),
       fileFieldName = "attachment",
       fileName = "data.bin",
@@ -1105,9 +1113,6 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     return MirrorPublishResult(res.code, added, existed, conflicts, rejected, "OK")
   }
 
-  // ───────────────────────────────────────────────────────────────────────
-  // /api/file-sync/* — repo file postbox (opaque encrypted containers)
-  // ───────────────────────────────────────────────────────────────────────
 
   fun fileSyncUpload(
     baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,
@@ -1115,8 +1120,8 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     onProgress: ((sent: Long, total: Long) -> Unit)? = null
   ): FileSyncUploadResult {
     val res = multipartUploadFile(
-      baseUrl, apiKey, insecureTls, "/api/file-sync/upload",
-      fields = mapOf("repo" to repo, "path" to relativePath, "plain_size" to plainSize.toString()),
+      baseUrl, apiKey, insecureTls, "/api/documents/attachment-upload",
+      fields = mapOf("rid" to rid(repo), "path" to relativePath, "plain_size" to plainSize.toString()),
       fileFieldName = "attachment",
       fileName = "data.bin",
       file = encryptedFile,
@@ -1131,7 +1136,8 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
 
   fun fileSyncList(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): FileSyncListResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/file-sync/list?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}")
+      val r = rid(repo)
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/attachment-list?rid=${java.net.URLEncoder.encode(r, "UTF-8")}")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 30_000
@@ -1162,8 +1168,9 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     id: String, outFile: File, onProgress: ((read: Long, total: Long) -> Unit)? = null
   ): DownloadResult {
     return try {
+      val r = rid(repo)
       val url = URL(
-        "${baseUrl.trimEnd('/')}/api/file-sync/download?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}" +
+        "${baseUrl.trimEnd('/')}/api/documents/attachment-get?rid=${java.net.URLEncoder.encode(r, "UTF-8")}" +
           "&id=${java.net.URLEncoder.encode(id, "UTF-8")}" 
       )
       val conn = HttpClient.open(url, insecureTls)
@@ -1196,8 +1203,9 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
 
   fun fileSyncAck(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, id: String): HttpResult {
     return try {
+      val r = rid(repo)
       val url = URL(
-        "${baseUrl.trimEnd('/')}/api/file-sync/ack?repo=${java.net.URLEncoder.encode(repo, "UTF-8")}" +
+        "${baseUrl.trimEnd('/')}/api/documents/attachment-ack?rid=${java.net.URLEncoder.encode(r, "UTF-8")}" +
           "&id=${java.net.URLEncoder.encode(id, "UTF-8")}" 
       )
       val conn = HttpClient.open(url, insecureTls)

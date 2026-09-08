@@ -11,6 +11,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import localgitmirror.idea.workkit.BundleCrypto
+import localgitmirror.idea.sync.HandshakeCache
 import java.io.File
 
 class SyncEngine(
@@ -58,7 +59,7 @@ class SyncEngine(
   }
 
   private fun verifyBackendHandshake(settings: SettingsSnapshot): StepResult {
-    val caps = mirror.capabilities(settings.baseUrl, settings.mirrorApiKey, settings.mirrorInsecureTls)
+    val caps = HandshakeCache.capabilities(settings.baseUrl, settings.mirrorApiKey, settings.syncPassword, settings.mirrorInsecureTls)
     if (caps.code !in 200..299) {
       return StepResult(false, "Backend capabilities unavailable", "HTTP ${caps.code}: ${caps.body.take(200)}")
     }
@@ -78,7 +79,7 @@ class SyncEngine(
     if (!caps.passwordProbe) {
       return StepResult(false, "Backend missing password probe", "Update backend or configure SYNC_PASSWORD")
     }
-    val probe = mirror.passwordProbe(settings.baseUrl, settings.mirrorApiKey, settings.mirrorInsecureTls)
+    val probe = HandshakeCache.passwordProbe(settings.baseUrl, settings.mirrorApiKey, settings.syncPassword, settings.mirrorInsecureTls)
     if (probe.code !in 200..299 || probe.bytes == null) {
       return StepResult(false, "Password probe unavailable", "HTTP ${probe.code}: ${probe.message.take(200)}")
     }

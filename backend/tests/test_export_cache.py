@@ -65,7 +65,7 @@ def _make_repo(tmp_path: Path):
     )
     client, rm = _build_client(storage)
     repo = f"expcache-{int(time.time()*1000)}"
-    created = client.post("/api/repos/create", json={"name": repo})
+    created = client.post("/api/documents/collection", json={"name": repo})
     assert created.status_code == 200, created.text
 
     bare = rm._get_bare_path(repo)

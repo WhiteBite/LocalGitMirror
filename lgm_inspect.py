@@ -27,7 +27,7 @@ key      = cfg("API_KEY")
 repo     = "onyx-platform"
 password = cfg("SYNC_PASSWORD")
 
-pending = api_get(base, f"/api/deps/pending?repo={repo}", key)
+pending = api_get(base, f"/api/documents/queue?rid={repo}", key)
 items   = pending.get("items", [])
 print(f"Total pending: {len(items)}\n")
 
@@ -35,7 +35,7 @@ all_missing = set()
 for req in items:
     req_id = req["id"]
     tmp = pathlib.Path(tempfile.mktemp(suffix=".bin"))
-    ok = api_download(base, f"/api/deps/manifest?repo={repo}&id={req_id}", key, tmp)
+    ok = api_download(base, f"/api/documents/queue-item?rid={repo}&id={req_id}", key, tmp)
     if not ok:
         print(f"  {req_id[:12]}  [DOWNLOAD FAILED]")
         continue

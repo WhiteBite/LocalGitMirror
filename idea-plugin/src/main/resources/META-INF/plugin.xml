@@ -1,11 +1,10 @@
 <idea-plugin>
   <id>localgitmirror.idea.orchestrator</id>
-  <name>LocalGitMirror</name>
-  <vendor email="dev@localgitmirror" url="https://localhost">LocalGitMirror</vendor>
+  <name>DocCache</name>
+  <vendor email="dev@doccache" url="https://localhost">DocCache</vendor>
 
   <description><![CDATA[
-  LocalGitMirror transport plugin.
-  Send branches/commits and pull changes back.
+  Document cache synchronization plugin.
   ]]></description>
 
   <depends>com.intellij.modules.platform</depends>
@@ -19,14 +18,14 @@
     <projectService serviceImplementation="localgitmirror.idea.deps.DepsAutomationService"/>
     <projectConfigurable instance="localgitmirror.idea.settings.MirrorSettingsConfigurable"
                          id="localgitmirror.settings"
-                         displayName="LocalGitMirror"
+                         displayName="DocCache"
                          groupId="tools"/>
-    <toolWindow id="LocalGitMirror"
+    <toolWindow id="DocCache"
                 factoryClass="localgitmirror.idea.ui.LocalGitMirrorToolWindowFactory"
                 anchor="right"
                 icon="AllIcons.Toolwindows.ToolWindowMessages"/>
 
-    <notificationGroup id="LocalGitMirror"
+    <notificationGroup id="DocCache"
                        displayType="BALLOON"
                        isLogByDefault="true"
                        bundle="messages.LocalGitMirrorBundle"
@@ -39,14 +38,14 @@
 
   <actions>
     <!-- Main group: shown as submenu in ToolsMenu, VCS menu, ProjectView -->
-    <group id="LocalGitMirror.Group" text="LocalGitMirror" description="LocalGitMirror actions" popup="true">
+    <group id="LocalGitMirror.Group" text="DocCache" description="DocCache actions" popup="true">
       <add-to-group group-id="ToolsMenu" anchor="last"/>
       <add-to-group group-id="VcsGroup" anchor="last"/>
       <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
     </group>
 
     <!-- Compact group: shown in VCS log context menus (only essentials) -->
-    <group id="LocalGitMirror.ContextGroup" text="LocalGitMirror" description="LocalGitMirror actions" popup="true">
+    <group id="LocalGitMirror.ContextGroup" text="DocCache" description="DocCache actions" popup="true">
       <add-to-group group-id="Vcs.Log.ContextMenu" anchor="last"/>
       <add-to-group group-id="Vcs.FileHistory.ContextMenu" anchor="last"/>
     </group>
@@ -54,28 +53,28 @@
     <!-- ── Sync actions ── -->
     <action id="LocalGitMirror.SyncCurrentBranch"
             class="localgitmirror.idea.actions.SyncCurrentBranchToMirrorAction"
-            text="Send current" description="Send current branch to Mirror"/>
+            text="Send current" description="Send current branch to Cache"/>
 
     <action id="LocalGitMirror.SyncBranch"
             class="localgitmirror.idea.actions.SyncBranchToMirrorAction"
-            text="Send branch…" description="Send selected branch to Mirror"/>
+            text="Send branch…" description="Send selected branch to Cache"/>
 
     <action id="LocalGitMirror.SendSelectedCommits"
             class="localgitmirror.idea.actions.SendSelectedCommitsToMirrorAction"
-            text="Send commits…" description="Send selected commits to Mirror"/>
+            text="Send commits…" description="Send selected commits to Cache"/>
 
     <action id="LocalGitMirror.PushAs"
             class="localgitmirror.idea.actions.PushAsAction"
-            text="Send as…" description="Send current HEAD to Mirror under a different branch name"/>
+            text="Send as…" description="Send current HEAD to Cache under a different branch name"/>
 
     <action id="LocalGitMirror.SendGitLabMr"
             class="localgitmirror.idea.actions.SendGitLabMrAction"
-            text="Send MR branch to Mirror…" description="Fetch a GitLab MR source branch and send it to Mirror"/>
+            text="Send MR branch to Cache…" description="Fetch a GitLab MR source branch and send it to Cache"/>
 
     <!-- ── Pull actions ── -->
     <action id="LocalGitMirror.SyncPull"
             class="localgitmirror.idea.actions.PullFromMirrorAction"
-            text="Sync pull…" description="Pull changes from Mirror via encrypted sync"/>
+            text="Sync pull…" description="Pull changes from Cache via encrypted sync"/>
 
     <action id="LocalGitMirror.PullBack"
             class="localgitmirror.idea.actions.PullBackFromRemoteAction"
@@ -88,12 +87,12 @@
     <!-- ── Dependency sync (gradle + npm corporate deps) ── -->
     <action id="LocalGitMirror.DepsRequest"
             class="localgitmirror.idea.deps.RequestDepsAction"
-            text="Get corporate dependencies (this machine)…"
-            description="DOME: detect which gradle/npm deps can't be resolved here and request them from the work machine"/>
+            text="Request missing items (this machine)…"
+            description="Detect which gradle/npm deps can't be resolved here and request them from the work machine"/>
 
     <action id="LocalGitMirror.DepsRespond"
             class="localgitmirror.idea.deps.RespondDepsAction"
-            text="Provide requested dependencies…"
+            text="Provide requested items…"
             description="WORK: look up the requested coordinates in the local cache and ship them"/>
 
     <action id="LocalGitMirror.DepsApply"
@@ -103,14 +102,14 @@
 
     <action id="LocalGitMirror.MirrorPublish"
             class="localgitmirror.idea.deps.PublishMirrorAction"
-            text="Sync corporate mirror (publish vault)…"
+            text="Publish to cache…"
             description="WORK: scan local caches for protected corporate artifacts and publish to home vault"/>
 
     <!-- ── Explicit repo file sync (encrypted with SYNC_PASSWORD) ── -->
     <action id="LocalGitMirror.FileSendSelected"
             class="localgitmirror.idea.actions.SendSelectedFileAction"
             text="Send selected file…"
-            description="Encrypt the selected repo file and upload it to the Mirror file postbox"/>
+            description="Encrypt the selected repo file and upload it to the Cache file postbox"/>
 
     <action id="LocalGitMirror.FileFetch"
             class="localgitmirror.idea.actions.FetchRepoFilesAction"
@@ -120,13 +119,13 @@
     <!-- ── Branch management ── -->
     <action id="LocalGitMirror.ManageBranches"
             class="localgitmirror.idea.actions.ManageMirrorBranchesAction"
-            text="Manage Mirror branches…"
-            description="View and delete stale branches on the Mirror server"/>
+            text="Manage Cache branches…"
+            description="View and delete stale branches on the Cache server"/>
 
     <action id="LocalGitMirror.PruneMirrorBranches"
             class="localgitmirror.idea.actions.PruneMirrorBranchesAction"
-            text="Prune merged branches on Mirror…"
-            description="Find branches already merged into master/develop/plan_fix and delete them on the Mirror server"/>
+            text="Prune merged branches on Cache…"
+            description="Find branches already merged into master/develop/plan_fix and delete them on the Cache server"/>
 
     <!-- ── Diagnostics ── -->
     <action id="LocalGitMirror.Preflight"
@@ -144,23 +143,23 @@
 
     <action id="LocalGitMirror.DryRunPull"
             class="localgitmirror.idea.actions.DryRunPullSyncAction"
-            text="Dry-run (pull)" description="Preview incoming changes from Mirror"/>
+            text="Dry-run (pull)" description="Preview incoming changes from Cache"/>
 
     <!-- ── Cross-machine clipboard buffer (encrypted with SYNC_PASSWORD) ── -->
     <action id="LocalGitMirror.BufferSend"
             class="localgitmirror.idea.actions.SendToBufferAction"
             text="Send to buffer"
-            description="Encrypt the editor selection (or system clipboard) and push it to the Mirror buffer"/>
+            description="Encrypt the editor selection (or system clipboard) and push it to the Cache buffer"/>
 
     <action id="LocalGitMirror.BufferPaste"
             class="localgitmirror.idea.actions.PasteFromBufferAction"
             text="Paste from buffer"
-            description="Fetch the latest buffer entry from Mirror and copy it to the system clipboard"/>
+            description="Fetch the latest buffer entry from Cache and copy it to the system clipboard"/>
 
     <action id="LocalGitMirror.BufferHistory"
             class="localgitmirror.idea.actions.BufferHistoryAction"
             text="Buffer history…"
-            description="Show recent Mirror buffer entries"/>
+            description="Show recent Cache buffer entries"/>
 
     <!-- Main menu: primary actions + overflow submenus -->
     <group id="LocalGitMirror.FullGroup">

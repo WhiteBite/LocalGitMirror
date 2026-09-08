@@ -16,7 +16,9 @@ from typing import Optional
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
-router = APIRouter(prefix="/api/file-sync", tags=["file-sync"])
+from app.routers._rid import resolve_repo_identifier
+
+router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 repo_manager = None
 system_logger = None
@@ -35,9 +37,10 @@ def _validate_repo(repo: str) -> str:
     return repo
 
 
-def _resolve_repo(repo_query: Optional[str], repo_header: Optional[str]) -> str:
-    repo = (repo_query or "").strip() or (repo_header or "").strip()
-    return _validate_repo(repo)
+def _resolve_repo(rid_query: Optional[str], doc_ref_header: Optional[str]) -> str:
+    value = (rid_query or "").strip() or (doc_ref_header or "").strip()
+    resolved = resolve_repo_identifier(value, repo_manager)
+    return _validate_repo(resolved)
 
 
 def _validate_id(value: str) -> str:
@@ -120,14 +123,15 @@ def _list_items(repo: str) -> list[dict]:
     return items
 
 
-@router.post("/upload")
-async def file_upload(
-    repo: str = Form(""),
+@router.post("/attachment-upload")
+async def docs_attachment_upload(
+    rid: str = Form(""),
     path: str = Form(""),
     plain_size: int = Form(0),
     attachment: UploadFile = File(...),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
-    repo = _validate_repo(repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     rel_path = _validate_rel_path(path)
     if plain_size < 0 or plain_size > _MAX_FILE_SIZE:
         raise HTTPException(400, "Invalid file size")
@@ -170,22 +174,22 @@ async def file_upload(
     return {"success": True, "repo": repo, "id": item_id, "path": rel_path, "size": total}
 
 
-@router.get("/list")
-def file_list(
-    repo: Optional[str] = Query(None),
-    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+@router.get("/attachment-list")
+def docs_attachment_list(
+    rid: Optional[str] = Query(None),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
-    repo = _resolve_repo(repo, x_lgm_repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     return {"success": True, "repo": repo, "items": _list_items(repo)}
 
 
-@router.get("/download")
-def file_download(
-    repo: Optional[str] = Query(None),
+@router.get("/attachment-get")
+def docs_attachment_get(
+    rid: Optional[str] = Query(None),
     id: str = Query(...),
-    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
-    repo = _resolve_repo(repo, x_lgm_repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     item_id = _validate_id(id)
     blob = _blob_path(repo, item_id)
     meta = _meta_path(repo, item_id)
@@ -194,13 +198,13 @@ def file_download(
     return FileResponse(blob, media_type="application/octet-stream", filename=f"{item_id}.bin")
 
 
-@router.delete("/ack")
-def file_ack(
-    repo: Optional[str] = Query(None),
+@router.delete("/attachment-ack")
+def docs_attachment_ack(
+    rid: Optional[str] = Query(None),
     id: str = Query(...),
-    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
-    repo = _resolve_repo(repo, x_lgm_repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     item_id = _validate_id(id)
     blob = _blob_path(repo, item_id)
     meta = _meta_path(repo, item_id)

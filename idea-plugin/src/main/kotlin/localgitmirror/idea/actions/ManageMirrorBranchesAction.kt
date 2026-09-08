@@ -49,7 +49,7 @@ class ManageMirrorBranchesAction : AnAction() {
     val history = service<OperationsHistoryService>()
 
     ProgressManager.getInstance().run(
-      object : Task.Backgroundable(project, "LocalGitMirror: загружаем ветки Mirror…", true) {
+      object : Task.Backgroundable(project, "DocCache: загружаем ветки Cache…", true) {
         override fun run(indicator: ProgressIndicator) {
           indicator.isIndeterminate = true
 
@@ -97,7 +97,7 @@ class ManageMirrorBranchesAction : AnAction() {
                 appendLine("★ HEAD = текущая ветка ('$headBranch') — удалить нельзя.")
                 append("Всего веток: ${all.size}")
               },
-              "LocalGitMirror: управление ветками Mirror",
+              "DocCache: управление ветками Cache",
               null, options, deletable.firstOrNull()?.label, null
             ) ?: return@invokeAndWaitIfNeeded emptyList()
 
@@ -105,7 +105,7 @@ class ManageMirrorBranchesAction : AnAction() {
               Messages.showInfoMessage(
                 project,
                 "Ветку '$headBranch' (HEAD) удалить нельзя.",
-                "LocalGitMirror"
+                "DocCache"
               )
               return@invokeAndWaitIfNeeded emptyList()
             }
@@ -121,7 +121,7 @@ class ManageMirrorBranchesAction : AnAction() {
             Messages.showYesNoDialog(
               project,
               "Удалить ветку «${toDelete.first()}» с Mirror?\n\nЭто действие необратимо.",
-              "LocalGitMirror: удалить ветку",
+              "DocCache: удалить ветку",
               "Удалить", "Отмена", null
             )
           }
@@ -151,7 +151,7 @@ class ManageMirrorBranchesAction : AnAction() {
 
   private fun notify(project: Project, msg: String, type: NotificationType) {
     NotificationGroupManager.getInstance()
-      .getNotificationGroup("LocalGitMirror")
+      .getNotificationGroup("DocCache")
       .createNotification(msg, type)
       .notify(project)
   }

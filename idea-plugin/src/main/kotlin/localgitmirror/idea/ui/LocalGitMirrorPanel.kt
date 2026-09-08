@@ -187,7 +187,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     margin = JBUI.insets(1)
     isFocusPainted = false
     toolTipText = LocalGitMirrorBundle.message("panel.branch.refresh.tooltip")
-    addActionListener { refreshBranchCombo(userInitiated = true) }
+    addActionListener { refreshBranchCombo(userInitiated = true, withMirror = true) }
   }
   private val branchRefreshGeneration = AtomicLong()
 
@@ -304,11 +304,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   }
 
   /**
-   * Refresh the selector from local Git immediately, then append fresh refs
-   * from Mirror asynchronously. A branch received from another machine is
-   * therefore visible without restarting the IDE or creating it locally first.
+   * Refresh the selector from local Git immediately. When [withMirror] is true,
+   * also append fresh refs from Mirror asynchronously. The mirror fetch is
+   * gated off the init/show path so the panel never auto-fires network on
+   * activation — only explicit user refresh and post-sync completions opt in.
    */
-  internal fun refreshBranchCombo(userInitiated: Boolean = false) {
+  internal fun refreshBranchCombo(userInitiated: Boolean = false, withMirror: Boolean = false) {
     val dir = baseDir()
     if (dir == null) {
       if (userInitiated) notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.WARNING)
@@ -318,7 +319,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val localBranches = GitLocal.listBranches(project, dir)
     val currentBranch = GitLocal.currentBranch(project, dir)
     replaceBranchItems(localBranches, mirrorRefs, currentBranch)
-    refreshMirrorBranches(dir, localBranches, currentBranch, userInitiated)
+    if (withMirror) {
+      refreshMirrorBranches(dir, localBranches, currentBranch, userInitiated)
+    }
   }
 
   private var mirrorRefs: Map<String, String> = emptyMap()
@@ -453,7 +456,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal fun rebuildGearMenu() {
     moreMenu.removeAll()
     // Group 1: branch refresh + connection test
-    moreMenu.add(gearMenuItem("Обновить ветки Mirror", AllIcons.Actions.Refresh) { refreshBranchCombo(userInitiated = true) })
+    moreMenu.add(gearMenuItem("Обновить ветки Mirror", AllIcons.Actions.Refresh) { refreshBranchCombo(userInitiated = true, withMirror = true) })
     moreMenu.add(gearMenuItem("Проверить подключение", AllIcons.Actions.Checked) { testMirror() })
     moreMenu.addSeparator()
     // Group 2: deps
@@ -682,7 +685,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     }
     
     isSyncing = true
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Стягивание ${branches.size} веток", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Стягивание ${branches.size} веток", true) {
       override fun run(indicator: ProgressIndicator) {
         for ((index, branch) in branches.withIndex()) {
           indicator.checkCanceled()
@@ -708,16 +711,16 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       
       override fun onSuccess() {
         isSyncing = false
-        refreshBranchCombo()
+        refreshBranchCombo(withMirror = true)
       }
-      
+
       override fun onThrowable(error: Throwable) {
         isSyncing = false
         notify("Ошибка: ${error.message}", NotificationType.ERROR)
       }
     })
   }
-  
+
   /** Sync a specific branch to Mirror. */
   private fun syncBranch(branchName: String) {
     if (isSyncing) {
@@ -726,7 +729,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     }
     
     isSyncing = true
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Отправка $branchName", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Отправка $branchName", true) {
       override fun run(indicator: ProgressIndicator) {
         val dir = baseDir() ?: run {
           notify("Проект не найден", NotificationType.ERROR)
@@ -749,9 +752,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       
       override fun onSuccess() {
         isSyncing = false
-        refreshBranchCombo()
+        refreshBranchCombo(withMirror = true)
       }
-      
+
       override fun onThrowable(error: Throwable) {
         isSyncing = false
         notify("Ошибка: ${error.message}", NotificationType.ERROR)
@@ -783,7 +786,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     }
     
     isSyncing = true
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Отправка ${branches.size} веток", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Отправка ${branches.size} веток", true) {
       override fun run(indicator: ProgressIndicator) {
         val dir = baseDir() ?: run {
           notify("Проект не найден", NotificationType.ERROR)
@@ -808,10 +811,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         
         notify("Отправлено ${branches.size} веток: ${branches.joinToString(", ")}", NotificationType.INFORMATION)
       }
-      
+
       override fun onSuccess() {
         isSyncing = false
-        refreshBranchCombo()
+        refreshBranchCombo(withMirror = true)
       }
       
       override fun onThrowable(error: Throwable) {
@@ -850,7 +853,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val targetFile = fileChooser.selectedFile
     
     isSyncing = true
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Экспорт bundle", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Экспорт bundle", true) {
       override fun run(indicator: ProgressIndicator) {
         indicator.text = "Создание bundle для ${branchNames.joinToString(", ")}"
         
@@ -914,7 +917,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val bundleFile = fileChooser.selectedFile
     
     isSyncing = true
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Импорт bundle", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Импорт bundle", true) {
       override fun run(indicator: ProgressIndicator) {
         indicator.text = "Импорт ${bundleFile.name}"
         
@@ -964,10 +967,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
             "file=${bundleFile.name} err=${e.message?.take(300)}")
         }
       }
-      
+
       override fun onSuccess() {
         isSyncing = false
-        refreshBranchCombo()
+        refreshBranchCombo(withMirror = true)
       }
       
       override fun onThrowable(error: Throwable) {
@@ -1010,7 +1013,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val repo = syncFacade.resolveRepo(dir, settings).sanitized
     
     isSyncing = true
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Удаление веток", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Удаление веток", true) {
       override fun run(indicator: ProgressIndicator) {
         val deleted = mutableListOf<String>()
         val errors = mutableListOf<String>()
@@ -1050,10 +1053,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           notify("Ошибки: ${errors.joinToString("; ")}", NotificationType.WARNING)
         }
       }
-      
+
       override fun onSuccess() {
         isSyncing = false
-        refreshBranchCombo()
+        refreshBranchCombo(withMirror = true)
       }
       
       override fun onThrowable(error: Throwable) {
@@ -1166,7 +1169,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
     val s = service<MirrorSettingsService>().state
     isSyncing = true
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Проверка подключения", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Проверка подключения", true) {
       override fun run(indicator: ProgressIndicator) {
         currentIndicator = indicator
         try {
@@ -1222,7 +1225,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
   internal fun notify(message: String, type: NotificationType) {
     NotificationGroupManager.getInstance()
-      .getNotificationGroup("LocalGitMirror")
+      .getNotificationGroup("DocCache")
       .createNotification(message, type)
       .notify(project)
   }

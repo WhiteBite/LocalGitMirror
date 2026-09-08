@@ -8,6 +8,8 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app.routers._rid import resolve_repo_identifier
+
 router = APIRouter(prefix="/api", tags=["repos"])
 
 # Injected from main.py
@@ -25,8 +27,9 @@ class RepoSelectRequest(BaseModel):
     repo: str
 
 
-class RepoCreateRequest(BaseModel):
-    name: str
+class CollectionCreateRequest(BaseModel):
+    rid: str = ""
+    name: str = ""
 
 
 class StoragePathRequest(BaseModel):
@@ -83,17 +86,26 @@ async def get_repos():
     return {"repos": repo_manager.get_repos(), "current": repo_manager.current_repo}
 
 
-@router.post("/repos/create")
-async def create_repo(request: RepoCreateRequest, raw_request: Request):
-    """Create a new repository"""
+@router.post("/documents/collection")
+async def create_collection(request: CollectionCreateRequest, raw_request: Request):
+    """Create a new repository.
+
+    Accepts either ``rid`` (obfuscated repo identifier) or ``name`` (plain
+    repo name). The rid is resolved to a repo name via the shared helper;
+    a plain name is used as-is.
+    """
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
+    raw = (request.rid or "").strip() or (request.name or "").strip()
+    resolved = resolve_repo_identifier(raw, repo_manager)
+    if not resolved:
+        raise HTTPException(400, "Missing 'rid' or 'name'")
     author_name = raw_request.headers.get("X-User-Name")
     author_email = raw_request.headers.get("X-User-Email")
-    result = repo_manager.create_repo(request.name, author_name=author_name, author_email=author_email)
+    result = repo_manager.create_repo(resolved, author_name=author_name, author_email=author_email)
     if result["success"]:
         if system_logger:
-            system_logger.info(f"Создан репозиторий: {request.name}")
+            system_logger.info(f"Создан репозиторий: {resolved}")
     else:
         if system_logger:
             system_logger.error(f"Не удалось создать репозиторий: {result['message']}")

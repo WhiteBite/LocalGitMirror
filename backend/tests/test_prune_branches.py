@@ -76,7 +76,7 @@ def _make_repo_with_history(tmp_path: Path, monkeypatch) -> tuple[TestClient, st
     """Create a backend repo whose bare has master/merged/unmerged/old branches."""
     client, rm = _make_client(tmp_path, monkeypatch)
     repo = f"prunebr-{int(time.time() * 1000)}"
-    created = client.post("/api/repos/create", json={"name": repo})
+    created = client.post("/api/documents/collection", json={"name": repo})
     assert created.status_code == 200, created.text
 
     bare = rm._get_bare_path(repo)
@@ -218,7 +218,7 @@ def test_refuses_to_delete_last_branch(tmp_path, monkeypatch):
     """Single branch that would be a candidate (HEAD points elsewhere) → guard."""
     client, rm = _make_client(tmp_path, monkeypatch)
     repo = f"prunelast-{int(time.time() * 1000)}"
-    assert client.post("/api/repos/create", json={"name": repo}).status_code == 200
+    assert client.post("/api/documents/collection", json={"name": repo}).status_code == 200
     bare = rm._get_bare_path(repo)
 
     # Remove every branch the auto-create made, push exactly one, and leave

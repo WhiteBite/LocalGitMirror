@@ -2,7 +2,6 @@ package localgitmirror.idea.deps
 
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
-import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.URL
 
@@ -26,8 +25,10 @@ enum class MachineRole { HOME, WORK }
  *     "work", use that override.
  *  2. Otherwise ("auto", the default): parse the host from [State.baseUrl].
  *     If the host is localhost / 127.0.0.1 / ::1 → HOME.
- *     Otherwise resolve the host via [InetAddress.getAllByName] and compare
- *     against all local [NetworkInterface] addresses → match ⇒ HOME else WORK.
+ *     Otherwise enumerate local [NetworkInterface] addresses and compare the
+ *     host string literally against each (string equality, no DNS) → match ⇒
+ *     HOME else WORK. DNS is never used: a non-loopback hostname that isn't
+ *     a literal local IP is treated as WORK.
  *  3. On ANY failure → WORK (safe default: never auto-request from a machine
  *     we can't identify as the dome).
  *
@@ -96,7 +97,7 @@ object RoleDetector {
 
   /**
    * Auto-detect from the baseUrl: localhost → HOME; otherwise compare the
-   * resolved host against local network interface addresses.
+   * host string literally against local network interface addresses (no DNS).
    * Falls back to WORK on any error.
    */
   private fun detectFromUrl(baseUrl: String): MachineRole = runCatching {
@@ -105,10 +106,6 @@ object RoleDetector {
     val host = parseHost(baseUrl) ?: return@runCatching MachineRole.WORK
     if (host.lowercase() in LOCAL_HOSTS) return@runCatching MachineRole.HOME
 
-    // Resolve the target host's addresses
-    val targetAddresses = InetAddress.getAllByName(host).map { it.hostAddress }.toSet()
-
-    // Walk all local network interfaces and compare
     val localAddresses = mutableSetOf<String>()
     val interfaces = NetworkInterface.getNetworkInterfaces() ?: return@runCatching MachineRole.WORK
     for (ni in interfaces) {
@@ -117,8 +114,7 @@ object RoleDetector {
       }
     }
 
-    // If any target address matches a local address → HOME
-    if (targetAddresses.any { it in localAddresses }) MachineRole.HOME
+    if (host in localAddresses) MachineRole.HOME
     else MachineRole.WORK
   }.getOrElse { MachineRole.WORK }
 

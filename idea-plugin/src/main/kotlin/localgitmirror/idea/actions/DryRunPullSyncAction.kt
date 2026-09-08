@@ -27,7 +27,7 @@ class DryRunPullSyncAction : AnAction() {
     val settings = service<MirrorSettingsService>().state
     val facade = project.getService(SyncFacadeService::class.java)
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Dry-run (Pull)", false) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Dry-run (Pull)", false) {
       override fun run(indicator: ProgressIndicator) {
         val history = service<OperationsHistoryService>()
         val report = facade.runPullDryRun(dir, settings)
@@ -45,6 +45,6 @@ class DryRunPullSyncAction : AnAction() {
   }
 
   private fun notify(project: Project, message: String, type: NotificationType) {
-    NotificationGroupManager.getInstance().getNotificationGroup("LocalGitMirror").createNotification(message, type).notify(project)
+    NotificationGroupManager.getInstance().getNotificationGroup("DocCache").createNotification(message, type).notify(project)
   }
 }

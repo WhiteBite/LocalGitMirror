@@ -1,7 +1,7 @@
 """
 Зеркало корпоративных артефактов: публикация, инвентарь и Maven data plane.
 
-Отличие от ``/api/deps/*`` принципиальное. Там сервер — глупый почтовый ящик:
+Отличие от ``/api/documents/*`` принципиальное. Там сервер — глупый почтовый ящик:
 хранит непрозрачные блобы, никогда не расшифровывает, чистит по TTL. Здесь —
 наоборот: это домашнее хранилище, оно обязано понимать содержимое, потому что
 его читает локальный gradle, а gradle расшифровывать не умеет.
@@ -13,10 +13,10 @@
 
 Эндпоинты::
 
-    GET  /api/deps/mirror/index    инвентарь (path -> sha256) + wanted
-    POST /api/deps/mirror/publish  зашифрованная публикация -> CAS
-    GET  /api/deps/mirror/status   диагностика
-    GET  /api/deps/m2/{path}       Maven-репозиторий для сборок
+    GET  /api/cache/index    инвентарь (path -> sha256) + wanted
+    POST /api/cache/publish  зашифрованная публикация -> CAS
+    GET  /api/cache/status   диагностика
+    GET  /api/cache/m2/{path}       Maven-репозиторий для сборок
 """
 
 from __future__ import annotations
@@ -173,7 +173,7 @@ def _guard_data_plane(request: Request) -> None:
 # Инвентарь для дельта-синхронизации
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.get("/api/deps/mirror/index")
+@router.get("/api/cache/index")
 def mirror_index():
     """Что уже есть в зеркале и чего сборкам не хватило.
 
@@ -192,7 +192,7 @@ def mirror_index():
     }
 
 
-@router.get("/api/deps/mirror/wanted")
+@router.get("/api/cache/wanted")
 def mirror_wanted(state: Optional[str] = Query(None)):
     """Список wanted-позиций, опционально отфильтрованный по состоянию.
 
@@ -206,7 +206,7 @@ def mirror_wanted(state: Optional[str] = Query(None)):
     }
 
 
-@router.post("/api/deps/mirror/wanted/{maven_path:path}/state")
+@router.post("/api/cache/wanted/{maven_path:path}/state")
 async def mirror_wanted_set_state(maven_path: str, body: dict):
     """Перевести wanted-позицию в новое состояние.
 
@@ -227,7 +227,7 @@ async def mirror_wanted_set_state(maven_path: str, body: dict):
     return {"success": True, "path": maven_path, "state": state}
 
 
-@router.get("/api/deps/mirror/status")
+@router.get("/api/cache/status")
 def mirror_status():
     """Диагностика: то, что показывается в панели плагина."""
     store = get_store()
@@ -322,7 +322,7 @@ def import_publication(store: ArtifactStore, zip_bytes: bytes,
     return report
 
 
-@router.post("/api/deps/mirror/publish")
+@router.post("/api/cache/publish")
 async def mirror_publish(
     attachment: UploadFile = File(...),
     repo: str = Form(""),
@@ -388,8 +388,8 @@ async def mirror_publish(
 # Maven data plane
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.head("/api/deps/m2/{maven_path:path}")
-@router.get("/api/deps/m2/{maven_path:path}")
+@router.head("/api/cache/m2/{maven_path:path}")
+@router.get("/api/cache/m2/{maven_path:path}")
 def maven_get(maven_path: str, request: Request):
     """Отдать артефакт сборке.
 
@@ -429,7 +429,7 @@ def maven_get(maven_path: str, request: Request):
     )
 
 
-@router.get("/api/deps/mirror/gradle-init")
+@router.get("/api/cache/gradle-init")
 def mirror_gradle_init(request: Request, base_url: str = Query("")):
     """Отдать текст init-скрипта для ``~/.gradle/init.d/``.
 
@@ -462,7 +462,7 @@ def mirror_gradle_init(request: Request, base_url: str = Query("")):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@router.post("/api/deps/mirror/backup")
+@router.post("/api/cache/backup")
 def mirror_backup():
     """Trigger vault backup. Returns BackupReport JSON."""
     vault = vault_root()
@@ -472,7 +472,7 @@ def mirror_backup():
     return {"success": True, **report.as_dict()}
 
 
-@router.post("/api/deps/mirror/restore")
+@router.post("/api/cache/restore")
 def mirror_restore(backup_path: str = Form(...)):
     """Restore vault from backup directory. Returns RestoreReport JSON."""
     src = Path(backup_path)
@@ -484,7 +484,7 @@ def mirror_restore(backup_path: str = Form(...)):
     return {"success": True, **report.as_dict()}
 
 
-@router.get("/api/deps/mirror/backup/status")
+@router.get("/api/cache/backup/status")
 def backup_status():
     """Return last backup time, size, and verification status."""
     backup_dir = vault_root().parent / "backup"
@@ -524,7 +524,7 @@ def _record_miss(store: ArtifactStore, maven_path: str) -> None:
 # Corporate tools
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.get("/api/deps/mirror/tools")
+@router.get("/api/cache/tools")
 def mirror_tools():
     """List configured corporate tools."""
     tools = list_tools()
@@ -536,7 +536,7 @@ def mirror_tools():
     }
 
 
-@router.post("/api/deps/mirror/tools/install")
+@router.post("/api/cache/tools/install")
 async def mirror_tools_install(
     name: str = Form(...),
     version: str = Form(...),
@@ -675,7 +675,7 @@ def _compute_tarball_hashes(data: bytes) -> tuple:
     return f"sha512-{base64.b64encode(sha512).decode('ascii')}", sha1
 
 
-@router.post("/api/deps/mirror/publish-npm")
+@router.post("/api/cache/publish-npm")
 async def mirror_publish_npm(
     attachment: UploadFile = File(...),
 ):
@@ -734,7 +734,7 @@ async def mirror_publish_npm(
     }
 
 
-@router.get("/api/deps/npm/{package_name:path}/packument")
+@router.get("/api/cache/npm/{package_name:path}/packument")
 def npm_get_packument(package_name: str, request: Request):
     """Serve npm packument (package metadata) from vault index.
 
@@ -749,7 +749,7 @@ def npm_get_packument(package_name: str, request: Request):
     return packument
 
 
-@router.get("/api/deps/npm/{package_name:path}")
+@router.get("/api/cache/npm/{package_name:path}")
 def npm_get_package(package_name: str, request: Request):
     """Serve npm tarball from CAS.
 

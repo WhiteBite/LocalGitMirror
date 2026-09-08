@@ -10,7 +10,7 @@ DOESN'T return "X not initialised".
 Specifically guards against:
   - GET  /api/repos                 — depends on api.repo_manager
   - GET  /api/health                — depends on api.config
-  - GET  /api/deps/pending          — depends on deps.repo_manager  (the bug we just fixed)
+  - GET  /api/documents/queue       — depends on deps.repo_manager  (the bug we just fixed)
   - GET  /api/settings              — depends on settings.settings_manager
 """
 import json
@@ -70,7 +70,7 @@ def test_deps_pending_router_is_wired(real_app: TestClient):
     The deps router globals must be assigned in the lifespan handler, not at
     module import time (when they were still None).
     """
-    resp = real_app.get("/api/deps/pending", params={"repo": "any-name"})
+    resp = real_app.get("/api/documents/queue", params={"rid": "any-name"})
     assert resp.status_code == 200, (
         f"deps.repo_manager not wired (got {resp.status_code}): {resp.text}\n"
         f"This is the bug where the deps router was wired before the lifespan "
@@ -84,8 +84,8 @@ def test_deps_pending_router_is_wired(real_app: TestClient):
 def test_deps_request_router_is_wired(real_app: TestClient):
     """The POST endpoint also needs the wiring — different code path than GET."""
     resp = real_app.post(
-        "/api/deps/request",
-        data={"repo": "any-name"},
+        "/api/documents/submit",
+        data={"rid": "any-name"},
         files={"attachment": ("m.bin", b"\x00" * 64, "application/octet-stream")},
     )
     # Should accept the upload and return success — NOT 500 'not initialised'.
@@ -131,38 +131,38 @@ def test_full_deps_roundtrip_against_real_app(real_app: TestClient):
     # 1. Request
     fake_manifest = b"ENCRYPTED_MANIFEST" * 100
     r = real_app.post(
-        "/api/deps/request",
-        data={"repo": repo},
+        "/api/documents/submit",
+        data={"rid": repo},
         files={"attachment": ("m.bin", fake_manifest, "application/octet-stream")},
     )
     assert r.status_code == 200, r.text
     request_id = r.json()["id"]
 
     # 2. Pending
-    p = real_app.get("/api/deps/pending", params={"repo": repo}).json()
+    p = real_app.get("/api/documents/queue", params={"rid": repo}).json()
     assert any(item["id"] == request_id for item in p["items"])
 
     # 3. Respond
     fake_archive = b"ENCRYPTED_ARCHIVE_PAYLOAD" * 1000
     rr = real_app.post(
-        "/api/deps/respond",
-        data={"repo": repo, "request_id": request_id},
+        "/api/documents/fulfill",
+        data={"rid": repo, "request_id": request_id},
         files={"attachment": ("a.bin", fake_archive, "application/octet-stream")},
     )
     assert rr.status_code == 200, rr.text
     response_id = rr.json()["id"]
 
     # 4. Responses list (dome side)
-    listing = real_app.get("/api/deps/responses", params={"repo": repo}).json()
+    listing = real_app.get("/api/documents/ready", params={"rid": repo}).json()
     assert any(item["id"] == response_id for item in listing["items"])
 
     # 5. Fetch — bytes round-trip exactly
-    fetched = real_app.get("/api/deps/fetch", params={"repo": repo, "id": response_id})
+    fetched = real_app.get("/api/documents/ready-item", params={"rid": repo, "id": response_id})
     assert fetched.status_code == 200
     assert fetched.content == fake_archive
 
     # 6. Ack — server deletes the blob
-    ack = real_app.delete("/api/deps/ack", params={"repo": repo, "id": response_id})
+    ack = real_app.delete("/api/documents/ack", params={"rid": repo, "id": response_id})
     assert ack.status_code == 200
-    final = real_app.get("/api/deps/responses", params={"repo": repo}).json()
+    final = real_app.get("/api/documents/ready", params={"rid": repo}).json()
     assert not any(item["id"] == response_id for item in final["items"])

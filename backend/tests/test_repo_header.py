@@ -1,7 +1,7 @@
-"""Tests for the X-LGM-Repo header alternative to ?repo= on GET/DELETE endpoints.
+"""Tests for the X-Doc-Ref header alternative to ?rid= on GET/DELETE endpoints.
 
-Order of precedence: query param (backward compat) > X-LGM-Repo header > 400.
-Same validation as ?repo= applies to the header value.
+Order of precedence: query param > X-Doc-Ref header > 400.
+Same validation as ?rid= applies to the header value.
 """
 import json
 from pathlib import Path
@@ -39,46 +39,46 @@ def _make_client(tmp_path: Path):
     return TestClient(app)
 
 
-# ── deps: X-LGM-Repo header on /api/deps/pending ─────────────────────────────
+# ── deps: X-Doc-Ref header on /api/documents/queue ───────────────────────────
 
-def test_deps_pending_via_header(tmp_path: Path):
+def test_deps_queue_via_header(tmp_path: Path):
     client = _make_client(tmp_path)
-    resp = client.get("/api/deps/pending", headers={"X-LGM-Repo": "onyx"})
+    resp = client.get("/api/documents/queue", headers={"X-Doc-Ref": "onyx"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["repo"] == "onyx"
     assert body["items"] == []
 
 
-def test_deps_pending_query_param_still_works(tmp_path: Path):
+def test_deps_queue_query_param_still_works(tmp_path: Path):
     client = _make_client(tmp_path)
-    resp = client.get("/api/deps/pending", params={"repo": "onyx"})
+    resp = client.get("/api/documents/queue", params={"rid": "onyx"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["repo"] == "onyx"
 
 
-def test_deps_pending_missing_both_returns_400(tmp_path: Path):
+def test_deps_queue_missing_both_returns_400(tmp_path: Path):
     client = _make_client(tmp_path)
-    resp = client.get("/api/deps/pending")
+    resp = client.get("/api/documents/queue")
     assert resp.status_code == 400
 
 
-def test_deps_pending_query_param_takes_precedence(tmp_path: Path):
+def test_deps_queue_query_param_takes_precedence(tmp_path: Path):
     client = _make_client(tmp_path)
     resp = client.get(
-        "/api/deps/pending",
-        params={"repo": "from-query"},
-        headers={"X-LGM-Repo": "from-header"},
+        "/api/documents/queue",
+        params={"rid": "from-query"},
+        headers={"X-Doc-Ref": "from-header"},
     )
     assert resp.status_code == 200
     assert resp.json()["repo"] == "from-query"
 
 
-# ── file-sync: X-LGM-Repo header on /api/file-sync/list ──────────────────────
+# ── file-sync: X-Doc-Ref header on /api/documents/attachment-list ────────────
 
 def test_file_sync_list_via_header(tmp_path: Path):
     client = _make_client(tmp_path)
-    resp = client.get("/api/file-sync/list", headers={"X-LGM-Repo": "onyx"})
+    resp = client.get("/api/documents/attachment-list", headers={"X-Doc-Ref": "onyx"})
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["repo"] == "onyx"
@@ -87,12 +87,12 @@ def test_file_sync_list_via_header(tmp_path: Path):
 
 def test_file_sync_list_query_param_still_works(tmp_path: Path):
     client = _make_client(tmp_path)
-    resp = client.get("/api/file-sync/list", params={"repo": "onyx"})
+    resp = client.get("/api/documents/attachment-list", params={"rid": "onyx"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["repo"] == "onyx"
 
 
 def test_file_sync_list_missing_both_returns_400(tmp_path: Path):
     client = _make_client(tmp_path)
-    resp = client.get("/api/file-sync/list")
+    resp = client.get("/api/documents/attachment-list")
     assert resp.status_code == 400

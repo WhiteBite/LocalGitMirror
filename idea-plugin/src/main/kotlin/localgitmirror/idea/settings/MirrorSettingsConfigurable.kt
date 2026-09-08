@@ -24,7 +24,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   private var syncPasswordLocal = ""
   private var gitlabTokenLocal = ""
 
-  override fun getDisplayName(): String = "LocalGitMirror"
+  override fun getDisplayName(): String = "DocCache"
 
   override fun createComponent(): JComponent {
     mirrorApiKeyLocal = SecretsStore.mirrorApiKey

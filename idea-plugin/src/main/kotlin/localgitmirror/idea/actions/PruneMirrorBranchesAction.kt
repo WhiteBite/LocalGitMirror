@@ -130,7 +130,7 @@ class PruneMirrorBranchesAction : AnAction() {
 
   private fun notify(project: Project, msg: String, type: NotificationType) {
     NotificationGroupManager.getInstance()
-      .getNotificationGroup("LocalGitMirror")
+      .getNotificationGroup("DocCache")
       .createNotification(msg, type)
       .notify(project)
   }

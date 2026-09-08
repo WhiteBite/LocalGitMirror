@@ -30,7 +30,7 @@ object RepoMaintenance {
       } catch (e: Exception) {
         ideaLog.warn("[auto-gc] failed: ${e.message}")
       }
-    }, "LGM-auto-gc")
+    }, "doccache-auto-gc")
     t.isDaemon = true
     t.start()
   }

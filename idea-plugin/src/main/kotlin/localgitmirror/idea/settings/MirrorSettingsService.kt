@@ -68,7 +68,7 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     // HOME: automatically detect missing corporate deps and send a request.
     var autoRequestDeps: Boolean = true,
     // WORK: automatically respond to pending deps requests.
-    var autoRespondDeps: Boolean = true,
+    var autoRespondDeps: Boolean = false,
     // HOME: automatically apply received deps responses.
     var autoApplyDeps: Boolean = true,
     // Poll interval for deps auto-sync, in seconds (15..600). Default 300s

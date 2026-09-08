@@ -141,8 +141,8 @@ def test_migrated_data_accessible_via_api(tmp_path):
     blob_id = "deadbeef12345678901234567890abcd"
     (plain_requests / f"{blob_id}.bin").write_bytes(b"encrypted-manifest")
 
-    # GET /api/deps/pending triggers migration and should list the blob.
-    res = client.get("/api/deps/pending", params={"repo": repo})
+    # GET /api/documents/queue triggers migration and should list the blob.
+    res = client.get("/api/documents/queue", params={"rid": repo})
     assert res.status_code == 200, res.text
     items = res.json()["items"]
     assert len(items) == 1, f"Expected 1 item after migration, got: {items}"

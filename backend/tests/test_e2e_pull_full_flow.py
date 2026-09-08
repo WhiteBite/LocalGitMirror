@@ -109,7 +109,7 @@ def _make_repo_with_branch(client: TestClient, storage: Path, repo_name: str,
     not in workspace — the exact scenario the plugin reports as buggy).
     Returns the tip SHA of the pushed branch.
     """
-    assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
 
     bare = storage / ".lgm" / "bare" / f"{repo_name}.git"
     work = storage / f"_scratch_{repo_name}"

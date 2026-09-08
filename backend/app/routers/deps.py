@@ -4,14 +4,14 @@ Gradle dependency-sync transport.
 The server is a dumb postbox: it stores opaque encrypted blobs and never
 inspects their content. Two flows happen here:
 
-  1. Dome  -> POST /deps/request  : "I have these artifacts, send me what's
-                                    missing for project X" (encrypted manifest)
-  2. Work  -> GET  /deps/pending  : list outstanding requests
-  3. Work  -> GET  /deps/manifest : download a specific request blob
-  4. Work  -> POST /deps/respond  : "here's the encrypted ZIP for request id"
-  5. Dome  -> GET  /deps/responses: list ready responses
-  6. Dome  -> GET  /deps/fetch    : download the response ZIP
-  7. Dome  -> DELETE /deps/ack    : confirm applied, server cleans up
+  1. Dome  -> POST /documents/submit     : "I have these artifacts, send me what's
+                                            missing for project X" (encrypted manifest)
+  2. Work  -> GET  /documents/queue      : list outstanding requests
+  3. Work  -> GET  /documents/queue-item : download a specific request blob
+  4. Work  -> POST /documents/fulfill    : "here's the encrypted ZIP for request id"
+  5. Dome  -> GET  /documents/ready      : list ready responses
+  6. Dome  -> GET  /documents/ready-item : download the response ZIP
+  7. Dome  -> DELETE /documents/ack     : confirm applied, server cleans up
 
 All payloads are pre-encrypted by the plugin (BundleCrypto), so leaking
 the storage dir does not leak project deps.
@@ -25,9 +25,10 @@ from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
 
-router = APIRouter(prefix="/api/deps", tags=["deps"])
+from app.routers._rid import resolve_repo_identifier
+
+router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 # Injected from main.py at startup, same pattern as the other routers.
 repo_manager = None
@@ -49,9 +50,10 @@ def _validate_repo(repo: str) -> str:
     return repo
 
 
-def _resolve_repo(repo_query: Optional[str], repo_header: Optional[str]) -> str:
-    repo = (repo_query or "").strip() or (repo_header or "").strip()
-    return _validate_repo(repo)
+def _resolve_repo(rid_query: Optional[str], doc_ref_header: Optional[str]) -> str:
+    value = (rid_query or "").strip() or (doc_ref_header or "").strip()
+    resolved = resolve_repo_identifier(value, repo_manager)
+    return _validate_repo(resolved)
 
 
 def _validate_id(item_id: str) -> str:
@@ -172,16 +174,17 @@ def _list_blobs(directory: Path) -> List[dict]:
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
 
-@router.post("/request")
-async def deps_request(
-    repo: str = Form(...),
+@router.post("/submit")
+async def deps_submit(
+    rid: str = Form(...),
     attachment: UploadFile = File(...),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
     """
     Dome side: post an encrypted manifest describing local artifacts.
     The blob is stored as-is; we never read it.
     """
-    repo = _validate_repo(repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     payload = await attachment.read()
     if not payload:
         raise HTTPException(400, "Empty manifest")
@@ -204,13 +207,13 @@ async def deps_request(
     return {"success": True, "repo": repo, "id": item_id, "size": len(payload)}
 
 
-@router.get("/pending")
-def deps_pending(
-    repo: Optional[str] = Query(None),
-    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+@router.get("/queue")
+def deps_queue(
+    rid: Optional[str] = Query(None),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
     """Work side: list outstanding requests for this repo."""
-    repo = _resolve_repo(repo, x_lgm_repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     req_dir = _requests_dir(repo)
     # D1: lazy cleanup before listing
     n = _cleanup_stale(req_dir)
@@ -219,14 +222,14 @@ def deps_pending(
     return {"success": True, "repo": repo, "items": _list_blobs(req_dir)}
 
 
-@router.get("/manifest")
-def deps_manifest(
-    repo: Optional[str] = Query(None),
+@router.get("/queue-item")
+def deps_queue_item(
+    rid: Optional[str] = Query(None),
     id: str = Query(...),
-    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
     """Work side: download a specific request blob (encrypted manifest)."""
-    repo = _resolve_repo(repo, x_lgm_repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     item_id = _validate_id(id)
     path = _requests_dir(repo) / f"{item_id}.bin"
     if not path.exists():
@@ -234,17 +237,18 @@ def deps_manifest(
     return FileResponse(path, media_type="application/octet-stream", filename=f"{item_id}.bin")
 
 
-@router.post("/respond")
-async def deps_respond(
-    repo: str = Form(...),
+@router.post("/fulfill")
+async def deps_fulfill(
+    rid: str = Form(...),
     request_id: str = Form(...),
     attachment: UploadFile = File(...),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
     """
     Work side: upload an encrypted archive in response to a manifest.
     Once accepted, the original request blob is deleted (one-shot).
     """
-    repo = _validate_repo(repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     request_id = _validate_id(request_id)
 
     payload = await attachment.read()
@@ -271,13 +275,13 @@ async def deps_respond(
     return {"success": True, "repo": repo, "id": response_id, "size": len(payload)}
 
 
-@router.get("/responses")
-def deps_responses(
-    repo: Optional[str] = Query(None),
-    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+@router.get("/ready")
+def deps_ready(
+    rid: Optional[str] = Query(None),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
     """Dome side: list ready responses for this repo."""
-    repo = _resolve_repo(repo, x_lgm_repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     resp_dir = _responses_dir(repo)
     # D1: lazy cleanup before listing
     n = _cleanup_stale(resp_dir)
@@ -286,14 +290,14 @@ def deps_responses(
     return {"success": True, "repo": repo, "items": _list_blobs(resp_dir)}
 
 
-@router.get("/fetch")
-def deps_fetch(
-    repo: Optional[str] = Query(None),
+@router.get("/ready-item")
+def deps_ready_item(
+    rid: Optional[str] = Query(None),
     id: str = Query(...),
-    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
     """Dome side: download a response blob."""
-    repo = _resolve_repo(repo, x_lgm_repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     item_id = _validate_id(id)
     path = _responses_dir(repo) / f"{item_id}.bin"
     if not path.exists():
@@ -301,19 +305,14 @@ def deps_fetch(
     return FileResponse(path, media_type="application/octet-stream", filename=f"{item_id}.bin")
 
 
-class DepsAckRequest(BaseModel):
-    repo: str
-    id: str
-
-
 @router.delete("/ack")
 def deps_ack(
-    repo: Optional[str] = Query(None),
+    rid: Optional[str] = Query(None),
     id: str = Query(...),
-    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+    x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
     """Dome side: confirm a response has been applied; server deletes it."""
-    repo = _resolve_repo(repo, x_lgm_repo)
+    repo = _resolve_repo(rid, x_doc_ref)
     item_id = _validate_id(id)
     path = _responses_dir(repo) / f"{item_id}.bin"
     if path.exists():

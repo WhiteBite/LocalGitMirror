@@ -41,7 +41,7 @@ internal fun LocalGitMirrorPanel.pullBack() {
   )?.trim()?.lowercase().orEmpty()
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Pull back", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Pull back", false) {
     override fun run(indicator: ProgressIndicator) {
       try {
         val original = GitLocal.currentBranch(project, dir)
@@ -191,7 +191,7 @@ internal fun LocalGitMirrorPanel.pushCurrent() {
   val remote = Messages.showInputDialog(project, "Remote name", "git push", null,
     GitLocal.defaultRemote(project, dir), null) ?: return
 
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: git push", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: git push", false) {
     override fun run(indicator: ProgressIndicator) {
       indicator.text = "Pushing $remote/$branch"
       append("git push $remote $branch")
@@ -215,7 +215,7 @@ internal fun LocalGitMirrorPanel.testMirror() {
   }
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Test Mirror", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Test Cache", false) {
     override fun run(indicator: ProgressIndicator) {
       try {
         val res = MirrorApi.ping(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls)
@@ -251,7 +251,7 @@ internal fun LocalGitMirrorPanel.runPreflight() {
   }
   val s = service<MirrorSettingsService>().state
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Preflight", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Preflight", false) {
     override fun run(indicator: ProgressIndicator) {
       try {
         val r = syncFacade.runPreflight(dir, s)
@@ -279,7 +279,7 @@ internal fun LocalGitMirrorPanel.runDryRun() {
   }
   val s = service<MirrorSettingsService>().state
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Dry-run (Send)", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Dry-run (Send)", false) {
     override fun run(indicator: ProgressIndicator) {
       try {
         val r = syncFacade.runDryRun(dir, s)
@@ -308,7 +308,7 @@ internal fun LocalGitMirrorPanel.runPullDryRun() {
   }
   val s = service<MirrorSettingsService>().state
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Dry-run (Pull)", false) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Dry-run (Pull)", false) {
     override fun run(indicator: ProgressIndicator) {
       try {
         val r = syncFacade.runPullDryRun(dir, s)
@@ -351,7 +351,7 @@ internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
   }
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: \u0421\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u0435 \u043f\u043b\u0430\u0433\u0438\u043d\u0430", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: \u0421\u043a\u0430\u0447\u0438\u0432\u0430\u043d\u0438\u0435 \u043f\u043b\u0430\u0433\u0438\u043d\u0430", true) {
     override fun run(indicator: ProgressIndicator) {
       try {
         indicator.isIndeterminate = true
@@ -433,7 +433,7 @@ internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
 
         val msg = "$title\n${outFile.absolutePath}"
         val notif = com.intellij.notification.NotificationGroupManager.getInstance()
-          .getNotificationGroup("LocalGitMirror")
+          .getNotificationGroup("DocCache")
           .createNotification(msg, NotificationType.INFORMATION)
         notif.addAction(com.intellij.notification.NotificationAction.createSimpleExpiring(
           "\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043f\u0430\u043f\u043a\u0443"

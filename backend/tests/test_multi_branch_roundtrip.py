@@ -84,7 +84,7 @@ def test_multi_branch_roundtrip_work_to_home(tmp_path: Path, monkeypatch):
     client = _build_client(storage)
 
     # Create repo on backend
-    created = client.post("/api/repos/create", json={"name": repo_name})
+    created = client.post("/api/documents/collection", json={"name": repo_name})
     assert created.status_code == 200, created.text
     assert created.json().get("success") is True, created.text
 

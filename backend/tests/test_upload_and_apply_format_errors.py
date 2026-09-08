@@ -49,7 +49,7 @@ def test_upload_and_apply_reports_stale_kit_on_non_native_dump(tmp_path: Path, m
     client = _build_client(storage)
     repo_name = f"fmt-stale-{int(time.time())}"
 
-    c = client.post("/api/repos/create", json={"name": repo_name})
+    c = client.post("/api/documents/collection", json={"name": repo_name})
     assert c.status_code == 200, c.text
 
     # Non-native payload (not LGMSTRL1 and not 7z archive) should fail deterministically
@@ -77,7 +77,7 @@ def test_upload_and_apply_reports_password_mismatch_invalidtag(tmp_path: Path, m
 
     client = _build_client(storage)
     repo_name = f"fmt-invalidtag-{int(time.time())}"
-    c = client.post("/api/repos/create", json={"name": repo_name})
+    c = client.post("/api/documents/collection", json={"name": repo_name})
     assert c.status_code == 200, c.text
 
     ws = storage / repo_name
@@ -127,7 +127,7 @@ def test_upload_and_apply_rejects_legacy_7z_dump(tmp_path: Path, monkeypatch):
 
     client = _build_client(storage)
     repo_name = f"fmt-legacy-reject-{int(time.time())}"
-    c = client.post("/api/repos/create", json={"name": repo_name})
+    c = client.post("/api/documents/collection", json={"name": repo_name})
     assert c.status_code == 200, c.text
 
     ws = storage / repo_name
