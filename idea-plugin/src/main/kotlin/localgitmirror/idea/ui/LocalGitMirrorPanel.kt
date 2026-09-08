@@ -113,10 +113,14 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   // All items before filtering — used by branchFilterField to re-apply the filter.
   private var allBranchItems: List<BranchListItem> = emptyList()
   // Small filter field above the list (speed search fallback for this SDK).
+  private var respondButton: javax.swing.JButton? = null
   private val branchFilterField = JBTextField().apply {
     emptyText.text = "Фильтр веток…"
     font = JBUI.Fonts.smallFont()
     toolTipText = "Фильтр веток"
+    // DSL resizableColumn does not grow cells in this panel; a huge preferred
+    // width forces the layout to give the field the full row (same trick as historyScroll).
+    preferredSize = Dimension(Int.MAX_VALUE, preferredSize.height)
     document.addDocumentListener(object : javax.swing.event.DocumentListener {
       override fun insertUpdate(e: javax.swing.event.DocumentEvent?) = applyBranchFilter()
       override fun removeUpdate(e: javax.swing.event.DocumentEvent?) = applyBranchFilter()
@@ -522,6 +526,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val branchScroll = JScrollPane(branchList).apply {
       border = BorderFactory.createEmptyBorder()
       viewportBorder = BorderFactory.createEmptyBorder()
+      preferredSize = Dimension(Int.MAX_VALUE, preferredSize.height)
     }
     
     // Configure history list
@@ -580,6 +585,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       
       // Action buttons row
       row {
+        button("Выдать") { triggerLgmAction("LocalGitMirror.DepsRespond") }
+          .applyToComponent {
+            respondButton = this
+            toolTipText = "Выдать запрошенные элементы из локального кэша"
+          }
         button("↓ Стянуть") { pullSelectedBranches() }
           .applyToComponent {
             putClientProperty("JButton.buttonType", "default")
@@ -1267,6 +1277,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     } else {
       status.text = LocalGitMirrorBundle.message("panel.status.disconnected") + " \u00b7 " + role
     }
+    val pending = localgitmirror.idea.deps.RespondDepsAction.lastKnownPendingCount.get()
+    respondButton?.text = if (pending > 0) "Выдать ($pending)" else "Выдать"
     status.toolTipText = repoRes?.let {
       "Repo \u00b7 source: ${it.source.name.lowercase().replace('_', ' ')}"
     }

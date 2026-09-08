@@ -72,7 +72,7 @@ class RequestDepsAction : AnAction() {
     }
     val repo = resolveRepoName(project)
     val history = service<OperationsHistoryService>()
-    service<DepsAutomationService>().recordLocalEvent()
+    runCatching { service<DepsAutomationService>().recordLocalEvent() }
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Запрос недостающих зависимостей", true) {
       override fun run(indicator: ProgressIndicator) {
@@ -126,7 +126,7 @@ class RespondDepsAction : AnAction() {
     }
     val repo = resolveRepoName(project)
     val history = service<OperationsHistoryService>()
-    service<DepsAutomationService>().recordLocalEvent()
+    runCatching { service<DepsAutomationService>().recordLocalEvent() }
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Выдать запрошенные зависимости", true) {
       override fun run(indicator: ProgressIndicator) {
@@ -265,7 +265,7 @@ class ApplyDepsAction : AnAction() {
     }
     val repo = resolveRepoName(project)
     val history = service<OperationsHistoryService>()
-    service<DepsAutomationService>().recordLocalEvent()
+    runCatching { service<DepsAutomationService>().recordLocalEvent() }
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Применить полученные deps", true) {
       override fun run(indicator: ProgressIndicator) {
