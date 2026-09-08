@@ -61,6 +61,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
 
   private var pollerThread: Thread? = null
   private var initialCheckThread: Thread? = null
+  private var vaultSyncInitThread: Thread? = null
 
   private val scheduler = DepsPollScheduler(
     baseIdleSec = { settings.depsPollSec }
@@ -114,6 +115,11 @@ class DepsAutomationService(private val project: Project) : Disposable {
     // HOME: debounced initial missing-check (20s after start)
     if (role == MachineRole.HOME && s.autoRequestDeps) {
       scheduleInitialMissingCheck(20_000L)
+    }
+
+    // HOME: vault cache self-healing (40s after start, after the missing-check)
+    if (role == MachineRole.HOME) {
+      scheduleVaultCacheSync(40_000L)
     }
   }
 
@@ -263,6 +269,20 @@ class DepsAutomationService(private val project: Project) : Disposable {
         .onFailure { DepsDiagnostics.event("automation: initial missing-check failed") }
     }, "doccache-init-check").apply { isDaemon = true }
     initialCheckThread?.start()
+  }
+
+  private fun scheduleVaultCacheSync(delayMs: Long) {
+    vaultSyncInitThread = Thread({
+      try {
+        Thread.sleep(delayMs)
+      } catch (_: InterruptedException) {
+        return@Thread
+      }
+      if (disposed) return@Thread
+      runCatching { VaultCacheSync.syncInBackground(project, "auto") }
+        .onFailure { DepsDiagnostics.event("automation: vault-sync scheduling failed") }
+    }, "doccache-vault-init").apply { isDaemon = true }
+    vaultSyncInitThread?.start()
   }
 
   private fun doMissingCheck() {
@@ -479,6 +499,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
     disposed = true
     pollerThread?.interrupt()
     initialCheckThread?.interrupt()
+    vaultSyncInitThread?.interrupt()
     DepsDiagnostics.event("automation: stopped (disposed)")
   }
 }

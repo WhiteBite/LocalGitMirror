@@ -472,6 +472,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     // Group 3: service
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("panel.menu.exportBundle"), AllIcons.Actions.Upload) { exportBundle() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("panel.menu.importBundle"), AllIcons.Actions.Download) { importBundle() })
+    moreMenu.add(gearMenuItem("Пополнить кэш из хранилища", AllIcons.Actions.Download) {
+      localgitmirror.idea.deps.VaultCacheSync.syncInBackground(project, "manual")
+    })
     moreMenu.add(gearMenuItem("Скачать плагин с сервера", AllIcons.Actions.Download) { downloadLatestPlugin() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.Preflight.text"), AllIcons.Actions.Preview) { triggerLgmAction("LocalGitMirror.Preflight") })
     moreMenu.addSeparator()

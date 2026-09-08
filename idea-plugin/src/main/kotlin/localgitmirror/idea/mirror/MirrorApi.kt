@@ -28,7 +28,7 @@ import localgitmirror.idea.workkit.HybridCrypto
 import com.intellij.openapi.components.service
 
 object MirrorApi {
-  data class HttpResult(val code: Int, val body: String)
+  data class HttpResult(val code: Int, val body: String, val bytes: ByteArray? = null)
 
   private fun rid(repoName: String): String {
     val md = java.security.MessageDigest.getInstance("SHA-256")
@@ -1068,6 +1068,35 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
       conn.readTimeout = 30_000
       if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
       HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  /** Fetch a single maven artifact from the vault m2 data plane (loopback-only). */
+  fun vaultM2Fetch(
+    baseUrl: String,
+    apiKey: String,
+    insecureTls: Boolean,
+    mavenPath: String
+  ): HttpResult {
+    return try {
+      val encoded = mavenPath.split("/").joinToString("/") {
+        java.net.URLEncoder.encode(it, "UTF-8")
+      }
+      val url = URL("${baseUrl.trimEnd('/')}/api/cache/m2/$encoded")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "GET"
+      conn.connectTimeout = 30_000
+      conn.readTimeout = 120_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      val code = conn.responseCode
+      if (code !in 200..299) {
+        return HttpResult(code, HttpClient.readBody(conn))
+      }
+      val bytes = conn.inputStream.use { it.readBytes() }
+      HttpResult(code, "", bytes)
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)
       HttpResult(0, "${e.type}: ${e.message}")
