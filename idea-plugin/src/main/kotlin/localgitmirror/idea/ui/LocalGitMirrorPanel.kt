@@ -99,6 +99,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   }
 
   internal lateinit var historyScroll: JScrollPane
+  private var historyExpanded = true
 
   internal val historyService = service<OperationsHistoryService>()
   internal val syncFacade = project.getService(SyncFacadeService::class.java)
@@ -597,23 +598,39 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         cell(progressLabel)
       }
       
-      // History (collapsible, collapsed by default)
-      collapsibleGroup("История", false) {
-        row {
-          cell(historyScroll).resizableColumn()
-          val clearBtn = JButton(AllIcons.Actions.GC).apply {
-            margin = JBUI.insets(1, 2)
-            isFocusPainted = false
-            isBorderPainted = false
-            isContentAreaFilled = false
-            toolTipText = "Очистить историю"
-            addActionListener {
-              historyService.clear()
-              refreshHistoryLog()
-            }
-          }
-          cell(clearBtn)
+      // History: explicit header row (toggle + title + clear always visible)
+      // plus a plain content row. collapsibleGroup hid the clear button when
+      // expanded and broke re-expanding once children visibility was touched.
+      row {
+        val toggleBtn = JButton(AllIcons.General.ChevronDown).apply {
+          margin = JBUI.insets(1, 2)
+          isFocusPainted = false
+          isBorderPainted = false
+          isContentAreaFilled = false
+          toolTipText = "Свернуть/развернуть историю"
         }
+        cell(toggleBtn)
+        cell(JLabel("История")).applyToComponent { font = JBUI.Fonts.smallFont() }
+        val clearBtn = JButton(AllIcons.Actions.GC).apply {
+          margin = JBUI.insets(1, 2)
+          isFocusPainted = false
+          isBorderPainted = false
+          isContentAreaFilled = false
+          toolTipText = "Очистить историю"
+          addActionListener {
+            historyService.clear()
+            refreshHistoryLog()
+          }
+        }
+        cell(clearBtn).align(AlignX.RIGHT)
+        toggleBtn.addActionListener {
+          historyExpanded = !historyExpanded
+          toggleBtn.icon = if (historyExpanded) AllIcons.General.ChevronDown else AllIcons.General.ChevronRight
+          refreshHistoryLog()
+        }
+      }
+      row {
+        cell(historyScroll).resizableColumn()
       }
     }
     
@@ -1271,7 +1288,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal fun refreshHistoryLog() {
     val entries = historyService.latest(40)
     if (::historyScroll.isInitialized) {
-      historyScroll.isVisible = entries.isNotEmpty()
+      historyScroll.isVisible = historyExpanded && entries.isNotEmpty()
     }
     historyListModel.clear()
     entries.forEach { historyListModel.addElement(it) }
