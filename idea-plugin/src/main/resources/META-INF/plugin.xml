@@ -40,7 +40,6 @@
     <!-- Main group: shown as submenu in ToolsMenu, VCS menu, ProjectView -->
     <group id="LocalGitMirror.Group" text="DocCache" description="DocCache actions" popup="true">
       <add-to-group group-id="ToolsMenu" anchor="last"/>
-      <add-to-group group-id="VcsGroup" anchor="last"/>
       <add-to-group group-id="ProjectViewPopupMenu" anchor="last"/>
     </group>
 

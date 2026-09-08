@@ -36,9 +36,9 @@ class DepsAutomationService(private val project: Project) : Disposable {
   private val settings get() = service<MirrorSettingsService>().state
   private val syncPwd get() = SecretsStore.syncPassword
 
-  /** Resolved once per [start]; cached for the session. */
-  private var role: MachineRole = MachineRole.WORK
-    private set
+  /** Re-resolved on every access: a machineRole settings change applies without restart. */
+  private val role: MachineRole
+    get() = RoleDetector.detect(settings)
 
   /** Repo name resolved once per [start]. */
   private var repoName: String = ""
@@ -87,7 +87,6 @@ class DepsAutomationService(private val project: Project) : Disposable {
     val s = settings
     if (s.baseUrl.isBlank() || syncPwd.isBlank()) return
 
-    role = RoleDetector.detect(s)
     val baseDir = project.basePath ?: return
     val dir = File(baseDir)
     if (!dir.exists()) return
