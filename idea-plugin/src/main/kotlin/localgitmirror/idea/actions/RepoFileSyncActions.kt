@@ -106,7 +106,7 @@ class SendSelectedFileAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("filesync.task.send"), true) {
       override fun run(indicator: ProgressIndicator) {
-        val encrypted = File.createTempFile("lgm-file-sync-", ".bin")
+        val encrypted = File.createTempFile("tmp-", ".bin")
         try {
           indicator.text = LocalGitMirrorBundle.message("filesync.progress.encrypt")
           RepoFileSyncCrypto.encryptFile(file, encrypted, ctx.password) { done, total ->
@@ -216,10 +216,10 @@ class FetchRepoFilesAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("filesync.task.fetch"), true) {
       override fun run(indicator: ProgressIndicator) {
-        val encrypted = File.createTempFile("lgm-file-sync-download-", ".bin")
+        val encrypted = File.createTempFile("tmp-download-", ".bin")
         val targetParent = target.parentFile ?: ctx.projectDir
         targetParent.mkdirs()
-        val plainTmp = File.createTempFile("lgm-file-sync-plain-", ".tmp", targetParent)
+        val plainTmp = File.createTempFile("tmp-plain-", ".tmp", targetParent)
         try {
           indicator.text = LocalGitMirrorBundle.message("filesync.progress.download")
           val dl = MirrorApi.fileSyncDownload(ctx.settings.baseUrl, ctx.apiKey, ctx.repo, ctx.settings.mirrorInsecureTls, item.id, encrypted) { read, total ->

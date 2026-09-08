@@ -105,7 +105,7 @@ object NexusFetcher {
     fun writeToTemp(fetchResult: FetchResult): File? {
         val bytes = fetchResult.bytes ?: return null
         return try {
-            val tmp = File.createTempFile("lgm-nexus-", "-${fetchResult.fileName}")
+            val tmp = File.createTempFile("tmp-", "-${fetchResult.fileName}")
             tmp.deleteOnExit()
             FileOutputStream(tmp).use { it.write(bytes) }
             tmp
