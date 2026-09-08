@@ -9,16 +9,23 @@ import com.intellij.openapi.wm.ToolWindowManager
 /**
  * Existing projects remember the old bottom anchor in their workspace layout,
  * which overrides the plugin.xml anchor. Once per project, after the layout is
- * restored, move the tool window to the right side (stacks under Gradle).
- * Afterwards the placement is fully user-owned.
+ * restored, move the tool window to the bottom-right (split group of the right
+ * stripe = below Gradle). Afterwards the placement is fully user-owned.
  */
 class LgmToolWindowPlacementActivity : ProjectActivity {
   override suspend fun execute(project: Project) {
     val props = PropertiesComponent.getInstance(project)
     if (props.getBoolean(PLACED_FLAG)) return
-    val tw = ToolWindowManager.getInstance(project).getToolWindow("LocalGitMirror") ?: return
-    tw.setAnchor(ToolWindowAnchor.RIGHT) { }
-    props.setValue(PLACED_FLAG, true)
+    // ToolWindowManager.invokeLater: documented EDT scheduling for tool window ops,
+    // drops the callback if the project is disposed.
+    ToolWindowManager.getInstance(project).invokeLater {
+      if (props.getBoolean(PLACED_FLAG)) return@invokeLater
+      val tw = ToolWindowManager.getInstance(project).getToolWindow("LocalGitMirror") ?: return@invokeLater
+      tw.setAnchor(ToolWindowAnchor.RIGHT, null)
+      // split mode on RIGHT anchor = bottom half of the right pane, i.e. under Gradle
+      tw.setSplitMode(true, null)
+      props.setValue(PLACED_FLAG, true)
+    }
   }
 
   private companion object {
