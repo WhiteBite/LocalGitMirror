@@ -402,7 +402,7 @@ object MirrorApi {
           writer.flush()
         }
 
-        partHeader("attachment", "document.bin", "application/octet-stream")
+        partHeader("attachment", "data.bin", "application/octet-stream")
         if (hybrid) {
           // Stream only the sealed bytes, skipping the 33-byte header.
           dumpFile.inputStream().use { it.skip(33); it.copyTo(os) }
@@ -921,7 +921,7 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
       baseUrl, apiKey, insecureTls, "/api/deps/request",
       fields = mapOf("repo" to repo),
       fileFieldName = "attachment",
-      fileName = "manifest.bin",
+      fileName = "data.bin",
       fileBytes = encryptedManifest
     )
     if (res.code !in 200..299) return DepsUploadResult(res.code, null, 0, res.body.take(500))
@@ -1018,7 +1018,7 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
       baseUrl, apiKey, insecureTls, "/api/deps/respond",
       fields = mapOf("repo" to repo, "request_id" to requestId),
       fileFieldName = "attachment",
-      fileName = "archive.bin",
+      fileName = "data.bin",
       fileBytes = encryptedArchive
     )
     if (res.code !in 200..299) return DepsUploadResult(res.code, null, 0, res.body.take(500))
@@ -1093,7 +1093,7 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
       baseUrl, apiKey, insecureTls, "/api/deps/mirror/publish",
       fields = emptyMap(),
       fileFieldName = "attachment",
-      fileName = "publication.enc",
+      fileName = "data.bin",
       fileBytes = encryptedPublication
     )
     if (res.code !in 200..299) return MirrorPublishResult(res.code, 0, 0, 0, 0, res.body.take(500))
@@ -1118,7 +1118,7 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
       baseUrl, apiKey, insecureTls, "/api/file-sync/upload",
       fields = mapOf("repo" to repo, "path" to relativePath, "plain_size" to plainSize.toString()),
       fileFieldName = "attachment",
-      fileName = "file.lgm",
+      fileName = "data.bin",
       file = encryptedFile,
       onProgress = onProgress
     )
@@ -1508,7 +1508,7 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
       val code = conn.responseCode
       if (code !in 200..299) return DownloadResult(code, null, HttpClient.readBody(conn).take(500))
       val bytes = conn.inputStream.use { it.readBytes() }
-      val tmp = File.createTempFile("lgm-buf-", ".bin").apply { writeBytes(bytes); deleteOnExit() }
+      val tmp = File.createTempFile("tmp-", ".bin").apply { writeBytes(bytes); deleteOnExit() }
       DownloadResult(code, tmp, "OK")
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)

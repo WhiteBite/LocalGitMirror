@@ -21,7 +21,7 @@ import kotlin.test.assertTrue
 class CacheRootResolutionTest {
 
   private val created = mutableListOf<File>()
-  private fun mkTmp(p: String): File = Files.createTempDirectory("lgm-cache-$p-").toFile().also { created.add(it) }
+  private fun mkTmp(p: String): File = Files.createTempDirectory("tmp-cache-$p-").toFile().also { created.add(it) }
   @AfterTest fun cleanup() { created.forEach { it.deleteRecursively() } }
 
   private fun fakeArtifact(cacheRoot: File, g: String, n: String, v: String, sha: String, file: String) {

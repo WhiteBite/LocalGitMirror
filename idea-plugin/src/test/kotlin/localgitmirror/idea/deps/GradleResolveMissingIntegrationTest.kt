@@ -27,7 +27,7 @@ class GradleResolveMissingIntegrationTest {
   private val created = mutableListOf<File>()
 
   private fun mkTmp(prefix: String): File =
-    Files.createTempDirectory("lgm-rm-$prefix-").toFile().also { created.add(it) }
+    Files.createTempDirectory("tmp-rm-$prefix-").toFile().also { created.add(it) }
 
   @AfterTest
   fun cleanup() { created.forEach { it.deleteRecursively() } }

@@ -35,7 +35,7 @@ class SyncEngineFlowTest {
     }
 
     val engine = SyncEngine(mirror = mirror, git = git, workKit = work, state = state, resolver = resolver)
-    val projectDir = createTempDir(prefix = "lgm-engine-invalid-")
+    val projectDir = createTempDir(prefix = "tmp-engine-invalid-")
     try {
       val res = engine.runFullSyncWithSnapshot(project = dummyProject(), projectDir = projectDir, snapshot = defaultSnapshot())
       assertEquals(false, res.step.ok)
@@ -60,7 +60,7 @@ class SyncEngineFlowTest {
     val resolver = fixedResolver("onyx-platform")
 
     val engine = SyncEngine(mirror = mirror, git = git, workKit = work, state = state, resolver = resolver)
-    val projectDir = createTempDir(prefix = "lgm-engine-pointer-")
+    val projectDir = createTempDir(prefix = "tmp-engine-pointer-")
     try {
       val res = engine.runFullSyncWithSnapshot(project = dummyProject(), projectDir = projectDir, snapshot = defaultSnapshot())
       assertEquals(true, res.step.ok)
@@ -84,7 +84,7 @@ class SyncEngineFlowTest {
     val resolver = fixedResolver("onyx-platform")
 
     val engine = SyncEngine(mirror = mirror, git = git, workKit = work, state = state, resolver = resolver)
-    val projectDir = createTempDir(prefix = "lgm-engine-offline-")
+    val projectDir = createTempDir(prefix = "tmp-engine-offline-")
     try {
       val snapshot = defaultSnapshot().copy(offlineGenerateOnly = true)
       val res = engine.runFullSyncWithSnapshot(project = dummyProject(), projectDir = projectDir, snapshot = snapshot)
@@ -107,7 +107,7 @@ class SyncEngineFlowTest {
     val resolver = fixedResolver("onyx-platform-v1")
 
     val engine = SyncEngine(mirror = mirror, git = git, workKit = work, state = state, resolver = resolver)
-    val projectDir = createTempDir(prefix = "lgm-engine-noop-")
+    val projectDir = createTempDir(prefix = "tmp-engine-noop-")
     try {
       val res = engine.runFullSyncWithSnapshot(project = dummyProject(), projectDir = projectDir, snapshot = defaultSnapshot().copy(repoConfigured = "onyx-platform-v1"))
       assertEquals(true, res.step.ok)
@@ -129,7 +129,7 @@ class SyncEngineFlowTest {
     val resolver = fixedResolver("onyx-platform-v1")
 
     val engine = SyncEngine(mirror = mirror, git = git, workKit = work, state = state, resolver = resolver)
-    val projectDir = createTempDir(prefix = "lgm-engine-missing-dump-")
+    val projectDir = createTempDir(prefix = "tmp-engine-missing-dump-")
     try {
       val res = engine.runFullSyncWithSnapshot(project = dummyProject(), projectDir = projectDir, snapshot = defaultSnapshot().copy(repoConfigured = "onyx-platform-v1"))
       assertEquals(false, res.step.ok)
@@ -144,7 +144,7 @@ class SyncEngineFlowTest {
   @Test
   fun `findLatestDump uses sync file path from generator output`() {
     val engine = SyncEngine(workKit = FakeWorkKitPort(createDump = false))
-    val projectDir = createTempDir(prefix = "lgm-engine-output-path-")
+    val projectDir = createTempDir(prefix = "tmp-engine-output-path-")
     try {
       val dumpDir = File(projectDir, ".git/lgm")
       dumpDir.mkdirs()

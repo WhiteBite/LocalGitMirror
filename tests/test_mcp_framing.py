@@ -142,7 +142,7 @@ def test_handle_initialize():
     result = resp["result"]
     assert "protocolVersion" in result
     assert "serverInfo" in result
-    assert result["serverInfo"]["name"] == "lgm-mcp"
+    assert result["serverInfo"]["name"] == "doccache-tools"
     assert "capabilities" in result
     assert "tools" in result["capabilities"]
 

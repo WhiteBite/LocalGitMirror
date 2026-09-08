@@ -9,7 +9,7 @@ class RepoFileSyncCryptoTest {
 
   @Test
   fun `encrypt and decrypt file roundtrip`() {
-    val dir = Files.createTempDirectory("lgm-file-sync-test").toFile()
+    val dir = Files.createTempDirectory("tmp-test").toFile()
     try {
       val plain = dir.resolve("plain.bin")
       val encrypted = dir.resolve("payload.lgm")
@@ -28,7 +28,7 @@ class RepoFileSyncCryptoTest {
 
   @Test
   fun `decrypt fails on wrong password`() {
-    val dir = Files.createTempDirectory("lgm-file-sync-test").toFile()
+    val dir = Files.createTempDirectory("tmp-test").toFile()
     try {
       val plain = dir.resolve("plain.txt")
       val encrypted = dir.resolve("payload.lgm")

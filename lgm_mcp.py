@@ -33,7 +33,7 @@ from lgm_core.ops import REGISTRY, Ctx, get_op
 
 # ── Version ──────────────────────────────────────────────────────────────────
 
-_SERVER_NAME = "lgm-mcp"
+_SERVER_NAME = "doccache-tools"
 _PROTOCOL_VERSION = "2024-11-05"
 
 
