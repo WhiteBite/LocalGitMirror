@@ -23,7 +23,7 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -47,6 +47,11 @@ def _validate_repo(repo: str) -> str:
     if not repo or ".." in repo or not _SAFE_REPO.match(repo):
         raise HTTPException(400, "Invalid repo name")
     return repo
+
+
+def _resolve_repo(repo_query: Optional[str], repo_header: Optional[str]) -> str:
+    repo = (repo_query or "").strip() or (repo_header or "").strip()
+    return _validate_repo(repo)
 
 
 def _validate_id(item_id: str) -> str:
@@ -200,9 +205,12 @@ async def deps_request(
 
 
 @router.get("/pending")
-def deps_pending(repo: str = Query(...)):
+def deps_pending(
+    repo: Optional[str] = Query(None),
+    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+):
     """Work side: list outstanding requests for this repo."""
-    repo = _validate_repo(repo)
+    repo = _resolve_repo(repo, x_lgm_repo)
     req_dir = _requests_dir(repo)
     # D1: lazy cleanup before listing
     n = _cleanup_stale(req_dir)
@@ -212,9 +220,13 @@ def deps_pending(repo: str = Query(...)):
 
 
 @router.get("/manifest")
-def deps_manifest(repo: str = Query(...), id: str = Query(...)):
+def deps_manifest(
+    repo: Optional[str] = Query(None),
+    id: str = Query(...),
+    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+):
     """Work side: download a specific request blob (encrypted manifest)."""
-    repo = _validate_repo(repo)
+    repo = _resolve_repo(repo, x_lgm_repo)
     item_id = _validate_id(id)
     path = _requests_dir(repo) / f"{item_id}.bin"
     if not path.exists():
@@ -260,9 +272,12 @@ async def deps_respond(
 
 
 @router.get("/responses")
-def deps_responses(repo: str = Query(...)):
+def deps_responses(
+    repo: Optional[str] = Query(None),
+    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+):
     """Dome side: list ready responses for this repo."""
-    repo = _validate_repo(repo)
+    repo = _resolve_repo(repo, x_lgm_repo)
     resp_dir = _responses_dir(repo)
     # D1: lazy cleanup before listing
     n = _cleanup_stale(resp_dir)
@@ -272,9 +287,13 @@ def deps_responses(repo: str = Query(...)):
 
 
 @router.get("/fetch")
-def deps_fetch(repo: str = Query(...), id: str = Query(...)):
+def deps_fetch(
+    repo: Optional[str] = Query(None),
+    id: str = Query(...),
+    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+):
     """Dome side: download a response blob."""
-    repo = _validate_repo(repo)
+    repo = _resolve_repo(repo, x_lgm_repo)
     item_id = _validate_id(id)
     path = _responses_dir(repo) / f"{item_id}.bin"
     if not path.exists():
@@ -288,9 +307,13 @@ class DepsAckRequest(BaseModel):
 
 
 @router.delete("/ack")
-def deps_ack(repo: str = Query(...), id: str = Query(...)):
+def deps_ack(
+    repo: Optional[str] = Query(None),
+    id: str = Query(...),
+    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+):
     """Dome side: confirm a response has been applied; server deletes it."""
-    repo = _validate_repo(repo)
+    repo = _resolve_repo(repo, x_lgm_repo)
     item_id = _validate_id(id)
     path = _responses_dir(repo) / f"{item_id}.bin"
     if path.exists():
