@@ -4,7 +4,6 @@ import base64
 import hashlib
 import os
 import re
-import shutil
 import struct
 import subprocess
 import tempfile
@@ -21,7 +20,7 @@ from pydantic import BaseModel
 from contextvars import ContextVar
 
 from app.core import hybrid_crypto
-from app.core.bundle_crypto import MAGIC, decrypt_dump_to_bundle, encrypt_bundle_to_dump
+from app.core.bundle_crypto import MAGIC, decrypt_dump_bytes, decrypt_dump_to_bundle, encrypt_bundle_bytes, encrypt_bundle_to_dump
 from app.core.envelope_crypto import decrypt_envelope as _pw_decrypt_envelope
 from app.core.envelope_crypto import encrypt_envelope as _pw_encrypt_envelope
 from app.routers.state import state
@@ -120,6 +119,16 @@ class EnvelopeRequest(BaseModel):
 # Refname-safe: no spaces, no control chars, not "." or "..", no ".."
 _SAFE_BRANCH = re.compile(r"^[^\x00-\x1f\x7f ~^:?*\[\\]+$")
 
+# Redaction patterns for git command/output logged to system.log.
+_SHA_RE = re.compile(r"\b[0-9a-f]{7,40}\b", re.IGNORECASE)
+_REFS_HEADS_RE = re.compile(r"refs/heads/[^\s:]+")
+
+
+def _redact_git_text(s: str) -> str:
+    s = _SHA_RE.sub("<sha>", s)
+    s = _REFS_HEADS_RE.sub("refs/heads/<branch>", s)
+    return s
+
 
 # ============ HELPER FUNCTIONS ============
 
@@ -127,14 +136,14 @@ _SAFE_BRANCH = re.compile(r"^[^\x00-\x1f\x7f ~^:?*\[\\]+$")
 def _git(cwd: Path, *args: str, timeout: int = 600) -> subprocess.CompletedProcess:
     cmd = ["git", *args]
     if system_logger:
-        system_logger.info(f"Exec: {' '.join(cmd)} (cwd={cwd.name})")
+        system_logger.info(f"Exec: git {cmd[1] if len(cmd) > 1 else ''} (cwd={cwd.name})")
 
     try:
         proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         if system_logger:
-            system_logger.error(f"Git timed out after {timeout}s: {' '.join(cmd)}")
+            system_logger.error(f"Git timed out after {timeout}s: git {cmd[1] if len(cmd) > 1 else ''}")
         return subprocess.CompletedProcess(
             cmd, returncode=124, stdout="",
             stderr=f"git command timed out after {timeout}s",
@@ -142,9 +151,9 @@ def _git(cwd: Path, *args: str, timeout: int = 600) -> subprocess.CompletedProce
 
     if system_logger:
         if proc.stderr and proc.stderr.strip():
-            system_logger.info(f"Git Stderr: {proc.stderr.strip()}")
+            system_logger.info(f"Git Stderr: {_redact_git_text(proc.stderr.strip())}")
         if proc.returncode != 0:
-            system_logger.error(f"Git Failed ({proc.returncode}): {proc.stdout.strip()}")
+            system_logger.error(f"Git Failed ({proc.returncode}): {_redact_git_text(proc.stdout.strip())}")
 
     return proc
 
@@ -280,7 +289,7 @@ def _prune_stale_branches(repo_name: str, local_branches: list, password: str) -
                 _git(workspace, "branch", "-D", branch)
 
     if pruned and system_logger:
-        system_logger.info("auto-pruned stale branches", {"repo": repo_name, "pruned": pruned})
+        system_logger.info("auto-pruned stale branches", {"repo": repo_name, "pruned_count": len(pruned)})
 
     return pruned
 
@@ -370,7 +379,7 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
                     bundle_refs[ref_name] = commit_hash
 
         if system_logger:
-            system_logger.info("Bundle refs", {"repo": repo_name, "refs": list(bundle_refs.keys())})
+            system_logger.info("Bundle refs", {"repo": repo_name, "ref_count": len(bundle_refs)})
 
         # ── Step 2: Fetch ALL refs from the bundle at once ──────────────
         # Detach HEAD first so fetch can update all branch refs
@@ -445,7 +454,7 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
                     err = (push_proc.stderr or "").strip()
                     push_errors.append(f"{branch_name}: {err}")
                     if system_logger:
-                        system_logger.warning(f"Failed to push branch {branch_name}", {"repo": repo_name, "error": err})
+                        system_logger.warning("Failed to push branch", {"repo": repo_name, "error": _redact_git_text(err)})
 
         if not pushed_branches and push_errors:
             return {"success": False, "message": f"Failed to push any branch to bare repo: {'; '.join(push_errors)}"}
@@ -458,9 +467,9 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
                 "upload-and-apply result",
                 {
                     "repo": repo_name, "success": True,
-                    "attachment": dump_filename, "commit": commit,
-                    "branches_pushed": pushed_branches,
-                    "branches_failed": [e.split(":")[0] for e in push_errors],
+                    "attachment": dump_filename,
+                    "branches_pushed_count": len(pushed_branches),
+                    "branches_failed_count": len(push_errors),
                 },
             )
 
@@ -573,16 +582,17 @@ def _build_export_bundle(workspace: Path, bundle_path: Path, since, branch, have
 # ============ EXPORT BUNDLE CACHE ============
 #
 # D3: content-addressed cache for the expensive `git bundle create` history
-# walk. We cache the PLAINTEXT bundle bytes keyed by the inputs that fully
-# determine the output: (repo, source HEAD sha, branch, since, haves). The HEAD
-# sha is the freshness token — when the branch tip moves the key changes and the
+# walk. We cache the bundle bytes keyed by the inputs that fully determine
+# the output: (repo, source HEAD sha, branch, since, haves). The HEAD sha is
+# the freshness token — when the branch tip moves the key changes and the
 # cache naturally misses, so we never serve stale history (correctness over
 # staleness).
 #
-# We deliberately do NOT cache the encrypted dump: encrypt_bundle_to_dump uses a
-# random salt + nonce, so its output is not byte-stable and caching it would
-# either force reuse of one salt/nonce (weakening crypto) or never hit. Caching
-# the bundle keeps per-request fresh encryption while skipping the history walk.
+# At-rest encryption: cached bytes are sealed with bundle_crypto (AES-256-GCM,
+# key derived from SYNC_PASSWORD). A legacy plaintext cache entry or a
+# tampered/undecryptable entry is treated as a cache miss — the read path
+# decrypts and falls back to rebuilding on any failure. v3-only servers (no
+# SYNC_PASSWORD) skip caching entirely.
 #
 # The cache is an optimization only: any read/write/corruption error falls back
 # to rebuilding from scratch.
@@ -596,6 +606,8 @@ def _export_cache_dir() -> Optional[Path]:
     """Return (creating if needed) the cache directory under storage, or None."""
     try:
         if not repo_manager or not getattr(repo_manager, "storage_path", None):
+            return None
+        if not os.getenv("SYNC_PASSWORD", ""):
             return None
         storage = Path(repo_manager.storage_path)
         _lgm = storage / ".lgm" / _EXPORT_CACHE_DIRNAME
@@ -653,13 +665,20 @@ def _export_cache_prune(cache_dir: Path) -> None:
 
 
 def _export_cache_lookup(cache_dir: Path, key: str, dest: Path) -> bool:
-    """Copy a cached bundle for `key` into `dest`. Return True on a usable hit."""
+    """Decrypt a cached bundle for `key` into `dest`. Return True on a usable hit.
+
+    Failure to decrypt (legacy plaintext entry, tampered data, wrong password)
+    is treated as a cache miss — the caller rebuilds from scratch.
+    """
+    password = os.getenv("SYNC_PASSWORD", "")
+    if not password:
+        return False
     try:
         cached = cache_dir / key
         if not cached.is_file() or cached.stat().st_size == 0:
             return False
-        shutil.copyfile(cached, dest)
-        # Refresh mtime so frequently-used entries survive LRU eviction.
+        plaintext = decrypt_dump_bytes(cached.read_bytes(), password)
+        dest.write_bytes(plaintext)
         try:
             os.utime(cached, None)
         except Exception:
@@ -670,16 +689,19 @@ def _export_cache_lookup(cache_dir: Path, key: str, dest: Path) -> bool:
 
 
 def _export_cache_store(cache_dir: Path, key: str, bundle_path: Path) -> None:
-    """Store the freshly built bundle under `key` (atomic, best-effort)."""
+    """Encrypt and store the freshly built bundle under `key` (atomic, best-effort)."""
+    password = os.getenv("SYNC_PASSWORD", "")
+    if not password:
+        return
     tmp = cache_dir / f".tmp_{uuid.uuid4().hex[:8]}"
     try:
         if not bundle_path.is_file() or bundle_path.stat().st_size == 0:
             return
+        encrypted = encrypt_bundle_bytes(bundle_path.read_bytes(), password)
+        tmp.write_bytes(encrypted)
         target = cache_dir / key
-        shutil.copyfile(bundle_path, tmp)
         os.replace(tmp, target)
     except Exception:
-        # Best-effort: clean up a stray temp file if possible.
         try:
             if tmp.exists():
                 tmp.unlink()
@@ -881,7 +903,7 @@ async def sync_apply_known(request: EnvelopeRequest):
         if check.returncode != 0:
             if system_logger:
                 system_logger.warning(
-                    f"apply-known: commit {branch_hash[:12]} for branch {branch_name} not found in workspace or bare",
+                    "apply-known: commit not found for branch in workspace or bare",
                     {"repo": repo}
                 )
             continue
@@ -893,7 +915,7 @@ async def sync_apply_known(request: EnvelopeRequest):
             if push.returncode == 0:
                 pushed_branches.append(branch_name)
             elif system_logger:
-                system_logger.warning(f"apply-known: failed to push {branch_name}", {"repo": repo, "error": push.stderr})
+                system_logger.warning("apply-known: failed to push branch", {"repo": repo, "error": _redact_git_text(push.stderr)})
 
     _git(workspace, "for-each-ref", "--format=%(refname)", "refs/fetched/")
 
@@ -901,7 +923,7 @@ async def sync_apply_known(request: EnvelopeRequest):
     _git(workspace, "checkout", "-f", preferred)
 
     if system_logger:
-        system_logger.info("apply-known result", {"repo": repo, "commit": commit, "branches": pushed_branches})
+        system_logger.info("apply-known result", {"repo": repo, "branches_count": len(pushed_branches)})
 
     # Auto-prune stale branches if client sent its local branch list
     local_branches = params.get("local_branches")
@@ -959,7 +981,8 @@ async def sync_upload_and_apply(
 
     filename = attachment.filename or ""
     inferred = _infer_repo_from_dump_filename(filename)
-    if inferred and inferred != repo_name:
+    repo_hash = hashlib.sha256(repo_name.encode("utf-8")).hexdigest()[:8]
+    if inferred and inferred != repo_name and inferred != repo_hash:
         return {"e": encrypt_envelope(
             {"success": False, "repo": repo_name,
              "message": f"Uploaded filename indicates repo '{inferred}' but request repo is '{repo_name}'"},
@@ -972,7 +995,7 @@ async def sync_upload_and_apply(
     with tempfile.TemporaryDirectory(prefix="idea-sync-") as tmp:
         tmp_dir = Path(tmp)
         ts = datetime.now().strftime("%Y%m%d_%H%M")
-        safe_name = filename if (filename.endswith(".dmp") or filename.endswith(".bin")) else f"cache_{repo_name}_{ts}.bin"
+        safe_name = filename if (filename.endswith(".dmp") or filename.endswith(".bin")) else f"cache_{repo_hash}_{ts}.bin"
         dump_path = tmp_dir / Path(safe_name).name
 
         payload = await attachment.read()
@@ -1140,7 +1163,7 @@ async def delete_ref(request: EnvelopeRequest):
             _git(workspace, "branch", "-D", branch)
 
     if system_logger:
-        system_logger.info("branch deleted", {"repo": repo_name, "branch": branch})
+        system_logger.info("branch deleted", {"repo": repo_name})
 
     return {"e": encrypt_envelope({"success": True, "repo": repo_name, "branch": branch}, password)}
 
