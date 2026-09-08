@@ -64,7 +64,7 @@ object GradleResolver {
     if (!projectDir.exists() || !projectDir.isDirectory) {
       return Result(false, emptyList(), "projectDir not found: ${projectDir.absolutePath}", 0)
     }
-    val outputFile = File.createTempFile("lgm-resolved-", ".jsonl")
+    val outputFile = File.createTempFile("tmp-", ".jsonl")
     try {
       val run = runGradleWithInitScript(
         projectDir = projectDir,
@@ -113,7 +113,7 @@ object GradleResolver {
     extraArgs: List<String> = emptyList(),
     task: String = "help"
   ): RawRun {
-    val initScript = File.createTempFile("lgm-init-", ".gradle")
+    val initScript = File.createTempFile("tmp-", ".gradle")
     try {
       initScript.writeText(initScriptContent)
       val cmd = mutableListOf<String>().apply {
@@ -181,7 +181,7 @@ object GradleResolver {
     if (!projectDir.exists() || !projectDir.isDirectory) {
       return Result(false, emptyList(), "projectDir not found: ${projectDir.absolutePath}", 0)
     }
-    val outputFile = File.createTempFile("lgm-missing-", ".jsonl")
+    val outputFile = File.createTempFile("tmp-", ".jsonl")
     try {
       val run = runGradleWithInitScript(
         projectDir = projectDir,
@@ -376,7 +376,7 @@ allprojects { p ->
    */
   fun discoverGradleUserHome(projectDir: File, timeoutSec: Long = 120, javaHome: String? = null): String? {
     if (!projectDir.isDirectory) return null
-    val out = File.createTempFile("lgm-guh-", ".txt")
+    val out = File.createTempFile("tmp-", ".txt")
     return try {
       val script = """
         gradle.projectsEvaluated {

@@ -137,8 +137,8 @@ def detect_java_home(explicit: str | None) -> str | None:
 
 def run_init_script(project_dir: Path, java_home: str | None) -> tuple[Path, str, int]:
     """Drop init-script, run gradlew --offline help, return (jsonl_path, stdout, exit)."""
-    out_file = Path(tempfile.mktemp(prefix="lgm-missing-", suffix=".jsonl"))
-    init_file = Path(tempfile.mktemp(prefix="lgm-init-", suffix=".gradle"))
+    out_file = Path(tempfile.mktemp(prefix="tmp-", suffix=".jsonl"))
+    init_file = Path(tempfile.mktemp(prefix="tmp-", suffix=".gradle"))
     init_file.write_text(
         INIT_SCRIPT_TEMPLATE.replace("__OUT__", str(out_file).replace("\\", "/")),
         encoding="utf-8",

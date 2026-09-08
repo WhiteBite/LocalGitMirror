@@ -166,6 +166,6 @@ def test_global_repo_flag_before_subcommand():
 
 def test_dry_run_flags_are_store_true():
     """--dry-run should not require a value (store_true)."""
-    code, out, err = _run_lgm("respond", "--dry-run", "--json")
-    # Will fail on network but should parse fine (exit 1 on network error, not 2).
+    code, out, err = _run_lgm("respond", "--repo", "test-repo", "--dry-run", "--json")
+    # Will fail on config/network but should parse fine (exit 1, not 2).
     assert code != 2, f"exit={code} stderr={err} — argparse rejected --dry-run"
