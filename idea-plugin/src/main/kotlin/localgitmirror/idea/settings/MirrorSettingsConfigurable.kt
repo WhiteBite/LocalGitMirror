@@ -192,6 +192,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
         when {
           servers.isEmpty() -> {
             Messages.showInfoMessage(
+              dialogPanel,
               "Серверы не найдены в локальной сети",
               "Поиск сервера"
             )
@@ -238,11 +239,12 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
       SwingUtilities.invokeLater {
         if (pingResult.code !in 200..299) {
           Messages.showErrorDialog(
+            dialogPanel,
             "Не удалось подключиться: HTTP ${pingResult.code}\n${pingResult.body.take(200)}",
             "Проверка подключения"
           )
         } else {
-          Messages.showInfoMessage("Подключение успешно", "Проверка подключения")
+          Messages.showInfoMessage(dialogPanel, "Подключение успешно", "Проверка подключения")
         }
       }
     }, "Cache-Test").apply { isDaemon = true }.start()
