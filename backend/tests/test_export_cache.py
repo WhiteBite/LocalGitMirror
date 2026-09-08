@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.bundle_crypto import decrypt_dump_to_bundle
+from app.core.bundle_crypto import FORMAT_VERSION, decrypt_dump_bytes, decrypt_dump_to_bundle
 from app.core.repo_manager import RepoManager
 from app.routers import sync as sync_module
 from tests import _harness
@@ -220,4 +220,57 @@ def test_corrupt_cache_falls_back(tmp_path, monkeypatch):
     assert second["status"] == "ok"
     refs2, _ = _bundle_refs(second["data"], tmp_path, "recovered")
     assert refs2.get("refs/heads/trunk") == refs1.get("refs/heads/trunk")
+
+
+# ── Test 5: cache stores encrypted bytes at rest (not plaintext) ─────────────
+
+def test_cache_stores_encrypted_bytes(tmp_path, monkeypatch):
+    monkeypatch.setenv("SYNC_PASSWORD", PASSWORD)
+    client, repo, bare, work, rm, storage = _make_repo(tmp_path)
+
+    _export(client, repo, branch="trunk")
+
+    cache_dir = storage / ".lgm" / "_export_cache"
+    entries = [p for p in cache_dir.iterdir() if p.is_file() and not p.name.startswith(".tmp_")]
+    assert len(entries) == 1, f"expected one cached entry, found {entries}"
+    raw = entries[0].read_bytes()
+
+    # Encrypted blob starts with FORMAT_VERSION (0x01), not a git bundle header
+    # (which starts with "# v3 git bundle" or similar text).
+    assert raw[0] == FORMAT_VERSION, "cache file must start with encryption version byte"
+    assert not raw.startswith(b"# v"), "cache file must not be a plaintext git bundle"
+
+    # The encrypted bytes must decrypt back to a valid git bundle.
+    plaintext = decrypt_dump_bytes(raw, PASSWORD)
+    assert plaintext.startswith(b"# v"), "decrypted cache must be a valid git bundle"
+
+
+# ── Test 6: legacy plaintext cache entry is treated as a miss ─────────────────
+
+def test_legacy_plaintext_cache_is_miss(tmp_path, monkeypatch):
+    monkeypatch.setenv("SYNC_PASSWORD", PASSWORD)
+    client, repo, bare, work, rm, storage = _make_repo(tmp_path)
+
+    # Populate the cache to discover the key, then overwrite with a plaintext
+    # git bundle (simulating a legacy entry from before at-rest encryption).
+    first = _export(client, repo, branch="trunk")
+    refs1, bundle_path = _bundle_refs(first["data"], tmp_path, "warm")
+
+    cache_dir = storage / ".lgm" / "_export_cache"
+    entries = [p for p in cache_dir.iterdir() if p.is_file() and not p.name.startswith(".tmp_")]
+    assert len(entries) == 1
+    key = entries[0].name
+
+    # Overwrite with the raw plaintext bundle bytes.
+    entries[0].write_bytes(bundle_path.read_bytes())
+
+    # Export must treat the legacy plaintext entry as a miss and rebuild.
+    second = _export(client, repo, branch="trunk")
+    assert second["status"] == "ok"
+    refs2, _ = _bundle_refs(second["data"], tmp_path, "rebuilt")
+    assert refs2.get("refs/heads/trunk") == refs1.get("refs/heads/trunk")
+
+    # The cache entry must now be encrypted (re-stored after rebuild).
+    raw = (cache_dir / key).read_bytes()
+    assert raw[0] == FORMAT_VERSION, "rebuilt cache entry must be encrypted"
 

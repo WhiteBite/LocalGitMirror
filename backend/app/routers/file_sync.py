@@ -11,8 +11,9 @@ import re
 import time
 import uuid
 from pathlib import Path
+from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 router = APIRouter(prefix="/api/file-sync", tags=["file-sync"])
@@ -32,6 +33,11 @@ def _validate_repo(repo: str) -> str:
     if not repo or repo in {".", ".."} or ".." in repo or not _SAFE_REPO.fullmatch(repo):
         raise HTTPException(400, "Invalid repo name")
     return repo
+
+
+def _resolve_repo(repo_query: Optional[str], repo_header: Optional[str]) -> str:
+    repo = (repo_query or "").strip() or (repo_header or "").strip()
+    return _validate_repo(repo)
 
 
 def _validate_id(value: str) -> str:
@@ -165,14 +171,21 @@ async def file_upload(
 
 
 @router.get("/list")
-def file_list(repo: str = Query(...)):
-    repo = _validate_repo(repo)
+def file_list(
+    repo: Optional[str] = Query(None),
+    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+):
+    repo = _resolve_repo(repo, x_lgm_repo)
     return {"success": True, "repo": repo, "items": _list_items(repo)}
 
 
 @router.get("/download")
-def file_download(repo: str = Query(...), id: str = Query(...)):
-    repo = _validate_repo(repo)
+def file_download(
+    repo: Optional[str] = Query(None),
+    id: str = Query(...),
+    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+):
+    repo = _resolve_repo(repo, x_lgm_repo)
     item_id = _validate_id(id)
     blob = _blob_path(repo, item_id)
     meta = _meta_path(repo, item_id)
@@ -182,8 +195,12 @@ def file_download(repo: str = Query(...), id: str = Query(...)):
 
 
 @router.delete("/ack")
-def file_ack(repo: str = Query(...), id: str = Query(...)):
-    repo = _validate_repo(repo)
+def file_ack(
+    repo: Optional[str] = Query(None),
+    id: str = Query(...),
+    x_lgm_repo: Optional[str] = Header(None, alias="X-LGM-Repo"),
+):
+    repo = _resolve_repo(repo, x_lgm_repo)
     item_id = _validate_id(id)
     blob = _blob_path(repo, item_id)
     meta = _meta_path(repo, item_id)
