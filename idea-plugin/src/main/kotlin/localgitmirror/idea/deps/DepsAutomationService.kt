@@ -62,6 +62,19 @@ class DepsAutomationService(private val project: Project) : Disposable {
   private var pollerThread: Thread? = null
   private var initialCheckThread: Thread? = null
 
+  private val scheduler = DepsPollScheduler(
+    baseIdleSec = { settings.depsPollSec }
+  )
+
+  /**
+   * Called from UI actions (Request/Respond/Apply) and internal events
+   * (auto-request sent, Gradle sync failure) to switch the poller into the
+   * 15-minute fast window (30–60 s jittered sleeps).
+   */
+  fun recordLocalEvent() {
+    scheduler.recordLocalEvent()
+  }
+
   /**
    * Called from [DepsAutomationStartupActivity]. Idempotent: safe to call
    * multiple times. Resolves the role and repo name, then starts the poller
@@ -107,8 +120,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
     pollerThread = Thread({
       while (!disposed && !Thread.currentThread().isInterrupted) {
         try {
-          val pollSec = settings.depsPollSec.coerceIn(15, 600)
-          Thread.sleep(pollSec * 1000L)
+          Thread.sleep(scheduler.nextSleepMs())
           if (disposed) break
           when (role) {
             MachineRole.HOME -> pollHome()
@@ -146,6 +158,8 @@ class DepsAutomationService(private val project: Project) : Disposable {
     // Update visibility cache for the manual action
     ApplyDepsAction.lastKnownResponseCount.set(responses.items.size)
 
+    scheduler.recordPollResult(hadItems = responses.items.isNotEmpty())
+
     for (item in responses.items) {
       if (disposed) return
       if (item.id in appliedIds) continue
@@ -159,7 +173,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
   }
 
   private fun processHomeResponse(id: String, s: MirrorSettingsService.State) {
-    val tmpResp = File.createTempFile("lgm-deps-auto-", ".bin").apply { deleteOnExit() }
+    val tmpResp = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
     try {
       val dl = MirrorApi.depsDownload(
         baseUrl = s.baseUrl,
@@ -277,6 +291,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
       DepsDiagnostics.event("automation: request sent id=${result.requestId} missing=${result.missingCount}")
       history.add(LocalGitMirrorBundle.message("history.op.autoDepsRequest"), true,
         "missing=${result.missingCount} id=${result.requestId}")
+      scheduler.recordLocalEvent()
     } else if (!result.success) {
       notify(LocalGitMirrorBundle.message("auto.notify.requestFailed", result.message), NotificationType.ERROR)
       DepsDiagnostics.event("automation: request failed: ${result.message}")
@@ -306,6 +321,8 @@ class DepsAutomationService(private val project: Project) : Disposable {
     // Update visibility cache for the manual action
     RespondDepsAction.lastKnownPendingCount.set(pending.items.size)
 
+    scheduler.recordPollResult(hadItems = pending.items.isNotEmpty())
+
     for (item in pending.items) {
       if (disposed) return
       if (!inFlightIds.add(item.id)) continue  // already being processed
@@ -317,7 +334,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
   }
 
   private fun processWorkRequest(id: String, s: MirrorSettingsService.State) {
-    val tmpManifest = File.createTempFile("lgm-auto-req-", ".bin").apply { deleteOnExit() }
+    val tmpManifest = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
     try {
       val dl = MirrorApi.depsDownload(
         baseUrl = s.baseUrl,
@@ -416,6 +433,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
               if (canonicalWd.equals(canonicalBase, ignoreCase = true)) {
                 // Schedule the missing-check (debounced 30s)
                 scheduleMissingCheck(30_000L)
+                scheduler.recordLocalEvent()
               }
             }
           }

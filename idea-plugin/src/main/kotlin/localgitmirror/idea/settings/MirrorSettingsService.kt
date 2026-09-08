@@ -71,8 +71,10 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     var autoRespondDeps: Boolean = true,
     // HOME: automatically apply received deps responses.
     var autoApplyDeps: Boolean = true,
-    // Poll interval for deps auto-sync, in seconds (15..600).
-    var depsPollSec: Int = 60
+    // Poll interval for deps auto-sync, in seconds (15..600). Default 300s
+    // (5 min) for stealth; the poller applies +/-30% jitter, a 15-min fast
+    // window after local events, and exponential backoff up to 4x on idle.
+    var depsPollSec: Int = 300
   )
 
   private var state = State()
