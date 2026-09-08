@@ -241,7 +241,32 @@ object DepsResponder {
 
     val nexusBaseUrl = settings.nexusBaseUrl
     var nexusRecovered = 0
+    var pkgMgrGradle = 0
+    var pkgMgrNpm = 0
     val tempFiles = mutableListOf<File>()
+
+    if (notFound.isNotEmpty() && workProjectDir != null) {
+      val gradleMissing = notFound.filter { it.ecosystem == "gradle" }
+      val npmMissing = notFound.filter { it.ecosystem == "npm" }
+      if (gradleMissing.isNotEmpty()) {
+        pkgMgrGradle = PkgManagerFetch.fetchGradle(workProjectDir, gradleMissing, indicator)
+      }
+      if (npmMissing.isNotEmpty()) {
+        pkgMgrNpm = PkgManagerFetch.fetchNpm(workProjectDir, npmMissing, indicator)
+      }
+      if (pkgMgrGradle > 0 || pkgMgrNpm > 0) {
+        val reNotFound = mutableListOf<DepCoordinate>()
+        GradleEcosystem.collectProjectDir = workProjectDir
+        for ((ecoId, coords) in notFound.groupBy { it.ecosystem }) {
+          val eco = DepsEcosystems.byId(ecoId)
+          if (eco == null) { reNotFound.addAll(coords); continue }
+          entries.addAll(eco.collect(coords, presentIndex) { reNotFound.add(it) })
+        }
+        GradleEcosystem.collectProjectDir = null
+        notFound.clear()
+        notFound.addAll(reNotFound)
+      }
+    }
 
     if (notFound.isNotEmpty()) {
       val gradleMissing = notFound.filter { it.ecosystem == "gradle" }
@@ -325,7 +350,7 @@ object DepsResponder {
       val notFoundUnique = notFound.distinctBy { it.key }
       DepsDiagnostics.enabled = settings.depsDiagnosticsEnabled
       DepsDiagnostics.verbose = settings.depsDiagnosticsVerbose
-      DepsDiagnostics.event("respond: shipped=${foundCoords.size} notFound=${notFoundUnique.size} nexusRecovered=$nexusRecovered bytes=$diffSize")
+      DepsDiagnostics.event("respond: shipped=${foundCoords.size} notFound=${notFoundUnique.size} pkgMgrGradle=$pkgMgrGradle pkgMgrNpm=$pkgMgrNpm nexusRecovered=$nexusRecovered bytes=$diffSize")
       DepsDiagnostics.detail("Shipped coordinates") {
         entries.map { it.coordinate.label }.distinct().sorted()
       }
@@ -336,13 +361,14 @@ object DepsResponder {
       }
 
       val warn = if (notFoundUnique.isNotEmpty()) " (не найдено ${notFoundUnique.size})" else ""
+      val pkgMgrInfo = if (pkgMgrGradle + pkgMgrNpm > 0) ", докачано пакетными менеджерами: ${pkgMgrGradle + pkgMgrNpm}" else ""
       val nexusInfo = if (nexusRecovered > 0) ", восстановлено через Nexus: $nexusRecovered" else ""
       val hint = if (nexusBaseUrl.isBlank() && notFoundUnique.isNotEmpty())
         "\nЗадайте Nexus URL в настройках DocCache, чтобы доставать отсутствующие в кэше артефакты напрямую."
       else ""
       return Result(
         success = true,
-        message = "Отправлено ${humanBytes(diffSize)} — ${foundCoords.size} зависимостей$warn$nexusInfo.$hint",
+        message = "Отправлено ${humanBytes(diffSize)} — ${foundCoords.size} зависимостей$warn$pkgMgrInfo$nexusInfo.$hint",
         sentCount = foundCoords.size,
         notFoundCount = notFoundUnique.size,
         bytes = diffSize
