@@ -16,7 +16,6 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import java.io.File
-
 private fun notify(project: Project, msg: String, type: NotificationType) {
   NotificationGroupManager.getInstance()
     .getNotificationGroup("LocalGitMirror")
@@ -73,6 +72,7 @@ class RequestDepsAction : AnAction() {
     }
     val repo = resolveRepoName(project)
     val history = service<OperationsHistoryService>()
+    service<DepsAutomationService>().recordLocalEvent()
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Запрос недостающих зависимостей", true) {
       override fun run(indicator: ProgressIndicator) {
@@ -126,6 +126,7 @@ class RespondDepsAction : AnAction() {
     }
     val repo = resolveRepoName(project)
     val history = service<OperationsHistoryService>()
+    service<DepsAutomationService>().recordLocalEvent()
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Выдать запрошенные зависимости", true) {
       override fun run(indicator: ProgressIndicator) {
@@ -153,72 +154,75 @@ class RespondDepsAction : AnAction() {
 
         val req = pending.items.first()
         indicator.text = "Скачиваем запрос ${req.id.take(8)}…"
-        val tmpManifest = File.createTempFile("lgm-req-", ".bin").apply { deleteOnExit() }
-        val dl = MirrorApi.depsDownload(
-          baseUrl = settings.baseUrl,
-          apiKey = SecretsStore.mirrorApiKey,
-          repo = repo,
-          insecureTls = settings.mirrorInsecureTls,
-          id = req.id,
-          kind = MirrorApi.DepsKind.MANIFEST,
-          outFile = tmpManifest
-        )
-        if (dl.code !in 200..299 || dl.file == null) {
-          notify(project, "Не удалось скачать запрос: ${dl.message}", NotificationType.ERROR)
-          return
-        }
-
-        val manifestBlob = tmpManifest.readBytes()
-        runCatching { tmpManifest.delete() }
-
-        val result = DepsResponder.respond(project, settings, syncPwd, repo, req.id, manifestBlob, indicator)
-
-        if (result.success) {
-          notify(project, result.message, NotificationType.INFORMATION)
-          history.add("Deps respond", true,
-            "request=${req.id} shipped=${result.sentCount} notFound=${result.notFoundCount} size=${humanBytes(result.bytes)}")
-        } else {
-          // The "0 found" case: do the detailed history logging that the core
-          // deliberately leaves to the caller (UI concern).
-          if (result.sentCount == 0 && result.notFoundCount > 0) {
-            val scanned = DepsScanner.candidateCacheRoots()
-            val gradleEnv = System.getenv("GRADLE_USER_HOME") ?: "(не задана)"
-            val workProjectDir = project.basePath?.let { File(it) }
-            val gradleReported = workProjectDir?.let {
-              try { GradleResolver.discoverGradleUserHome(it) } catch (_: Throwable) { null }
-            } ?: "(не определён)"
-
-            history.add("Deps respond", false,
-              "0 из ${result.notFoundCount} найдено. GRADLE_USER_HOME=$gradleEnv | gradle сообщил=$gradleReported")
-            history.add("Deps: кеши", false,
-              "Просканировано ${scanned.size} кеш-путей (см. ниже)")
-            scanned.forEach { root ->
-              val exists = root.isDirectory
-              val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
-              val mark = if (exists) "OK, групп=$groups" else "НЕТ такой папки"
-              history.add("Deps: кеш-путь", exists, "$mark — ${root.absolutePath}")
-            }
-
-            // Re-scan for the notification message (same as original code)
-            val scanReport = scanned.joinToString("\n") { root ->
-              val exists = root.isDirectory
-              val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
-              "  • ${root.absolutePath} — ${if (exists) "есть ($groups групп)" else "НЕТ"}"
-            }
-            val msg = buildString {
-              appendLine("Ни одна из ${result.notFoundCount} зависимостей не найдена в кеше.")
-              appendLine("Подробности записаны в Историю (панель плагина).")
-              appendLine()
-              appendLine("Искал в:")
-              appendLine(scanReport)
-              appendLine()
-              append("GRADLE_USER_HOME = $gradleEnv")
-            }
-            notify(project, msg, NotificationType.WARNING)
-          } else {
-            notify(project, result.message, NotificationType.ERROR)
-            history.add("Deps respond", false, result.message)
+        val tmpManifest = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
+        try {
+          val dl = MirrorApi.depsDownload(
+            baseUrl = settings.baseUrl,
+            apiKey = SecretsStore.mirrorApiKey,
+            repo = repo,
+            insecureTls = settings.mirrorInsecureTls,
+            id = req.id,
+            kind = MirrorApi.DepsKind.MANIFEST,
+            outFile = tmpManifest
+          )
+          if (dl.code !in 200..299 || dl.file == null) {
+            notify(project, "Не удалось скачать запрос: ${dl.message}", NotificationType.ERROR)
+            return
           }
+
+          val manifestBlob = tmpManifest.readBytes()
+
+          val result = DepsResponder.respond(project, settings, syncPwd, repo, req.id, manifestBlob, indicator)
+
+          if (result.success) {
+            notify(project, result.message, NotificationType.INFORMATION)
+            history.add("Deps respond", true,
+              "request=${req.id} shipped=${result.sentCount} notFound=${result.notFoundCount} size=${humanBytes(result.bytes)}")
+          } else {
+            // The "0 found" case: do the detailed history logging that the core
+            // deliberately leaves to the caller (UI concern).
+            if (result.sentCount == 0 && result.notFoundCount > 0) {
+              val scanned = DepsScanner.candidateCacheRoots()
+              val gradleEnv = System.getenv("GRADLE_USER_HOME") ?: "(не задана)"
+              val workProjectDir = project.basePath?.let { File(it) }
+              val gradleReported = workProjectDir?.let {
+                try { GradleResolver.discoverGradleUserHome(it) } catch (_: Throwable) { null }
+              } ?: "(не определён)"
+
+              history.add("Deps respond", false,
+                "0 из ${result.notFoundCount} найдено. GRADLE_USER_HOME=$gradleEnv | gradle сообщил=$gradleReported")
+              history.add("Deps: кеши", false,
+                "Просканировано ${scanned.size} кеш-путей (см. ниже)")
+              scanned.forEach { root ->
+                val exists = root.isDirectory
+                val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
+                val mark = if (exists) "OK, групп=$groups" else "НЕТ такой папки"
+                history.add("Deps: кеш-путь", exists, "$mark — ${root.absolutePath}")
+              }
+
+              // Re-scan for the notification message (same as original code)
+              val scanReport = scanned.joinToString("\n") { root ->
+                val exists = root.isDirectory
+                val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
+                "  • ${root.absolutePath} — ${if (exists) "есть ($groups групп)" else "НЕТ"}"
+              }
+              val msg = buildString {
+                appendLine("Ни одна из ${result.notFoundCount} зависимостей не найдена в кеше.")
+                appendLine("Подробности записаны в Историю (панель плагина).")
+                appendLine()
+                appendLine("Искал в:")
+                appendLine(scanReport)
+                appendLine()
+                append("GRADLE_USER_HOME = $gradleEnv")
+              }
+              notify(project, msg, NotificationType.WARNING)
+            } else {
+              notify(project, result.message, NotificationType.ERROR)
+              history.add("Deps respond", false, result.message)
+            }
+          }
+        } finally {
+          runCatching { tmpManifest.delete() }
         }
       }
     })
@@ -261,6 +265,7 @@ class ApplyDepsAction : AnAction() {
     }
     val repo = resolveRepoName(project)
     val history = service<OperationsHistoryService>()
+    service<DepsAutomationService>().recordLocalEvent()
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Применить полученные deps", true) {
       override fun run(indicator: ProgressIndicator) {
@@ -292,106 +297,108 @@ class ApplyDepsAction : AnAction() {
         }
         if (confirmed != Messages.YES) return
 
-        val tmpResp = File.createTempFile("lgm-deps-resp-", ".bin").apply { deleteOnExit() }
-        indicator.text = "Скачивание (${humanBytes(resp.size)})…"
-        indicator.isIndeterminate = false
-        val dl = MirrorApi.depsDownload(
-          baseUrl = settings.baseUrl,
-          apiKey = SecretsStore.mirrorApiKey,
-          repo = repo,
-          insecureTls = settings.mirrorInsecureTls,
-          id = resp.id,
-          kind = MirrorApi.DepsKind.RESPONSE,
-          outFile = tmpResp,
-          onProgress = { read, total ->
-            if (total > 0) {
-              indicator.fraction = (read.toDouble() / total).coerceIn(0.0, 0.99)
-              indicator.text = "Скачивание ${humanBytes(read)} / ${humanBytes(total)}"
+        val tmpResp = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
+        try {
+          indicator.text = "Скачивание (${humanBytes(resp.size)})…"
+          indicator.isIndeterminate = false
+          val dl = MirrorApi.depsDownload(
+            baseUrl = settings.baseUrl,
+            apiKey = SecretsStore.mirrorApiKey,
+            repo = repo,
+            insecureTls = settings.mirrorInsecureTls,
+            id = resp.id,
+            kind = MirrorApi.DepsKind.RESPONSE,
+            outFile = tmpResp,
+            onProgress = { read, total ->
+              if (total > 0) {
+                indicator.fraction = (read.toDouble() / total).coerceIn(0.0, 0.99)
+                indicator.text = "Скачивание ${humanBytes(read)} / ${humanBytes(total)}"
+              }
+            }
+          )
+          if (dl.code !in 200..299 || dl.file == null) {
+            notify(project, "Не скачалось: ${dl.message}", NotificationType.ERROR)
+            return
+          }
+
+          val responseBlob = tmpResp.readBytes()
+
+          val result = DepsApplier.apply(project, settings, syncPwd, responseBlob, indicator)
+
+          if (!result.success) {
+            notify(project, result.message, NotificationType.ERROR)
+            history.add("Deps apply", false, "decrypt/unpack failed: ${result.message}")
+            return
+          }
+
+          // Ack the response on the server (one-shot: server deletes it).
+          MirrorApi.depsAck(
+            baseUrl = settings.baseUrl,
+            apiKey = SecretsStore.mirrorApiKey,
+            repo = repo,
+            insecureTls = settings.mirrorInsecureTls,
+            id = resp.id
+          )
+
+          // Offer to run npm/yarn install if the core suggests it (action only;
+          // the automation service skips this dialog).
+          var finalMsg = result.message
+          if (result.suggestYarnInstall) {
+            val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
+              Messages.showYesNoDialog(
+                project,
+                "${result.lockMsg}\nЗапустить yarn install --offline сейчас? (публичное из кеша yarn, корпоративное из mirror)",
+                "LocalGitMirror: yarn install", "Запустить", "Позже", null
+              )
+            }
+            if (runIt == Messages.YES) {
+              indicator.text = "yarn install --offline…"
+              val code = runCatching {
+                val isWin = System.getProperty("os.name").lowercase().contains("win")
+                val cmd = (if (isWin) listOf("cmd", "/c", "yarn") else listOf("yarn")) +
+                  listOf("install", "--offline", "--pure-lockfile", "--non-interactive")
+                val applyProj = project.basePath?.let { File(it) }
+                val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
+                proc.inputStream.bufferedReader().forEachLine { /* drain */ }
+                proc.waitFor()
+              }.getOrElse { -1 }
+              finalMsg += if (code == 0) " yarn install: OK."
+                          else " yarn install: код $code (если не хватает публичного — один онлайн yarn install, дальше офлайн)."
+            } else {
+              finalMsg += " Запусти: yarn install --offline --pure-lockfile"
+            }
+          } else if (result.suggestNpmInstall) {
+            val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
+              Messages.showYesNoDialog(
+                project,
+                "${result.lockMsg}\nЗапустить npm install сейчас? (публичное с npmjs, корпоративное из кеша)",
+                "LocalGitMirror: npm install", "Запустить", "Позже", null
+              )
+            }
+            if (runIt == Messages.YES) {
+              indicator.text = "npm install…"
+              val code = runCatching {
+                val isWin = System.getProperty("os.name").lowercase().contains("win")
+                val cmd = (if (isWin) listOf("cmd", "/c", "npm") else listOf("npm")) +
+                  listOf("install", "--prefer-offline", "--registry",
+                         "https://registry.npmjs.org", "--no-audit", "--no-fund")
+                val applyProj = project.basePath?.let { File(it) }
+                val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
+                proc.inputStream.bufferedReader().forEachLine { /* drain */ }
+                proc.waitFor()
+              }.getOrElse { -1 }
+              finalMsg += if (code == 0) " npm install: OK." else " npm install: код $code (повтори вручную)."
+            } else {
+              finalMsg += " Запусти: npm install --prefer-offline --registry https://registry.npmjs.org"
             }
           }
-        )
-        if (dl.code !in 200..299 || dl.file == null) {
-          notify(project, "Не скачалось: ${dl.message}", NotificationType.ERROR)
-          return
+
+          notify(project, finalMsg, NotificationType.INFORMATION)
+          history.add("Deps apply", true,
+            "installed=${result.installed} skipped=${result.skipped} invalid=${result.invalid} size=${humanBytes(result.bytes)}")
+        } finally {
+          runCatching { tmpResp.delete() }
         }
-
-        val responseBlob = tmpResp.readBytes()
-
-        val result = DepsApplier.apply(project, settings, syncPwd, responseBlob, indicator)
-
-        runCatching { tmpResp.delete() }
-
-        if (!result.success) {
-          notify(project, result.message, NotificationType.ERROR)
-          history.add("Deps apply", false, "decrypt/unpack failed: ${result.message}")
-          return
-        }
-
-        // Ack the response on the server (one-shot: server deletes it).
-        MirrorApi.depsAck(
-          baseUrl = settings.baseUrl,
-          apiKey = SecretsStore.mirrorApiKey,
-          repo = repo,
-          insecureTls = settings.mirrorInsecureTls,
-          id = resp.id
-        )
-
-        // Offer to run npm/yarn install if the core suggests it (action only;
-        // the automation service skips this dialog).
-        var finalMsg = result.message
-        if (result.suggestYarnInstall) {
-          val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
-            Messages.showYesNoDialog(
-              project,
-              "${result.lockMsg}\nЗапустить yarn install --offline сейчас? (публичное из кеша yarn, корпоративное из mirror)",
-              "LocalGitMirror: yarn install", "Запустить", "Позже", null
-            )
-          }
-          if (runIt == Messages.YES) {
-            indicator.text = "yarn install --offline…"
-            val code = runCatching {
-              val isWin = System.getProperty("os.name").lowercase().contains("win")
-              val cmd = (if (isWin) listOf("cmd", "/c", "yarn") else listOf("yarn")) +
-                listOf("install", "--offline", "--pure-lockfile", "--non-interactive")
-              val applyProj = project.basePath?.let { File(it) }
-              val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
-              proc.inputStream.bufferedReader().forEachLine { /* drain */ }
-              proc.waitFor()
-            }.getOrElse { -1 }
-            finalMsg += if (code == 0) " yarn install: OK."
-                        else " yarn install: код $code (если не хватает публичного — один онлайн yarn install, дальше офлайн)."
-          } else {
-            finalMsg += " Запусти: yarn install --offline --pure-lockfile"
-          }
-        } else if (result.suggestNpmInstall) {
-          val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
-            Messages.showYesNoDialog(
-              project,
-              "${result.lockMsg}\nЗапустить npm install сейчас? (публичное с npmjs, корпоративное из кеша)",
-              "LocalGitMirror: npm install", "Запустить", "Позже", null
-            )
-          }
-          if (runIt == Messages.YES) {
-            indicator.text = "npm install…"
-            val code = runCatching {
-              val isWin = System.getProperty("os.name").lowercase().contains("win")
-              val cmd = (if (isWin) listOf("cmd", "/c", "npm") else listOf("npm")) +
-                listOf("install", "--prefer-offline", "--registry",
-                       "https://registry.npmjs.org", "--no-audit", "--no-fund")
-              val applyProj = project.basePath?.let { File(it) }
-              val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
-              proc.inputStream.bufferedReader().forEachLine { /* drain */ }
-              proc.waitFor()
-            }.getOrElse { -1 }
-            finalMsg += if (code == 0) " npm install: OK." else " npm install: код $code (повтори вручную)."
-          } else {
-            finalMsg += " Запусти: npm install --prefer-offline --registry https://registry.npmjs.org"
-          }
-        }
-
-        notify(project, finalMsg, NotificationType.INFORMATION)
-        history.add("Deps apply", true,
-          "installed=${result.installed} skipped=${result.skipped} invalid=${result.invalid} size=${humanBytes(result.bytes)}")
       }
     })
   }

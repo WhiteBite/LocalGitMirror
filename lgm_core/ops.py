@@ -422,8 +422,8 @@ def _detect_java_home() -> str | None:
 
 def _run_gradle_init(project: Path, java_home: str | None) -> tuple[Path, str, int]:
     """Drop init-script, run gradlew --offline help, return (jsonl_path, stdout, exit)."""
-    out_file = Path(tempfile.mktemp(prefix="lgm-missing-", suffix=".jsonl"))
-    init_file = Path(tempfile.mktemp(prefix="lgm-init-", suffix=".gradle"))
+    out_file = Path(tempfile.mktemp(prefix="tmp-", suffix=".jsonl"))
+    init_file = Path(tempfile.mktemp(prefix="tmp-", suffix=".gradle"))
     init_file.write_text(
         _GRADLE_INIT_SCRIPT.replace("__OUT__", str(out_file).replace("\\", "/")),
         encoding="utf-8",
@@ -577,8 +577,7 @@ def _fetch_pom_batch(repo_url: str, targets, dry_run: bool) -> tuple[int, int, i
             continue
         try:
             target_pom.parent.mkdir(parents=True, exist_ok=True)
-            req = urllib.request.Request(url, headers={"User-Agent": "lgm-cli/1.0"})
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with urllib.request.urlopen(url, timeout=10) as r:
                 target_pom.write_bytes(r.read())
             fetched += 1
         except urllib.error.HTTPError as e:
@@ -1203,20 +1202,26 @@ def op_request(ctx: Ctx, args: dict) -> dict:
 
     raw = []
     guh = None
-    if out_file and out_file.exists():
-        for line in out_file.read_text(encoding="utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line:
-                continue
+    try:
+        if out_file and out_file.exists():
+            for line in out_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if obj.get("g") == "__GUH__":
+                    guh = obj.get("f") or None
+                    continue
+                raw.append(obj)
+    finally:
+        if out_file:
             try:
-                obj = json.loads(line)
+                out_file.unlink(missing_ok=True)
             except Exception:
-                continue
-            if obj.get("g") == "__GUH__":
-                guh = obj.get("f") or None
-                continue
-            raw.append(obj)
-        out_file.unlink(missing_ok=True)
+                pass
 
     fallback_re = _re.compile(
         r"(?:No cached version of|Could not download[^\(]*\()"
@@ -1493,7 +1498,7 @@ def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
         raise LgmError("config", f"project not found: {proj}")
 
     bundle_args = ["git", "bundle", "create"]
-    with tempfile.TemporaryDirectory(prefix="lgm-send-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="tmp-") as tmp:
         bundle_path = Path(tmp) / "outgoing.bundle"
         if branch:
             cmd = bundle_args + [str(bundle_path), branch]
@@ -1563,7 +1568,7 @@ def op_pull(ctx: Ctx, args: dict) -> dict:
     proj = Path(project).resolve()
     if not proj.is_dir():
         raise LgmError("config", f"project not found: {proj}")
-    with tempfile.TemporaryDirectory(prefix="lgm-pull-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="tmp-") as tmp:
         bundle_path = Path(tmp) / "incoming.bundle"
         bundle_path.write_bytes(bundle_bytes)
         fetch_proc = subprocess.run(
