@@ -31,7 +31,7 @@ class DepsLogicTest {
   }
 
   private fun mkTmp(prefix: String): File =
-    Files.createTempDirectory("lgm-deps-$prefix-").toFile()
+    Files.createTempDirectory("tmp-deps-$prefix-").toFile()
 
   @Test
   fun `scanner finds all artifacts in fake cache`() {

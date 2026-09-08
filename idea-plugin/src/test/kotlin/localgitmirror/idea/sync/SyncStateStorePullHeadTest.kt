@@ -9,7 +9,7 @@ class SyncStateStorePullHeadTest {
 
   @Test
   fun `read write last pulled head`() {
-    val root = createTempDir(prefix = "lgm-sync-pull-")
+    val root = createTempDir(prefix = "tmp-sync-pull-")
     try {
       // Initialize a bare git repo so SyncStateStore can resolve .git/
       ProcessBuilder(listOf("git", "init")).directory(root).start().waitFor()

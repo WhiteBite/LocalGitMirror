@@ -19,7 +19,7 @@ import kotlin.test.assertTrue
 class EcosystemDepsTest {
 
   private fun mkTmp(prefix: String): File =
-    Files.createTempDirectory("lgm-eco-$prefix-").toFile()
+    Files.createTempDirectory("tmp-eco-$prefix-").toFile()
 
   // ── DepCoordinate ──────────────────────────────────────────────────────────
 

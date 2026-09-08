@@ -8,7 +8,7 @@ class SyncStateStoreCleanupTest {
 
   @Test
   fun `cleanupOldDumps keeps only newest N files`() {
-    val root = createTempDir(prefix = "lgm-sync-state-")
+    val root = createTempDir(prefix = "tmp-sync-state-")
     try {
       // Initialize git so gitDir() resolves correctly
       ProcessBuilder(listOf("git", "init")).directory(root).start().waitFor()

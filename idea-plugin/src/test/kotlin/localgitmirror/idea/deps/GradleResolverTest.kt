@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
 class GradleResolverTest {
 
   private fun mkTmp(prefix: String): File =
-    Files.createTempDirectory("lgm-resolver-$prefix-").toFile()
+    Files.createTempDirectory("tmp-resolver-$prefix-").toFile()
 
   // ─────────────────────────────────────────────────────────────────────────
   // Wrapper auto-detection

@@ -10,7 +10,7 @@ class BundleImporterTest {
 
   @Test
   fun `apply dump ff-only advances head`() {
-    val root = createTempDir(prefix = "lgm-native-apply-")
+    val root = createTempDir(prefix = "tmp-native-apply-")
     try {
       val source = File(root, "source").also { it.mkdirs() }
       git(source, "init")
@@ -52,7 +52,7 @@ class BundleImporterTest {
 
   @Test
   fun `apply dump fails on wrong password`() {
-    val root = createTempDir(prefix = "lgm-native-apply-pw-")
+    val root = createTempDir(prefix = "tmp-native-apply-pw-")
     try {
       val repo = File(root, "repo").also { it.mkdirs() }
       git(repo, "init")
@@ -82,7 +82,7 @@ class BundleImporterTest {
 
   @Test
   fun `apply dump new-branch creates branch`() {
-    val root = createTempDir(prefix = "lgm-native-apply-nb-")
+    val root = createTempDir(prefix = "tmp-native-apply-nb-")
     try {
       val repo = File(root, "repo").also { it.mkdirs() }
       git(repo, "init")
@@ -115,7 +115,7 @@ class BundleImporterTest {
 
   @Test
   fun `apply dump auto-suffixes on branch collision`() {
-    val root = createTempDir(prefix = "lgm-native-apply-coll-")
+    val root = createTempDir(prefix = "tmp-native-apply-coll-")
     try {
       val repo = File(root, "repo").also { it.mkdirs() }
       git(repo, "init")
