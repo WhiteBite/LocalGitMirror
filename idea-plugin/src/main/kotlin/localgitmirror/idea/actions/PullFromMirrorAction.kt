@@ -64,7 +64,7 @@ class PullFromMirrorAction(
     val handshakeError = quickHandshake(settings)
     if (handshakeError != null) {
       notify(project, handshakeError, NotificationType.ERROR)
-      service<OperationsHistoryService>().add("Pull from Mirror", false, handshakeError)
+      service<OperationsHistoryService>().add("Pull from Cache", false, handshakeError)
       operationInProgress.set(false)
       return
     }
@@ -76,7 +76,7 @@ class PullFromMirrorAction(
       override fun run(indicator: ProgressIndicator) {
         onIndicator?.invoke(indicator)
         indicator.isIndeterminate = true
-        indicator.text = "Получаем список веток с Mirror…"
+        indicator.text = "Получаем список веток с сервера…"
         indicator.checkCanceled()
         refsResult = MirrorApi.getRefs(
           baseUrl = settings.baseUrl,
@@ -91,14 +91,14 @@ class PullFromMirrorAction(
         val result = refsResult ?: run { operationInProgress.set(false); return }
 
         if (result.code !in 200..299 || result.refs == null) {
-          notify(project, "Не удалось получить ветки (repo='$repoName'): HTTP ${result.code}: ${result.message}", NotificationType.ERROR)
+          notify(project, "Не удалось получить ветки: HTTP ${result.code}: ${result.message}", NotificationType.ERROR)
           operationInProgress.set(false)
           return
         }
 
         val remoteRefs = result.refs ?: emptyMap()
         if (remoteRefs.isEmpty()) {
-          notify(project, "На Mirror нет веток для repo='$repoName'. Если ветку пушили с другой машины, " +
+          notify(project, "На Cache нет веток. Если ветку пушили с другой машины, " +
             "проверьте, что имя репозитория (см. строку статуса в панели) совпадает на обеих машинах.",
             NotificationType.WARNING)
           operationInProgress.set(false)
@@ -131,7 +131,7 @@ class PullFromMirrorAction(
             displayItems.first()
 
           val chosenDisplay = Messages.showEditableChooseDialog(
-            "Выберите ветку для подтягивания с Mirror:\n(★ = ветки которых нет локально — будут созданы)",
+            "Выберите ветку для подтягивания с Cache:\n(★ = ветки которых нет локально — будут созданы)",
             "DocCache: Fetch from Cache",
             null,
             displayItems,
@@ -149,7 +149,7 @@ class PullFromMirrorAction(
                          else chosenDisplay.removePrefix("★ ").substringBefore("  (")
 
           if (!remoteRefs.containsKey(resolved)) {
-            notify(project, "Ветка «$resolved» не найдена на Mirror.", NotificationType.WARNING)
+            notify(project, "Ветка «$resolved» не найдена на Cache.", NotificationType.WARNING)
             operationInProgress.set(false)
             return
           }
@@ -342,14 +342,14 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
                 )
                 if (dlFull.code == 204 || dlFull.code !in 200..299 || dlFull.file == null) {
                   notify(project, "[trace=$traceId] Сервер не может отдать нужные объекты (${dlFull.code})", NotificationType.ERROR)
-                  historyService.add("Pull from Mirror", false, "trace=$traceId 204 on full export")
+                  historyService.add("Pull from Cache", false, "trace=$traceId 204 on full export")
                   return
                 }
                 if (!doFetch(dir, dlFull.file, traceId, project, historyService, targetBranch, indicator)) return
               }
               dl.code !in 200..299 || dl.file == null -> {
                 notify(project, "[trace=$traceId] Ошибка скачивания HTTP ${dl.code}: ${dl.message}", NotificationType.ERROR)
-                historyService.add("Pull from Mirror", false, "trace=$traceId branch=$targetBranch HTTP ${dl.code}")
+                historyService.add("Pull from Cache", false, "trace=$traceId branch=$targetBranch HTTP ${dl.code}")
                 return
               }
               else -> {
@@ -363,7 +363,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
             val hasNow = git(dir, indicator, "cat-file", "-e", targetHash).exitCode == 0
             if (!hasNow) {
               notify(project, "[trace=$traceId] Объекты ветки «$targetBranch» недоступны после загрузки. Попробуйте ещё раз.", NotificationType.ERROR)
-              historyService.add("Pull from Mirror", false, "trace=$traceId objects missing after fetch")
+              historyService.add("Pull from Cache", false, "trace=$traceId objects missing after fetch")
               return
             }
           }
@@ -397,7 +397,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
           else ""
           val msg = "[trace=$traceId] Pull завершён: $result$checkoutHint"
           notify(project, msg, NotificationType.INFORMATION)
-          historyService.add("Pull from Mirror", true, "trace=$traceId branch=$targetBranch $result")
+          historyService.add("Pull from Cache", true, "trace=$traceId branch=$targetBranch $result")
 
           if (!remoteRefs["HEAD"].isNullOrBlank()) {
             SyncStateStore.writeLastPulledHead(dir, remoteRefs["HEAD"]!!)
@@ -410,7 +410,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
           }
           val msg = "[trace=$traceId] Pull не удался: ${humanizeGitError(t.message)}"
           notify(project, msg, NotificationType.ERROR)
-          historyService.add("Pull from Mirror", false, "trace=$traceId ${t.message}")
+          historyService.add("Pull from Cache", false, "trace=$traceId ${t.message}")
         } finally {
           operationInProgress.set(false)
         }
@@ -438,9 +438,9 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
       "timed out" in low || "timeout" in low ->
         "превышено время ожидания. Проверьте сеть/нагрузку сервера."
       "connection" in low || "connect" in low ->
-        "не удалось подключиться к Mirror. Проверьте URL/порт."
+        "не удалось подключиться к серверу. Проверьте URL/порт."
       "would clobber" in low || "non-fast-forward" in low ->
-        "локальная ветка расходится с Mirror. Сохраните изменения и повторите."
+        "локальная ветка расходится с Cache. Сохраните изменения и повторите."
       else -> raw.take(300)
     }
   }
@@ -452,9 +452,9 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
    * for the send path, so push and pull behave consistently.
    */
   private fun quickHandshake(settings: MirrorSettingsService.State): String? {
-    if (settings.baseUrl.isBlank()) return "Не настроен Mirror URL."
+    if (settings.baseUrl.isBlank()) return "Не настроен URL сервера."
     val syncPassword = SecretsStore.syncPassword
-    if (syncPassword.isBlank()) return "Не задан Sync Password (Settings → LocalGitMirror)."
+    if (syncPassword.isBlank()) return "Не задан Sync Password (Settings → DocCache)."
 
     val probe = HandshakeCache.passwordProbe(
       baseUrl = settings.baseUrl,
@@ -463,7 +463,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
       insecureTls = settings.mirrorInsecureTls
     )
     if (probe.code !in 200..299 || probe.bytes == null) {
-      return "Mirror недоступен: HTTP ${probe.code}: ${probe.message.take(200)}"
+      return "Сервер недоступен: HTTP ${probe.code}: ${probe.message.take(200)}"
     }
     return try {
       val plain = String(BundleCrypto.decryptDumpBytes(probe.bytes, syncPassword)).trim()
@@ -471,7 +471,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
       else "Sync Password не совпадает с сервером (probe вернул неожиданный payload)."
     } catch (_: Throwable) {
       "Sync Password не совпадает с сервером. " +
-        "Откройте Settings → LocalGitMirror и введите тот же пароль, что в .env (SYNC_PASSWORD) на сервере."
+        "Откройте Settings → DocCache и введите тот же пароль, что в .env (SYNC_PASSWORD) на сервере."
     }
   }
 
@@ -483,7 +483,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
       // AES-GCM tag mismatch = wrong password (or corrupted bundle)
       cls.contains("BadTag") || cls.contains("BadPadding") || raw?.contains("Tag mismatch", true) == true ->
         "Ошибка расшифровки: Sync Password не совпадает с сервером. " +
-          "Сверьте пароль в Settings → LocalGitMirror с .env SYNC_PASSWORD на сервере."
+          "Сверьте пароль в Settings → DocCache с .env SYNC_PASSWORD на сервере."
       cls.contains("IllegalArgument") ->
         "Ошибка расшифровки: повреждённый или неподдерживаемый формат пакета. ${raw ?: ""}".trim()
       else -> "Ошибка расшифровки: ${raw ?: cls}"
@@ -514,13 +514,13 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
       fetchFromBundle(dir, bundleBytes, indicator) { err -> fetchError = err }
       if (fetchError != null) {
         notify(project, "[trace=$traceId] $fetchError", NotificationType.ERROR)
-        historyService.add("Pull from Mirror", false, "trace=$traceId $fetchError")
+        historyService.add("Pull from Cache", false, "trace=$traceId $fetchError")
         false
       } else true
     } catch (e: Exception) {
       val msg = describeDecryptError(e)
       notify(project, "[trace=$traceId] $msg", NotificationType.ERROR)
-      historyService.add("Pull from Mirror", false, "trace=$traceId $msg")
+      historyService.add("Pull from Cache", false, "trace=$traceId $msg")
       false
     } finally {
       try { dumpFile.delete() } catch (_: Exception) {}

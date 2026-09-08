@@ -47,13 +47,13 @@ class SyncFacadeService(private val project: Project) {
     val diags = mutableListOf<Diagnostic>()
     val resolved = resolveRepo(projectDir, settings)
     if (!resolved.error.isNullOrBlank()) {
-      diags += Diagnostic(Severity.ERROR, "REPO_INVALID", resolved.error, "Set Mirror repo explicitly in settings")
+      diags += Diagnostic(Severity.ERROR, "REPO_INVALID", resolved.error, "Set Cache repo explicitly in settings")
     } else {
       diags += Diagnostic(Severity.INFO, "REPO_TARGET", "Target repo: ${resolved.sanitized}")
     }
 
     if (settings.baseUrl.isBlank()) {
-      diags += Diagnostic(Severity.ERROR, "BASE_URL_MISSING", "Mirror URL is not configured")
+      diags += Diagnostic(Severity.ERROR, "BASE_URL_MISSING", "Server URL is not configured")
     }
     if (SecretsStore.syncPassword.isBlank()) {
       diags += Diagnostic(Severity.ERROR, "PASSWORD_MISSING", "Sync Password is not configured")
@@ -171,14 +171,14 @@ class SyncFacadeService(private val project: Project) {
     if (has.code !in 200..299) {
       diags += Diagnostic(Severity.WARN, "DRYRUN_NEGOTIATION_UNAVAILABLE", "has-commits unavailable (HTTP ${has.code})")
     } else {
-      diags += Diagnostic(Severity.INFO, "DRYRUN_REMOTE_KNOWN", "Mirror knows ${known.size} candidate commits")
+      diags += Diagnostic(Severity.INFO, "DRYRUN_REMOTE_KNOWN", "Cache knows ${known.size} candidate commits")
     }
 
     if (remoteHasHead) {
       diags += Diagnostic(
         Severity.INFO,
         "DRYRUN_POINTER_ONLY",
-        "Mirror already has HEAD object; will use pointer-only apply",
+        "Cache already has HEAD object; will use pointer-only apply",
         "If you expected changes to send, verify you're on the right branch and repo target"
       )
     }
@@ -211,7 +211,7 @@ class SyncFacadeService(private val project: Project) {
       return PullDryRunReport(
         ok = false, targetRepo = repo, localHead = null, remoteHead = null,
         hasUpdates = false, reason = "not-configured",
-        diagnostics = listOf(Diagnostic(Severity.ERROR, "BASE_URL_MISSING", "Mirror URL is not configured"))
+        diagnostics = listOf(Diagnostic(Severity.ERROR, "BASE_URL_MISSING", "Server URL is not configured"))
       )
     }
 

@@ -33,14 +33,14 @@ object DepsDiagnostics {
   @Volatile var verbose: Boolean = false
 
   private fun diagFile(): File {
-    val dir = File(PathManager.getLogPath(), "localgitmirror")
+    val dir = File(PathManager.getLogPath(), "doccache")
     if (!dir.exists()) dir.mkdirs()
-    return File(dir, "deps-diag.log")
+    return File(dir, "diag.log")
   }
 
   /** Short, name-free status line — always safe to emit to the IDE log. */
   fun event(message: String) {
-    ideaLog.info("[deps] $message")
+    ideaLog.info("[cache] $message")
     if (enabled) append("[$ts] $message")
   }
 
@@ -49,7 +49,7 @@ object DepsDiagnostics {
    * [enabled] and [verbose] are on; otherwise reduced to a counts-only line.
    */
   fun detail(title: String, lines: () -> List<String>) {
-    if (!enabled) { ideaLog.debug("[deps] $title (${lines().size} lines, file disabled)"); return }
+    if (!enabled) { ideaLog.debug("[cache] $title (${lines().size} lines, file disabled)"); return }
     if (!verbose) { append("[$ts] $title — ${lines().size} entries (verbose off, names hidden)"); return }
     val body = buildString {
       appendLine("[$ts] $title")

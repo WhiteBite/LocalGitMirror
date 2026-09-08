@@ -347,7 +347,7 @@ class ApplyDepsAction : AnAction() {
             val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
               Messages.showYesNoDialog(
                 project,
-                "${result.lockMsg}\nЗапустить yarn install --offline сейчас? (публичное из кеша yarn, корпоративное из mirror)",
+                "${result.lockMsg}\nЗапустить yarn install --offline сейчас? (публичное из кеша yarn, защищённое из кеша)",
                 "DocCache: yarn install", "Запустить", "Позже", null
               )
             }
@@ -371,7 +371,7 @@ class ApplyDepsAction : AnAction() {
             val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
               Messages.showYesNoDialog(
                 project,
-                "${result.lockMsg}\nЗапустить npm install сейчас? (публичное с npmjs, корпоративное из кеша)",
+                "${result.lockMsg}\nЗапустить npm install сейчас? (публичное с npmjs, защищённое из кеша)",
                 "DocCache: npm install", "Запустить", "Позже", null
               )
             }

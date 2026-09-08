@@ -165,7 +165,7 @@ class PullCheckStartupActivity : ProjectActivity {
         "Доступна новая версия для загрузки.",
         NotificationType.INFORMATION
       )
-      .addAction(NotificationAction.createSimpleExpiring("Pull from Mirror") {
+      .addAction(NotificationAction.createSimpleExpiring("Загрузить") {
         localgitmirror.idea.actions.PullFromMirrorAction().actionPerformed(
           com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
             "SyncFocusCheck",
@@ -236,7 +236,7 @@ class PullCheckStartupActivity : ProjectActivity {
           val notification = NotificationGroupManager.getInstance()
             .getNotificationGroup("DocCache")
             .createNotification(
-              "На Mirror ждёт $count запрос(ов) зависимостей. Нажми «Выдать».",
+              "В DocCache ждёт $count запрос(ов). Нажми «Выдать».",
               NotificationType.INFORMATION
             )
             .addAction(NotificationAction.createSimpleExpiring("Выдать") {
@@ -274,7 +274,7 @@ class PullCheckStartupActivity : ProjectActivity {
           val notification = NotificationGroupManager.getInstance()
             .getNotificationGroup("DocCache")
             .createNotification(
-              "Готов ответ с зависимостями ($count). Нажми «Применить».",
+              "Готов ответ ($count). Нажми «Применить».",
               NotificationType.INFORMATION
             )
             .addAction(NotificationAction.createSimpleExpiring("Применить") {

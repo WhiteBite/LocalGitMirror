@@ -1275,7 +1275,7 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     syncPassword: String
   ): PruneResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/sync/documents/prune-branches")
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/prune-branches")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "POST"
       conn.doOutput = true

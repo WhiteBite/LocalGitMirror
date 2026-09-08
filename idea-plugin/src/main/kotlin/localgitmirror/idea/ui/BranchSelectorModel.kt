@@ -10,7 +10,7 @@ internal data class BranchChoice(
 ) {
   val isMirrorOnly: Boolean get() = !isLocal
 
-  override fun toString(): String = if (isLocal) name else "★ $name (Mirror)"
+  override fun toString(): String = if (isLocal) name else "★ $name (Cache)"
 }
 
 /** Pure branch-selector rules, kept outside Swing so they can be unit tested. */

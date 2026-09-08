@@ -33,7 +33,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
     val panel = panel {
       // Minimal settings: URL + API Key + Password
-      group("Mirror Server") {
+      group("Сервер") {
         row("URL") {
           textField()
             .bindText(state::baseUrl)
@@ -47,7 +47,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
         row("API Key") {
           passwordField()
             .bindText(::mirrorApiKeyLocal)
-            .comment("Из Plugin Connection Info на Mirror-сервере")
+            .comment("Из Plugin Connection Info на сервере")
         }
 
         row("Пароль синхронизации") {
@@ -63,7 +63,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           textField()
             .bindText(projectState::repoOverride)
             .resizableColumn()
-            .comment("Переопределение имени репозитория на Mirror (если папка называется иначе)")
+            .comment("Переопределение имени репозитория на сервере (если папка называется иначе)")
         }
       }
 
@@ -192,8 +192,8 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
         when {
           servers.isEmpty() -> {
             Messages.showInfoMessage(
-              "Серверы Mirror не найдены в локальной сети",
-              "Поиск Mirror"
+              "Серверы не найдены в локальной сети",
+              "Поиск сервера"
             )
           }
           servers.size == 1 -> {
@@ -205,8 +205,8 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           else -> {
             val options = servers.map { "${it.toUrl()} (${it.ip})" }.toTypedArray()
             val chosen = Messages.showEditableChooseDialog(
-              "Найдено несколько серверов Mirror. Выберите:",
-              "Поиск Mirror",
+              "Найдено несколько серверов. Выберите:",
+              "Поиск сервера",
               null, options, options.first(), null
             )
             if (chosen != null) {
@@ -245,7 +245,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           Messages.showInfoMessage("Подключение успешно", "Проверка подключения")
         }
       }
-    }, "Mirror-Test").apply { isDaemon = true }.start()
+    }, "Cache-Test").apply { isDaemon = true }.start()
   }
 
   private fun resolveUrl(raw: String): String {

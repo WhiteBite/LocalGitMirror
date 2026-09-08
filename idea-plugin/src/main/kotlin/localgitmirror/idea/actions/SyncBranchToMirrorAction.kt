@@ -105,7 +105,7 @@ class SyncBranchToMirrorAction : AnAction() {
           return
         }
 
-        notify(project, "[trace=${syncRes.traceId}] Synced branch '$chosen' to Mirror repo '${syncRes.repo ?: "?"}'. ${syncRes.http?.body?.take(500) ?: ""}", NotificationType.INFORMATION)
+        notify(project, "[trace=${syncRes.traceId}] Synced branch '$chosen' to Cache. ${syncRes.http?.body?.take(500) ?: ""}", NotificationType.INFORMATION)
         history.add(LocalGitMirrorBundle.message("history.op.sendBranch"), true,
           "branch=$chosen repo=${syncRes.repo ?: "?"}")
       }

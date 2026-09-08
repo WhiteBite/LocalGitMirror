@@ -27,7 +27,7 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
 
   val selectedChoice = selectedBranchChoice()
   if (selectedChoice?.isMirrorOnly == true) {
-    notify("Ветка «${selectedChoice.name}» есть только на Mirror. Нажмите «Подтянуть с Mirror».", NotificationType.INFORMATION)
+    notify("Ветка «${selectedChoice.name}» есть только на Cache. Нажмите «Подтянуть с Cache».", NotificationType.INFORMATION)
     return
   }
 
@@ -264,11 +264,11 @@ internal fun LocalGitMirrorPanel.syncSelectedCommits() {
         if (settings.offlineGenerateOnly) {
           append("Offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
           historyService.add("Send commits", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' offline dump: ${syncRes.dump?.absolutePath ?: res.details}")
-          notify("[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}'", NotificationType.INFORMATION)
+          notify("[trace=${syncRes.traceId}] Offline mode: dump generated", NotificationType.INFORMATION)
         } else {
           append("OK: ${syncRes.http?.code} ${syncRes.http?.body?.take(400) ?: ""}")
           historyService.add("Send commits", true, "trace=${syncRes.traceId} repo='${syncRes.repo ?: "?"}' ${syncRes.http?.body ?: "OK"}")
-          notify("[trace=${syncRes.traceId}] Sent selected commits to Mirror repo '${syncRes.repo ?: "?"}'", NotificationType.INFORMATION)
+          notify("[trace=${syncRes.traceId}] Sent selected commits to Cache", NotificationType.INFORMATION)
         }
         markLastSyncOk()
         refreshHistoryLog()

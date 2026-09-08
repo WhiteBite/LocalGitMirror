@@ -84,26 +84,26 @@
             class="localgitmirror.idea.actions.ApplyLocalDumpAction"
             text="Apply local sync package…" description="Apply local encrypted sync package"/>
 
-    <!-- ── Dependency sync (gradle + npm corporate deps) ── -->
+    <!-- ── Dependency sync (gradle + npm deps) ── -->
     <action id="LocalGitMirror.DepsRequest"
             class="localgitmirror.idea.deps.RequestDepsAction"
             text="Request missing items (this machine)…"
-            description="Detect which gradle/npm deps can't be resolved here and request them from the work machine"/>
+            description="Detect items that cannot be resolved locally and request them"/>
 
     <action id="LocalGitMirror.DepsRespond"
             class="localgitmirror.idea.deps.RespondDepsAction"
             text="Provide requested items…"
-            description="WORK: look up the requested coordinates in the local cache and ship them"/>
+            description="Look up requested items in the local cache and provide them"/>
 
     <action id="LocalGitMirror.DepsApply"
             class="localgitmirror.idea.deps.ApplyDepsAction"
             text="Apply received dependencies…"
-            description="DOME: unpack the received deps into the local gradle/npm caches"/>
+            description="Unpack received items into local caches"/>
 
     <action id="LocalGitMirror.MirrorPublish"
             class="localgitmirror.idea.deps.PublishMirrorAction"
             text="Publish to cache…"
-            description="WORK: scan local caches for protected corporate artifacts and publish to home vault"/>
+            description="Publish cached items to the server vault"/>
 
     <!-- ── Explicit repo file sync (encrypted with SYNC_PASSWORD) ── -->
     <action id="LocalGitMirror.FileSendSelected"

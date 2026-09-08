@@ -101,7 +101,7 @@ class PushAsAction : AnAction() {
         }
 
         try {
-          indicator.text = "Syncing '$targetBranch' to Mirror"
+          indicator.text = "Syncing '$targetBranch' to Cache"
           val syncRes = syncFacade.runFullSync(projectDir, settings)
           val result = syncRes.step
           if (!result.ok) {
