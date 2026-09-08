@@ -98,7 +98,7 @@ def test_export_empty_repo_returns_400(tmp_path: Path, monkeypatch):
     client = TestClient(app)
 
     # Create repo (this makes the initial commit via RepoManager)
-    created = client.post("/api/repos/create", json={"name": repo_name})
+    created = client.post("/api/documents/collection", json={"name": repo_name})
     assert created.status_code == 200
 
     # Export of an unknown repo must 404. Request params travel inside an

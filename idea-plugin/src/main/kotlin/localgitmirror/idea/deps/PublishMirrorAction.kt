@@ -54,7 +54,7 @@ class PublishMirrorAction : AnAction() {
     }
     val history = service<OperationsHistoryService>()
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Синхронизировать корпоративное зеркало", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Опубликовать в кэш", true) {
       override fun run(indicator: ProgressIndicator) {
         indicator.isIndeterminate = true
 
@@ -275,7 +275,7 @@ class PublishMirrorAction : AnAction() {
 
 private fun notify(project: Project, msg: String, type: NotificationType) {
   NotificationGroupManager.getInstance()
-    .getNotificationGroup("LocalGitMirror")
+    .getNotificationGroup("DocCache")
     .createNotification(msg, type)
     .notify(project)
 }

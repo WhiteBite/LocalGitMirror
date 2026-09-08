@@ -38,7 +38,7 @@ import javax.swing.JList
 
 private fun notify(project: Project?, message: String, type: NotificationType) {
   NotificationGroupManager.getInstance()
-    .getNotificationGroup("LocalGitMirror")
+    .getNotificationGroup("DocCache")
     .createNotification(message, type)
     .notify(project)
 }
@@ -283,7 +283,7 @@ private fun fetchAndCopy(
   setSystemClipboard(plain)
   val previewLen = plain.length
   val notif = NotificationGroupManager.getInstance()
-    .getNotificationGroup("LocalGitMirror")
+    .getNotificationGroup("DocCache")
     .createNotification(
       LocalGitMirrorBundle.message("notify.buffer.pasted", formatTs(ts), previewLen.toString()),
       NotificationType.INFORMATION

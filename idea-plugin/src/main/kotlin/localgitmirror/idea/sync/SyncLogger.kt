@@ -18,7 +18,7 @@ object SyncLogger {
     private val gitDirCache = ConcurrentHashMap<String, File>()
 
     fun log(dir: File, message: String) {
-        ideaLog.info("[Sync] $message")
+        ideaLog.info("[DocCache] $message")
         try {
             val gitDir = gitDirCache[dir.absolutePath]
                 ?: resolveGitDir(dir)?.also { gitDirCache[dir.absolutePath] = it }

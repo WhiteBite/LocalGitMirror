@@ -1582,7 +1582,7 @@ def op_pull(ctx: Ctx, args: dict) -> dict:
 
 
 def op_deps_request(ctx: Ctx, args: dict) -> dict:
-    """Post a pre-built encrypted manifest file to /api/deps/request."""
+    """Post a pre-built encrypted manifest file to /api/documents/submit."""
     c = _client(ctx)
     repo = args.get("repo", "onyx-platform")
     manifest_path = args.get("manifest", "")
@@ -1890,7 +1890,7 @@ REGISTRY: list[Op] = [
     ),
     Op(
         name="deps_request",
-        summary="Post a pre-built encrypted manifest file to /api/deps/request.",
+        summary="Post a pre-built encrypted manifest file to /api/documents/submit.",
         params=[
             Param("repo", "str", "", "Repository name"),
             Param("manifest", "str", "", "Path to encrypted manifest file", required=True),

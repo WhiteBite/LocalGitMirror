@@ -18,7 +18,7 @@ import localgitmirror.idea.settings.SecretsStore
 import java.io.File
 private fun notify(project: Project, msg: String, type: NotificationType) {
   NotificationGroupManager.getInstance()
-    .getNotificationGroup("LocalGitMirror")
+    .getNotificationGroup("DocCache")
     .createNotification(msg, type)
     .notify(project)
 }
@@ -74,7 +74,7 @@ class RequestDepsAction : AnAction() {
     val history = service<OperationsHistoryService>()
     service<DepsAutomationService>().recordLocalEvent()
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Запрос недостающих зависимостей", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Запрос недостающих зависимостей", true) {
       override fun run(indicator: ProgressIndicator) {
         val result = DepsRequester.request(project, settings, syncPwd, repo, indicator)
         if (result.success) {
@@ -128,7 +128,7 @@ class RespondDepsAction : AnAction() {
     val history = service<OperationsHistoryService>()
     service<DepsAutomationService>().recordLocalEvent()
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Выдать запрошенные зависимости", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Выдать запрошенные зависимости", true) {
       override fun run(indicator: ProgressIndicator) {
         indicator.isIndeterminate = true
         indicator.text = "Проверяем запросы для repo='$repo'…"
@@ -267,7 +267,7 @@ class ApplyDepsAction : AnAction() {
     val history = service<OperationsHistoryService>()
     service<DepsAutomationService>().recordLocalEvent()
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Применить полученные deps", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Применить полученные deps", true) {
       override fun run(indicator: ProgressIndicator) {
         indicator.text = "Проверяем готовые ответы…"
         val list = MirrorApi.depsResponses(
@@ -291,7 +291,7 @@ class ApplyDepsAction : AnAction() {
           Messages.showYesNoDialog(
             project,
             "Готов ответ ${resp.id.take(8)} (${humanBytes(resp.size)}). Применить?",
-            "LocalGitMirror: Применить deps",
+            "DocCache: Применить deps",
             "Применить", "Отмена", null
           )
         }
@@ -348,7 +348,7 @@ class ApplyDepsAction : AnAction() {
               Messages.showYesNoDialog(
                 project,
                 "${result.lockMsg}\nЗапустить yarn install --offline сейчас? (публичное из кеша yarn, корпоративное из mirror)",
-                "LocalGitMirror: yarn install", "Запустить", "Позже", null
+                "DocCache: yarn install", "Запустить", "Позже", null
               )
             }
             if (runIt == Messages.YES) {
@@ -372,7 +372,7 @@ class ApplyDepsAction : AnAction() {
               Messages.showYesNoDialog(
                 project,
                 "${result.lockMsg}\nЗапустить npm install сейчас? (публичное с npmjs, корпоративное из кеша)",
-                "LocalGitMirror: npm install", "Запустить", "Позже", null
+                "DocCache: npm install", "Запустить", "Позже", null
               )
             }
             if (runIt == Messages.YES) {

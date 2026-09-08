@@ -74,7 +74,7 @@ def make_publication(entries: dict, manifest: dict | None = None) -> bytes:
 
 def publish(client, payload: bytes):
     return client.post(
-        "/api/deps/mirror/publish",
+        "/api/cache/publish",
         files={"attachment": ("pub.bin", payload, "application/octet-stream")},
         data={"repo": "onyx-platform"},
     )
@@ -95,7 +95,7 @@ def test_publish_imports_protected_artifact(client):
 def test_published_artifact_is_served_by_maven_endpoint(client):
     """Приёмочный сценарий целиком: опубликовали — сборка может забрать."""
     publish(client, make_publication({PLUGIN.maven_path: b"plugin-jar"}))
-    r = client.get(f"/api/deps/m2/{PLUGIN.maven_path}")
+    r = client.get(f"/api/cache/m2/{PLUGIN.maven_path}")
     assert r.status_code == 200
     assert r.content == b"plugin-jar"
 
@@ -128,7 +128,7 @@ def test_publish_reports_conflict_and_keeps_original(client):
 
     assert len(body["conflicts"]) == 1
     assert body["added"] == 0
-    served = client.get(f"/api/deps/m2/{PLUGIN.maven_path}")
+    served = client.get(f"/api/cache/m2/{PLUGIN.maven_path}")
     assert served.content == b"original", "подмена не должна вступать в силу"
 
 
@@ -183,7 +183,7 @@ def test_publish_rejects_non_zip_plaintext(client):
 
 def test_publish_rejects_empty_body(client):
     r = client.post(
-        "/api/deps/mirror/publish",
+        "/api/cache/publish",
         files={"attachment": ("pub.bin", b"", "application/octet-stream")},
     )
     assert r.status_code == 400
@@ -208,12 +208,12 @@ def test_publish_rebuilds_projection(client, store):
 def test_missing_protected_artifact_returns_404_not_redirect(client):
     """Ключевое свойство. Фолбэка в Maven Central быть не должно: иначе туда
     можно опубликовать ru.kryptonite:* и перехватить защищённое имя."""
-    r = client.get(f"/api/deps/m2/{PLUGIN.maven_path}", follow_redirects=False)
+    r = client.get(f"/api/cache/m2/{PLUGIN.maven_path}", follow_redirects=False)
     assert r.status_code == 404
 
 
 def test_missing_protected_artifact_is_recorded_as_wanted(client, store):
-    client.get(f"/api/deps/m2/{PLUGIN.maven_path}")
+    client.get(f"/api/cache/m2/{PLUGIN.maven_path}")
     wanted = store.list_wanted()
     assert len(wanted) == 1
     assert wanted[0]["maven_path"] == PLUGIN.maven_path
@@ -222,7 +222,7 @@ def test_missing_protected_artifact_is_recorded_as_wanted(client, store):
 
 def test_repeated_miss_counts_once_in_queue(client, store):
     for _ in range(3):
-        client.get(f"/api/deps/m2/{PLUGIN.maven_path}")
+        client.get(f"/api/cache/m2/{PLUGIN.maven_path}")
     wanted = store.list_wanted()
     assert len(wanted) == 1
     assert wanted[0]["count"] == 3
@@ -230,31 +230,31 @@ def test_repeated_miss_counts_once_in_queue(client, store):
 
 def test_public_miss_is_not_recorded_as_wanted(client, store):
     """Публичный промах дом закроет сам — очередь им засорять не надо."""
-    client.get(f"/api/deps/m2/{FOREIGN.maven_path}")
+    client.get(f"/api/cache/m2/{FOREIGN.maven_path}")
     assert store.list_wanted() == []
 
 
 def test_maven_rejects_path_traversal(client):
-    r = client.get("/api/deps/m2/ru/kryptonite/../../../../../etc/passwd")
+    r = client.get("/api/cache/m2/ru/kryptonite/../../../../../etc/passwd")
     assert r.status_code in (400, 404)
 
 
 def test_maven_serves_sha1_checksum(client):
     publish(client, make_publication({PLUGIN.maven_path: b"jar"}))
-    r = client.get(f"/api/deps/m2/{PLUGIN.maven_path}.sha1")
+    r = client.get(f"/api/cache/m2/{PLUGIN.maven_path}.sha1")
     assert r.status_code == 200
     assert len(r.text.strip()) == 40
 
 
 def test_maven_sha1_of_missing_artifact_is_404(client):
-    r = client.get(f"/api/deps/m2/{PLUGIN.maven_path}.sha1")
+    r = client.get(f"/api/cache/m2/{PLUGIN.maven_path}.sha1")
     assert r.status_code == 404
 
 
 def test_marker_pom_is_servable(client):
     """Плагин резолвится через marker-POM — без него plugins {} не работает."""
     publish(client, make_publication({MARKER.maven_path: b"<project/>"}))
-    r = client.get(f"/api/deps/m2/{MARKER.maven_path}")
+    r = client.get(f"/api/cache/m2/{MARKER.maven_path}")
     assert r.status_code == 200
 
 
@@ -268,7 +268,7 @@ def test_data_plane_refuses_remote_client(vault):
     app = FastAPI()
     app.include_router(mirror_mod.router)
     remote = TestClient(app, client=("192.168.1.50", 40000))
-    r = remote.get(f"/api/deps/m2/{PLUGIN.maven_path}")
+    r = remote.get(f"/api/cache/m2/{PLUGIN.maven_path}")
     assert r.status_code == 404
 
 
@@ -278,7 +278,7 @@ def test_data_plane_remote_allowed_with_explicit_optin(vault, monkeypatch):
     app = FastAPI()
     app.include_router(mirror_mod.router)
     remote = TestClient(app, client=("192.168.1.50", 40000))
-    r = remote.get(f"/api/deps/m2/{PLUGIN.maven_path}")
+    r = remote.get(f"/api/cache/m2/{PLUGIN.maven_path}")
     assert r.status_code == 200
 
 
@@ -288,7 +288,7 @@ def test_publish_is_not_restricted_to_loopback(vault):
     app.include_router(mirror_mod.router)
     remote = TestClient(app, client=("192.168.1.50", 40000))
     r = remote.post(
-        "/api/deps/mirror/publish",
+        "/api/cache/publish",
         files={"attachment": ("pub.bin",
                               make_publication({PLUGIN.maven_path: b"jar"}),
                               "application/octet-stream")},
@@ -302,31 +302,31 @@ def test_publish_is_not_restricted_to_loopback(vault):
 
 def test_index_reports_inventory_for_delta_sync(client):
     publish(client, make_publication({PLUGIN.maven_path: b"jar"}))
-    body = client.get("/api/deps/mirror/index").json()
+    body = client.get("/api/cache/index").json()
     assert body["inventory"][PLUGIN.maven_path] == sha256_bytes(b"jar")
 
 
 def test_index_exposes_pending_wanted(client):
-    client.get(f"/api/deps/m2/{PLUGIN.maven_path}")  # промах -> wanted
-    body = client.get("/api/deps/mirror/index").json()
+    client.get(f"/api/cache/m2/{PLUGIN.maven_path}")  # промах -> wanted
+    body = client.get("/api/cache/index").json()
     assert len(body["wanted"]) == 1
 
 
 def test_index_lists_protected_groups(client):
-    body = client.get("/api/deps/mirror/index").json()
+    body = client.get("/api/cache/index").json()
     assert body["protectedGroups"] == ["ru.kryptonite"]
 
 
 def test_protected_groups_configurable_via_env(client, monkeypatch):
     monkeypatch.setenv("LGM_PROTECTED_MAVEN_GROUPS", "ru.kryptonite,ru.other")
-    body = client.get("/api/deps/mirror/index").json()
+    body = client.get("/api/cache/index").json()
     assert body["protectedGroups"] == ["ru.kryptonite", "ru.other"]
 
 
 def test_status_reports_conflicts(client):
     publish(client, make_publication({PLUGIN.maven_path: b"a"}))
     publish(client, make_publication({PLUGIN.maven_path: b"b"}))
-    body = client.get("/api/deps/mirror/status").json()
+    body = client.get("/api/cache/status").json()
     assert len(body["conflicts"]) == 1
 
 
@@ -336,33 +336,33 @@ def test_status_reports_conflicts(client):
 
 def test_gradle_init_returns_script(client):
     """Эндпоинт отдаёт готовый скрипт с подставленными значениями."""
-    resp = client.get("/api/deps/mirror/gradle-init")
+    resp = client.get("/api/cache/gradle-init")
     assert resp.status_code == 200
     assert "text/plain" in resp.headers["content-type"]
     script = resp.text
     assert "LgmVaultFiles" in script
     assert "LgmVaultHttp" in script
-    assert "/api/deps/m2/" in script
+    assert "/api/cache/m2/" in script
 
 
 def test_gradle_init_uses_request_base_url(client):
     """Адрес берётся из запроса — скрипт знает, где живёт сервер."""
-    resp = client.get("/api/deps/mirror/gradle-init")
+    resp = client.get("/api/cache/gradle-init")
     # TestClient по умолчанию ходит на http://testserver
-    assert "http://testserver/api/deps/m2/" in resp.text
+    assert "http://testserver/api/cache/m2/" in resp.text
 
 
 def test_gradle_init_respects_base_url_param(client):
     """Переопределение через query-параметр — для случаев, когда клиент
     знает внешний адрес лучше сервера (например за NAT)."""
-    resp = client.get("/api/deps/mirror/gradle-init?base_url=http://10.0.0.5:9000")
-    assert "http://10.0.0.5:9000/api/deps/m2/" in resp.text
+    resp = client.get("/api/cache/gradle-init?base_url=http://10.0.0.5:9000")
+    assert "http://10.0.0.5:9000/api/cache/m2/" in resp.text
 
 
 def test_gradle_init_includes_api_key_when_set(client, monkeypatch):
     """API-ключ попадает в скрипт — gradle будет авторизовываться."""
     monkeypatch.setenv("API_KEY", "test-secret-key")
-    resp = client.get("/api/deps/mirror/gradle-init")
+    resp = client.get("/api/cache/gradle-init")
     assert "test-secret-key" in resp.text
     assert "HttpHeaderCredentials" in resp.text
 
@@ -370,7 +370,7 @@ def test_gradle_init_includes_api_key_when_set(client, monkeypatch):
 def test_gradle_init_omits_auth_when_no_key(client, monkeypatch):
     """Без ключа — без credentials. Gradle ругается на пустые блоки."""
     monkeypatch.delenv("API_KEY", raising=False)
-    resp = client.get("/api/deps/mirror/gradle-init")
+    resp = client.get("/api/cache/gradle-init")
     assert "HttpHeaderCredentials" not in resp.text
 
 
@@ -379,7 +379,7 @@ def test_gradle_init_rejects_remote_client(client, vault, monkeypatch):
     monkeypatch.setenv("API_KEY", "secret")
     # Имитируем удалённый запрос через headers.
     resp = client.get(
-        "/api/deps/mirror/gradle-init",
+        "/api/cache/gradle-init",
         headers={"X-Forwarded-For": "203.0.113.5"},
     )
     # FastAPI TestClient не устанавливает request.client.host из заголовков,
@@ -390,13 +390,13 @@ def test_gradle_init_rejects_remote_client(client, vault, monkeypatch):
 
 def test_gradle_init_suggested_filename(client):
     """Заголовок подсказывает имя файла для сохранения."""
-    resp = client.get("/api/deps/mirror/gradle-init")
+    resp = client.get("/api/cache/gradle-init")
     assert resp.headers.get("x-suggested-filename") == "lgm-vault.gradle"
 
 
 def test_gradle_init_covers_protected_groups(client):
     """Скрипт содержит регулярку для защищённых групп."""
-    resp = client.get("/api/deps/mirror/gradle-init")
+    resp = client.get("/api/cache/gradle-init")
     # Дефолтная группа из DEFAULT_PROTECTED_MAVEN_GROUPS
     assert "ru" in resp.text
     assert "kryptonite" in resp.text

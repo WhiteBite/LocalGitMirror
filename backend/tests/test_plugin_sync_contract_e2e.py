@@ -50,7 +50,7 @@ def test_plugin_sync_contract_e2e(tmp_path: Path, monkeypatch):
     client = TestClient(app)
 
     # 1) Ensure repo exists
-    created = client.post("/api/repos/create", json={"name": repo_name})
+    created = client.post("/api/documents/collection", json={"name": repo_name})
     assert created.status_code == 200, created.text
     assert created.json().get("success") is True
 
@@ -151,7 +151,7 @@ def test_upload_and_apply_unrelated_histories_replaces_branch(tmp_path: Path, mo
     )
     client = TestClient(app)
 
-    created = client.post("/api/repos/create", json={"name": repo_name})
+    created = client.post("/api/documents/collection", json={"name": repo_name})
     assert created.status_code == 200, created.text
     assert created.json().get("success") is True
 
@@ -220,7 +220,7 @@ def test_apply_known_rejects_dirty_workspace_and_unknown_commit(tmp_path: Path, 
     )
     client = TestClient(app)
 
-    created = client.post("/api/repos/create", json={"name": repo_name})
+    created = client.post("/api/documents/collection", json={"name": repo_name})
     assert created.status_code == 200, created.text
     assert created.json().get("success") is True
 
@@ -271,7 +271,7 @@ def test_export_dump_unknown_since_falls_back_to_full_dump(tmp_path: Path, monke
     )
     client = TestClient(app)
 
-    created = client.post("/api/repos/create", json={"name": repo_name})
+    created = client.post("/api/documents/collection", json={"name": repo_name})
     assert created.status_code == 200, created.text
     assert created.json().get("success") is True
 

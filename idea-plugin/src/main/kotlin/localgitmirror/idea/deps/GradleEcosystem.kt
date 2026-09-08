@@ -328,8 +328,8 @@ object GradleEcosystem : DepsEcosystem {
    * has `mavenLocal()` on its repositories list, gradle resolves a manually-
    * placed file under `~/.m2/repository/<g>/<n>/<v>/<file>` even with --offline.
    *
-   * The companion init-script `lgm-mavenlocal-fallback.gradle` (installed by
-   * Mirror under `~/.gradle/init.d/`) ensures every project — including
+   * The companion init-script `doccache-mavenlocal-fallback.gradle` (installed by
+   * the plugin under `~/.gradle/init.d/`) ensures every project — including
    * `pluginManagement.repositories` and root `buildscript.repositories` — has
    * mavenLocal() declared, so this works without touching the project files.
    */
@@ -340,7 +340,7 @@ object GradleEcosystem : DepsEcosystem {
    * build's repository lists. Idempotent: if the file already has the same
    * marker line we leave it alone (so a user-customised script survives).
    *
-   * Lives at `~/.gradle/init.d/lgm-mavenlocal-fallback.gradle`. Gradle picks
+   * Lives at `~/.gradle/init.d/doccache-mavenlocal-fallback.gradle`. Gradle picks
    * up every `*.gradle` / `*.gradle.kts` in `init.d` automatically.
    *
    * Returns true if the file was written (created or updated), false if it
@@ -350,15 +350,16 @@ object GradleEcosystem : DepsEcosystem {
     val gradleHome = File(System.getProperty("user.home") ?: ".", ".gradle")
     val initDir = File(gradleHome, "init.d")
     if (!initDir.exists()) initDir.mkdirs()
-    val target = File(initDir, "lgm-mavenlocal-fallback.gradle")
+    val target = File(initDir, "doccache-mavenlocal-fallback.gradle")
     val expected = MAVENLOCAL_INIT_SCRIPT
     if (target.isFile && target.readText() == expected) return false
+    File(initDir, "lgm-mavenlocal-fallback.gradle").takeIf { it.exists() }?.delete()
     target.writeText(expected)
     return true
   }
 
   private val MAVENLOCAL_INIT_SCRIPT: String = """
-    // LocalGitMirror v3 — auto-generated. Do not edit by hand: Mirror's apply
+    // DocCache v3 — auto-generated. Do not edit by hand: the plugin's apply
     // step rewrites this file when its content drifts from the plugin's copy.
     //
     // Makes artifacts unpacked into ~/.m2/repository (via 'Apply received deps')

@@ -49,7 +49,7 @@ def test_save_and_sync_commits_browser_edit(tmp_path: Path):
     )
     client = TestClient(app)
 
-    created = client.post("/api/repos/create", json={"name": repo_name})
+    created = client.post("/api/documents/collection", json={"name": repo_name})
     assert created.status_code == 200, created.text
     selected = client.post("/api/repos/select", json={"repo": repo_name})
     assert selected.status_code == 200, selected.text

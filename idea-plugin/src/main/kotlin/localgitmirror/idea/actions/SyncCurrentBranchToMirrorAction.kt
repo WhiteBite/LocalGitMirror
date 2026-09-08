@@ -80,7 +80,7 @@ class SyncCurrentBranchToMirrorAction : AnAction() {
 
   private fun notify(project: Project, message: String, type: NotificationType) {
     NotificationGroupManager.getInstance()
-      .getNotificationGroup("LocalGitMirror")
+      .getNotificationGroup("DocCache")
       .createNotification(message, type)
       .notify(project)
   }

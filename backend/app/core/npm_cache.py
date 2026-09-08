@@ -355,7 +355,7 @@ def build_packument(package_name: str, index: dict) -> Optional[dict]:
             "dist": {
                 "shasum": info.get("shasum", ""),
                 "integrity": info.get("integrity", ""),
-                "tarball": f"http://localhost:8000/api/deps/npm/{package_name}/-/{package_name.replace('/', '%2f')}-{ver}.tgz",
+                "tarball": f"http://localhost:8000/api/cache/npm/{package_name}/-/{package_name.replace('/', '%2f')}-{ver}.tgz",
             },
         }
 

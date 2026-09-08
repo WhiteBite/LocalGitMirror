@@ -75,7 +75,7 @@ class TestRenderInitScript:
             projection_dir="/tmp/proj",
             base_url="http://127.0.0.1:8080",
         )
-        assert "http://127.0.0.1:8080/api/deps/m2/" in script
+        assert "http://127.0.0.1:8080/api/cache/m2/" in script
         assert "LgmVaultHttp" in script
 
     def test_api_key_included_when_given(self):

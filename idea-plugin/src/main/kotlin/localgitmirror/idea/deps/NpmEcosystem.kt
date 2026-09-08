@@ -152,7 +152,7 @@ object NpmEcosystem : DepsEcosystem {
     if (candidates.isEmpty()) return emptyMap()
     val workers = candidates.size.coerceIn(1, 24)
     val pool = java.util.concurrent.Executors.newFixedThreadPool(workers) { r ->
-      Thread(r, "lgm-npm-probe").apply { isDaemon = true }
+      Thread(r, "doccache-probe").apply { isDaemon = true }
     }
     return try {
       val futures = candidates.map { c -> c to pool.submit<PublicAvailability> { probePublicRegistry(c) } }

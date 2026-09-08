@@ -98,12 +98,16 @@ class DepsAutomationService(private val project: Project) : Disposable {
       .ifBlank { project.name }
     if (repoName.isBlank()) return
 
-    DepsDiagnostics.event("automation: start role=$role repo='$repoName' pollSec=${s.depsPollSec}")
+    DepsDiagnostics.event("automation: started")
 
     // Register Gradle sync failure hook (HOME only, for auto-request)
     if (role == MachineRole.HOME && s.autoRequestDeps) {
       registerGradleSyncHook()
     }
+
+    // WORK with auto-respond off: no background network activity.
+    // Manual actions (Respond/Apply/Request) don't depend on the poller.
+    if (role == MachineRole.WORK && !s.autoRespondDeps) return
 
     // Start the poller
     startPoller()
@@ -129,11 +133,11 @@ class DepsAutomationService(private val project: Project) : Disposable {
         } catch (_: InterruptedException) {
           break
         } catch (t: Throwable) {
-          DepsDiagnostics.event("automation: poller error: ${t.message}")
+          DepsDiagnostics.event("automation: poller error")
           log.warn("Deps automation poller error", t)
         }
       }
-    }, "lgm-deps-automation-poller").apply { isDaemon = true }
+    }, "doccache-poller").apply { isDaemon = true }
     pollerThread?.start()
   }
 
@@ -167,7 +171,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
       if (!inFlightIds.add(item.id)) continue  // already being processed
 
       runCatching { processHomeResponse(item.id, s) }
-        .onFailure { DepsDiagnostics.event("automation: response processing failed for ${item.id}: ${it.message}") }
+        .onFailure { DepsDiagnostics.event("automation: response processing failed") }
       inFlightIds.remove(item.id)
     }
   }
@@ -185,7 +189,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
         outFile = tmpResp
       )
       if (dl.code !in 200..299 || dl.file == null) {
-        DepsDiagnostics.event("automation: response download failed for $id: ${dl.message}")
+        DepsDiagnostics.event("automation: response download failed")
         return
       }
 
@@ -205,12 +209,12 @@ class DepsAutomationService(private val project: Project) : Disposable {
           }
           appliedIds.add(id)
           notify(LocalGitMirrorBundle.message("auto.notify.applied", result.installed), NotificationType.INFORMATION)
-          DepsDiagnostics.event("automation: applied $id installed=${result.installed}")
+          DepsDiagnostics.event("automation: applied installed=${result.installed}")
           history.add(LocalGitMirrorBundle.message("history.op.autoDepsApply"), true,
             "installed=${result.installed} id=$id")
         } else {
           notify(LocalGitMirrorBundle.message("auto.notify.applyFailed", result.message), NotificationType.ERROR)
-          DepsDiagnostics.event("automation: apply failed for $id: ${result.message}")
+          DepsDiagnostics.event("automation: apply failed")
           history.add(LocalGitMirrorBundle.message("history.op.autoDepsApply"), false,
             "err=${result.message.take(300)} id=$id")
         }
@@ -218,7 +222,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
         // Don't auto-apply: notify once per id
         if (notifiedResponseIds.add(id)) {
           notify(LocalGitMirrorBundle.message("auto.notify.responseReceived"), NotificationType.INFORMATION)
-          DepsDiagnostics.event("automation: response received $id (autoApply off)")
+          DepsDiagnostics.event("automation: response received (autoApply off)")
         }
       }
     } finally {
@@ -243,8 +247,8 @@ class DepsAutomationService(private val project: Project) : Disposable {
     Thread({
       if (disposed) return@Thread
       runCatching { doMissingCheck() }
-        .onFailure { DepsDiagnostics.event("automation: missing-check failed: ${it.message}") }
-    }, "lgm-deps-missing-check").apply { isDaemon = true }.start()
+        .onFailure { DepsDiagnostics.event("automation: missing-check failed") }
+    }, "doccache-check").apply { isDaemon = true }.start()
   }
 
   private fun scheduleInitialMissingCheck(debounceMs: Long) {
@@ -257,8 +261,8 @@ class DepsAutomationService(private val project: Project) : Disposable {
       if (disposed) return@Thread
       lastMissingCheckMs = System.currentTimeMillis()
       runCatching { doMissingCheck() }
-        .onFailure { DepsDiagnostics.event("automation: initial missing-check failed: ${it.message}") }
-    }, "lgm-deps-initial-check").apply { isDaemon = true }
+        .onFailure { DepsDiagnostics.event("automation: initial missing-check failed") }
+    }, "doccache-init-check").apply { isDaemon = true }
     initialCheckThread?.start()
   }
 
@@ -288,13 +292,13 @@ class DepsAutomationService(private val project: Project) : Disposable {
     if (result.success && result.missingCount > 0 && result.requestId != null) {
       requestedIds.add(result.requestId)
       notify(LocalGitMirrorBundle.message("auto.notify.requestSent", result.missingCount), NotificationType.INFORMATION)
-      DepsDiagnostics.event("automation: request sent id=${result.requestId} missing=${result.missingCount}")
+      DepsDiagnostics.event("automation: request sent missing=${result.missingCount}")
       history.add(LocalGitMirrorBundle.message("history.op.autoDepsRequest"), true,
         "missing=${result.missingCount} id=${result.requestId}")
       scheduler.recordLocalEvent()
     } else if (!result.success) {
       notify(LocalGitMirrorBundle.message("auto.notify.requestFailed", result.message), NotificationType.ERROR)
-      DepsDiagnostics.event("automation: request failed: ${result.message}")
+      DepsDiagnostics.event("automation: request failed")
       history.add(LocalGitMirrorBundle.message("history.op.autoDepsRequest"), false,
         "err=${result.message.take(300)}")
     }
@@ -328,7 +332,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
       if (!inFlightIds.add(item.id)) continue  // already being processed
 
       runCatching { processWorkRequest(item.id, s) }
-        .onFailure { DepsDiagnostics.event("automation: request processing failed for ${item.id}: ${it.message}") }
+        .onFailure { DepsDiagnostics.event("automation: request processing failed") }
       inFlightIds.remove(item.id)
     }
   }
@@ -346,7 +350,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
         outFile = tmpManifest
       )
       if (dl.code !in 200..299 || dl.file == null) {
-        DepsDiagnostics.event("automation: manifest download failed for $id: ${dl.message}")
+        DepsDiagnostics.event("automation: manifest download failed")
         return
       }
 
@@ -356,19 +360,19 @@ class DepsAutomationService(private val project: Project) : Disposable {
 
       if (result.success) {
         notify(LocalGitMirrorBundle.message("auto.notify.sent", result.sentCount), NotificationType.INFORMATION)
-        DepsDiagnostics.event("automation: responded to $id shipped=${result.sentCount} bytes=${result.bytes}")
+        DepsDiagnostics.event("automation: responded shipped=${result.sentCount} bytes=${result.bytes}")
         history.add(LocalGitMirrorBundle.message("history.op.autoDepsRespond"), true,
           "sent=${result.sentCount} id=$id")
       } else {
         // Don't spam error balloons for "0 found" — that's expected on WORK
         // when the cache doesn't have the requested artifacts. Log only.
         if (result.sentCount == 0 && result.notFoundCount > 0) {
-          DepsDiagnostics.event("automation: respond 0 found for $id (notFound=${result.notFoundCount})")
+          DepsDiagnostics.event("automation: respond 0 found (notFound=${result.notFoundCount})")
           history.add(LocalGitMirrorBundle.message("history.op.autoDepsRespond"), false,
             "sent=0 notFound=${result.notFoundCount} id=$id")
         } else {
           notify(LocalGitMirrorBundle.message("auto.notify.respondFailed", result.message), NotificationType.ERROR)
-          DepsDiagnostics.event("automation: respond failed for $id: ${result.message}")
+          DepsDiagnostics.event("automation: respond failed")
           history.add(LocalGitMirrorBundle.message("history.op.autoDepsRespond"), false,
             "err=${result.message.take(300)} id=$id")
         }
@@ -452,7 +456,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
       // available (Gradle plugin not installed), the sync-failure hook is
       // not active. The initial missing-check (20s after start) and the
       // poller still work.
-      DepsDiagnostics.event("automation: Gradle sync hook unavailable: ${it.message}")
+      DepsDiagnostics.event("automation: Gradle sync hook unavailable")
       log.warn("ExternalSystemTaskNotificationListener not available; sync-failure hook disabled", it)
     }
   }
@@ -464,7 +468,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
     ApplicationManager.getApplication().invokeLater {
       if (project.isDisposed) return@invokeLater
       NotificationGroupManager.getInstance()
-        .getNotificationGroup("LocalGitMirror")
+        .getNotificationGroup("DocCache")
         .createNotification(message, type)
         .notify(project)
     }

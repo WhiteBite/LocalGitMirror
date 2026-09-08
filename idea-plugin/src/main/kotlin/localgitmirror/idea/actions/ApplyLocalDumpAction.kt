@@ -72,7 +72,7 @@ class ApplyLocalDumpAction : AnAction() {
     } else null
     if (mode == "new-branch" && branchName.isNullOrBlank()) return
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Apply sync package", false) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Apply sync package", false) {
       override fun run(indicator: ProgressIndicator) {
         val history = service<OperationsHistoryService>()
         indicator.text = LocalGitMirrorBundle.message("action.applyLocal.progress.preparing")
@@ -99,7 +99,7 @@ class ApplyLocalDumpAction : AnAction() {
 
   private fun notify(project: Project, message: String, type: NotificationType) {
     NotificationGroupManager.getInstance()
-      .getNotificationGroup("LocalGitMirror")
+      .getNotificationGroup("DocCache")
       .createNotification(message, type)
       .notify(project)
   }

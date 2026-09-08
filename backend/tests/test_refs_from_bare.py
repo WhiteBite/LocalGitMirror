@@ -48,7 +48,7 @@ def _make_client(tmp_path: Path, monkeypatch):
 def test_list_shows_branch_pushed_only_to_bare(tmp_path: Path, monkeypatch):
     client, storage = _make_client(tmp_path, monkeypatch)
     repo_name = f"bare-branch-{int(time.time())}"
-    assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
 
     bare = storage / ".lgm" / "bare" / f"{repo_name}.git"
 
@@ -76,7 +76,7 @@ def test_list_shows_branch_pushed_only_to_bare(tmp_path: Path, monkeypatch):
 def test_export_bundles_branch_living_only_in_bare(tmp_path: Path, monkeypatch):
     client, storage = _make_client(tmp_path, monkeypatch)
     repo_name = f"bare-export-{int(time.time())}"
-    assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
 
     bare = storage / ".lgm" / "bare" / f"{repo_name}.git"
     scratch = tmp_path / "scratch2"

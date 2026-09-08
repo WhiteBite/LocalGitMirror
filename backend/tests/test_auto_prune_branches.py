@@ -64,7 +64,7 @@ def _bare_branches(bare: Path) -> set:
 
 def _create_repo_with_branches(client, storage, rm, repo_name: str, branches: list[str]):
     """Create repo and push multiple branches into bare."""
-    assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
 
     # Use a scratch dir to create branches and push to bare
     bare = rm._get_bare_path(repo_name)

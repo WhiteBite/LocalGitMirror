@@ -17,6 +17,7 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.SyncStateStore
+import localgitmirror.idea.sync.HandshakeCache
 import localgitmirror.idea.sync.v2.SyncConstants
 import localgitmirror.idea.workkit.BundleCrypto
 import java.io.File
@@ -69,7 +70,7 @@ class PullFromMirrorAction(
     }
 
     // ── Step 1: fetch refs in background ──
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Получаем ветки…", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Получаем ветки…", true) {
       private var refsResult: MirrorApi.RefsResult? = null
 
       override fun run(indicator: ProgressIndicator) {
@@ -131,7 +132,7 @@ class PullFromMirrorAction(
 
           val chosenDisplay = Messages.showEditableChooseDialog(
             "Выберите ветку для подтягивания с Mirror:\n(★ = ветки которых нет локально — будут созданы)",
-            "LocalGitMirror: Pull from Mirror",
+            "DocCache: Fetch from Cache",
             null,
             displayItems,
             preselect,
@@ -189,7 +190,7 @@ class PullFromMirrorAction(
       return
     }
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Превью изменений…", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Превью изменений…", true) {
       private var preview: MirrorApi.PreviewPullDetailsResult? = null
 
       override fun run(indicator: ProgressIndicator) {
@@ -232,7 +233,7 @@ class PullFromMirrorAction(
         }
 
         val confirmed = Messages.showYesNoDialog(
-          project, summary, "LocalGitMirror: Подтвердите Pull",
+          project, summary, "DocCache: Подтвердите Pull",
           "Подтянуть", "Отмена", null
         )
         if (confirmed == Messages.YES) {
@@ -261,7 +262,7 @@ class PullFromMirrorAction(
     targetBranch: String,
     remoteRefs: Map<String, String>
   ) {
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Pull «$targetBranch»", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Pull «$targetBranch»", true) {
       override fun run(indicator: ProgressIndicator) {
         onIndicator?.invoke(indicator)
         val traceId = UUID.randomUUID().toString().take(8)
@@ -455,9 +456,10 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
     val syncPassword = SecretsStore.syncPassword
     if (syncPassword.isBlank()) return "Не задан Sync Password (Settings → LocalGitMirror)."
 
-    val probe = MirrorApi.passwordProbe(
+    val probe = HandshakeCache.passwordProbe(
       baseUrl = settings.baseUrl,
       apiKey = SecretsStore.mirrorApiKey,
+      syncPassword = syncPassword,
       insecureTls = settings.mirrorInsecureTls
     )
     if (probe.code !in 200..299 || probe.bytes == null) {
@@ -647,7 +649,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
 
   private fun notify(project: Project, message: String, type: NotificationType) {
     NotificationGroupManager.getInstance()
-      .getNotificationGroup("LocalGitMirror")
+      .getNotificationGroup("DocCache")
       .createNotification(message, type)
       .notify(project)
   }

@@ -381,7 +381,7 @@ def test_backup_handles_sqlite_catalog(populated_vault, backup_dir):
 
 
 def test_backup_endpoint_succeeds(populated_vault, client):
-    r = client.post("/api/deps/mirror/backup")
+    r = client.post("/api/cache/backup")
     assert r.status_code == 200
     body = r.json()
     assert body["success"]
@@ -389,8 +389,8 @@ def test_backup_endpoint_succeeds(populated_vault, client):
 
 
 def test_backup_status_endpoint(populated_vault, client):
-    client.post("/api/deps/mirror/backup")
-    r = client.get("/api/deps/mirror/backup/status")
+    client.post("/api/cache/backup")
+    r = client.get("/api/cache/backup/status")
     assert r.status_code == 200
     body = r.json()
     assert body["success"]
@@ -398,15 +398,15 @@ def test_backup_status_endpoint(populated_vault, client):
 
 
 def test_restore_endpoint_rejects_missing_dir(client):
-    r = client.post("/api/deps/mirror/restore", data={"backup_path": "/nonexistent/path"})
+    r = client.post("/api/cache/restore", data={"backup_path": "/nonexistent/path"})
     assert r.status_code == 400
 
 
 def test_restore_endpoint_succeeds(populated_vault, client, tmp_path):
-    client.post("/api/deps/mirror/backup")
+    client.post("/api/cache/backup")
     backup = populated_vault.parent / "backup"
 
-    r = client.post("/api/deps/mirror/restore", data={"backup_path": str(backup)})
+    r = client.post("/api/cache/restore", data={"backup_path": str(backup)})
     assert r.status_code == 200
     body = r.json()
     assert body["success"]
@@ -416,12 +416,12 @@ def test_restore_endpoint_succeeds(populated_vault, client, tmp_path):
 def test_backup_endpoint_roundtrip(populated_vault, client, tmp_path):
     """Endpoint round-trip: backup via API, restore via API, verify data."""
     # Backup
-    r = client.post("/api/deps/mirror/backup")
+    r = client.post("/api/cache/backup")
     assert r.status_code == 200
 
     # Restore to the same vault (it already contains the data)
     backup = populated_vault.parent / "backup"
-    r = client.post("/api/deps/mirror/restore", data={"backup_path": str(backup)})
+    r = client.post("/api/cache/restore", data={"backup_path": str(backup)})
     assert r.status_code == 200
 
     # Verify restored vault

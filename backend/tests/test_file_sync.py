@@ -1,4 +1,4 @@
-"""Tests for /api/file-sync opaque encrypted file postbox."""
+"""Tests for /api/documents/attachment-* opaque encrypted file postbox."""
 import json
 from pathlib import Path
 
@@ -36,8 +36,8 @@ def test_file_sync_lifecycle_is_opaque(tmp_path: Path):
     payload = b"ENCRYPTED-FILE-CONTAINER" * 1024
 
     uploaded = client.post(
-        "/api/file-sync/upload",
-        data={"repo": "onyx", "path": "docs/big-model.bin", "plain_size": "123456"},
+        "/api/documents/attachment-upload",
+        data={"rid": "onyx", "path": "docs/big-model.bin", "plain_size": "123456"},
         files={"attachment": ("file.lgm", payload, "application/octet-stream")},
     )
     assert uploaded.status_code == 200, uploaded.text
@@ -46,68 +46,68 @@ def test_file_sync_lifecycle_is_opaque(tmp_path: Path):
     assert body["path"] == "docs/big-model.bin"
     assert body["size"] == len(payload)
 
-    listed = client.get("/api/file-sync/list", params={"repo": "onyx"})
+    listed = client.get("/api/documents/attachment-list", params={"rid": "onyx"})
     assert listed.status_code == 200
     items = listed.json()["items"]
     assert [it["id"] for it in items] == [item_id]
     assert items[0]["path"] == "docs/big-model.bin"
     assert items[0]["plain_size"] == 123456
 
-    downloaded = client.get("/api/file-sync/download", params={"repo": "onyx", "id": item_id})
+    downloaded = client.get("/api/documents/attachment-get", params={"rid": "onyx", "id": item_id})
     assert downloaded.status_code == 200
     assert downloaded.content == payload
 
-    ack = client.delete("/api/file-sync/ack", params={"repo": "onyx", "id": item_id})
+    ack = client.delete("/api/documents/attachment-ack", params={"rid": "onyx", "id": item_id})
     assert ack.status_code == 200
     assert ack.json()["deleted"] is True
-    assert client.get("/api/file-sync/list", params={"repo": "onyx"}).json()["items"] == []
+    assert client.get("/api/documents/attachment-list", params={"rid": "onyx"}).json()["items"] == []
 
 
 def test_file_sync_rejects_bad_repo_path_and_id(tmp_path: Path):
     client, _ = _make_client(tmp_path)
     for bad_repo in ["../etc", "foo/bar", "x\\y", "", "."]:
-        resp = client.get("/api/file-sync/list", params={"repo": bad_repo})
+        resp = client.get("/api/documents/attachment-list", params={"rid": bad_repo})
         assert resp.status_code == 400, bad_repo
 
     for bad_path in ["../secret.bin", "/abs/file", "a/../../b", "", "."]:
         resp = client.post(
-            "/api/file-sync/upload",
-            data={"repo": "onyx", "path": bad_path, "plain_size": "1"},
+            "/api/documents/attachment-upload",
+            data={"rid": "onyx", "path": bad_path, "plain_size": "1"},
             files={"attachment": ("x.bin", b"payload", "application/octet-stream")},
         )
         assert resp.status_code == 400, bad_path
 
     for bad_id in ["../x", "a/b", "", "x" * 100]:
-        resp = client.get("/api/file-sync/download", params={"repo": "onyx", "id": bad_id})
+        resp = client.get("/api/documents/attachment-get", params={"rid": "onyx", "id": bad_id})
         assert resp.status_code == 400, bad_id
 
 
 def test_file_sync_rejects_empty_payload(tmp_path: Path):
     client, _ = _make_client(tmp_path)
     resp = client.post(
-        "/api/file-sync/upload",
-        data={"repo": "onyx", "path": "a.bin", "plain_size": "0"},
+        "/api/documents/attachment-upload",
+        data={"rid": "onyx", "path": "a.bin", "plain_size": "0"},
         files={"attachment": ("x.bin", b"", "application/octet-stream")},
     )
     assert resp.status_code == 400
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# X-LGM-Repo header: alternative to ?repo= query param
+# X-Doc-Ref header: alternative to ?rid= query param
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_file_sync_list_via_x_lgm_repo_header(tmp_path: Path):
+def test_file_sync_list_via_x_doc_ref_header(tmp_path: Path):
     client, _ = _make_client(tmp_path)
     payload = b"ENCRYPTED-FILE-CONTAINER" * 1024
     client.post(
-        "/api/file-sync/upload",
-        data={"repo": "onyx", "path": "docs/file.bin", "plain_size": "123"},
+        "/api/documents/attachment-upload",
+        data={"rid": "onyx", "path": "docs/file.bin", "plain_size": "123"},
         files={"attachment": ("file.lgm", payload, "application/octet-stream")},
     )
 
-    resp = client.get("/api/file-sync/list", headers={"X-LGM-Repo": "onyx"})
+    resp = client.get("/api/documents/attachment-list", headers={"X-Doc-Ref": "onyx"})
     assert resp.status_code == 200, resp.text
     assert len(resp.json()["items"]) == 1
 
-    resp = client.get("/api/file-sync/list")
+    resp = client.get("/api/documents/attachment-list")
     assert resp.status_code == 400

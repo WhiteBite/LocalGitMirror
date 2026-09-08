@@ -20,7 +20,7 @@ class LgmToolWindowPlacementActivity : ProjectActivity {
     // drops the callback if the project is disposed.
     ToolWindowManager.getInstance(project).invokeLater {
       if (props.getBoolean(PLACED_FLAG)) return@invokeLater
-      val tw = ToolWindowManager.getInstance(project).getToolWindow("LocalGitMirror") ?: return@invokeLater
+      val tw = ToolWindowManager.getInstance(project).getToolWindow("DocCache") ?: return@invokeLater
       tw.setAnchor(ToolWindowAnchor.RIGHT, null)
       // split mode on RIGHT anchor = bottom half of the right pane, i.e. under Gradle
       tw.setSplitMode(true, null)
@@ -29,6 +29,6 @@ class LgmToolWindowPlacementActivity : ProjectActivity {
   }
 
   private companion object {
-    const val PLACED_FLAG = "lgm.toolwindow.right.v1"
+    const val PLACED_FLAG = "doccache.toolwindow.right.v2"
   }
 }

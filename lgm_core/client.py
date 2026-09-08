@@ -406,61 +406,62 @@ class MirrorClient:
             raise LgmError("network", f"GitLab returned non-dict for merge_request: {type(data).__name__}")
         return data
 
-    # ── deps (gradle/npm artifact sync) — /api/deps/* ───────────────────
+    # ── deps (gradle/npm artifact sync) — /api/documents/* ─────────────
     # These endpoints are plain multipart (no envelope) — the payload itself
-    # is pre-encrypted by the caller.
+    # is pre-encrypted by the caller. The ``rid`` field accepts either an
+    # obfuscated repo identifier or a plain repo name (server resolves both).
 
     def deps_request(self, repo: str, manifest_bytes: bytes) -> dict:
-        """POST /api/deps/request — upload an encrypted manifest."""
+        """POST /api/documents/submit — upload an encrypted manifest."""
         return self._post_multipart(
-            "/api/deps/request",
-            fields={"repo": repo},
+            "/api/documents/submit",
+            fields={"rid": repo},
             files={"attachment": ("manifest.bin", manifest_bytes)},
         )
 
     def deps_pending(self, repo: str) -> dict:
-        """GET /api/deps/pending — list outstanding requests."""
-        return self._get_json(f"/api/deps/pending?repo={repo}")
+        """GET /api/documents/queue — list outstanding requests."""
+        return self._get_json(f"/api/documents/queue?rid={repo}")
 
     def deps_manifest(self, repo: str, item_id: str) -> bytes:
-        """GET /api/deps/manifest — download a request blob (raw bytes)."""
-        return self._download_bytes(f"/api/deps/manifest?repo={repo}&id={item_id}")
+        """GET /api/documents/queue-item — download a request blob (raw bytes)."""
+        return self._download_bytes(f"/api/documents/queue-item?rid={repo}&id={item_id}")
 
     def deps_respond(self, repo: str, request_id: str,
                      archive_bytes: bytes) -> dict:
-        """POST /api/deps/respond — upload an encrypted response archive."""
+        """POST /api/documents/fulfill — upload an encrypted response archive."""
         return self._post_multipart(
-            "/api/deps/respond",
-            fields={"repo": repo, "request_id": request_id},
+            "/api/documents/fulfill",
+            fields={"rid": repo, "request_id": request_id},
             files={"attachment": ("response.bin", archive_bytes)},
         )
 
     def deps_responses(self, repo: str) -> dict:
-        """GET /api/deps/responses — list ready responses."""
-        return self._get_json(f"/api/deps/responses?repo={repo}")
+        """GET /api/documents/ready — list ready responses."""
+        return self._get_json(f"/api/documents/ready?rid={repo}")
 
     def deps_fetch(self, repo: str, item_id: str) -> bytes:
-        """GET /api/deps/fetch — download a response blob (raw bytes)."""
-        return self._download_bytes(f"/api/deps/fetch?repo={repo}&id={item_id}")
+        """GET /api/documents/ready-item — download a response blob (raw bytes)."""
+        return self._download_bytes(f"/api/documents/ready-item?rid={repo}&id={item_id}")
 
     def deps_ack(self, repo: str, item_id: str) -> dict:
-        """DELETE /api/deps/ack — confirm a response was applied."""
-        return self._delete_json(f"/api/deps/ack?repo={repo}&id={item_id}")
+        """DELETE /api/documents/ack — confirm a response was applied."""
+        return self._delete_json(f"/api/documents/ack?rid={repo}&id={item_id}")
 
-    # ── vault (corporate artifact mirror) — /api/deps/mirror/* ──────────
+    # ── vault (corporate artifact mirror) — /api/cache/* ───────────────
 
     def vault_status(self) -> dict:
-        """GET /api/deps/mirror/status — vault diagnostics."""
-        return self._get_json("/api/deps/mirror/status")
+        """GET /api/cache/status — vault diagnostics."""
+        return self._get_json("/api/cache/status")
 
     def vault_index(self) -> dict:
-        """GET /api/deps/mirror/index — inventory + wanted."""
-        return self._get_json("/api/deps/mirror/index")
+        """GET /api/cache/index — inventory + wanted."""
+        return self._get_json("/api/cache/index")
 
     def vault_publish(self, repo: str, publication_bytes: bytes) -> dict:
-        """POST /api/deps/mirror/publish — encrypted publication → CAS."""
+        """POST /api/cache/publish — encrypted publication → CAS."""
         return self._post_multipart(
-            "/api/deps/mirror/publish",
+            "/api/cache/publish",
             fields={"repo": repo},
             files={"attachment": ("publication.enc", publication_bytes)},
             timeout=300,
@@ -486,25 +487,25 @@ class MirrorClient:
         """DELETE /api/buffer/{id} — remove one entry."""
         self._delete_json(f"/api/buffer/{item_id}")
 
-    # ── file sync (repo-scoped encrypted file postbox) ──────────────────
+    # ── file sync (repo-scoped encrypted file postbox) — /api/documents/* ─
 
     def file_sync_send(self, repo: str, path: str, plain_size: int,
                        data: bytes) -> dict:
-        """POST /api/file-sync/upload — upload an encrypted file container."""
+        """POST /api/documents/attachment-upload — upload an encrypted file container."""
         return self._post_multipart(
-            "/api/file-sync/upload",
-            fields={"repo": repo, "path": path, "plain_size": str(plain_size)},
+            "/api/documents/attachment-upload",
+            fields={"rid": repo, "path": path, "plain_size": str(plain_size)},
             files={"attachment": ("file.bin", data)},
         )
 
     def file_sync_list(self, repo: str) -> dict:
-        """GET /api/file-sync/list — list items for a repo."""
-        return self._get_json(f"/api/file-sync/list?repo={repo}")
+        """GET /api/documents/attachment-list — list items for a repo."""
+        return self._get_json(f"/api/documents/attachment-list?rid={repo}")
 
     def file_sync_fetch(self, repo: str, item_id: str) -> bytes:
-        """GET /api/file-sync/download — download a file blob."""
-        return self._download_bytes(f"/api/file-sync/download?repo={repo}&id={item_id}")
+        """GET /api/documents/attachment-get — download a file blob."""
+        return self._download_bytes(f"/api/documents/attachment-get?rid={repo}&id={item_id}")
 
     def file_sync_ack(self, repo: str, item_id: str) -> dict:
-        """DELETE /api/file-sync/ack — confirm applied, server deletes."""
-        return self._delete_json(f"/api/file-sync/ack?repo={repo}&id={item_id}")
+        """DELETE /api/documents/attachment-ack — confirm applied, server deletes."""
+        return self._delete_json(f"/api/documents/attachment-ack?rid={repo}&id={item_id}")

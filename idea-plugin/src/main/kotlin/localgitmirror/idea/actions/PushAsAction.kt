@@ -88,7 +88,7 @@ class PushAsAction : AnAction() {
       return
     }
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Push as '$targetBranch'", false) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Push as '$targetBranch'", false) {
       override fun run(indicator: ProgressIndicator) {
         val history = service<OperationsHistoryService>()
         indicator.text = "Creating temporary branch '$targetBranch'"
@@ -145,7 +145,7 @@ class PushAsAction : AnAction() {
 
   private fun notify(project: Project, message: String, type: NotificationType) {
     NotificationGroupManager.getInstance()
-      .getNotificationGroup("LocalGitMirror")
+      .getNotificationGroup("DocCache")
       .createNotification(message, type)
       .notify(project)
   }

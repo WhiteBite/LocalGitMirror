@@ -216,8 +216,8 @@ def test_path_instructions(tools_dir):
 # ── endpoints ────────────────────────────────────────────────────────────────
 
 def test_get_tools_empty(client, tools_dir):
-    """GET /api/deps/mirror/tools returns empty list when no tools configured."""
-    resp = client.get("/api/deps/mirror/tools")
+    """GET /api/cache/tools returns empty list when no tools configured."""
+    resp = client.get("/api/cache/tools")
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"] is True
@@ -227,9 +227,9 @@ def test_get_tools_empty(client, tools_dir):
 
 
 def test_get_tools_with_installed(client, tools_dir):
-    """GET /api/deps/mirror/tools returns tool info after config."""
+    """GET /api/cache/tools returns tool info after config."""
     save_tools_config({"krypto-cli": "2.4.1"})
-    resp = client.get("/api/deps/mirror/tools")
+    resp = client.get("/api/cache/tools")
     body = resp.json()
     assert len(body["tools"]) == 1
     t = body["tools"][0]
@@ -239,10 +239,10 @@ def test_get_tools_with_installed(client, tools_dir):
 
 
 def test_post_install_tool(client, tools_dir):
-    """POST /api/deps/mirror/tools/install installs a tool from tarball."""
+    """POST /api/cache/tools/install installs a tool from tarball."""
     tarball = make_tool_tarball("krypto-cli", "2.4.1")
     resp = client.post(
-        "/api/deps/mirror/tools/install",
+        "/api/cache/tools/install",
         data={"name": "krypto-cli", "version": "2.4.1"},
         files={"tarball": ("krypto-cli.tgz", tarball, "application/gzip")},
     )
@@ -260,7 +260,7 @@ def test_post_install_tool(client, tools_dir):
 def test_post_install_bad_tarball(client, tools_dir):
     """POST with invalid tarball returns 400."""
     resp = client.post(
-        "/api/deps/mirror/tools/install",
+        "/api/cache/tools/install",
         data={"name": "bad", "version": "1.0"},
         files={"tarball": ("bad.tgz", b"not a tarball", "application/gzip")},
     )

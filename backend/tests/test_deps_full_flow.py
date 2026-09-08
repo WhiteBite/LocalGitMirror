@@ -1,5 +1,5 @@
 """
-End-to-end test of /api/deps/* flow.
+End-to-end test of /api/documents/* deps flow.
 
 Simulates both sides:
   Dome: posts a manifest (encrypted blob) -> waits for response -> applies
@@ -55,8 +55,8 @@ def test_deps_full_lifecycle(tmp_path: Path):
     # 1. Dome posts a manifest
     fake_manifest = b"\x01ENCRYPTED-MANIFEST-PAYLOAD-PRETEND-IS-CIPHERTEXT" * 10
     resp = client.post(
-        "/api/deps/request",
-        data={"repo": repo},
+        "/api/documents/submit",
+        data={"rid": repo},
         files={"attachment": ("manifest.bin", fake_manifest, "application/octet-stream")},
     )
     assert resp.status_code == 200, resp.text
@@ -65,42 +65,42 @@ def test_deps_full_lifecycle(tmp_path: Path):
     assert body["size"] == len(fake_manifest)
 
     # 2. Work sees it pending
-    pending = client.get("/api/deps/pending", params={"repo": repo}).json()
+    pending = client.get("/api/documents/queue", params={"rid": repo}).json()
     ids = [it["id"] for it in pending["items"]]
     assert request_id in ids
 
     # 3. Work downloads the manifest blob — server returns bytes-for-bytes
-    got = client.get("/api/deps/manifest", params={"repo": repo, "id": request_id})
+    got = client.get("/api/documents/queue-item", params={"rid": repo, "id": request_id})
     assert got.status_code == 200
     assert got.content == fake_manifest, "Server must NOT mutate encrypted payload"
 
     # 4. Work uploads a response (zip-like blob)
     fake_archive = b"\x01ENCRYPTED-ARCHIVE-CONTENT" * 1000
     rr = client.post(
-        "/api/deps/respond",
-        data={"repo": repo, "request_id": request_id},
+        "/api/documents/fulfill",
+        data={"rid": repo, "request_id": request_id},
         files={"attachment": ("archive.bin", fake_archive, "application/octet-stream")},
     )
     assert rr.status_code == 200, rr.text
     response_id = rr.json()["id"]
 
     # 5. Original request was deleted (one-shot)
-    pending2 = client.get("/api/deps/pending", params={"repo": repo}).json()
+    pending2 = client.get("/api/documents/queue", params={"rid": repo}).json()
     assert request_id not in [it["id"] for it in pending2["items"]]
 
     # 6. Dome sees the response
-    resps = client.get("/api/deps/responses", params={"repo": repo}).json()
+    resps = client.get("/api/documents/ready", params={"rid": repo}).json()
     assert response_id in [it["id"] for it in resps["items"]]
 
     # 7. Dome fetches the response — same bytes back
-    fetched = client.get("/api/deps/fetch", params={"repo": repo, "id": response_id})
+    fetched = client.get("/api/documents/ready-item", params={"rid": repo, "id": response_id})
     assert fetched.status_code == 200
     assert fetched.content == fake_archive
 
     # 8. Dome ACKs — server deletes the response
-    ack = client.delete("/api/deps/ack", params={"repo": repo, "id": response_id})
+    ack = client.delete("/api/documents/ack", params={"rid": repo, "id": response_id})
     assert ack.status_code == 200
-    final = client.get("/api/deps/responses", params={"repo": repo}).json()
+    final = client.get("/api/documents/ready", params={"rid": repo}).json()
     assert response_id not in [it["id"] for it in final["items"]]
 
 
@@ -112,22 +112,22 @@ def test_deps_rejects_path_traversal(tmp_path: Path):
     client, _ = _make_client(tmp_path)
     # Attempted path traversal in repo name
     for bad in ["../etc", "foo/bar", "x\\y", "", "."]:
-        resp = client.get("/api/deps/pending", params={"repo": bad})
+        resp = client.get("/api/documents/queue", params={"rid": bad})
         assert resp.status_code == 400, f"Should reject {bad!r}, got {resp.status_code}"
 
 
 def test_deps_rejects_bad_id(tmp_path: Path):
     client, _ = _make_client(tmp_path)
     for bad in ["../something", "a/b", "", "x" * 100]:
-        resp = client.get("/api/deps/manifest", params={"repo": "onyx", "id": bad})
+        resp = client.get("/api/documents/queue-item", params={"rid": "onyx", "id": bad})
         assert resp.status_code == 400, f"Should reject id {bad!r}"
 
 
 def test_deps_rejects_empty_payload(tmp_path: Path):
     client, _ = _make_client(tmp_path)
     resp = client.post(
-        "/api/deps/request",
-        data={"repo": "onyx"},
+        "/api/documents/submit",
+        data={"rid": "onyx"},
         files={"attachment": ("x.bin", b"", "application/octet-stream")},
     )
     assert resp.status_code == 400
@@ -135,9 +135,9 @@ def test_deps_rejects_empty_payload(tmp_path: Path):
 
 def test_deps_fetch_unknown_returns_404(tmp_path: Path):
     client, _ = _make_client(tmp_path)
-    resp = client.get("/api/deps/fetch", params={"repo": "onyx", "id": "deadbeef"})
+    resp = client.get("/api/documents/ready-item", params={"rid": "onyx", "id": "deadbeef"})
     assert resp.status_code == 404
-    resp = client.get("/api/deps/manifest", params={"repo": "onyx", "id": "deadbeef"})
+    resp = client.get("/api/documents/queue-item", params={"rid": "onyx", "id": "deadbeef"})
     assert resp.status_code == 404
 
 
@@ -150,35 +150,35 @@ def test_deps_multiple_requests_each_has_unique_id(tmp_path: Path):
     ids = []
     for i in range(5):
         r = client.post(
-            "/api/deps/request",
-            data={"repo": "onyx"},
+            "/api/documents/submit",
+            data={"rid": "onyx"},
             files={"attachment": (f"m{i}.bin", f"payload{i}".encode() * 100, "application/octet-stream")},
         )
         assert r.status_code == 200
         ids.append(r.json()["id"])
     # All unique
     assert len(set(ids)) == len(ids)
-    pending = client.get("/api/deps/pending", params={"repo": "onyx"}).json()
+    pending = client.get("/api/documents/queue", params={"rid": "onyx"}).json()
     assert len([x for x in pending["items"] if x["id"] in ids]) == 5
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# X-LGM-Repo header: alternative to ?repo= query param
+# X-Doc-Ref header: alternative to ?rid= query param
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_deps_pending_via_x_lgm_repo_header(tmp_path: Path):
+def test_deps_queue_via_x_doc_ref_header(tmp_path: Path):
     client, _ = _make_client(tmp_path)
     repo = "onyx-platform"
     fake_manifest = b"\x01ENCRYPTED-MANIFEST-PAYLOAD" * 10
     client.post(
-        "/api/deps/request",
-        data={"repo": repo},
+        "/api/documents/submit",
+        data={"rid": repo},
         files={"attachment": ("manifest.bin", fake_manifest, "application/octet-stream")},
     )
 
-    resp = client.get("/api/deps/pending", headers={"X-LGM-Repo": repo})
+    resp = client.get("/api/documents/queue", headers={"X-Doc-Ref": repo})
     assert resp.status_code == 200, resp.text
     assert len(resp.json()["items"]) >= 1
 
-    resp = client.get("/api/deps/pending")
+    resp = client.get("/api/documents/queue")
     assert resp.status_code == 400

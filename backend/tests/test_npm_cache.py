@@ -246,7 +246,7 @@ class TestNpmPublishEndpoint:
         encrypted = encrypt_bundle_bytes(pub, PASSWORD)
 
         resp = client.post(
-            "/api/deps/mirror/publish-npm",
+            "/api/cache/publish-npm",
             files={"attachment": ("pub.enc", encrypted, "application/octet-stream")},
         )
         assert resp.status_code == 200
@@ -260,7 +260,7 @@ class TestNpmPublishEndpoint:
         encrypted = encrypt_bundle_bytes(pub, "wrong-password")
 
         resp = client.post(
-            "/api/deps/mirror/publish-npm",
+            "/api/cache/publish-npm",
             files={"attachment": ("pub.enc", encrypted, "application/octet-stream")},
         )
         assert resp.status_code == 400
@@ -272,14 +272,14 @@ class TestNpmPublishEndpoint:
 
         # First publish
         resp1 = client.post(
-            "/api/deps/mirror/publish-npm",
+            "/api/cache/publish-npm",
             files={"attachment": ("pub.enc", encrypted, "application/octet-stream")},
         )
         assert resp1.json()["added"] == 1
 
         # Second publish — same tarball
         resp2 = client.post(
-            "/api/deps/mirror/publish-npm",
+            "/api/cache/publish-npm",
             files={"attachment": ("pub.enc", encrypted, "application/octet-stream")},
         )
         assert resp2.json()["existed"] == 1
@@ -291,14 +291,14 @@ class TestNpmServeEndpoints:
         pub = _make_npm_publication({"@krypto-ui/components@1.2.3": tar})
         encrypted = encrypt_bundle_bytes(pub, PASSWORD)
         pub_resp = client.post(
-            "/api/deps/mirror/publish-npm",
+            "/api/cache/publish-npm",
             files={"attachment": ("pub.enc", encrypted, "application/octet-stream")},
         )
         assert pub_resp.status_code == 200, f"Publish failed: {pub_resp.text}"
         assert pub_resp.json()["added"] == 1, f"Nothing added: {pub_resp.json()}"
 
         # Endpoint serves latest version when no version specified
-        resp = client.get("/api/deps/npm/@krypto-ui/components")
+        resp = client.get("/api/cache/npm/@krypto-ui/components")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "application/octet-stream"
 
@@ -307,16 +307,16 @@ class TestNpmServeEndpoints:
         pub = _make_npm_publication({"@krypto-ui/components@1.2.3": tar})
         encrypted = encrypt_bundle_bytes(pub, PASSWORD)
         client.post(
-            "/api/deps/mirror/publish-npm",
+            "/api/cache/publish-npm",
             files={"attachment": ("pub.enc", encrypted, "application/octet-stream")},
         )
 
-        resp = client.get("/api/deps/npm/@krypto-ui/components/packument")
+        resp = client.get("/api/cache/npm/@krypto-ui/components/packument")
         assert resp.status_code == 200
         body = resp.json()
         assert body["name"] == "@krypto-ui/components"
         assert "1.2.3" in body["versions"]
 
     def test_serve_missing_returns_404(self, client, vault):
-        resp = client.get("/api/deps/npm/@krypto-ui/missing/1.0.0")
+        resp = client.get("/api/cache/npm/@krypto-ui/missing/1.0.0")
         assert resp.status_code == 404

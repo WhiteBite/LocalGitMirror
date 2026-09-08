@@ -73,7 +73,7 @@ def render_init_script(
     regex = protected_group_regex(groups)
 
     projection_uri = projection_dir.replace("\\", "/")
-    m2_url = base_url.rstrip("/") + "/api/deps/m2/"
+    m2_url = base_url.rstrip("/") + "/api/cache/m2/"
 
     # Заголовочная авторизация нужна только если ключ задан. Собираем блок
     # отдельно, чтобы в скрипте не появлялось пустых credentials — gradle на

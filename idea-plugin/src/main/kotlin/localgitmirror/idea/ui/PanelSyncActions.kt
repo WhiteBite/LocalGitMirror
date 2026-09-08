@@ -37,7 +37,7 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
   val needsCheckout = chosenBranch != currentBranch && !chosenBranch.isBlank()
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send «$chosenBranch»", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Send «$chosenBranch»", true) {
     override fun run(indicator: ProgressIndicator) {
       currentIndicator = indicator
       try {
@@ -127,7 +127,7 @@ internal fun LocalGitMirrorPanel.syncBranch() {
   ) ?: return
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send branch", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Send branch", true) {
     override fun run(indicator: ProgressIndicator) {
       currentIndicator = indicator
       try {
@@ -210,7 +210,7 @@ internal fun LocalGitMirrorPanel.syncSelectedCommits() {
   if (selectedHashes.isEmpty()) return
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Send commits", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Send commits", true) {
     override fun run(indicator: ProgressIndicator) {
       currentIndicator = indicator
       try {
@@ -331,7 +331,7 @@ internal fun LocalGitMirrorPanel.pushAs() {
   }
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "LocalGitMirror: Push as '$targetBranch'", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Push as '$targetBranch'", true) {
     override fun run(indicator: ProgressIndicator) {
       currentIndicator = indicator
       try {

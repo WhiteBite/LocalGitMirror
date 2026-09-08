@@ -68,7 +68,7 @@ def _export(client, repo_name: str, *, branch=None, haves=None) -> dict:
 def test_export_with_branch_bundles_only_that_branch(tmp_path: Path, monkeypatch):
     client, storage = _make_client(tmp_path, monkeypatch)
     repo_name = f"branch-export-{int(time.time())}"
-    assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
 
     ws = storage / repo_name
     _run_git(ws, "checkout", "-B", "main")
@@ -90,7 +90,7 @@ def test_export_with_branch_bundles_only_that_branch(tmp_path: Path, monkeypatch
 def test_export_with_haves_excludes_known_commits(tmp_path: Path, monkeypatch):
     client, storage = _make_client(tmp_path, monkeypatch)
     repo_name = f"haves-export-{int(time.time())}"
-    assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
 
     ws = storage / repo_name
     _run_git(ws, "checkout", "-B", "main")
@@ -112,7 +112,7 @@ def test_export_with_haves_excludes_known_commits(tmp_path: Path, monkeypatch):
 def test_export_ignores_unknown_haves(tmp_path: Path, monkeypatch):
     client, storage = _make_client(tmp_path, monkeypatch)
     repo_name = f"badhaves-export-{int(time.time())}"
-    assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
 
     ws = storage / repo_name
     _run_git(ws, "checkout", "-B", "main")
@@ -127,7 +127,7 @@ def test_export_ignores_unknown_haves(tmp_path: Path, monkeypatch):
 def test_export_no_branch_falls_back_to_all(tmp_path: Path, monkeypatch):
     client, storage = _make_client(tmp_path, monkeypatch)
     repo_name = f"fallback-export-{int(time.time())}"
-    assert client.post("/api/repos/create", json={"name": repo_name}).status_code == 200
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
 
     ws = storage / repo_name
     (ws / "a.txt").write_text("a\n")

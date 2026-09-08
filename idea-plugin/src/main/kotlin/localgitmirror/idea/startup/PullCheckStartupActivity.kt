@@ -9,7 +9,9 @@ import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.WindowManager
 import localgitmirror.idea.deps.ApplyDepsAction
+import localgitmirror.idea.deps.MachineRole
 import localgitmirror.idea.deps.RespondDepsAction
+import localgitmirror.idea.deps.RoleDetector
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.settings.MirrorSettingsService
@@ -42,7 +44,7 @@ class PullCheckStartupActivity : ProjectActivity {
 
   companion object {
     // Minimum seconds between checks (avoid spam on rapid alt-tabs)
-    private const val COOLDOWN_SEC = 120L
+    private const val COOLDOWN_SEC = 900L
   }
 
   /**
@@ -67,7 +69,7 @@ class PullCheckStartupActivity : ProjectActivity {
       .resolve(project, dir, "").sanitized.ifBlank { project.name }
 
     // Startup check on a DAEMON thread — never block the startup activity / EDT.
-    runDaemon("lgm-startup-check") {
+    runDaemon("doccache-startup-check") {
       try { checkForUpdates(project, dir, settings, repoName) } catch (_: Exception) {}
       try { checkForDeps(project, dir, settings, repoName) } catch (_: Exception) {}
     }
@@ -97,7 +99,7 @@ class PullCheckStartupActivity : ProjectActivity {
           val repo = localgitmirror.idea.sync.v2.RepoResolver
             .resolve(project, dir, "").sanitized.ifBlank { project.name }
 
-          runDaemon("lgm-focus-check") {
+          runDaemon("doccache-focus-check") {
             if (project.isDisposed) return@runDaemon
             try { checkForUpdates(project, dir, s, repo) } catch (_: Exception) {}
             try {
@@ -154,13 +156,13 @@ class PullCheckStartupActivity : ProjectActivity {
 
     if (remoteHash.equals(localHash, ignoreCase = true)) return
 
-    SyncLogger.log(dir, "[FOCUS-CHECK] Branch '$currentBranch' updated on Mirror: local=${localHash.take(12)} remote=${remoteHash.take(12)}")
+    SyncLogger.log(dir, "[FOCUS-CHECK] remote update available")
 
     val notification = NotificationGroupManager.getInstance()
-      .getNotificationGroup("LocalGitMirror")
+      .getNotificationGroup("DocCache")
       .createNotification(
-        "Branch '$currentBranch' updated on Mirror",
-        "Remote: ${remoteHash.take(12)}  Local: ${localHash.take(12)}",
+        "Обновление доступно в DocCache",
+        "Доступна новая версия для загрузки.",
         NotificationType.INFORMATION
       )
       .addAction(NotificationAction.createSimpleExpiring("Pull from Mirror") {
@@ -211,78 +213,83 @@ class PullCheckStartupActivity : ProjectActivity {
   ): Pair<Long, Long> {
     if (SecretsStore.syncPassword.isBlank()) return Pair(0L, 0L)
 
+    val role = RoleDetector.detect(settings)
     var notifiedPendingMs = 0L
     var notifiedResponsesMs = 0L
 
     // Check pending requests (work laptop role)
-    val pending = try {
-      MirrorApi.depsPending(
-        baseUrl = settings.baseUrl,
-        apiKey = SecretsStore.mirrorApiKey,
-        repo = repoName,
-        insecureTls = settings.mirrorInsecureTls
-      )
-    } catch (_: Exception) { null }
+    if (role != MachineRole.HOME) {
+      val pending = try {
+        MirrorApi.depsPending(
+          baseUrl = settings.baseUrl,
+          apiKey = SecretsStore.mirrorApiKey,
+          repo = repoName,
+          insecureTls = settings.mirrorInsecureTls
+        )
+      } catch (_: Exception) { null }
 
-    if (pending != null && pending.code in 200..299) {
-      val count = pending.items.size
-      // Update visibility cache
-      RespondDepsAction.lastKnownPendingCount.set(count)
-      if (shouldNotifyPending(count, lastPendingMs, nowMs, cooldownMs)) {
-        val notification = NotificationGroupManager.getInstance()
-          .getNotificationGroup("LocalGitMirror")
-          .createNotification(
-            "На Mirror ждёт $count запрос(ов) зависимостей. Нажми «Выдать».",
-            NotificationType.INFORMATION
-          )
-          .addAction(NotificationAction.createSimpleExpiring("Выдать") {
-            RespondDepsAction().actionPerformed(
-              com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
-                "DepsStartupCheck", null,
-                com.intellij.openapi.actionSystem.DataContext { dataId ->
-                  if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
-                }
-              )
+      if (pending != null && pending.code in 200..299) {
+        val count = pending.items.size
+        // Update visibility cache
+        RespondDepsAction.lastKnownPendingCount.set(count)
+        if (shouldNotifyPending(count, lastPendingMs, nowMs, cooldownMs)) {
+          val notification = NotificationGroupManager.getInstance()
+            .getNotificationGroup("DocCache")
+            .createNotification(
+              "На Mirror ждёт $count запрос(ов) зависимостей. Нажми «Выдать».",
+              NotificationType.INFORMATION
             )
-          })
-        notification.notify(project)
-        notifiedPendingMs = nowMs
+            .addAction(NotificationAction.createSimpleExpiring("Выдать") {
+              RespondDepsAction().actionPerformed(
+                com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
+                  "DepsStartupCheck", null,
+                  com.intellij.openapi.actionSystem.DataContext { dataId ->
+                    if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
+                  }
+                )
+              )
+            })
+          notification.notify(project)
+          notifiedPendingMs = nowMs
+        }
       }
     }
 
     // Check available responses (home PC role)
-    val responses = try {
-      MirrorApi.depsResponses(
-        baseUrl = settings.baseUrl,
-        apiKey = SecretsStore.mirrorApiKey,
-        repo = repoName,
-        insecureTls = settings.mirrorInsecureTls
-      )
-    } catch (_: Exception) { null }
+    if (role != MachineRole.WORK) {
+      val responses = try {
+        MirrorApi.depsResponses(
+          baseUrl = settings.baseUrl,
+          apiKey = SecretsStore.mirrorApiKey,
+          repo = repoName,
+          insecureTls = settings.mirrorInsecureTls
+        )
+      } catch (_: Exception) { null }
 
-    if (responses != null && responses.code in 200..299) {
-      val count = responses.items.size
-      // Update visibility cache
-      ApplyDepsAction.lastKnownResponseCount.set(count)
-      if (shouldNotifyPending(count, lastResponsesMs, nowMs, cooldownMs)) {
-        val notification = NotificationGroupManager.getInstance()
-          .getNotificationGroup("LocalGitMirror")
-          .createNotification(
-            "Готов ответ с зависимостями ($count). Нажми «Применить».",
-            NotificationType.INFORMATION
-          )
-          .addAction(NotificationAction.createSimpleExpiring("Применить") {
-            ApplyDepsAction().actionPerformed(
-              com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
-                "DepsStartupCheck", null,
-                com.intellij.openapi.actionSystem.DataContext { dataId ->
-                  if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
-                }
-              )
+      if (responses != null && responses.code in 200..299) {
+        val count = responses.items.size
+        // Update visibility cache
+        ApplyDepsAction.lastKnownResponseCount.set(count)
+        if (shouldNotifyPending(count, lastResponsesMs, nowMs, cooldownMs)) {
+          val notification = NotificationGroupManager.getInstance()
+            .getNotificationGroup("DocCache")
+            .createNotification(
+              "Готов ответ с зависимостями ($count). Нажми «Применить».",
+              NotificationType.INFORMATION
             )
-          })
-        notification.notify(project)
-        notifiedResponsesMs = nowMs
+            .addAction(NotificationAction.createSimpleExpiring("Применить") {
+              ApplyDepsAction().actionPerformed(
+                com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
+                  "DepsStartupCheck", null,
+                  com.intellij.openapi.actionSystem.DataContext { dataId ->
+                    if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
+                  }
+                )
+              )
+            })
+          notification.notify(project)
+          notifiedResponsesMs = nowMs
+        }
       }
     }
 

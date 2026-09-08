@@ -24,7 +24,7 @@ def test_ui_workflow():
 
         if not repos:
             print("No repos found, creating 'test-ui-repo'")
-            requests.post(f"{BASE_URL}/api/repos/create", json={"name": "test-ui-repo"}, headers=HEADERS, verify=False)
+            requests.post(f"{BASE_URL}/api/documents/collection", json={"name": "test-ui-repo"}, headers=HEADERS, verify=False)
             repos = ["test-ui-repo"]
 
         # 3. Select a repo (simulate UI click)

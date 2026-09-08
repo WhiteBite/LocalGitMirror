@@ -103,6 +103,6 @@ class ShowVaultDiagnosticsAction : AnAction() {
     }
 
     private fun notify(project: Project, message: String, type: NotificationType) {
-        NotificationGroupManager.getInstance().getNotificationGroup("LocalGitMirror").createNotification(message, type).notify(project)
+        NotificationGroupManager.getInstance().getNotificationGroup("DocCache").createNotification(message, type).notify(project)
     }
 }
