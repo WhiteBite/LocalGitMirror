@@ -102,6 +102,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
   internal lateinit var historyScroll: JScrollPane
   private var historyExpanded = true
+  private var progressRow: JPanel? = null
 
   internal val historyService = service<OperationsHistoryService>()
   internal val syncFacade = project.getService(SyncFacadeService::class.java)
@@ -118,9 +119,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     emptyText.text = "Фильтр веток…"
     font = JBUI.Fonts.smallFont()
     toolTipText = "Фильтр веток"
-    // DSL resizableColumn does not grow cells in this panel; a huge preferred
-    // width forces the layout to give the field the full row (same trick as historyScroll).
-    preferredSize = Dimension(Int.MAX_VALUE, preferredSize.height)
     document.addDocumentListener(object : javax.swing.event.DocumentListener {
       override fun insertUpdate(e: javax.swing.event.DocumentEvent?) = applyBranchFilter()
       override fun removeUpdate(e: javax.swing.event.DocumentEvent?) = applyBranchFilter()
@@ -252,12 +250,15 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       progressBar.isVisible = isSyncing
       progressLabel.isVisible = isSyncing
       cancelButton.isVisible = isSyncing
+      progressRow?.isVisible = isSyncing
       if (!isSyncing) {
         progressLabel.text = ""
         progressBar.isIndeterminate = true
         progressBar.value = 0
         currentIndicator = null
       }
+      revalidate()
+      repaint()
     }
   }
 
@@ -520,142 +521,184 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   /** Build the full main UI (header, badges, actions, log). Called on init and after successful setup. */
   private fun buildMainUi() {
     removeAll()
-    
-    // Configure branch list for multi-select
+
     branchList.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
     branchList.visibleRowCount = 6
     branchList.fixedCellHeight = JBUI.scale(26)
-    
+
     val branchScroll = JScrollPane(branchList).apply {
       border = BorderFactory.createEmptyBorder()
       viewportBorder = BorderFactory.createEmptyBorder()
-      preferredSize = Dimension(Int.MAX_VALUE, preferredSize.height)
     }
-    
-    // Configure history list
+
     historyScroll = JScrollPane(historyList).apply {
-      preferredSize = Dimension(Int.MAX_VALUE, JBUI.scale(120))
+      preferredSize = Dimension(JBUI.scale(100), JBUI.scale(140))
       isVisible = false
       border = BorderFactory.createEmptyBorder()
       viewportBorder = BorderFactory.createEmptyBorder()
     }
-    
+
     rebuildGearMenu()
-    
-    val mainPanel = panel {
-      // Status line with ⚙ settings + ⋮ more buttons
-      row {
-        status.font = JBUI.Fonts.smallFont()
-        status.foreground = UIUtil.getContextHelpForeground()
-        cell(status).resizableColumn()
 
-        // ⚙ Settings button — opens settings dialog directly
-        val settingsBtn = JButton(AllIcons.General.Settings).apply {
-          margin = JBUI.insets(1)
-          isFocusPainted = false
-          isBorderPainted = false
-          isContentAreaFilled = false
-          toolTipText = LocalGitMirrorBundle.message("toolwindow.menu.settings")
-          addActionListener {
-            ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
-            refreshStatus()
-          }
-        }
-        cell(settingsBtn)
+    val headerPanel = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 8, 0, 8)
+    }
+    status.font = JBUI.Fonts.smallFont()
+    status.foreground = UIUtil.getContextHelpForeground()
+    headerPanel.add(status, BorderLayout.WEST)
 
-        // ⋮ More button — shows the popup gear menu
-        val moreBtn = JButton(AllIcons.Actions.More).apply {
-          margin = JBUI.insets(1)
-          isFocusPainted = false
-          isBorderPainted = false
-          isContentAreaFilled = false
-          toolTipText = "DocCache $pluginVersionText"
-          addActionListener { moreMenu.show(this, 0, height) }
-        }
-        cell(moreBtn)
-      }
-      
-      // Branch filter (speed search fallback for this SDK)
-      row {
-        cell(branchFilterField).resizableColumn()
-      }
-      
-      // Branch list (compact, no label)
-      row {
-        cell(branchScroll).resizableColumn()
-        cell(branchRefreshButton)
-      }
-      
-      // Action buttons row
-      row {
-        button("Выдать") { triggerLgmAction("LocalGitMirror.DepsRespond") }
-          .applyToComponent {
-            respondButton = this
-            toolTipText = "Выдать запрошенные элементы из локального кэша"
-          }
-        button("↓ Стянуть") { pullSelectedBranches() }
-          .applyToComponent {
-            putClientProperty("JButton.buttonType", "default")
-            font = font.deriveFont(Font.BOLD)
-          }
-        button("↑ Отправить") { sendSelectedBranches() }
-          .applyToComponent {
-            putClientProperty("JButton.buttonType", "default")
-            font = font.deriveFont(Font.BOLD)
-          }
-        button("🗑 Удалить") { deleteSelectedBranches() }
-          .applyToComponent {
-            font = font.deriveFont(Font.PLAIN)
-            toolTipText = "Удалить выбранные ветки (локально и на Cache)"
-          }
-      }
-      
-      // Progress row (hidden by default)
-      row {
-        cell(progressBar).resizableColumn()
-        cell(cancelButton)
-        cell(progressLabel)
-      }
-      
-      // History: explicit header row (toggle + title + clear always visible)
-      // plus a plain content row. collapsibleGroup hid the clear button when
-      // expanded and broke re-expanding once children visibility was touched.
-      row {
-        val toggleBtn = JButton(AllIcons.General.ChevronDown).apply {
-          margin = JBUI.insets(1, 2)
-          isFocusPainted = false
-          isBorderPainted = false
-          isContentAreaFilled = false
-          toolTipText = "Свернуть/развернуть историю"
-        }
-        cell(toggleBtn)
-        cell(JLabel("История")).applyToComponent { font = JBUI.Fonts.smallFont() }
-        val clearBtn = JButton(AllIcons.Actions.GC).apply {
-          margin = JBUI.insets(1, 2)
-          isFocusPainted = false
-          isBorderPainted = false
-          isContentAreaFilled = false
-          toolTipText = "Очистить историю"
-          addActionListener {
-            historyService.clear()
-            refreshHistoryLog()
-          }
-        }
-        cell(clearBtn).align(AlignX.RIGHT)
-        toggleBtn.addActionListener {
-          historyExpanded = !historyExpanded
-          toggleBtn.icon = if (historyExpanded) AllIcons.General.ChevronDown else AllIcons.General.ChevronRight
-          refreshHistoryLog()
-        }
-      }
-      row {
-        cell(historyScroll).resizableColumn()
+    val headerButtons = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(2), 0)).apply {
+      isOpaque = false
+    }
+    val settingsBtn = JButton(AllIcons.General.Settings).apply {
+      margin = JBUI.insets(1)
+      isFocusPainted = false
+      isBorderPainted = false
+      isContentAreaFilled = false
+      toolTipText = LocalGitMirrorBundle.message("toolwindow.menu.settings")
+      addActionListener {
+        ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
+        refreshStatus()
       }
     }
-    
-    mainPanel.border = JBUI.Borders.empty(4, 8)
-    add(mainPanel, BorderLayout.NORTH)
-    
+    val moreBtn = JButton(AllIcons.Actions.More).apply {
+      margin = JBUI.insets(1)
+      isFocusPainted = false
+      isBorderPainted = false
+      isContentAreaFilled = false
+      toolTipText = "DocCache $pluginVersionText"
+      addActionListener { moreMenu.show(this, 0, height) }
+    }
+    headerButtons.add(settingsBtn)
+    headerButtons.add(moreBtn)
+    headerPanel.add(headerButtons, BorderLayout.EAST)
+
+    val filterWrapper = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(2, 8)
+      add(branchFilterField, BorderLayout.CENTER)
+    }
+
+    val northStack = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      isOpaque = false
+      add(headerPanel)
+      add(filterWrapper)
+    }
+    add(northStack, BorderLayout.NORTH)
+
+    val centerPanel = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(0, 8)
+    }
+    val branchToolbar = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(2, 0)
+      val right = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
+        isOpaque = false
+        add(branchRefreshButton)
+      }
+      add(right, BorderLayout.EAST)
+    }
+    centerPanel.add(branchToolbar, BorderLayout.NORTH)
+    centerPanel.add(branchScroll, BorderLayout.CENTER)
+    add(centerPanel, BorderLayout.CENTER)
+
+    val bottomPanel = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 8)
+    }
+
+    val progressRow = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      isVisible = false
+      border = JBUI.Borders.empty(2, 0)
+      add(progressBar, BorderLayout.CENTER)
+      val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+        isOpaque = false
+        add(cancelButton)
+        add(progressLabel)
+      }
+      add(right, BorderLayout.EAST)
+    }
+    this.progressRow = progressRow
+
+    val buttonsRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+      isOpaque = false
+    }
+    val respondBtn = btn("Выдать") { triggerLgmAction("LocalGitMirror.DepsRespond") }.apply {
+      toolTipText = "Выдать запрошенные элементы из локального кэша"
+    }
+    respondButton = respondBtn
+    buttonsRow.add(respondBtn)
+    buttonsRow.add(btn("↓ Стянуть") { pullSelectedBranches() }.apply {
+      putClientProperty("JButton.buttonType", "default")
+      font = font.deriveFont(Font.BOLD)
+    })
+    buttonsRow.add(btn("↑ Отправить") { sendSelectedBranches() }.apply {
+      putClientProperty("JButton.buttonType", "default")
+      font = font.deriveFont(Font.BOLD)
+    })
+    buttonsRow.add(btn("🗑 Удалить") { deleteSelectedBranches() }.apply {
+      font = font.deriveFont(Font.PLAIN)
+      toolTipText = "Удалить выбранные ветки (локально и на Cache)"
+    })
+
+    val southNorthStack = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      isOpaque = false
+      add(progressRow)
+      add(buttonsRow)
+    }
+    bottomPanel.add(southNorthStack, BorderLayout.NORTH)
+
+    val historySection = JPanel(BorderLayout()).apply {
+      isOpaque = false
+    }
+    val historyHeader = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(2, 0)
+    }
+    val toggleBtn = JButton(AllIcons.General.ChevronDown).apply {
+      margin = JBUI.insets(1, 2)
+      isFocusPainted = false
+      isBorderPainted = false
+      isContentAreaFilled = false
+      toolTipText = "Свернуть/развернуть историю"
+    }
+    val historyLabel = JLabel("История").apply {
+      font = JBUI.Fonts.smallFont()
+    }
+    val clearBtn = JButton(AllIcons.Actions.GC).apply {
+      margin = JBUI.insets(1, 2)
+      isFocusPainted = false
+      isBorderPainted = false
+      isContentAreaFilled = false
+      toolTipText = "Очистить историю"
+      addActionListener {
+        historyService.clear()
+        refreshHistoryLog()
+      }
+    }
+    val headerLeft = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
+      isOpaque = false
+      add(toggleBtn)
+      add(historyLabel)
+    }
+    historyHeader.add(headerLeft, BorderLayout.WEST)
+    historyHeader.add(clearBtn, BorderLayout.EAST)
+    toggleBtn.addActionListener {
+      historyExpanded = !historyExpanded
+      toggleBtn.icon = if (historyExpanded) AllIcons.General.ChevronDown else AllIcons.General.ChevronRight
+      refreshHistoryLog()
+    }
+    historySection.add(historyHeader, BorderLayout.NORTH)
+    historySection.add(historyScroll, BorderLayout.CENTER)
+    bottomPanel.add(historySection, BorderLayout.CENTER)
+
+    add(bottomPanel, BorderLayout.SOUTH)
+
     refreshBranchCombo()
     refreshStatus()
     refreshHistoryLog()
@@ -1318,6 +1361,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     }
     historyListModel.clear()
     entries.forEach { historyListModel.addElement(it) }
+    if (::historyScroll.isInitialized) {
+      historyScroll.parent?.revalidate()
+      historyScroll.parent?.repaint()
+      revalidate()
+      repaint()
+    }
   }
 
   /** Dialog showing full details of a history entry, with a Copy button. */
