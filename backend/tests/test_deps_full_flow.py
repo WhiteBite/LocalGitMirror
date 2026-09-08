@@ -160,3 +160,25 @@ def test_deps_multiple_requests_each_has_unique_id(tmp_path: Path):
     assert len(set(ids)) == len(ids)
     pending = client.get("/api/deps/pending", params={"repo": "onyx"}).json()
     assert len([x for x in pending["items"] if x["id"] in ids]) == 5
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# X-LGM-Repo header: alternative to ?repo= query param
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_deps_pending_via_x_lgm_repo_header(tmp_path: Path):
+    client, _ = _make_client(tmp_path)
+    repo = "onyx-platform"
+    fake_manifest = b"\x01ENCRYPTED-MANIFEST-PAYLOAD" * 10
+    client.post(
+        "/api/deps/request",
+        data={"repo": repo},
+        files={"attachment": ("manifest.bin", fake_manifest, "application/octet-stream")},
+    )
+
+    resp = client.get("/api/deps/pending", headers={"X-LGM-Repo": repo})
+    assert resp.status_code == 200, resp.text
+    assert len(resp.json()["items"]) >= 1
+
+    resp = client.get("/api/deps/pending")
+    assert resp.status_code == 400

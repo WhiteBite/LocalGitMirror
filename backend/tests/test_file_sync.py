@@ -90,3 +90,24 @@ def test_file_sync_rejects_empty_payload(tmp_path: Path):
         files={"attachment": ("x.bin", b"", "application/octet-stream")},
     )
     assert resp.status_code == 400
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# X-LGM-Repo header: alternative to ?repo= query param
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_file_sync_list_via_x_lgm_repo_header(tmp_path: Path):
+    client, _ = _make_client(tmp_path)
+    payload = b"ENCRYPTED-FILE-CONTAINER" * 1024
+    client.post(
+        "/api/file-sync/upload",
+        data={"repo": "onyx", "path": "docs/file.bin", "plain_size": "123"},
+        files={"attachment": ("file.lgm", payload, "application/octet-stream")},
+    )
+
+    resp = client.get("/api/file-sync/list", headers={"X-LGM-Repo": "onyx"})
+    assert resp.status_code == 200, resp.text
+    assert len(resp.json()["items"]) == 1
+
+    resp = client.get("/api/file-sync/list")
+    assert resp.status_code == 400

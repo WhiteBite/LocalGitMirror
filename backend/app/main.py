@@ -303,11 +303,12 @@ async def lifespan(app: FastAPI):
     from app.core.system_monitor import SystemMonitor
     local_ip = SystemMonitor.get_local_ip()
     api_key = os.getenv("API_KEY", "")
+    masked_key = f"{api_key[:4]}****" if len(api_key) >= 4 else "****"
     console.print("")
     console.print("[bold cyan]─── Plugin Connection Info ───[/bold cyan]")
     console.print(f"[cyan]Mirror URL:[/cyan]      {protocol}://{local_ip}:{CONFIG['web_port']}")
-    console.print(f"[cyan]API Key:[/cyan]         {api_key}")
-    console.print(f"[cyan]Sync Password:[/cyan]   {sync_pass}")
+    console.print(f"[cyan]API Key:[/cyan]         {masked_key}")
+    console.print(f"[cyan]Sync Password:[/cyan]   **** (set in .env)")
     # v3 hybrid public-key fingerprint (for out-of-band pinning verification)
     try:
         if getattr(sync_router_mod, "server_private_key", None) is not None:
@@ -318,7 +319,7 @@ async def lifespan(app: FastAPI):
         pass
     console.print(f"[cyan]Default Repo:[/cyan]    {repo_manager.current_repo if repo_manager else 'default'}")
     console.print("[bold cyan]─────────────────────────────[/bold cyan]")
-    console.print("[dim]Copy these values into IDEA plugin Settings > LocalGitMirror[/dim]")
+    console.print("[dim]Copy full API Key / Sync Password from .env into IDEA plugin Settings > LocalGitMirror[/dim]")
     console.print("")
 
     yield
