@@ -17,6 +17,7 @@ import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
+import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.*
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -111,7 +112,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   // All items before filtering — used by branchFilterField to re-apply the filter.
   private var allBranchItems: List<BranchListItem> = emptyList()
   // Small filter field above the list (speed search fallback for this SDK).
-  private val branchFilterField = JTextField().apply {
+  private val branchFilterField = JBTextField().apply {
+    emptyText.text = "Фильтр веток…"
     font = JBUI.Fonts.smallFont()
     toolTipText = "Фильтр веток"
     document.addDocumentListener(object : javax.swing.event.DocumentListener {
