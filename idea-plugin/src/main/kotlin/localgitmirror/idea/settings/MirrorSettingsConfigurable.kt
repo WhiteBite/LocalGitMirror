@@ -19,6 +19,11 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
   private var dialogPanel: DialogPanel? = null
 
+  // Live component refs: test/discover buttons must read what is typed, not the
+  // not-yet-applied persistent state.
+  private var urlField: javax.swing.JTextField? = null
+  private var apiKeyField: javax.swing.JPasswordField? = null
+
   // SecretsStore-backed fields — managed manually (not in PersistentStateComponent)
   private var mirrorApiKeyLocal = ""
   private var syncPasswordLocal = ""
@@ -39,6 +44,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
             .bindText(state::baseUrl)
             .resizableColumn()
             .comment("e.g. https://192.168.1.50")
+            .applyToComponent { urlField = this }
           button("Найти") { onDiscoverClicked() }
             .gap(RightGap.SMALL)
           button("Проверить") { onTestClicked() }
@@ -47,7 +53,8 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
         row("API Key") {
           passwordField()
             .bindText(::mirrorApiKeyLocal)
-            .comment("Из Plugin Connection Info на сервере")
+            .comment("из Plugin Connection Info на сервере")
+            .applyToComponent { apiKeyField = this }
         }
 
         row("Пароль синхронизации") {
@@ -226,14 +233,15 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
   // ── Test Connection ──
   private fun onTestClicked() {
-    val urlToTest = resolveUrl(state.baseUrl)
+    val urlToTest = resolveUrl(urlField?.text ?: state.baseUrl)
     if (urlToTest.isBlank()) {
-      Messages.showInfoMessage("Укажите URL сервера", "Проверка подключения")
+      Messages.showInfoMessage(dialogPanel, "Укажите URL сервера", "Проверка подключения")
       return
     }
+    val apiKeyToTest = apiKeyField?.text?.takeIf { it.isNotBlank() } ?: mirrorApiKeyLocal
 
     Thread({
-      val pingResult = runCatching { MirrorApi.ping(urlToTest, mirrorApiKeyLocal, state.mirrorInsecureTls) }
+      val pingResult = runCatching { MirrorApi.ping(urlToTest, apiKeyToTest, state.mirrorInsecureTls) }
         .getOrElse { MirrorApi.HttpResult(0, it.message ?: "error") }
 
       SwingUtilities.invokeLater {
