@@ -23,7 +23,7 @@
                          groupId="tools"/>
     <toolWindow id="LocalGitMirror"
                 factoryClass="localgitmirror.idea.ui.LocalGitMirrorToolWindowFactory"
-                anchor="bottom"
+                anchor="right"
                 icon="AllIcons.Toolwindows.ToolWindowMessages"/>
 
     <notificationGroup id="LocalGitMirror"
