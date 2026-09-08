@@ -34,6 +34,7 @@
 
     <postStartupActivity implementation="localgitmirror.idea.startup.PullCheckStartupActivity"/>
     <postStartupActivity implementation="localgitmirror.idea.startup.DepsAutomationStartupActivity"/>
+    <postStartupActivity implementation="localgitmirror.idea.ui.LgmToolWindowPlacementActivity"/>
   </extensions>
 
   <actions>
