@@ -340,22 +340,36 @@ object GradleEcosystem : DepsEcosystem {
    * build's repository lists. Idempotent: if the file already has the same
    * marker line we leave it alone (so a user-customised script survives).
    *
-   * Lives at `~/.gradle/init.d/doccache-mavenlocal-fallback.gradle`. Gradle picks
-   * up every `*.gradle` / `*.gradle.kts` in `init.d` automatically.
+   * Lives in `init.d` of EVERY candidate gradle home (GRADLE_USER_HOME,
+   * gradle.user.home, ~/.gradle, GRADLE_HOME/.gradle): builds run with a
+   * custom gradle home only read init.d from that home, so a single
+   * ~/.gradle install left those builds without mavenLocal(). Gradle picks
+   * up every `*.gradle` / `*.gradle.kts` in init.d automatically.
    *
-   * Returns true if the file was written (created or updated), false if it
-   * was already current.
+   * Returns true if any file was written (created or updated), false if all
+   * were already current.
    */
   fun ensureMavenLocalInitScript(): Boolean {
-    val gradleHome = File(System.getProperty("user.home") ?: ".", ".gradle")
-    val initDir = File(gradleHome, "init.d")
-    if (!initDir.exists()) initDir.mkdirs()
-    val target = File(initDir, "doccache-mavenlocal-fallback.gradle")
-    val expected = MAVENLOCAL_INIT_SCRIPT
-    if (target.isFile && target.readText() == expected) return false
-    File(initDir, "lgm-mavenlocal-fallback.gradle").takeIf { it.exists() }?.delete()
-    target.writeText(expected)
-    return true
+    val sub = "caches" + File.separator + "modules-2" + File.separator + "files-2.1"
+    val homes = LinkedHashSet<File>()
+    for (root in DepsScanner.candidateCacheRoots()) {
+      val path = root.path
+      if (path.endsWith(sub)) homes.add(File(path.removeSuffix(sub)))
+    }
+    homes.add(File(System.getProperty("user.home") ?: ".", ".gradle"))
+
+    var written = false
+    for (gradleHome in homes) {
+      val initDir = File(gradleHome, "init.d")
+      if (!initDir.exists()) initDir.mkdirs()
+      val target = File(initDir, "doccache-mavenlocal-fallback.gradle")
+      val expected = MAVENLOCAL_INIT_SCRIPT
+      if (target.isFile && target.readText() == expected) continue
+      File(initDir, "lgm-mavenlocal-fallback.gradle").takeIf { it.exists() }?.delete()
+      target.writeText(expected)
+      written = true
+    }
+    return written
   }
 
   private val MAVENLOCAL_INIT_SCRIPT: String = """
