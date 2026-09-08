@@ -239,82 +239,142 @@ object DepsResponder {
     }
     GradleEcosystem.collectProjectDir = null
 
-    if (entries.isEmpty()) {
-      // Diagnostics only; the caller (action) does the detailed history logging
-      // by scanning cache roots itself, keeping the core free of UI concerns.
-      val gradleEnv = System.getenv("GRADLE_USER_HOME") ?: "(не задана)"
-      DepsDiagnostics.event("respond: 0 found. GRADLE_USER_HOME=$gradleEnv")
-      DepsDiagnostics.detail("Requested (not found)") { manifest.missing.map { "${it.ecosystem} ${it.label}" } }
+    val nexusBaseUrl = settings.nexusBaseUrl
+    var nexusRecovered = 0
+    val tempFiles = mutableListOf<File>()
 
-      return Result(
-        success = false,
-        message = "Ни одна из ${manifest.missing.size} зависимостей не найдена в кеше.",
-        sentCount = 0,
-        notFoundCount = manifest.missing.size,
-        bytes = 0
-      )
-    }
-
-    // Pack with ecosystem-prefixed entry names so the dome can route them.
-    val prefixed = entries.map {
-      it.copy(relativePath = "${it.coordinate.ecosystem}/${it.relativePath}")
-    }.toMutableList()
-    // Ship the project's npm lockfile (if present) as a meta entry.
-    workProjectDir?.let { dir ->
-      val lock = File(dir, "package-lock.json")
-      if (lock.isFile) {
-        prefixed.add(DepFileEntry(
-          coordinate = DepCoordinate("npm", "", "package-lock.json", ""),
-          absolutePath = lock.absolutePath,
-          relativePath = "__meta__/package-lock.json",
-          size = lock.length()
-        ))
-      }
-    }
-    val diffSize = prefixed.sumOf { it.size }
-    indicator?.text = "Упаковываем ${prefixed.size} файлов (${humanBytes(diffSize)})…"
-    val zipBytes = DepsBundler.packEntries(prefixed)
-    val encrypted = BundleCrypto.encryptBundleBytes(zipBytes, syncPwd)
-
-    indicator?.text = "Отправляем (${humanBytes(encrypted.size.toLong())})…"
-    val res = MirrorApi.depsRespond(
-      baseUrl = settings.baseUrl,
-      apiKey = SecretsStore.mirrorApiKey,
-      repo = repo,
-      insecureTls = settings.mirrorInsecureTls,
-      requestId = requestId,
-      encryptedArchive = encrypted
-    )
-    if (res.code !in 200..299 || res.id == null) {
-      return Result(
-        success = false,
-        message = "Не отправлено (${res.code}): ${res.message}",
-        sentCount = 0, notFoundCount = 0, bytes = 0
-      )
-    }
-
-    val foundCoords = entries.map { it.coordinate.key }.toSet()
-    val notFoundUnique = notFound.distinctBy { it.key }
-    DepsDiagnostics.enabled = settings.depsDiagnosticsEnabled
-    DepsDiagnostics.verbose = settings.depsDiagnosticsVerbose
-    DepsDiagnostics.event("respond: shipped=${foundCoords.size} notFound=${notFoundUnique.size} bytes=$diffSize")
-    DepsDiagnostics.detail("Shipped coordinates") {
-      entries.map { it.coordinate.label }.distinct().sorted()
-    }
-    if (notFoundUnique.isNotEmpty()) {
-      DepsDiagnostics.detail("Requested but NOT in local cache") {
-        notFoundUnique.map { "${it.ecosystem}  ${it.label}" }
+    if (notFound.isNotEmpty()) {
+      val gradleMissing = notFound.filter { it.ecosystem == "gradle" }
+      val nonGradle = notFound.filter { it.ecosystem != "gradle" }
+      if (nexusBaseUrl.isNotBlank() && gradleMissing.isNotEmpty()) {
+        val cap = minOf(50, gradleMissing.size)
+        indicator?.text = "Пробуем Nexus для $cap отсутствующих артефактов…"
+        val stillMissing = mutableListOf<DepCoordinate>()
+        for (coord in gradleMissing.take(cap)) {
+          val ok = runCatching { fetchCoordFromNexus(coord, nexusBaseUrl, entries, tempFiles) }
+            .getOrDefault(false)
+          if (ok) nexusRecovered++ else stillMissing.add(coord)
+        }
+        stillMissing.addAll(gradleMissing.drop(cap))
+        notFound.clear()
+        notFound.addAll(nonGradle)
+        notFound.addAll(stillMissing)
       }
     }
 
-    val warn = if (notFoundUnique.isNotEmpty()) " (не найдено ${notFoundUnique.size})" else ""
-    return Result(
-      success = true,
-      message = "Отправлено ${humanBytes(diffSize)} — ${foundCoords.size} зависимостей$warn.",
-      sentCount = foundCoords.size,
-      notFoundCount = notFoundUnique.size,
-      bytes = diffSize
-    )
+    try {
+      if (entries.isEmpty()) {
+        // Diagnostics only; the caller (action) does the detailed history logging
+        // by scanning cache roots itself, keeping the core free of UI concerns.
+        val gradleEnv = System.getenv("GRADLE_USER_HOME") ?: "(не задана)"
+        DepsDiagnostics.event("respond: 0 found. GRADLE_USER_HOME=$gradleEnv" +
+          (if (nexusBaseUrl.isNotBlank()) " nexusTried=${notFound.size}" else ""))
+        DepsDiagnostics.detail("Requested (not found)") { manifest.missing.map { "${it.ecosystem}  ${it.label}" } }
+
+        val hint = if (nexusBaseUrl.isBlank() && notFound.isNotEmpty())
+          "\nЗадайте Nexus URL в настройках DocCache, чтобы доставать отсутствующие в кэше артефакты напрямую."
+        else ""
+        return Result(
+          success = false,
+          message = "Ни одна из ${manifest.missing.size} зависимостей не найдена в кеше.$hint",
+          sentCount = 0,
+          notFoundCount = manifest.missing.size,
+          bytes = 0
+        )
+      }
+
+      // Pack with ecosystem-prefixed entry names so the dome can route them.
+      val prefixed = entries.map {
+        it.copy(relativePath = "${it.coordinate.ecosystem}/${it.relativePath}")
+      }.toMutableList()
+      // Ship the project's npm lockfile (if present) as a meta entry.
+      workProjectDir?.let { dir ->
+        val lock = File(dir, "package-lock.json")
+        if (lock.isFile) {
+          prefixed.add(DepFileEntry(
+            coordinate = DepCoordinate("npm", "", "package-lock.json", ""),
+            absolutePath = lock.absolutePath,
+            relativePath = "__meta__/package-lock.json",
+            size = lock.length()
+          ))
+        }
+      }
+      val diffSize = prefixed.sumOf { it.size }
+      indicator?.text = "Упаковываем ${prefixed.size} файлов (${humanBytes(diffSize)})…"
+      val zipBytes = DepsBundler.packEntries(prefixed)
+      val encrypted = BundleCrypto.encryptBundleBytes(zipBytes, syncPwd)
+
+      indicator?.text = "Отправляем (${humanBytes(encrypted.size.toLong())})…"
+      val res = MirrorApi.depsRespond(
+        baseUrl = settings.baseUrl,
+        apiKey = SecretsStore.mirrorApiKey,
+        repo = repo,
+        insecureTls = settings.mirrorInsecureTls,
+        requestId = requestId,
+        encryptedArchive = encrypted
+      )
+      if (res.code !in 200..299 || res.id == null) {
+        return Result(
+          success = false,
+          message = "Не отправлено (${res.code}): ${res.message}",
+          sentCount = 0, notFoundCount = 0, bytes = 0
+        )
+      }
+
+      val foundCoords = entries.map { it.coordinate.key }.toSet()
+      val notFoundUnique = notFound.distinctBy { it.key }
+      DepsDiagnostics.enabled = settings.depsDiagnosticsEnabled
+      DepsDiagnostics.verbose = settings.depsDiagnosticsVerbose
+      DepsDiagnostics.event("respond: shipped=${foundCoords.size} notFound=${notFoundUnique.size} nexusRecovered=$nexusRecovered bytes=$diffSize")
+      DepsDiagnostics.detail("Shipped coordinates") {
+        entries.map { it.coordinate.label }.distinct().sorted()
+      }
+      if (notFoundUnique.isNotEmpty()) {
+        DepsDiagnostics.detail("Requested but NOT in local cache") {
+          notFoundUnique.map { "${it.ecosystem}  ${it.label}" }
+        }
+      }
+
+      val warn = if (notFoundUnique.isNotEmpty()) " (не найдено ${notFoundUnique.size})" else ""
+      val nexusInfo = if (nexusRecovered > 0) ", восстановлено через Nexus: $nexusRecovered" else ""
+      val hint = if (nexusBaseUrl.isBlank() && notFoundUnique.isNotEmpty())
+        "\nЗадайте Nexus URL в настройках DocCache, чтобы доставать отсутствующие в кэше артефакты напрямую."
+      else ""
+      return Result(
+        success = true,
+        message = "Отправлено ${humanBytes(diffSize)} — ${foundCoords.size} зависимостей$warn$nexusInfo.$hint",
+        sentCount = foundCoords.size,
+        notFoundCount = notFoundUnique.size,
+        bytes = diffSize
+      )
+    } finally {
+      tempFiles.forEach { runCatching { it.delete() } }
+    }
+  }
+
+  private fun fetchCoordFromNexus(
+    coord: DepCoordinate,
+    nexusBaseUrl: String,
+    entries: MutableList<DepFileEntry>,
+    tempFiles: MutableList<File>
+  ): Boolean {
+    val main = NexusFetcher.fetch(nexusBaseUrl, coord.group, coord.name, coord.version, coord.classifier, "jar")
+    val pom = NexusFetcher.fetch(nexusBaseUrl, coord.group, coord.name, coord.version, "", "pom")
+    val module = NexusFetcher.fetch(nexusBaseUrl, coord.group, coord.name, coord.version, "", "module")
+    var any = false
+    for (r in listOf(main, pom, module)) {
+      if (!r.success || r.bytes == null) continue
+      val tmp = NexusFetcher.writeToTemp(r) ?: continue
+      tempFiles.add(tmp)
+      entries.add(DepFileEntry(
+        coordinate = coord,
+        absolutePath = tmp.absolutePath,
+        relativePath = MavenLocalScanner.mavenLocalRelativePath(coord.group, coord.name, coord.version, r.fileName),
+        size = r.bytes.size.toLong()
+      ))
+      any = true
+    }
+    return any
   }
 }
 
