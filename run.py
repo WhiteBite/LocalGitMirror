@@ -260,6 +260,69 @@ def _start_redirect_thread(http_port: int, https_port: int) -> None:
     print(f"[info] HTTP->HTTPS redirect on :{http_port} -> :{https_port}")
 
 
+def _free_port(port: int | None) -> None:
+    """Освободить порт, закрыв предыдущий экземпляр LocalGitMirror.
+
+    Безопасность: завершается только дерево процессов, опознанное как наше
+    (путь репо / run.py / uvicorn в cmdline самого процесса или его предков).
+    Посторонний процесс на порту не трогается — печатается предупреждение.
+    """
+    if not port:
+        return
+    try:
+        import psutil
+    except ImportError:
+        print(f"[warn] psutil недоступен — порт {port} не освобождён автоматически")
+        return
+
+    root = str(ROOT).lower()
+    me = os.getpid()
+
+    def _is_ours(proc) -> bool:
+        cur = proc
+        for _ in range(4):
+            if cur is None:
+                return False
+            try:
+                cl = " ".join(cur.cmdline() or []).lower()
+            except psutil.Error:
+                return False
+            if root in cl or "run.py" in cl or "uvicorn" in cl:
+                return True
+            try:
+                cur = cur.parent()
+            except psutil.Error:
+                return False
+        return False
+
+    for conn in psutil.net_connections(kind="inet"):
+        try:
+            if conn.status != psutil.CONN_LISTEN or not conn.laddr or conn.laddr.port != port:
+                continue
+            if not conn.pid or conn.pid == me:
+                continue
+            proc = psutil.Process(conn.pid)
+            if not _is_ours(proc):
+                print(f"[warn] Порт {port} занят посторонним процессом PID {conn.pid} ({proc.name()}) — не трогаю; освободи вручную")
+                return
+            tree = [proc] + proc.children(recursive=True)
+            print(f"[info] Закрываю предыдущий сервер на порту {port} (PID {proc.pid})...")
+            for p in tree:
+                try:
+                    p.terminate()
+                except psutil.Error:
+                    pass
+            _gone, alive = psutil.wait_procs(tree, timeout=8)
+            for p in alive:
+                try:
+                    p.kill()
+                except psutil.Error:
+                    pass
+            return
+        except psutil.Error:
+            continue
+
+
 def run_prod() -> None:
     os.chdir(ROOT)  # cert.pem / storage / frontend dist resolve relative to repo root
     _load_env()
@@ -271,12 +334,17 @@ def run_prod() -> None:
     from app.main import CONFIG, app
 
     web_port = CONFIG["web_port"]
+    _free_port(web_port)
+    git_raw = (os.getenv("GIT_PORT") or "8444").strip()
+    if git_raw.isdigit():
+        _free_port(int(git_raw))
     cert, key = ROOT / "cert.pem", ROOT / "key.pem"
     have_ssl = _ensure_certs()
 
     redirect_raw = (os.getenv("REDIRECT_HTTP_PORT") or "").strip()
     if redirect_raw and redirect_raw != "0":
         try:
+            _free_port(int(redirect_raw))
             _start_redirect_thread(int(redirect_raw), web_port)
         except Exception as exc:
             print(f"[warn] redirect not started: {exc}")
