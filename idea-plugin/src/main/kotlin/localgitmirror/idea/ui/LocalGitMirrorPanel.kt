@@ -3,6 +3,10 @@ package localgitmirror.idea.ui
 import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -12,12 +16,17 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.ui.ColoredListCellRenderer
+import com.intellij.ui.EditorNotificationPanel
 import com.intellij.ui.JBColor
+import com.intellij.ui.ListSpeedSearch
+import com.intellij.ui.OnePixelSplitter
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
-import com.intellij.ui.components.JBTextField
+import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.dsl.builder.*
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
@@ -113,13 +122,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal val branchListModel = DefaultListModel<BranchListItem>()
   // All items before filtering — used by branchFilterField to re-apply the filter.
   private var allBranchItems: List<BranchListItem> = emptyList()
-  // Small filter field above the list (speed search fallback for this SDK).
   private var respondButton: javax.swing.JButton? = null
-  private val branchFilterField = JBTextField().apply {
-    emptyText.text = "Фильтр веток…"
-    font = JBUI.Fonts.smallFont()
-    toolTipText = "Фильтр веток"
-    document.addDocumentListener(object : javax.swing.event.DocumentListener {
+  private val branchFilterField = SearchTextField(false).apply {
+    textEditor.emptyText.text = LocalGitMirrorBundle.message("panel.branch.filter")
+    textEditor.font = JBUI.Fonts.smallFont()
+    toolTipText = LocalGitMirrorBundle.message("panel.branch.filter")
+    addDocumentListener(object : javax.swing.event.DocumentListener {
       override fun insertUpdate(e: javax.swing.event.DocumentEvent?) = applyBranchFilter()
       override fun removeUpdate(e: javax.swing.event.DocumentEvent?) = applyBranchFilter()
       override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = applyBranchFilter()
@@ -129,31 +137,112 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     font = JBUI.Fonts.smallFont()
     cellRenderer = BranchListCellRenderer()
     selectionMode = ListSelectionModel.SINGLE_SELECTION
+    emptyText.text = LocalGitMirrorBundle.message("panel.branch.empty")
+    emptyText.appendLine(
+      LocalGitMirrorBundle.message("panel.branch.empty.refresh"),
+      SimpleTextAttributes.LINK_ATTRIBUTES
+    ) { refreshBranchCombo(userInitiated = true, withMirror = true) }
     toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Cache"
   }
 
-  private inner class BranchListCellRenderer : DefaultListCellRenderer() {
+  internal val depsListModel = DefaultListModel<String>()
+  internal val depsList = JBList(depsListModel).apply {
+    font = JBUI.Fonts.smallFont()
+    selectionMode = ListSelectionModel.SINGLE_SELECTION
+    emptyText.text = LocalGitMirrorBundle.message("panel.deps.empty")
+    emptyText.appendLine(
+      LocalGitMirrorBundle.message("panel.deps.empty.refresh"),
+      SimpleTextAttributes.LINK_ATTRIBUTES
+    ) { refreshDepsInBackground() }
+  }
+  private var depsBanner: EditorNotificationPanel? = null
+
+  internal val filesListModel = DefaultListModel<String>()
+  internal val filesList = JBList(filesListModel).apply {
+    font = JBUI.Fonts.smallFont()
+    selectionMode = ListSelectionModel.SINGLE_SELECTION
+    emptyText.text = LocalGitMirrorBundle.message("panel.exchange.files.empty")
+    emptyText.appendLine(
+      LocalGitMirrorBundle.message("panel.exchange.files.refresh"),
+      SimpleTextAttributes.LINK_ATTRIBUTES
+    ) { refreshExchangeInBackground() }
+  }
+  private var bufferMetaLabel = JBLabel("")
+  private var bufferHintLabel = JBLabel("")
+  internal val roleBadge = BadgeLabel("")
+  private var tabsPane: JBTabbedPane? = null
+
+  private inner class BranchListCellRenderer : JPanel(BorderLayout()), ListCellRenderer<BranchListItem> {
+    private val glyphLabel = JBLabel()
+    private val nameLabel = JBLabel()
+    private val badgeLabel = JBLabel()
+    private val deltaLabel = JBLabel()
+
+    init {
+      isOpaque = true
+      border = JBUI.Borders.empty(1, 6)
+      val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+        isOpaque = false
+        add(glyphLabel)
+        add(nameLabel)
+        add(badgeLabel)
+      }
+      add(left, BorderLayout.WEST)
+      add(deltaLabel, BorderLayout.EAST)
+      glyphLabel.font = JBUI.Fonts.smallFont().asBold()
+      nameLabel.font = JBUI.Fonts.smallFont()
+      badgeLabel.font = JBUI.Fonts.smallFont()
+      deltaLabel.font = JBUI.Fonts.smallFont()
+    }
+
     override fun getListCellRendererComponent(
-      list: JList<*>?,
-      value: Any?,
+      list: JList<out BranchListItem>,
+      value: BranchListItem?,
       index: Int,
       isSelected: Boolean,
       cellHasFocus: Boolean
     ): Component {
-      val c = super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
-      if (value is BranchListItem) {
-        val prefix = when (value.status) {
-          BranchStatus.SYNCED -> "\u2713 "
-          BranchStatus.AHEAD -> "\u2191 "
-          BranchStatus.BEHIND -> "\u2193 "
-          BranchStatus.MIRROR_ONLY -> "\u2605 "
-          BranchStatus.LOCAL_ONLY -> "\u25CB "
-        }
-        text = "$prefix${value.name}"
-        font = JBUI.Fonts.smallFont()
+      background = if (isSelected) UIUtil.getListSelectionBackground(true) else UIUtil.getListBackground()
+      if (value == null) return this
+      val color = statusColor(value.status)
+      glyphLabel.text = statusGlyph(value.status)
+      glyphLabel.foreground = color
+      nameLabel.text = value.name
+      nameLabel.font = JBUI.Fonts.smallFont().let { if (value.isCurrent) it.asBold() else it }
+      nameLabel.foreground = when {
+        value.isCurrent -> JBColor(0x2E7D32, 0x5FAD65)
+        value.status == BranchStatus.MIRROR_ONLY -> UIUtil.getContextHelpForeground()
+        else -> UIUtil.getListForeground()
       }
-      return c
+      badgeLabel.text = if (value.mrIid != null)
+        "  !${value.mrIid}${if (value.mrUnresolved > 0) " \\u00b7 ${value.mrUnresolved}\\u26a0" else ""}"
+      else ""
+      badgeLabel.foreground = JBColor(0xB8860B, 0xE3AE4D)
+      deltaLabel.text = when (value.status) {
+        BranchStatus.AHEAD -> value.aheadCount?.let { "+$it" } ?: ""
+        BranchStatus.BEHIND -> value.behindCount?.let { "\\u2212$it" } ?: ""
+        else -> ""
+      }
+      deltaLabel.foreground = color
+      deltaLabel.border = JBUI.Borders.empty(0, 0, 0, 4)
+      return this
     }
+  }
+
+  private fun statusGlyph(status: BranchStatus): String = when (status) {
+    BranchStatus.SYNCED -> "\u2713"
+    BranchStatus.AHEAD -> "\u2191"
+    BranchStatus.BEHIND -> "\u2193"
+    BranchStatus.MIRROR_ONLY -> "\u2605"
+    BranchStatus.LOCAL_ONLY -> "\u25cb"
+  }
+
+  private fun statusColor(status: BranchStatus): JBColor = when (status) {
+    BranchStatus.SYNCED -> JBColor(0x2E7D32, 0x5FAD65)
+    BranchStatus.AHEAD -> JBColor(0xB8860B, 0xE3AE4D)
+    BranchStatus.BEHIND -> JBColor(0x1565C0, 0x548AF7)
+    BranchStatus.MIRROR_ONLY -> JBColor(0x9A7D0A, 0xD4A72C)
+    BranchStatus.LOCAL_ONLY -> JBColor.GRAY
   }
 
   private inner class HistoryCellRenderer : ColoredListCellRenderer<OperationsHistoryService.Entry>() {
@@ -186,11 +275,28 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       toolTipText = value.details.take(1000)
     }
   }
-  private val branchRefreshButton = JButton(AllIcons.Actions.Refresh).apply {
-    margin = JBUI.insets(1)
-    isFocusPainted = false
-    toolTipText = LocalGitMirrorBundle.message("panel.branch.refresh.tooltip")
-    addActionListener { refreshBranchCombo(userInitiated = true, withMirror = true) }
+  private var branchRefreshInProgress = false
+
+  private val refreshBranchesAction = object : AnAction(
+    LocalGitMirrorBundle.message("panel.branch.refresh.tooltip"),
+    LocalGitMirrorBundle.message("panel.branch.refresh.tooltip"),
+    AllIcons.Actions.Refresh
+  ) {
+    override fun actionPerformed(e: AnActionEvent) = refreshBranchCombo(userInitiated = true, withMirror = true)
+    override fun update(e: AnActionEvent) {
+      e.presentation.isEnabled = !branchRefreshInProgress && !isSyncing
+    }
+  }
+
+  private val overflowAction = object : AnAction(
+    LocalGitMirrorBundle.message("panel.toolbar.more"),
+    LocalGitMirrorBundle.message("panel.toolbar.more.tooltip", pluginVersionText),
+    AllIcons.Actions.MoreHorizontal
+  ) {
+    override fun actionPerformed(e: AnActionEvent) {
+      val anchor = (e.inputEvent?.component as? JComponent) ?: this@LocalGitMirrorPanel
+      showOverflowPopup(anchor)
+    }
   }
   private val branchRefreshGeneration = AtomicLong()
 
@@ -204,7 +310,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     isOpaque = false
     alignmentX = LEFT_ALIGNMENT
   }
-  internal val moreMenu = JPopupMenu()
+  /** Full action list — shown only in the overflow popup. */
+  internal val mainGroup = DefaultActionGroup()
+  /** Compact toolbar set — what actually renders in the panel's top toolbar. */
+  internal val toolbarGroup = DefaultActionGroup()
 
   internal var isSyncing = false
     set(value) {
@@ -247,6 +356,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         }
       }
       disableAll(this)
+      cancelButton.isEnabled = true
       progressBar.isVisible = isSyncing
       progressLabel.isVisible = isSyncing
       cancelButton.isVisible = isSyncing
@@ -280,12 +390,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     b.putClientProperty("JButton.buttonType", "default")
     b.addActionListener { action() }
     return b
-  }
-
-  private fun gearMenuItem(title: String, icon: Icon? = null, action: () -> Unit): JMenuItem {
-    val mi = JMenuItem(title, icon)
-    mi.addActionListener { action() }
-    return mi
   }
 
   /** Trigger an action registered in plugin.xml by id, in the panel's project context. */
@@ -379,11 +483,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   }
 
   private fun setBranchRefreshInProgress(inProgress: Boolean) {
-    branchRefreshButton.isEnabled = !inProgress && !isSyncing
-    branchRefreshButton.toolTipText = if (inProgress)
-      LocalGitMirrorBundle.message("panel.branch.refresh.inprogress")
-    else
-      LocalGitMirrorBundle.message("panel.branch.refresh.tooltip")
+    branchRefreshInProgress = inProgress
+    com.intellij.ide.ActivityTracker.getInstance().inc()
     if (inProgress) branchList.toolTipText = "Загружаем ветки с сервера…"
   }
 
@@ -426,7 +527,21 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         GitLocal.isAncestor(project, dir, localHash, mirrorHash) -> BranchStatus.BEHIND
         else -> BranchStatus.AHEAD // ponytail: divergent → show as ahead
       }
-      BranchListItem(name, status, localHash, mirrorHash)
+      val aheadCount = if (status == BranchStatus.AHEAD && localHash != null && mirrorHash != null)
+        runCatching { GitLocal.commitCount(project, dir, "$mirrorHash..$localHash") }.getOrNull()
+      else null
+      val behindCount = if (status == BranchStatus.BEHIND && localHash != null && mirrorHash != null)
+        runCatching { GitLocal.commitCount(project, dir, "$localHash..$mirrorHash") }.getOrNull()
+      else null
+      BranchListItem(
+        name = name,
+        status = status,
+        localHash = localHash,
+        mirrorHash = mirrorHash,
+        aheadCount = aheadCount,
+        behindCount = behindCount,
+        isCurrent = name == currentBranch
+      )
     }
 
     allBranchItems = items
@@ -458,36 +573,109 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     return GitLocal.currentBranch(project, dir)
   }
 
-  /** Rebuild the concise gear menu; routine actions stay at the top, rare tools are grouped. */
+  /**
+   * Rebuild the action groups that feed the panel. [toolbarGroup] is the small
+   * icon set actually rendered in the top toolbar; [mainGroup] is the full
+   * list shown only in the overflow popup. Registered plugin.xml actions are
+   * referenced by id so their localized presentations stay the single source
+   * of truth; panel-only operations get thin wrappers.
+   */
   internal fun rebuildGearMenu() {
-    moreMenu.removeAll()
-    // Group 1: branch refresh + connection test
-    moreMenu.add(gearMenuItem("Обновить ветки Cache", AllIcons.Actions.Refresh) { refreshBranchCombo(userInitiated = true, withMirror = true) })
-    moreMenu.add(gearMenuItem("Проверить подключение", AllIcons.Actions.Checked) { testMirror() })
-    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("gitlab.mrlist.open"), AllIcons.Actions.Show) { openMrList() })
-    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.SendGitLabMr.text"), AllIcons.Actions.Upload) { triggerLgmAction("LocalGitMirror.SendGitLabMr") })
-    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("gitlab.mrnotes.open"), AllIcons.Actions.Show) { openMrNotes() })
-    moreMenu.addSeparator()
-    // Group 2: deps
-    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.DepsRequest.text"), AllIcons.Actions.Download) { triggerLgmAction("LocalGitMirror.DepsRequest") })
-    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.DepsRespond.text"), AllIcons.Actions.Upload) { triggerLgmAction("LocalGitMirror.DepsRespond") })
-    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.DepsApply.text"), AllIcons.Actions.CheckOut) { triggerLgmAction("LocalGitMirror.DepsApply") })
-    moreMenu.addSeparator()
-    // Group 3: service
-    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("panel.menu.exportBundle"), AllIcons.Actions.Upload) { exportBundle() })
-    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("panel.menu.importBundle"), AllIcons.Actions.Download) { importBundle() })
-    moreMenu.add(gearMenuItem("Пополнить кэш из хранилища", AllIcons.Actions.Download) {
-      localgitmirror.idea.deps.VaultCacheSync.syncInBackground(project, "manual")
+    toolbarGroup.removeAll()
+    toolbarGroup.add(refreshBranchesAction)
+    toolbarGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.testMirror"), AllIcons.Actions.Checked) {
+      testMirror()
     })
-    moreMenu.add(gearMenuItem("Скачать плагин с сервера", AllIcons.Actions.Download) { downloadLatestPlugin() })
-    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.Preflight.text"), AllIcons.Actions.Preview) { triggerLgmAction("LocalGitMirror.Preflight") })
-    moreMenu.addSeparator()
-    // Group 4: settings
-    moreMenu.add(gearMenuItem("Настройки", AllIcons.General.Settings) {
+    toolbarGroup.addSeparator()
+    toolbarGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.settings"), AllIcons.General.Settings) {
       ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
       refreshStatus()
     })
-    // Role now shown in header status — removed disabled «Машина: …» item.
+    toolbarGroup.add(overflowAction)
+
+    mainGroup.removeAll()
+    mainGroup.add(refreshBranchesAction)
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.testMirror"), AllIcons.Actions.Checked) {
+      testMirror()
+    })
+    mainGroup.addSeparator()
+    addRegisteredActions(
+      "LocalGitMirror.SyncCurrentBranch",
+      "LocalGitMirror.SyncBranch",
+      "LocalGitMirror.SendSelectedCommits",
+      "LocalGitMirror.PushAs",
+      "LocalGitMirror.SendGitLabMr",
+      "LocalGitMirror.SyncPull",
+      "LocalGitMirror.PullBack",
+      "LocalGitMirror.ApplyLocalSync"
+    )
+    mainGroup.addSeparator()
+    addRegisteredActions(
+      "LocalGitMirror.ManageBranches",
+      "LocalGitMirror.PruneMirrorBranches"
+    )
+    mainGroup.addSeparator()
+    addRegisteredActions(
+      "LocalGitMirror.DepsRequest",
+      "LocalGitMirror.DepsRespond",
+      "LocalGitMirror.DepsApply",
+      "LocalGitMirror.MirrorPublish"
+    )
+    mainGroup.addSeparator()
+    addRegisteredActions(
+      "LocalGitMirror.FileSendSelected",
+      "LocalGitMirror.FileFetch"
+    )
+    mainGroup.addSeparator()
+    addRegisteredActions(
+      "LocalGitMirror.BufferSend",
+      "LocalGitMirror.BufferPaste",
+      "LocalGitMirror.BufferHistory"
+    )
+    mainGroup.addSeparator()
+    addRegisteredActions(
+      "LocalGitMirror.Preflight",
+      "LocalGitMirror.VaultDiagnostics",
+      "LocalGitMirror.DryRun",
+      "LocalGitMirror.DryRunPull"
+    )
+    mainGroup.addSeparator()
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("gitlab.mrlist.open"), AllIcons.Actions.Show) { openMrList() })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("gitlab.mrnotes.open"), AllIcons.Actions.Show) { openMrNotes() })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.exportBundle"), AllIcons.Actions.Upload) { exportBundle() })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.importBundle"), AllIcons.Actions.Download) { importBundle() })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.vaultSync"), AllIcons.Actions.Download) {
+      localgitmirror.idea.deps.VaultCacheSync.syncInBackground(project, "manual")
+    })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.downloadPlugin"), AllIcons.Actions.Download) { downloadLatestPlugin() })
+    mainGroup.addSeparator()
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.settings"), AllIcons.General.Settings) {
+      ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
+      refreshStatus()
+    })
+  }
+
+  private fun addRegisteredActions(vararg ids: String) {
+    val manager = ActionManager.getInstance()
+    ids.forEach { id -> manager.getAction(id)?.let { mainGroup.add(it) } }
+  }
+
+  private fun panelAction(title: String, icon: Icon, action: () -> Unit): AnAction =
+    object : AnAction(title, title, icon) {
+      override fun actionPerformed(e: AnActionEvent) = action()
+    }
+
+  /** Show the unified group as an overflow popup under [anchor]. */
+  internal fun showOverflowPopup(anchor: JComponent) {
+    val dataContext = com.intellij.openapi.actionSystem.DataContext { dataId ->
+      if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
+    }
+    val popup = com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+      .createActionGroupPopup(
+        null, mainGroup, dataContext,
+        com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, true
+      )
+    popup.show(com.intellij.ui.awt.RelativePoint.getSouthWestOf(anchor))
   }
 
   /** Trigger a registered plugin action by id, with project context. Notifies on failure. */
@@ -521,190 +709,289 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     }
   }
 
-  /** Build the full main UI (header, badges, actions, log). Called on init and after successful setup. */
+  /** Build the full main UI (toolbar + tabs + progress). Called on init and after successful setup. */
   private fun buildMainUi() {
     removeAll()
 
     branchList.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
-    branchList.visibleRowCount = 6
     branchList.fixedCellHeight = JBUI.scale(26)
+    ListSpeedSearch.installOn(branchList)
 
-    val branchScroll = JScrollPane(branchList).apply {
+    rebuildGearMenu()
+
+    val root = SimpleToolWindowPanel(true, true)
+    val toolbar = ActionManager.getInstance()
+      .createActionToolbar("LocalGitMirrorPanel", toolbarGroup, true)
+    toolbar.targetComponent = this
+    root.setToolbar(toolbar.component)
+
+    progressRow = buildProgressRow()
+
+    val tabs = JBTabbedPane()
+    tabs.addTab(LocalGitMirrorBundle.message("tab.branches"), buildBranchesTab())
+    tabs.addTab(LocalGitMirrorBundle.message("tab.deps"), buildDepsTab())
+    tabs.addTab(LocalGitMirrorBundle.message("tab.exchange"), buildExchangeTab())
+    tabs.setToolTipTextAt(0, LocalGitMirrorBundle.message("panel.branch.legend"))
+    tabs.addChangeListener { onTabChanged(tabs.selectedIndex) }
+    tabsPane = tabs
+
+    val center = JPanel(BorderLayout()).apply { isOpaque = false }
+    center.add(progressRow, BorderLayout.NORTH)
+    center.add(tabs, BorderLayout.CENTER)
+    root.setContent(center)
+
+    add(root, BorderLayout.CENTER)
+
+    refreshBranchCombo()
+    refreshStatus()
+    refreshHistoryLog()
+  }
+
+  private fun buildProgressRow(): JPanel = JPanel(BorderLayout()).apply {
+    isOpaque = false
+    isVisible = false
+    border = JBUI.Borders.empty(2, 8)
+    add(progressBar, BorderLayout.CENTER)
+    val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+      isOpaque = false
+      add(cancelButton)
+      add(progressLabel)
+    }
+    add(right, BorderLayout.EAST)
+  }
+
+  private fun onTabChanged(index: Int) {
+    when (index) {
+      1 -> refreshDepsInBackground()
+      2 -> refreshExchangeInBackground()
+    }
+  }
+
+  private fun sectionHeader(text: String): JBLabel = JBLabel(text).apply {
+    font = JBUI.Fonts.smallFont().asBold()
+    foreground = UIUtil.getContextHelpForeground()
+    border = JBUI.Borders.empty(6, 0, 2, 0)
+    alignmentX = LEFT_ALIGNMENT
+  }
+
+  private fun buildBranchesTab(): JComponent {
+    val statusRow = JPanel(BorderLayout()).apply { isOpaque = false }
+    status.font = JBUI.Fonts.smallFont()
+    status.foreground = UIUtil.getContextHelpForeground()
+    statusRow.add(status, BorderLayout.WEST)
+    statusRow.add(roleBadge, BorderLayout.EAST)
+
+    val searchRow = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 0, 4, 0)
+      add(branchFilterField, BorderLayout.CENTER)
+    }
+
+    val north = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      isOpaque = false
+      add(statusRow)
+      add(searchRow)
+    }
+
+    val listScroll = JScrollPane(branchList).apply {
       border = BorderFactory.createEmptyBorder()
       viewportBorder = BorderFactory.createEmptyBorder()
     }
 
+    val bottom = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 0, 0, 0)
+      val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+        isOpaque = false
+        add(primaryBtn(LocalGitMirrorBundle.message("panel.branch.send"), AllIcons.Actions.Upload) {
+          sendSelectedBranches()
+        })
+        add(btn(LocalGitMirrorBundle.message("panel.branch.pull"), AllIcons.Actions.Download) {
+          pullSelectedBranches()
+        })
+      }
+      add(left, BorderLayout.WEST)
+      add(btn(LocalGitMirrorBundle.message("panel.branch.delete"), AllIcons.Actions.GC) {
+        deleteSelectedBranches()
+      }, BorderLayout.EAST)
+    }
+
+    val top = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 8)
+      add(north, BorderLayout.NORTH)
+      add(listScroll, BorderLayout.CENTER)
+      add(bottom, BorderLayout.SOUTH)
+    }
+
+    val split = OnePixelSplitter(true, 0.72f)
+    split.firstComponent = top
+    split.secondComponent = buildHistoryPanel()
+    return split
+  }
+
+  private fun buildHistoryPanel(): JComponent {
     historyScroll = JScrollPane(historyList).apply {
       preferredSize = Dimension(JBUI.scale(100), JBUI.scale(140))
       isVisible = false
       border = BorderFactory.createEmptyBorder()
       viewportBorder = BorderFactory.createEmptyBorder()
     }
-
-    rebuildGearMenu()
-
-    val headerPanel = JPanel(BorderLayout()).apply {
-      isOpaque = false
-      border = JBUI.Borders.empty(4, 8, 0, 8)
-    }
-    status.font = JBUI.Fonts.smallFont()
-    status.foreground = UIUtil.getContextHelpForeground()
-    headerPanel.add(status, BorderLayout.WEST)
-
-    val headerButtons = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(2), 0)).apply {
-      isOpaque = false
-    }
-    val settingsBtn = JButton(AllIcons.General.Settings).apply {
-      margin = JBUI.insets(1)
-      isFocusPainted = false
-      isBorderPainted = false
-      isContentAreaFilled = false
-      toolTipText = LocalGitMirrorBundle.message("toolwindow.menu.settings")
-      addActionListener {
-        ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
-        refreshStatus()
-      }
-    }
-    val moreBtn = JButton(AllIcons.Actions.More).apply {
-      margin = JBUI.insets(1)
-      isFocusPainted = false
-      isBorderPainted = false
-      isContentAreaFilled = false
-      toolTipText = "DocCache $pluginVersionText"
-      addActionListener { moreMenu.show(this, 0, height) }
-    }
-    headerButtons.add(settingsBtn)
-    headerButtons.add(moreBtn)
-    headerPanel.add(headerButtons, BorderLayout.EAST)
-
-    val filterWrapper = JPanel(BorderLayout()).apply {
-      isOpaque = false
-      border = JBUI.Borders.empty(2, 8)
-      add(branchFilterField, BorderLayout.CENTER)
-    }
-
-    val northStack = JPanel().apply {
-      layout = BoxLayout(this, BoxLayout.Y_AXIS)
-      isOpaque = false
-      add(headerPanel)
-      add(filterWrapper)
-    }
-    add(northStack, BorderLayout.NORTH)
-
-    val centerPanel = JPanel(BorderLayout()).apply {
-      isOpaque = false
-      border = JBUI.Borders.empty(0, 8)
-    }
-    val branchToolbar = JPanel(BorderLayout()).apply {
-      isOpaque = false
-      border = JBUI.Borders.empty(2, 0)
-      val right = JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
-        isOpaque = false
-        add(branchRefreshButton)
-      }
-      add(right, BorderLayout.EAST)
-    }
-    centerPanel.add(branchToolbar, BorderLayout.NORTH)
-    centerPanel.add(branchScroll, BorderLayout.CENTER)
-    add(centerPanel, BorderLayout.CENTER)
-
-    val bottomPanel = JPanel(BorderLayout()).apply {
-      isOpaque = false
-      border = JBUI.Borders.empty(4, 8)
-    }
-
-    val progressRow = JPanel(BorderLayout()).apply {
-      isOpaque = false
-      isVisible = false
-      border = JBUI.Borders.empty(2, 0)
-      add(progressBar, BorderLayout.CENTER)
-      val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
-        isOpaque = false
-        add(cancelButton)
-        add(progressLabel)
-      }
-      add(right, BorderLayout.EAST)
-    }
-    this.progressRow = progressRow
-
-    val buttonsRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
-      isOpaque = false
-    }
-    val respondBtn = btn("Выдать") { triggerLgmAction("LocalGitMirror.DepsRespond") }.apply {
-      toolTipText = "Выдать запрошенные элементы из локального кэша"
-    }
-    respondButton = respondBtn
-    buttonsRow.add(respondBtn)
-    buttonsRow.add(btn("↓ Стянуть") { pullSelectedBranches() }.apply {
-      putClientProperty("JButton.buttonType", "default")
-      font = font.deriveFont(Font.BOLD)
-    })
-    buttonsRow.add(btn("↑ Отправить") { sendSelectedBranches() }.apply {
-      putClientProperty("JButton.buttonType", "default")
-      font = font.deriveFont(Font.BOLD)
-    })
-    buttonsRow.add(btn("🗑 Удалить") { deleteSelectedBranches() }.apply {
-      font = font.deriveFont(Font.PLAIN)
-      toolTipText = "Удалить выбранные ветки (локально и на Cache)"
-    })
-
-    val southNorthStack = JPanel().apply {
-      layout = BoxLayout(this, BoxLayout.Y_AXIS)
-      isOpaque = false
-      add(progressRow)
-      add(buttonsRow)
-    }
-    bottomPanel.add(southNorthStack, BorderLayout.NORTH)
-
-    val historySection = JPanel(BorderLayout()).apply {
-      isOpaque = false
-    }
-    val historyHeader = JPanel(BorderLayout()).apply {
-      isOpaque = false
-      border = JBUI.Borders.empty(2, 0)
-    }
     val toggleBtn = JButton(AllIcons.General.ChevronDown).apply {
       margin = JBUI.insets(1, 2)
       isFocusPainted = false
       isBorderPainted = false
       isContentAreaFilled = false
-      toolTipText = "Свернуть/развернуть историю"
+      toolTipText = LocalGitMirrorBundle.message("panel.history.toggle.tooltip")
     }
-    val historyLabel = JLabel("История").apply {
-      font = JBUI.Fonts.smallFont()
+    val historyLabel = JBLabel(LocalGitMirrorBundle.message("panel.history.title")).apply {
+      font = JBUI.Fonts.smallFont().asBold()
     }
     val clearBtn = JButton(AllIcons.Actions.GC).apply {
       margin = JBUI.insets(1, 2)
       isFocusPainted = false
       isBorderPainted = false
       isContentAreaFilled = false
-      toolTipText = "Очистить историю"
+      toolTipText = LocalGitMirrorBundle.message("toolwindow.history.clear")
       addActionListener {
         historyService.clear()
         refreshHistoryLog()
       }
     }
-    val headerLeft = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
+    val header = JPanel(BorderLayout()).apply {
       isOpaque = false
-      add(toggleBtn)
-      add(historyLabel)
+      border = JBUI.Borders.empty(2, 4)
+      val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
+        isOpaque = false
+        add(toggleBtn)
+        add(historyLabel)
+      }
+      add(left, BorderLayout.WEST)
+      add(clearBtn, BorderLayout.EAST)
     }
-    historyHeader.add(headerLeft, BorderLayout.WEST)
-    historyHeader.add(clearBtn, BorderLayout.EAST)
     toggleBtn.addActionListener {
       historyExpanded = !historyExpanded
       toggleBtn.icon = if (historyExpanded) AllIcons.General.ChevronDown else AllIcons.General.ChevronRight
       refreshHistoryLog()
     }
-    historySection.add(historyHeader, BorderLayout.NORTH)
-    historySection.add(historyScroll, BorderLayout.CENTER)
-    bottomPanel.add(historySection, BorderLayout.CENTER)
+    return JPanel(BorderLayout()).apply {
+      isOpaque = false
+      add(header, BorderLayout.NORTH)
+      add(historyScroll, BorderLayout.CENTER)
+    }
+  }
 
-    add(bottomPanel, BorderLayout.SOUTH)
+  private fun buildDepsBanner(): EditorNotificationPanel =
+    EditorNotificationPanel(EditorNotificationPanel.Status.Warning).apply {
+      isVisible = false
+      createActionLabel(LocalGitMirrorBundle.message("panel.deps.banner.all")) {
+        triggerLgmAction("LocalGitMirror.DepsRespond")
+      }
+    }
 
-    refreshBranchCombo()
-    refreshStatus()
-    refreshHistoryLog()
+  private fun buildDepsTab(): JComponent {
+    val banner = buildDepsBanner()
+    depsBanner = banner
+
+    val center = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      add(sectionHeader(LocalGitMirrorBundle.message("panel.deps.requests")), BorderLayout.NORTH)
+      add(JScrollPane(depsList).apply {
+        border = BorderFactory.createEmptyBorder()
+        viewportBorder = BorderFactory.createEmptyBorder()
+      }, BorderLayout.CENTER)
+    }
+
+    val bottom = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 0, 0, 0)
+    }
+    val respondBtn = primaryBtn(LocalGitMirrorBundle.message("deps.menu.respond")) {
+      triggerLgmAction("LocalGitMirror.DepsRespond")
+    }
+    respondButton = respondBtn
+    bottom.add(respondBtn)
+    bottom.add(btn(LocalGitMirrorBundle.message("deps.menu.request")) {
+      triggerLgmAction("LocalGitMirror.DepsRequest")
+    })
+    bottom.add(btn(LocalGitMirrorBundle.message("deps.menu.apply")) {
+      triggerLgmAction("LocalGitMirror.DepsApply")
+    })
+
+    return JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 8)
+      add(depsBanner, BorderLayout.NORTH)
+      add(center, BorderLayout.CENTER)
+      add(bottom, BorderLayout.SOUTH)
+    }
+  }
+
+  private fun buildExchangeTab(): JComponent {
+    bufferMetaLabel = JBLabel("").apply {
+      font = JBUI.Fonts.smallFont()
+      foreground = UIUtil.getContextHelpForeground()
+      alignmentX = LEFT_ALIGNMENT
+    }
+    bufferHintLabel = JBLabel("").apply {
+      font = JBUI.Fonts.smallFont()
+      alignmentX = LEFT_ALIGNMENT
+    }
+    val bufferCard = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      isOpaque = false
+      alignmentX = LEFT_ALIGNMENT
+      add(bufferMetaLabel)
+      add(bufferHintLabel)
+    }
+
+    val bufferButtons = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+      isOpaque = false
+      alignmentX = LEFT_ALIGNMENT
+      add(btn(LocalGitMirrorBundle.message("buffer.menu.paste")) {
+        triggerLgmAction("LocalGitMirror.BufferPaste")
+      })
+      add(btn(LocalGitMirrorBundle.message("buffer.menu.history")) {
+        triggerLgmAction("LocalGitMirror.BufferHistory")
+      })
+      add(primaryBtn(LocalGitMirrorBundle.message("buffer.menu.send")) {
+        triggerLgmAction("LocalGitMirror.BufferSend")
+      })
+    }
+
+    val north = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      isOpaque = false
+      add(sectionHeader(LocalGitMirrorBundle.message("panel.exchange.buffer")))
+      add(bufferCard)
+      add(bufferButtons)
+      add(sectionHeader(LocalGitMirrorBundle.message("panel.exchange.files")))
+    }
+
+    val filesScroll = JScrollPane(filesList).apply {
+      border = BorderFactory.createEmptyBorder()
+      viewportBorder = BorderFactory.createEmptyBorder()
+    }
+
+    val bottom = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 0, 0, 0)
+      add(btn(LocalGitMirrorBundle.message("action.LocalGitMirror.FileSendSelected.text")) {
+        triggerLgmAction("LocalGitMirror.FileSendSelected")
+      })
+      add(btn(LocalGitMirrorBundle.message("action.LocalGitMirror.FileFetch.text")) {
+        triggerLgmAction("LocalGitMirror.FileFetch")
+      })
+    }
+
+    return JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 8)
+      add(north, BorderLayout.NORTH)
+      add(filesScroll, BorderLayout.CENTER)
+      add(bottom, BorderLayout.SOUTH)
+    }
   }
   
   /** Pull selected branches (multi-select support). Falls back to single-branch picker if nothing selected. */
@@ -1405,23 +1692,51 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     }
     val s = service<MirrorSettingsService>().state
     val connected = s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+    val machineRole = localgitmirror.idea.deps.RoleDetector.detect(s)
     val role = localgitmirror.idea.deps.RoleDetector.describe(s)
     val divergedCount = countDivergedBranches()
 
     // Resolve Mirror repo for tooltip (single source of truth)
     val repoRes = try { syncFacade.resolveRepo(dir, s) } catch (_: Throwable) { null }
 
+    var branchCount = 0
     if (connected) {
-      val branchCount = GitLocal.listBranches(project, dir).size
+      branchCount = GitLocal.listBranches(project, dir).size
       val branchesWord = LocalGitMirrorBundle.message("status.branches", branchCount)
       val arrow = if (divergedCount > 0) " \u2191" else ""
       status.text = LocalGitMirrorBundle.message("panel.status.connected") +
-        " \u00b7 $branchCount $branchesWord$arrow \u00b7 " + role
+        " \u00b7 $branchCount $branchesWord$arrow"
     } else {
-      status.text = LocalGitMirrorBundle.message("panel.status.disconnected") + " \u00b7 " + role
+      status.text = LocalGitMirrorBundle.message("panel.status.disconnected")
     }
+    roleBadge.text = role
+    roleBadge.status = if (machineRole == localgitmirror.idea.deps.MachineRole.WORK)
+      BadgeLabel.Status.WARNING else BadgeLabel.Status.GOOD
+
     val pending = localgitmirror.idea.deps.RespondDepsAction.lastKnownPendingCount.get()
-    respondButton?.text = if (pending > 0) "Выдать ($pending)" else "Выдать"
+    respondButton?.text = if (pending > 0)
+      LocalGitMirrorBundle.message("panel.deps.respond.count", pending)
+    else
+      LocalGitMirrorBundle.message("panel.deps.respond")
+    val showBanner = connected &&
+      machineRole == localgitmirror.idea.deps.MachineRole.WORK && pending > 0
+    depsBanner?.isVisible = showBanner
+    if (showBanner) {
+      depsBanner?.text = LocalGitMirrorBundle.message("panel.deps.banner", pending)
+    }
+
+    tabsPane?.let { tabs ->
+      if (tabs.tabCount > 0) {
+        tabs.setTitleAt(0, LocalGitMirrorBundle.message("tab.branches.count", branchCount))
+      }
+      if (tabs.tabCount > 1) {
+        tabs.setTitleAt(1, if (pending > 0)
+          LocalGitMirrorBundle.message("tab.deps.count", pending)
+        else
+          LocalGitMirrorBundle.message("tab.deps"))
+      }
+    }
+
     status.toolTipText = repoRes?.let {
       "Repo \u00b7 source: ${it.source.name.lowercase().replace('_', ' ')}"
     }
@@ -1430,6 +1745,76 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     refreshBranchCombo()
     mirrorBadge.isVisible = false
     lastSyncBadge.isVisible = false
+  }
+
+  /** Fetch pending deps requests (WORK role) off the EDT and refresh the banner/counters. */
+  internal fun refreshDepsInBackground() {
+    val s = service<MirrorSettingsService>().state
+    if (s.baseUrl.isBlank() || SecretsStore.syncPassword.isBlank()) return
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: deps", false) {
+      override fun run(indicator: ProgressIndicator) {
+        val dir = baseDir() ?: return
+        val repo = try { syncFacade.resolveRepo(dir, s).sanitized } catch (_: Throwable) { "" }
+        if (repo.isBlank()) return
+        val pending = MirrorApi.depsPending(
+          baseUrl = s.baseUrl,
+          apiKey = SecretsStore.mirrorApiKey,
+          repo = repo,
+          insecureTls = s.mirrorInsecureTls
+        )
+        UIUtil.invokeLaterIfNeeded {
+          if (project.isDisposed) return@invokeLaterIfNeeded
+          if (pending.code in 200..299) {
+            localgitmirror.idea.deps.RespondDepsAction.lastKnownPendingCount.set(pending.items.size)
+            depsListModel.clear()
+            pending.items.forEach { depsListModel.addElement(it.id.take(8)) }
+          }
+          refreshStatus()
+        }
+      }
+    })
+  }
+
+  /** Fetch buffer head entry + repo file list off the EDT for the Exchange tab. */
+  internal fun refreshExchangeInBackground() {
+    val s = service<MirrorSettingsService>().state
+    if (s.baseUrl.isBlank() || SecretsStore.syncPassword.isBlank()) return
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: exchange", false) {
+      override fun run(indicator: ProgressIndicator) {
+        val buffer = MirrorApi.bufferList(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls)
+        val dir = baseDir()
+        val repo = if (dir != null)
+          try { syncFacade.resolveRepo(dir, s).sanitized } catch (_: Throwable) { "" }
+        else ""
+        val files = if (repo.isNotBlank())
+          MirrorApi.fileSyncList(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls)
+        else null
+        UIUtil.invokeLaterIfNeeded {
+          if (project.isDisposed) return@invokeLaterIfNeeded
+          val latest = buffer.items.firstOrNull().takeIf { buffer.code in 200..299 }
+          if (latest == null) {
+            bufferMetaLabel.text = LocalGitMirrorBundle.message("panel.exchange.buffer.empty")
+            bufferHintLabel.text = ""
+          } else {
+            bufferMetaLabel.text = LocalGitMirrorBundle.message(
+              "panel.exchange.buffer.last", formatBufferTs(latest.ts), latest.size.toString()
+            )
+            bufferHintLabel.text = latest.hint
+          }
+          filesListModel.clear()
+          if (files != null && files.code in 200..299) {
+            files.items.forEach {
+              filesListModel.addElement(LocalGitMirrorBundle.message("panel.exchange.files.row", it.path, it.size))
+            }
+          }
+        }
+      }
+    })
+  }
+
+  private fun formatBufferTs(epochSec: Double): String {
+    val ms = (epochSec * 1000).toLong()
+    return java.text.SimpleDateFormat("HH:mm").format(java.util.Date(ms))
   }
 
   internal fun ensureConfigured(settings: MirrorSettingsService.State): String? {

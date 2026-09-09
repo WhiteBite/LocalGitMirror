@@ -160,15 +160,8 @@
             text="Buffer history…"
             description="Show recent Cache buffer entries"/>
 
-    <!-- Main menu: primary actions + overflow submenus -->
-    <group id="LocalGitMirror.FullGroup">
-      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
-
-      <!-- Primary: send/pull -->
-      <reference ref="LocalGitMirror.SyncCurrentBranch"/>
-      <reference ref="LocalGitMirror.SyncPull"/>
-      <separator/>
-
+    <!-- Overflow submenu: everything that is not a daily primary action -->
+    <group id="LocalGitMirror.MoreGroup" popup="true">
       <!-- Secondary: send variants -->
       <reference ref="LocalGitMirror.SyncBranch"/>
       <reference ref="LocalGitMirror.SendSelectedCommits"/>
@@ -206,6 +199,17 @@
       <reference ref="LocalGitMirror.BufferSend"/>
       <reference ref="LocalGitMirror.BufferPaste"/>
       <reference ref="LocalGitMirror.BufferHistory"/>
+    </group>
+
+    <!-- Main menu: primary actions + the overflow submenu -->
+    <group id="LocalGitMirror.FullGroup">
+      <add-to-group group-id="LocalGitMirror.Group" anchor="last"/>
+
+      <!-- Primary: send/pull -->
+      <reference ref="LocalGitMirror.SyncCurrentBranch"/>
+      <reference ref="LocalGitMirror.SyncPull"/>
+      <separator/>
+      <reference ref="LocalGitMirror.MoreGroup"/>
     </group>
 
     <!-- Context menu: only essentials -->
