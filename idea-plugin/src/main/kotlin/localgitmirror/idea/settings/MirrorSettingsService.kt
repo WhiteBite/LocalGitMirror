@@ -54,11 +54,9 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     // ── GitLab MR transfer ──
     // Base URL override for the GitLab instance (e.g. https://gitlab.example.com).
     // Empty = auto-detect from the project's default git remote URL.
+    // The GitLab project path is always derived from the current project's
+    // git remote; the API token lives in SecretsStore (gitlabToken), never here.
     var gitlabUrl: String = "",
-    // Project path override (e.g. "group/sub/repo" or a numeric project id).
-    // Empty = auto-detect from the project's default git remote URL.
-    // The API token itself lives in SecretsStore (gitlabToken), never here.
-    var gitlabProject: String = "",
 
     // ── Auto deps-sync (corporate-dependency transfer) ──
     // Machine role override: "auto" (default) detects via RoleDetector;
