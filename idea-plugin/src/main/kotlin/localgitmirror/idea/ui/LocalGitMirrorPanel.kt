@@ -464,6 +464,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     // Group 1: branch refresh + connection test
     moreMenu.add(gearMenuItem("Обновить ветки Cache", AllIcons.Actions.Refresh) { refreshBranchCombo(userInitiated = true, withMirror = true) })
     moreMenu.add(gearMenuItem("Проверить подключение", AllIcons.Actions.Checked) { testMirror() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("gitlab.mrlist.open"), AllIcons.Actions.Show) { openMrList() })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.SendGitLabMr.text"), AllIcons.Actions.Upload) { triggerLgmAction("LocalGitMirror.SendGitLabMr") })
     moreMenu.addSeparator()
     // Group 2: deps
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.DepsRequest.text"), AllIcons.Actions.Download) { triggerLgmAction("LocalGitMirror.DepsRequest") })
@@ -1283,6 +1285,43 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
   internal fun append(line: String) {
     // Diagnostic output is now captured via OperationsHistoryService entries.
+  }
+
+  private fun openMrList() {
+    val conf = localgitmirror.idea.gitlab.GitLabConfig.resolve(project)
+    if (conf.url.isBlank() || conf.project.isBlank()) {
+      notify(LocalGitMirrorBundle.message("gitlab.notify.notDetected"), NotificationType.ERROR)
+      return
+    }
+    if (!localgitmirror.idea.gitlab.GitLabConfig.hasApi(conf)) {
+      notify(LocalGitMirrorBundle.message("gitlab.notify.tokenMissingForIid"), NotificationType.WARNING)
+      return
+    }
+    Thread({
+      val res = localgitmirror.idea.gitlab.GitLabApi.listOpenMrs(conf)
+      SwingUtilities.invokeLater {
+        if (res.code !in 200..299) {
+          notify(LocalGitMirrorBundle.message("gitlab.notify.mrListFailed", res.code, res.message), NotificationType.ERROR)
+          return@invokeLater
+        }
+        if (res.mrs.isEmpty()) {
+          notify(LocalGitMirrorBundle.message("gitlab.mrlist.empty"), NotificationType.INFORMATION)
+          return@invokeLater
+        }
+        val dlg = MrListDialog(res.mrs)
+        if (!dlg.showAndGet()) return@invokeLater
+        val mr = dlg.selected ?: return@invokeLater
+        com.intellij.openapi.progress.ProgressManager.getInstance().run(
+          object : com.intellij.openapi.progress.Task.Backgroundable(
+            project, LocalGitMirrorBundle.message("gitlab.task.title"), true
+          ) {
+            override fun run(indicator: com.intellij.openapi.progress.ProgressIndicator) {
+              localgitmirror.idea.actions.GitLabMrSender.send(project, conf, mr.sourceBranch, mr.iid)
+            }
+          }
+        )
+      }
+    }, "GitLab-MrList").apply { isDaemon = true }.start()
   }
 
   internal fun notify(message: String, type: NotificationType) {
