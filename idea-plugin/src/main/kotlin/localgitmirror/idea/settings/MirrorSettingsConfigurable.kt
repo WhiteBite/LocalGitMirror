@@ -90,6 +90,10 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
         }
 
         row {
+          button(LocalGitMirrorBundle.message("settings.gitlab.test.label")) { onGitLabTestClicked() }
+        }
+
+        row {
           label(LocalGitMirrorBundle.message("settings.gitlab.autoHint"))
         }
       }
@@ -249,6 +253,30 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
         }
       }
     }, "Cache-Test").apply { isDaemon = true }.start()
+  }
+
+  private fun onGitLabTestClicked() {
+    val resolved = localgitmirror.idea.gitlab.GitLabConfig.resolve(project)
+    val conf = resolved.copy(token = gitlabTokenLocal.trim().ifBlank { resolved.token })
+    Thread({
+      val result = runCatching { localgitmirror.idea.gitlab.GitLabApi.verify(conf) }
+        .getOrElse { localgitmirror.idea.gitlab.GitLabApi.VerifyResult(0, null, it.message ?: "error") }
+      SwingUtilities.invokeLater {
+        val title = LocalGitMirrorBundle.message("settings.gitlab.test.title")
+        val text = when {
+          result.message == "not-detected" -> LocalGitMirrorBundle.message("settings.gitlab.test.noConf")
+          result.message == "no-token" -> LocalGitMirrorBundle.message("settings.gitlab.test.noToken")
+          result.code in 200..299 -> LocalGitMirrorBundle.message(
+            "settings.gitlab.test.ok", conf.url, conf.project, result.projectName ?: ""
+          )
+          result.code == 401 -> LocalGitMirrorBundle.message("settings.gitlab.test.badToken", conf.url)
+          result.code == 404 -> LocalGitMirrorBundle.message("settings.gitlab.test.badProject", conf.url, conf.project)
+          else -> LocalGitMirrorBundle.message("settings.gitlab.test.fail", result.code, result.message)
+        }
+        if (result.code in 200..299) Messages.showInfoMessage(dialogPanel, text, title)
+        else Messages.showErrorDialog(dialogPanel, text, title)
+      }
+    }, "GitLab-Test").apply { isDaemon = true }.start()
   }
 
   private fun resolveUrl(raw: String): String {

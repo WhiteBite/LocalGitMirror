@@ -32,6 +32,7 @@ object GitLabApi {
 
   data class MrsResult(val code: Int, val mrs: List<MrInfo>, val message: String)
   data class MrBranchResult(val code: Int, val branch: String?, val message: String)
+  data class VerifyResult(val code: Int, val projectName: String?, val message: String)
 
   private fun insecureTls(): Boolean = try {
     service<MirrorSettingsService>().state.mirrorInsecureTls
@@ -51,6 +52,30 @@ object GitLabApi {
     conn.setRequestProperty("PRIVATE-TOKEN", token)
     conn.setRequestProperty("Accept", "application/json")
     return conn
+  }
+
+  /** GET {url}/api/v4/projects/{project} — proves url+project+token work together. */
+  fun verify(conf: GitLabConfig.GitLabConf): VerifyResult {
+    if (conf.url.isBlank() || conf.project.isBlank()) {
+      return VerifyResult(0, null, "not-detected")
+    }
+    if (conf.token.isBlank()) {
+      return VerifyResult(0, null, "no-token")
+    }
+    return try {
+      val conn = open("${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}", conf.token)
+      val code = conn.responseCode
+      val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+      val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
+      if (code in 200..299) {
+        val name = Regex("\"name\"\\s*:\\s*\"([^\"]*)\"").find(body)?.groupValues?.getOrNull(1)
+        VerifyResult(code, name, "")
+      } else {
+        VerifyResult(code, null, body.take(200))
+      }
+    } catch (t: Throwable) {
+      VerifyResult(0, null, t.message ?: "error")
+    }
   }
 
   /**
