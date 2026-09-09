@@ -499,11 +499,12 @@ object NpmEcosystem : DepsEcosystem {
   ): List<DepFileEntry> {
     val cacacheContent = File(npmCacheDir(), "_cacache" + File.separator + "content-v2")
     val out = mutableListOf<DepFileEntry>()
+    val missingFromCacache = mutableListOf<DepCoordinate>()
     for (coord in coordinates) {
       if (coord.ecosystem != id) continue
       val tarball = locateByIntegrity(cacacheContent, coord.classifier)
       if (tarball == null || !tarball.isFile) {
-        onMissingLocally(coord)
+        missingFromCacache.add(coord)
         continue
       }
       // npm's content-addressed cache uses the integrity hash as the content
@@ -519,7 +520,189 @@ object NpmEcosystem : DepsEcosystem {
 
       out.add(DepFileEntry(coord, tarball.absolutePath, mirrorRelativePath(coord), tarball.length()))
     }
+
+    if (missingFromCacache.isNotEmpty()) {
+      val recovered = recoverFromYarn(missingFromCacache, presentIndex)
+      out.addAll(recovered)
+      val recoveredKeys = recovered.map { it.coordinate.key }.toSet()
+      for (coord in missingFromCacache) {
+        if (coord.key !in recoveredKeys) onMissingLocally(coord)
+      }
+    }
     return out
+  }
+
+  // ── WORK: yarn cache recovery for packages not in npm _cacache ──────────────
+
+  /**
+   * Corporate frontend projects using yarn v1 keep their packages in the yarn
+   * global cache (NOT in npm _cacache), so the cacache scan in [collect] misses
+   * them. Two yarn-side sources are tried, in order:
+   *   1. The plugin's yarn offline mirror (~/.lgm-yarn-offline) — tarballs
+   *      already named in yarn's `<name '/'->'-'>-<version>.tgz` form.
+   *   2. The yarn v6 global cache (<root>/v6/<hash>/node_modules/<pkg>/) —
+   *      packages stored EXTRACTED with a package.json; we repack each into a
+   *      proper .tgz via `npm pack` and drop it into the npm offline mirror.
+   * Capped at 100 recoveries per collect call; never throws.
+   */
+  private fun recoverFromYarn(
+    missing: List<DepCoordinate>,
+    presentIndex: Map<String, Set<String>>
+  ): List<DepFileEntry> {
+    if (missing.isEmpty()) return emptyList()
+    val out = mutableListOf<DepFileEntry>()
+    val cap = 100
+    val processed = mutableSetOf<String>()
+
+    // 1. Yarn offline mirror — scan by filename.
+    val mirror = yarnOfflineMirror()
+    if (mirror.isDirectory) {
+      val byFilename = HashMap<String, File>()
+      mirror.walkTopDown().filter { it.isFile && it.extension == "tgz" }.forEach {
+        byFilename[it.name] = it
+      }
+      for (coord in missing) {
+        if (out.size >= cap) break
+        if (coord.key in processed) continue
+        val fullName = if (coord.group.isNotEmpty()) "${coord.group}/${coord.name}" else coord.name
+        val tgz = byFilename[yarnTarballName(fullName, coord.version)] ?: continue
+        if (!isAlreadyAtDome(coord, tgz.name, presentIndex)) {
+          out.add(DepFileEntry(coord, tgz.absolutePath, mirrorRelativePath(coord), tgz.length()))
+        }
+        processed.add(coord.key)
+      }
+    }
+
+    // 2. Yarn global cache (extracted) — repack via npm pack.
+    if (out.size < cap) {
+      val stillMissing = missing.filter { it.key !in processed }
+      if (stillMissing.isNotEmpty()) {
+        val yarnRoot = yarnCacheDir()
+        if (yarnRoot != null) {
+          val v6 = File(yarnRoot, "v6")
+          if (v6.isDirectory) recoverFromYarnV6(v6, stillMissing, presentIndex, out, cap)
+        }
+      }
+    }
+
+    DepsDiagnostics.event("npm collect: yarn recovered=${out.size}")
+    return out
+  }
+
+  /** Walk the yarn v6 cache, match package.json name+version, repack matches. */
+  private fun recoverFromYarnV6(
+    v6Root: File,
+    missing: List<DepCoordinate>,
+    presentIndex: Map<String, Set<String>>,
+    out: MutableList<DepFileEntry>,
+    cap: Int
+  ) {
+    val wanted = HashMap<String, DepCoordinate>()
+    for (c in missing) {
+      val full = if (c.group.isNotEmpty()) "${c.group}/${c.name}" else c.name
+      wanted["$full@${c.version}"] = c
+    }
+
+    val matches = mutableListOf<Pair<File, DepCoordinate>>()
+    v6Root.walkTopDown().filter { it.isFile && it.name == "package.json" }.forEach { pj ->
+      if (matches.size >= cap) return@forEach
+      val nv = readPackageNameVersion(pj) ?: return@forEach
+      val coord = wanted[nv] ?: return@forEach
+      matches.add(pj.parentFile to coord)
+    }
+    if (matches.isEmpty()) return
+
+    val npm = npmCommand() ?: return
+    val tempDir = java.nio.file.Files.createTempDirectory("lgm-yarn-repack").toFile()
+    try {
+      for ((pkgDir, coord) in matches) {
+        if (out.size >= cap) break
+        val tgz = repackWithNpm(npm, pkgDir, tempDir) ?: continue
+        if (isAlreadyAtDome(coord, tgz.name, presentIndex)) {
+          runCatching { tgz.delete() }
+          continue
+        }
+        out.add(DepFileEntry(coord, tgz.absolutePath, mirrorRelativePath(coord), tgz.length()))
+      }
+    } finally {
+      runCatching { tempDir.deleteRecursively() }
+    }
+  }
+
+  /** Run `npm pack <pkgDir>` in [tempDir]; returns the produced .tgz (in tempDir). */
+  private fun repackWithNpm(npm: List<String>, pkgDir: File, tempDir: File): File? {
+    return try {
+      val proc = ProcessBuilder(npm + listOf("pack", pkgDir.absolutePath))
+        .directory(tempDir)
+        .redirectErrorStream(true).start()
+      proc.inputStream.bufferedReader().use { it.readText() }
+      if (!proc.waitFor(60, java.util.concurrent.TimeUnit.SECONDS)) {
+        proc.destroyForcibly()
+        return null
+      }
+      if (proc.exitValue() != 0) return null
+      tempDir.listFiles { f -> f.isFile && f.extension == "tgz" }
+        ?.maxByOrNull { it.lastModified() }
+    } catch (_: Throwable) { null }
+  }
+
+  /** Read "name@version" from a package.json, or null. */
+  private fun readPackageNameVersion(packageJson: File): String? {
+    return try {
+      val text = packageJson.readText(Charsets.UTF_8)
+      val name = Regex("\"name\"\\s*:\\s*\"([^\"]+)\"").find(text)?.groupValues?.get(1)
+      val version = Regex("\"version\"\\s*:\\s*\"([^\"]+)\"").find(text)?.groupValues?.get(1)
+      if (name != null && version != null) "$name@$version" else null
+    } catch (_: Throwable) { null }
+  }
+
+  /** True if the dome already has a file with this name under the same coord. */
+  private fun isAlreadyAtDome(
+    coord: DepCoordinate, fileName: String, presentIndex: Map<String, Set<String>>
+  ): Boolean {
+    val coordKey = "${coord.group}:${coord.name}:${coord.version}"
+    val alreadyAtDome = presentIndex[coordKey].orEmpty()
+    val fileKey = "${coord.classifier}/$fileName"
+    return fileKey in alreadyAtDome
+  }
+
+  // ── yarn cache root discovery ───────────────────────────────────────────────
+
+  /** Locate the yarn v1 global cache root: `yarn cache dir` or fallback paths. */
+  private fun yarnCacheDir(): File? {
+    val fromCmd = runYarnCacheDir()
+    if (fromCmd != null && fromCmd.isDirectory) return fromCmd
+    val localAppData = System.getenv("LOCALAPPDATA")
+    if (localAppData != null) {
+      val f = File(localAppData, "Yarn/Cache")
+      if (f.isDirectory) return f
+    }
+    val home = System.getProperty("user.home")
+    listOf(File(home, ".yarn/cache"), File(home, "Library/Caches/Yarn")).forEach {
+      if (it.isDirectory) return it
+    }
+    return null
+  }
+
+  private fun runYarnCacheDir(): File? {
+    val yarn = yarnCommand() ?: return null
+    val cwd = GradleEcosystem.collectProjectDir ?: File(System.getProperty("user.home"))
+    return try {
+      val proc = ProcessBuilder(yarn + listOf("cache", "dir"))
+        .directory(cwd)
+        .redirectErrorStream(true).start()
+      val out = proc.inputStream.bufferedReader().use { it.readText().trim() }
+      if (!proc.waitFor(15, java.util.concurrent.TimeUnit.SECONDS)) {
+        proc.destroyForcibly()
+        return null
+      }
+      if (proc.exitValue() == 0 && out.isNotBlank()) File(out) else null
+    } catch (_: Throwable) { null }
+  }
+
+  private fun yarnCommand(): List<String>? {
+    val isWindows = System.getProperty("os.name").lowercase().contains("win")
+    return if (isWindows) listOf("cmd", "/c", "yarn") else listOf("yarn")
   }
 
   /**
