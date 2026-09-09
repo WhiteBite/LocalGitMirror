@@ -466,6 +466,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     moreMenu.add(gearMenuItem("Проверить подключение", AllIcons.Actions.Checked) { testMirror() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("gitlab.mrlist.open"), AllIcons.Actions.Show) { openMrList() })
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.SendGitLabMr.text"), AllIcons.Actions.Upload) { triggerLgmAction("LocalGitMirror.SendGitLabMr") })
+    moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("gitlab.mrnotes.open"), AllIcons.Actions.Show) { openMrNotes() })
     moreMenu.addSeparator()
     // Group 2: deps
     moreMenu.add(gearMenuItem(LocalGitMirrorBundle.message("action.LocalGitMirror.DepsRequest.text"), AllIcons.Actions.Download) { triggerLgmAction("LocalGitMirror.DepsRequest") })
@@ -1285,6 +1286,63 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
   internal fun append(line: String) {
     // Diagnostic output is now captured via OperationsHistoryService entries.
+  }
+
+  private fun openMrNotes() {
+    val dir = baseDir() ?: return
+    val s = service<MirrorSettingsService>().state
+    val repo = try { syncFacade.resolveRepo(dir, s).sanitized } catch (_: Throwable) { "" }
+    if (repo.isBlank() || s.baseUrl.isBlank()) {
+      notify(LocalGitMirrorBundle.message("gitlab.mrnotes.noRepo"), NotificationType.WARNING)
+      return
+    }
+    Thread({
+      val list = MirrorApi.fileSyncList(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls)
+      SwingUtilities.invokeLater {
+        if (list.code !in 200..299) {
+          notify(LocalGitMirrorBundle.message("gitlab.mrnotes.listFail", list.code, list.message), NotificationType.ERROR)
+          return@invokeLater
+        }
+        val notes = list.items.filter { it.path.startsWith("mr-notes/") }
+        if (notes.isEmpty()) {
+          notify(LocalGitMirrorBundle.message("gitlab.mrnotes.empty"), NotificationType.INFORMATION)
+          return@invokeLater
+        }
+        val paths = notes.map { it.path }.toTypedArray()
+        val chosen = Messages.showChooseDialog(
+          project,
+          LocalGitMirrorBundle.message("gitlab.mrnotes.choose"),
+          LocalGitMirrorBundle.message("gitlab.mrnotes.title"),
+          null,
+          paths,
+          paths[0]
+        ) as String? ?: return@invokeLater
+        val item = notes.first { it.path == chosen }
+        Thread({
+          val enc = File.createTempFile("tmp-mrnotes-dl-", ".bin")
+          val plainTmp = File.createTempFile("tmp-mrnotes-plain-", ".md")
+          try {
+            val dl = MirrorApi.fileSyncDownload(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls, item.id, enc, null)
+            if (dl.code !in 200..299) {
+              SwingUtilities.invokeLater {
+                notify(LocalGitMirrorBundle.message("gitlab.mrnotes.dlFail", dl.code, dl.message), NotificationType.ERROR)
+              }
+              return@Thread
+            }
+            localgitmirror.idea.workkit.RepoFileSyncCrypto.decryptFile(enc, plainTmp, SecretsStore.syncPassword, null)
+            val text = plainTmp.readText(Charsets.UTF_8)
+            SwingUtilities.invokeLater { MrNotesDialog(chosen, text).show() }
+          } catch (t: Throwable) {
+            SwingUtilities.invokeLater {
+              notify(LocalGitMirrorBundle.message("gitlab.mrnotes.dlFail", 0, t.message ?: "error"), NotificationType.ERROR)
+            }
+          } finally {
+            runCatching { enc.delete() }
+            runCatching { plainTmp.delete() }
+          }
+        }, "MrNotes-Dl").apply { isDaemon = true }.start()
+      }
+    }, "MrNotes-List").apply { isDaemon = true }.start()
   }
 
   private fun openMrList() {
