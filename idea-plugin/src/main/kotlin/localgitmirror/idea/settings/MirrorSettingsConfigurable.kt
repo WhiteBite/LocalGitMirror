@@ -94,7 +94,13 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
         }
 
         row {
-          label(LocalGitMirrorBundle.message("settings.gitlab.autoHint"))
+          comment(LocalGitMirrorBundle.message("settings.gitlab.autoHint.1"))
+        }
+        row {
+          comment(LocalGitMirrorBundle.message("settings.gitlab.autoHint.2"))
+        }
+        row {
+          comment(LocalGitMirrorBundle.message("settings.gitlab.autoHint.3"))
         }
       }
 
