@@ -11,11 +11,12 @@ import java.io.File
  * Resolve the effective GitLab connection for a project.
  *
  * Precedence:
- *  1. Explicit overrides from settings (gitlabUrl / gitlabProject in
- *     MirrorSettingsService.State).
- *  2. Auto-detection from the project's default git remote (GitLocal):
- *       base    = scheme://host[:port]
- *       project = remote path minus a trailing ".git"
+ *  1. URL: explicit override from settings (gitlabUrl in MirrorSettingsService.State),
+ *     otherwise auto-detected from the project's default git remote
+ *     (base = scheme://host[:port]).
+ *  2. Project: always auto-detected from the current project's default git
+ *     remote (remote path minus a trailing ".git") - different projects map
+ *     to different GitLab projects without any settings.
  *  3. Token: SecretsStore.gitlabToken, falling back to the GITLAB_TOKEN
  *     environment variable when the store is empty.
  */
@@ -24,17 +25,12 @@ object GitLabConfig {
   data class GitLabConf(
     val url: String,
     val project: String,
-    val token: String,
-    /** true when [url] came from the git remote, not from settings. */
-    val urlAuto: Boolean,
-    /** true when [project] came from the git remote, not from settings. */
-    val projectAuto: Boolean
+    val token: String
   )
 
   fun resolve(project: Project): GitLabConf {
     val state = service<MirrorSettingsService>().state
     val urlOverride = state.gitlabUrl.trim().trimEnd('/')
-    val projectOverride = state.gitlabProject.trim().trim('/')
 
     // Auto-detect from the default git remote of this project.
     var autoUrl = ""
@@ -62,10 +58,8 @@ object GitLabConfig {
 
     return GitLabConf(
       url = urlOverride.ifBlank { autoUrl },
-      project = projectOverride.ifBlank { autoProject },
-      token = token.trim(),
-      urlAuto = urlOverride.isBlank(),
-      projectAuto = projectOverride.isBlank()
+      project = autoProject,
+      token = token.trim()
     )
   }
 

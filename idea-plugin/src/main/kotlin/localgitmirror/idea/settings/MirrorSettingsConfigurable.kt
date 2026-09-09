@@ -83,13 +83,6 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
             .comment(LocalGitMirrorBundle.message("settings.gitlab.url.comment"))
         }
 
-        row(LocalGitMirrorBundle.message("settings.gitlab.project.label")) {
-          textField()
-            .bindText(state::gitlabProject)
-            .resizableColumn()
-            .comment(LocalGitMirrorBundle.message("settings.gitlab.project.comment"))
-        }
-
         row(LocalGitMirrorBundle.message("settings.gitlab.token.label")) {
           passwordField()
             .bindText(::gitlabTokenLocal)
