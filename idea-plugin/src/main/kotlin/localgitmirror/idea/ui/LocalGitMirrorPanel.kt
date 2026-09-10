@@ -243,6 +243,69 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal val roleBadge = BadgeLabel("")
   internal val statusDot = JBLabel("\u25CF")
   private var tabsPane: JBTabbedPane? = null
+  private val tabLabels = mutableMapOf<Int, JBLabel>()
+  private val tabPills = mutableMapOf<Int, JComponent>()
+
+  private fun makeTabComponent(tabs: JBTabbedPane, index: Int): JComponent {
+    val label = JBLabel(tabs.getTitleAt(index)).apply {
+      font = JBUI.Fonts.smallFont()
+      border = JBUI.Borders.empty(0, 12)
+      foreground = JBColor(0x8C8F94, 0x8C8F94)
+    }
+    tabLabels[index] = label
+    val pill = object : JPanel(BorderLayout()) {
+      var hovered = false
+      override fun paintComponent(g: Graphics) {
+        val g2 = g.create() as Graphics2D
+        g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+        val bg = when {
+          tabs.selectedIndex == index -> JBColor(0x333640, 0x333640)
+          hovered -> JBColor(0x313438, 0x313438)
+          else -> null
+        }
+        if (bg != null) {
+          g2.color = bg
+          g2.fillRoundRect(0, 0, width, height, JBUI.scale(14), JBUI.scale(14))
+        }
+        g2.dispose()
+        super.paintComponent(g)
+      }
+    }
+    pill.isOpaque = false
+    pill.border = JBUI.Borders.empty(2, 0)
+    pill.preferredSize = Dimension(0, JBUI.scale(28))
+    pill.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+    pill.add(label, BorderLayout.CENTER)
+    pill.addMouseListener(object : MouseAdapter() {
+      override fun mouseEntered(e: MouseEvent) {
+        pill.hovered = true
+        pill.repaint()
+      }
+      override fun mouseExited(e: MouseEvent) {
+        pill.hovered = false
+        pill.repaint()
+      }
+      override fun mouseClicked(e: MouseEvent) {
+        tabs.selectedIndex = index
+      }
+    })
+    tabPills[index] = pill
+    return pill
+  }
+
+  private fun refreshTabStyles() {
+    val tabs = tabsPane ?: return
+    for ((i, pill) in tabPills) {
+      tabLabels[i]?.foreground = if (tabs.selectedIndex == i)
+        JBColor(0xDFE1E5, 0xDFE1E5) else JBColor(0x8C8F94, 0x8C8F94)
+      pill.repaint()
+    }
+  }
+
+  private fun setTabTitle(index: Int, text: String) {
+    tabsPane?.setTitleAt(index, text)
+    tabLabels[index]?.text = text
+  }
 
   private val mrReviewListModel = DefaultListModel<MrReviewService.MrRowItem>()
   private val mrReviewStatus = JBLabel("").apply {
@@ -408,7 +471,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         value.operation,
         SimpleTextAttributes.REGULAR_ATTRIBUTES
       )
-      val shortDetails = value.details.lineSequence().firstOrNull()?.take(60) ?: ""
+      val shortDetails = (value.details.lineSequence().firstOrNull() ?: "")
+        .replace(Regex("[0-9a-f]{16,}"), "…")
+        .take(60)
       if (shortDetails.isNotEmpty()) {
         append("  $shortDetails", SimpleTextAttributes.GRAYED_ATTRIBUTES)
       }
@@ -902,6 +967,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     tabs.addTab(LocalGitMirrorBundle.message("tab.review"), buildReviewTab())
     tabs.addTab(LocalGitMirrorBundle.message("tab.deps"), buildDepsTab())
     tabs.addTab(LocalGitMirrorBundle.message("tab.exchange"), buildExchangeTab())
+    for (i in 0 until tabs.tabCount) {
+      tabs.setTabComponentAt(i, makeTabComponent(tabs, i))
+    }
+    tabs.addChangeListener { refreshTabStyles() }
+    refreshTabStyles()
     tabs.addChangeListener { onTabChanged(tabs.selectedIndex) }
     tabsPane = tabs
 
@@ -1886,7 +1956,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       .cachedRows().count { it.unresolved > 0 }
     tabsPane?.let { tabs ->
       if (tabs.tabCount > 1) {
-        tabs.setTitleAt(1, if (attn > 0)
+        setTabTitle(1, if (attn > 0)
           LocalGitMirrorBundle.message("tab.review.count", attn)
         else
           LocalGitMirrorBundle.message("tab.review"))
@@ -2044,10 +2114,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val actionable = if (isWork) pending else responses
     tabsPane?.let { tabs ->
       if (tabs.tabCount > 0) {
-        tabs.setTitleAt(0, LocalGitMirrorBundle.message("tab.branches.count", branchCount))
+        setTabTitle(0, LocalGitMirrorBundle.message("tab.branches.count", branchCount))
       }
       if (tabs.tabCount > 2) {
-        tabs.setTitleAt(2, if (actionable > 0)
+        setTabTitle(2, if (actionable > 0)
           LocalGitMirrorBundle.message("tab.deps.count", actionable)
         else
           LocalGitMirrorBundle.message("tab.deps"))
