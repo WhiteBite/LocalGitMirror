@@ -144,7 +144,7 @@ class MrReviewService(private val project: Project) {
     }
   }
 
-  private fun parseMrMarkdown(iid: Int, markdown: String): MrRowItem {
+  internal fun parseMrMarkdown(iid: Int, markdown: String): MrRowItem {
     val lines = markdown.lines()
 
     val title = lines.firstOrNull { it.startsWith("# MR !") }
@@ -157,7 +157,8 @@ class MrReviewService(private val project: Project) {
       ?: ""
 
     val unresolved = lines.count { it.startsWith("## \u26a0") }
-    val totalThreads = lines.count { it.startsWith("## \u26a0") || it.startsWith("## \u2713") }
+    val resolved = lines.count { it.startsWith("## ✓ решено") }
+    val totalThreads = unresolved + resolved
 
     return MrRowItem(
       iid = iid,
