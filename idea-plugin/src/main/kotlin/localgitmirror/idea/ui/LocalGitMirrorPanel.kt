@@ -194,7 +194,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     fixedCellHeight = JBUI.scale(24)
     selectionMode = ListSelectionModel.SINGLE_SELECTION
     cellRenderer = BufferCellRenderer()
-    resetBufferEmptyText()
+    emptyText.text = LocalGitMirrorBundle.message("panel.exchange.buffer.empty")
+    emptyText.appendLine(LocalGitMirrorBundle.message("panel.exchange.buffer.emptyNote"))
     addMouseListener(object : MouseAdapter() {
       override fun mouseClicked(e: MouseEvent) {
         if (e.clickCount >= 2) pasteSelectedBufferEntry()
