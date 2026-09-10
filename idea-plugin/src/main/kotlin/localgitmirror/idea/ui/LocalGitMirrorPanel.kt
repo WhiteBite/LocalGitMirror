@@ -273,9 +273,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     }
     pill.isOpaque = false
     pill.border = JBUI.Borders.empty(2, 0)
-    pill.preferredSize = Dimension(0, JBUI.scale(28))
-    pill.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
     pill.add(label, BorderLayout.CENTER)
+    pill.preferredSize = Dimension(pill.preferredSize.width, JBUI.scale(28))
+    pill.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
     pill.addMouseListener(object : MouseAdapter() {
       override fun mouseEntered(e: MouseEvent) {
         pill.hovered = true
@@ -421,12 +421,17 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       else ""
       badgeLabel.foreground = if (isSelected) selFg else JBColor(0xB8860B, 0xE3AE4D)
 
-      deltaLabel.text = when (value.status) {
+      val delta = when (value.status) {
         BranchStatus.AHEAD -> value.aheadCount?.let { "+$it" } ?: ""
-        BranchStatus.BEHIND -> value.behindCount?.let { "\u2212$it" } ?: ""
+        BranchStatus.BEHIND -> value.behindCount?.let { "−$it" } ?: ""
         else -> ""
       }
-      deltaLabel.foreground = if (isSelected) selFg else statusFg
+      deltaLabel.text = delta.ifEmpty { if (value.isCurrent) "HEAD" else "" }
+      deltaLabel.foreground = when {
+        isSelected -> selFg
+        delta.isEmpty() && value.isCurrent -> JBColor(0x6F7277, 0x6F7277)
+        else -> statusFg
+      }
       deltaLabel.border = JBUI.Borders.empty(0, 8, 0, 4)
       return this
     }
@@ -473,6 +478,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       )
       val shortDetails = (value.details.lineSequence().firstOrNull() ?: "")
         .replace(Regex("[0-9a-f]{16,}"), "…")
+        .replace("id=…", "")
+        .replace("'", "")
+        .replace(Regex("\\s{2,}"), " ")
+        .trim()
         .take(60)
       if (shortDetails.isNotEmpty()) {
         append("  $shortDetails", SimpleTextAttributes.GRAYED_ATTRIBUTES)
@@ -803,6 +812,13 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
    */
   internal fun rebuildGearMenu() {
     toolbarGroup.removeAll()
+    toolbarGroup.add(panelAction(LocalGitMirrorBundle.message("panel.branch.send"), AllIcons.Actions.Upload) {
+      sendSelectedBranches()
+    })
+    toolbarGroup.add(panelAction(LocalGitMirrorBundle.message("panel.branch.pull"), AllIcons.Actions.Download) {
+      pullSelectedBranches()
+    })
+    toolbarGroup.addSeparator()
     toolbarGroup.add(refreshBranchesAction)
     toolbarGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.testMirror"), AllIcons.Actions.Checked) {
       testMirror()
