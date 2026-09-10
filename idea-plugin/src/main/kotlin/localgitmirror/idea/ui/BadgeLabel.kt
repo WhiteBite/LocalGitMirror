@@ -25,7 +25,7 @@ class BadgeLabel(text: String) : JLabel(text) {
 
   init {
     isOpaque = false
-    border = JBUI.Borders.empty(2, 6)
+    border = JBUI.Borders.empty(2, JBUI.scale(14), 2, 6)
     font = JBUI.Fonts.label(11f)
     iconTextGap = JBUI.scale(4)
   }
@@ -54,11 +54,7 @@ class BadgeLabel(text: String) : JLabel(text) {
     // Draw text with status color
     val oldFg = foreground
     foreground = dotColor
-    // Shift text right to make room for the dot
-    val savedBorder = border
-    border = JBUI.Borders.empty(2, JBUI.scale(14), 2, 6)
     super.paintComponent(g)
-    border = savedBorder
     foreground = oldFg
   }
 }
