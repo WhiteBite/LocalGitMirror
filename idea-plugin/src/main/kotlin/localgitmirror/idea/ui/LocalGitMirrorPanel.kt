@@ -241,6 +241,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     })
   }
   internal val roleBadge = BadgeLabel("")
+  internal val statusDot = JBLabel("\u25CF")
   private var tabsPane: JBTabbedPane? = null
 
   private val mrReviewListModel = DefaultListModel<MrReviewService.MrRowItem>()
@@ -522,11 +523,21 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   }
 
   /** Primary (accent) button. */
-  private fun primaryBtn(title: String, icon: Icon? = null, action: () -> Unit): JButton {
+  private fun primaryBtn(title: String, icon: Icon? = null, action: () -> Unit): JButton =
+    accentBtn(title, icon, JBColor(0x3574F0, 0x3574F0), action)
+
+  private fun greenBtn(title: String, icon: Icon? = null, action: () -> Unit): JButton =
+    accentBtn(title, icon, JBColor(0x4A9D54, 0x4A9D54), action)
+
+  private fun accentBtn(title: String, icon: Icon?, bg: JBColor, action: () -> Unit): JButton {
     val b = JButton(title, icon)
     b.margin = JBUI.insets(2, 10)
     b.font = b.font.deriveFont(Font.BOLD)
-    b.putClientProperty("JButton.buttonType", "default")
+    b.isOpaque = true
+    b.background = bg
+    b.foreground = JBColor.WHITE
+    b.border = JBUI.Borders.empty(4, 12)
+    b.isFocusPainted = false
     b.addActionListener { action() }
     return b
   }
@@ -891,7 +902,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     tabs.addTab(LocalGitMirrorBundle.message("tab.review"), buildReviewTab())
     tabs.addTab(LocalGitMirrorBundle.message("tab.deps"), buildDepsTab())
     tabs.addTab(LocalGitMirrorBundle.message("tab.exchange"), buildExchangeTab())
-    tabs.setToolTipTextAt(0, LocalGitMirrorBundle.message("panel.branch.legend"))
     tabs.addChangeListener { onTabChanged(tabs.selectedIndex) }
     tabsPane = tabs
 
@@ -944,8 +954,24 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val statusRow = JPanel(BorderLayout()).apply { isOpaque = false }
     status.font = JBUI.Fonts.smallFont()
     status.foreground = UIUtil.getContextHelpForeground()
-    statusRow.add(status, BorderLayout.WEST)
+    statusDot.font = JBUI.Fonts.smallFont()
+    val statusLeft = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+      isOpaque = false
+      add(statusDot)
+      add(status)
+    }
+    statusRow.add(statusLeft, BorderLayout.WEST)
     statusRow.add(roleBadge, BorderLayout.EAST)
+
+    val sectionRow = JPanel(BorderLayout()).apply { isOpaque = false }
+    sectionRow.add(JBLabel(LocalGitMirrorBundle.message("panel.branch.section")).apply {
+      font = JBUI.Fonts.smallFont()
+      foreground = UIUtil.getContextHelpForeground()
+    }, BorderLayout.WEST)
+    sectionRow.add(JBLabel(LocalGitMirrorBundle.message("panel.branch.legend")).apply {
+      font = JBUI.Fonts.smallFont().deriveFont(Font.PLAIN, JBUI.scale(10f).toFloat())
+      foreground = JBColor(0x5C5F64, 0x5C5F64)
+    }, BorderLayout.EAST)
 
     val searchRow = JPanel(BorderLayout()).apply {
       isOpaque = false
@@ -958,6 +984,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       isOpaque = false
       add(statusRow)
       add(searchRow)
+      add(sectionRow)
     }
 
     val listScroll = JScrollPane(branchList).apply {
@@ -1091,7 +1118,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       isOpaque = false
       border = JBUI.Borders.empty(4, 0, 0, 0)
     }
-    val respondBtn = primaryBtn(LocalGitMirrorBundle.message("deps.menu.respond")) {
+    val respondBtn = greenBtn(LocalGitMirrorBundle.message("deps.menu.respond")) {
       triggerLgmAction("LocalGitMirror.DepsRespond")
     }
     respondButton = respondBtn
@@ -1957,7 +1984,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     val s = service<MirrorSettingsService>().state
     val connected = s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
     val machineRole = localgitmirror.idea.deps.RoleDetector.detect(s)
-    val role = localgitmirror.idea.deps.RoleDetector.describe(s)
     val divergedCount = countDivergedBranches()
 
     // Resolve Mirror repo for tooltip (single source of truth)
@@ -1973,7 +1999,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     } else {
       status.text = LocalGitMirrorBundle.message("panel.status.disconnected")
     }
-    roleBadge.text = role
+    roleBadge.text = if (machineRole == localgitmirror.idea.deps.MachineRole.WORK)
+      LocalGitMirrorBundle.message("panel.role.work")
+    else
+      LocalGitMirrorBundle.message("panel.role.home")
+    statusDot.foreground = if (connected) JBColor(0x5FAD65, 0x5FAD65) else JBColor.GRAY
     roleBadge.status = if (machineRole == localgitmirror.idea.deps.MachineRole.WORK)
       BadgeLabel.Status.WARNING else BadgeLabel.Status.GOOD
 
