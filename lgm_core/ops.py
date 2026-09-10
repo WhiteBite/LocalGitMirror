@@ -1771,6 +1771,26 @@ def op_guide(ctx: Ctx, args: dict) -> dict:
     return {"success": True, "guide": _GUIDE}
 
 
+def op_mr_notes(ctx: Ctx, args: dict) -> dict:
+    """Decrypt MR discussion notes (mr-notes/mr-!N.md) from the file postbox."""
+    c = _client(ctx)
+    repo = _repo_arg(args)
+    lst = c.file_sync_list(repo)
+    items = [i for i in (lst.get("items") or []) if str(i.get("path", "")).startswith("mr-notes/")]
+    iid = int(args.get("iid") or 0)
+    if iid:
+        items = [i for i in items if str(i.get("path", "")).endswith(f"mr-!{iid}.md")]
+    notes = []
+    for i in items:
+        blob = c.file_sync_fetch(repo, i["id"])
+        try:
+            plain = decrypt_bundle(blob, ctx.config.sync_password)
+            notes.append({"path": i["path"], "markdown": plain.decode("utf-8")})
+        except Exception:
+            notes.append({"path": i["path"], "error": "decrypt failed: sync password mismatch?"})
+    return {"success": True, "repo": repo, "notes": notes}
+
+
 REGISTRY: list[Op] = [
     Op(
         name="scan",
@@ -1944,6 +1964,15 @@ REGISTRY: list[Op] = [
             Param("repo", "str", "", "Mirror repository name", required=True),
         ],
         run=op_mr_send,
+    ),
+    Op(
+        name="mr_notes",
+        summary="Decrypt and show MR discussion notes stored on the mirror (mr-notes/mr-!N.md).",
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "Only this MR iid (0 = all)"),
+        ],
+        run=op_mr_notes,
     ),
     Op(
         name="guide",
