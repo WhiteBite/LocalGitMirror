@@ -7,6 +7,7 @@ import com.intellij.openapi.project.Project
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.gitlab.GitLabApi
 import localgitmirror.idea.gitlab.GitLabConfig
+import localgitmirror.idea.gitlab.MrNotesWriter
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
@@ -121,18 +122,24 @@ object GitLabMrSender {
       NotificationType.INFORMATION
     )
     if (iid != null && GitLabConfig.hasApi(conf) && !syncRes.repo.isNullOrBlank()) {
-      runCatching { sendMrNotes(project, conf, iid, syncRes.repo) }
+      runCatching { sendMrNotes(project, conf, iid, syncRes.repo, branch) }
     }
     history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
       "repo=${syncRes.repo ?: "?"} branch=$branch iid=$iid")
   }
 
   /** All MR discussions (open/resolved/system) as markdown into the repo file postbox. */
-  private fun sendMrNotes(project: Project, conf: GitLabConfig.GitLabConf, iid: Int, repo: String) {
+  private fun sendMrNotes(project: Project, conf: GitLabConfig.GitLabConf, iid: Int, repo: String, branch: String) {
     val res = GitLabApi.listMrDiscussions(conf, iid)
     if (res.code !in 200..299 || res.discussions.isEmpty()) return
     val settings = service<MirrorSettingsService>().state
-    val markdown = renderDiscussions(iid, res.discussions)
+
+    val mrsResult = GitLabApi.listOpenMrs(conf)
+    val mrInfo = if (mrsResult.code in 200..299) mrsResult.mrs.firstOrNull { it.iid == iid } else null
+    val title = mrInfo?.title ?: ""
+    val updatedAt = mrInfo?.updatedAt ?: ""
+
+    val markdown = renderDiscussions(project, iid, title, branch, updatedAt, res.discussions)
     val plain = File.createTempFile("tmp-mrnotes-", ".md")
     val encrypted = File.createTempFile("tmp-mrnotes-", ".bin")
     try {
@@ -155,25 +162,17 @@ object GitLabMrSender {
     }
   }
 
-  private fun renderDiscussions(iid: Int, discussions: List<GitLabApi.MrDiscussion>): String {
-    val sb = StringBuilder()
-    sb.appendLine("# MR !$iid")
-    sb.appendLine()
-    for ((idx, d) in discussions.withIndex()) {
-      val state = if (d.resolved) "resolved" else "open"
-      sb.appendLine("## Discussion ${idx + 1} [$state]")
-      for (n in d.notes) {
-        val tag = when {
-          n.system -> " (system)"
-          n.resolved -> " (resolved)"
-          else -> ""
-        }
-        sb.appendLine("### ${n.author} - ${n.createdAt}$tag")
-        sb.appendLine(n.body)
-        sb.appendLine()
-      }
-    }
-    return sb.toString()
+  private fun renderDiscussions(
+    project: Project,
+    iid: Int,
+    title: String,
+    branch: String,
+    updatedAt: String,
+    discussions: List<GitLabApi.MrDiscussion>,
+  ): String {
+    val unresolved = discussions.count { d -> !d.resolved && d.notes.any { !it.system } }
+    val totalThreads = discussions.count { d -> d.notes.any { !it.system } }
+    return MrNotesWriter.renderMarkdown(project, iid, title, branch, updatedAt, unresolved, totalThreads, discussions)
   }
 
   private fun notify(project: Project, message: String, type: NotificationType) {

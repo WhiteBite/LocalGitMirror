@@ -84,10 +84,15 @@ object GitLabApi {
     val createdAt: String,
     val system: Boolean,
     val body: String,
-    val resolved: Boolean
+    val resolved: Boolean,
+    val filePath: String? = null,
+    val line: Int? = null
   )
 
-  data class MrDiscussion(val resolved: Boolean, val notes: List<MrNote>)
+  data class MrDiscussion(val resolved: Boolean, val notes: List<MrNote>) {
+    val anchorFile: String? get() = notes.firstOrNull { it.filePath != null }?.filePath
+    val anchorLine: Int? get() = notes.firstOrNull { it.line != null }?.line
+  }
   data class DiscussionsResult(val code: Int, val discussions: List<MrDiscussion>, val message: String)
 
   /**
@@ -127,13 +132,20 @@ object GitLabApi {
               anyResolvable = true
               if (!isResolved) resolved = false
             }
+            val pos = o["position"]?.jsonObject
+            val newPath = pos?.get("new_path")?.jsonPrimitive?.contentOrNull
+            val newLine = pos?.get("new_line")?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+            val oldPath = pos?.get("old_path")?.jsonPrimitive?.contentOrNull
+            val oldLine = pos?.get("old_line")?.jsonPrimitive?.contentOrNull?.toIntOrNull()
             notes.add(
               MrNote(
                 author = o["author"]?.jsonObject?.get("name")?.jsonPrimitive?.contentOrNull ?: "?",
                 createdAt = o["created_at"]?.jsonPrimitive?.contentOrNull ?: "",
                 system = o["system"]?.jsonPrimitive?.booleanOrNull ?: false,
                 body = o["body"]?.jsonPrimitive?.contentOrNull ?: "",
-                resolved = isResolved
+                resolved = isResolved,
+                filePath = newPath ?: oldPath,
+                line = newLine ?: oldLine
               )
             )
           }

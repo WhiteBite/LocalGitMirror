@@ -33,6 +33,8 @@ import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.actions.PullFromMirrorAction
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.gitlab.MrNotesWriter
+import localgitmirror.idea.gitlab.MrReviewService
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.net.LanDiscovery
@@ -240,6 +242,68 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   }
   internal val roleBadge = BadgeLabel("")
   private var tabsPane: JBTabbedPane? = null
+
+  private val mrReviewListModel = DefaultListModel<MrReviewService.MrRowItem>()
+  private val mrReviewStatus = JBLabel("").apply {
+    font = JBUI.Fonts.smallFont()
+    foreground = UIUtil.getContextHelpForeground()
+  }
+  private val mrReviewFilterField = SearchTextField(false).apply {
+    textEditor.emptyText.text = LocalGitMirrorBundle.message("review.filter")
+    textEditor.font = JBUI.Fonts.smallFont()
+    toolTipText = LocalGitMirrorBundle.message("review.filter")
+    addDocumentListener(object : javax.swing.event.DocumentListener {
+      override fun insertUpdate(e: javax.swing.event.DocumentEvent?) = refreshReview()
+      override fun removeUpdate(e: javax.swing.event.DocumentEvent?) = refreshReview()
+      override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = refreshReview()
+    })
+  }
+  private val mrReviewList = JBList(mrReviewListModel).apply {
+    font = JBUI.Fonts.smallFont()
+    fixedCellHeight = JBUI.scale(24)
+    cellRenderer = MrReviewListCellRenderer()
+    selectionMode = ListSelectionModel.SINGLE_SELECTION
+    emptyText.text = LocalGitMirrorBundle.message("review.empty")
+    emptyText.appendLine(
+      LocalGitMirrorBundle.message("review.empty.hint"),
+      SimpleTextAttributes.LINK_ATTRIBUTES
+    ) { reloadReview() }
+    addMouseListener(object : MouseAdapter() {
+      override fun mouseClicked(e: MouseEvent) {
+        if (e.clickCount >= 2) {
+          val row = selectedValue ?: return
+          openMrDialog(row)
+        }
+      }
+    })
+  }
+
+  private inner class MrReviewListCellRenderer : ColoredListCellRenderer<MrReviewService.MrRowItem>() {
+    override fun customizeCellRenderer(
+      list: JList<out MrReviewService.MrRowItem>,
+      value: MrReviewService.MrRowItem?,
+      index: Int,
+      selected: Boolean,
+      hasFocus: Boolean
+    ) {
+      if (value == null) return
+      border = JBUI.Borders.empty(1, 6)
+      val amber = JBColor(0xE3AE4D, 0xE3AE4D)
+      val green = JBColor(0x2E7D32, 0x66BB6A)
+      val badgeAttr = if (value.unresolved > 0)
+        SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, amber)
+      else
+        SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, JBColor.GRAY)
+      append("!${value.iid}", badgeAttr)
+      append("  ${value.title}", SimpleTextAttributes.REGULAR_ATTRIBUTES)
+      append("  ${value.sourceBranch}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+      val countAttr = SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN,
+        if (value.unresolved > 0) amber else green)
+      val countText = if (value.unresolved > 0) "${value.unresolved}\u26a0"
+                      else "\u2713 ${value.totalThreads}"
+      append("  $countText", countAttr)
+    }
+  }
 
   private inner class BranchListCellRenderer : JPanel(BorderLayout()), ListCellRenderer<BranchListItem> {
     private val glyphLabel = JBLabel()
@@ -617,14 +681,22 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       )
     }
 
-    allBranchItems = items
+    val mrByBranch = runCatching {
+      project.getService(MrReviewService::class.java).rowsBySourceBranch()
+    }.getOrDefault(emptyMap())
+    val itemsWithMr = items.map { item ->
+      val mr = mrByBranch[item.name]
+      item.copy(mrIid = mr?.iid, mrUnresolved = mr?.unresolved ?: 0)
+    }
+
+    allBranchItems = itemsWithMr
 
     val preferred = BranchSelectorModel.preferredSelection(selectedName, currentBranch,
-      items.map { BranchChoice(it.name, it.localHash != null) })
+      itemsWithMr.map { BranchChoice(it.name, it.localHash != null) })
 
     // Apply current filter (if any) before populating the model.
     val filter = branchFilterField.text.trim().lowercase()
-    val visibleItems = if (filter.isBlank()) items else items.filter { it.name.lowercase().contains(filter) }
+    val visibleItems = if (filter.isBlank()) itemsWithMr else itemsWithMr.filter { it.name.lowercase().contains(filter) }
 
     branchListModel.clear()
     visibleItems.forEach { branchListModel.addElement(it) }
@@ -713,8 +785,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       "LocalGitMirror.DryRunPull"
     )
     mainGroup.addSeparator()
-    mainGroup.add(panelAction(LocalGitMirrorBundle.message("gitlab.mrlist.open"), AllIcons.Actions.Show) { openMrList() })
-    mainGroup.add(panelAction(LocalGitMirrorBundle.message("gitlab.mrnotes.open"), AllIcons.Actions.Show) { openMrNotes() })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("review.tab.open"), AllIcons.Actions.Show) { tabsPane?.selectedIndex = 1 })
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.exportBundle"), AllIcons.Actions.Upload) { exportBundle() })
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.importBundle"), AllIcons.Actions.Download) { importBundle() })
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.vaultSync"), AllIcons.Actions.Download) {
@@ -785,6 +856,23 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     removeAll()
 
     branchList.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+    branchList.addMouseListener(object : MouseAdapter() {
+      override fun mousePressed(e: MouseEvent) {
+        if (e.isPopupTrigger) showBranchContextMenu(e)
+      }
+      override fun mouseReleased(e: MouseEvent) {
+        if (e.isPopupTrigger) showBranchContextMenu(e)
+      }
+      override fun mouseClicked(e: MouseEvent) {
+        if (e.clickCount >= 2) {
+          val item = branchList.selectedValue ?: return
+          val iid = item.mrIid ?: return
+          val row = project.getService(MrReviewService::class.java)
+            .cachedRows().firstOrNull { it.iid == iid } ?: return
+          openMrDialog(row)
+        }
+      }
+    })
     branchList.fixedCellHeight = JBUI.scale(26)
     ListSpeedSearch.installOn(branchList)
 
@@ -800,6 +888,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
     val tabs = JBTabbedPane()
     tabs.addTab(LocalGitMirrorBundle.message("tab.branches"), buildBranchesTab())
+    tabs.addTab(LocalGitMirrorBundle.message("tab.review"), buildReviewTab())
     tabs.addTab(LocalGitMirrorBundle.message("tab.deps"), buildDepsTab())
     tabs.addTab(LocalGitMirrorBundle.message("tab.exchange"), buildExchangeTab())
     tabs.setToolTipTextAt(0, LocalGitMirrorBundle.message("panel.branch.legend"))
@@ -818,6 +907,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     // open instead of every row showing as LOCAL_ONLY.
     refreshBranchCombo(userInitiated = false, withMirror = true)
     refreshStatus()
+    refreshReview()
     refreshHistoryLog()
   }
 
@@ -837,8 +927,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   private fun onTabChanged(index: Int) {
     if (project.isDisposed || ApplicationManager.getApplication().isDisposeInProgress) return
     when (index) {
-      1 -> refreshDepsInBackground()
-      2 -> refreshExchangeInBackground()
+      1 -> refreshReview()
+      2 -> refreshDepsInBackground()
+      3 -> refreshExchangeInBackground()
     }
   }
 
@@ -1078,6 +1169,70 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       isOpaque = false
       border = JBUI.Borders.empty(4, 8)
       add(split, BorderLayout.CENTER)
+      add(bottom, BorderLayout.SOUTH)
+    }
+  }
+
+  private fun buildReviewTab(): JComponent {
+    val statusRow = JPanel(BorderLayout()).apply { isOpaque = false }
+    statusRow.add(mrReviewStatus, BorderLayout.WEST)
+
+    val searchRow = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 0, 4, 0)
+      add(mrReviewFilterField, BorderLayout.CENTER)
+    }
+
+    val headerRow = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+      isOpaque = false
+      add(sectionHeader(LocalGitMirrorBundle.message("review.section")))
+      add(JBLabel(LocalGitMirrorBundle.message("review.legend.unres")).apply {
+        font = JBUI.Fonts.smallFont()
+        foreground = JBColor(0xB8860B, 0xE3AE4D)
+      })
+      add(JBLabel(LocalGitMirrorBundle.message("review.legend.ok")).apply {
+        font = JBUI.Fonts.smallFont()
+        foreground = JBColor(0x2E7D32, 0x66BB6A)
+      })
+    }
+
+    val north = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      isOpaque = false
+      add(statusRow)
+      add(searchRow)
+      add(headerRow)
+    }
+
+    val listScroll = JScrollPane(mrReviewList).apply {
+      border = BorderFactory.createEmptyBorder()
+      viewportBorder = BorderFactory.createEmptyBorder()
+    }
+
+    val bottom = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 0, 0, 0)
+      add(primaryBtn(LocalGitMirrorBundle.message("review.open")) {
+        mrReviewList.selectedValue?.let { openMrDialog(it) }
+      })
+      add(btn(LocalGitMirrorBundle.message("review.fetch"), AllIcons.Actions.Refresh) {
+        reloadReview()
+      })
+      add(JButton(AllIcons.Actions.MenuSaveall).apply {
+        margin = JBUI.insets(2, 4)
+        isFocusPainted = false
+        isBorderPainted = false
+        isContentAreaFilled = false
+        toolTipText = LocalGitMirrorBundle.message("review.saveAll")
+        addActionListener { saveAllUnresolved() }
+      })
+    }
+
+    return JPanel(BorderLayout()).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 8)
+      add(north, BorderLayout.NORTH)
+      add(listScroll, BorderLayout.CENTER)
       add(bottom, BorderLayout.SOUTH)
     }
   }
@@ -1663,99 +1818,119 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     // Diagnostic output is now captured via OperationsHistoryService entries.
   }
 
-  private fun openMrNotes() {
-    val dir = baseDir() ?: return
-    val s = service<MirrorSettingsService>().state
-    val repo = try { syncFacade.resolveRepo(dir, s).sanitized } catch (_: Throwable) { "" }
-    if (repo.isBlank() || s.baseUrl.isBlank()) {
-      notify(LocalGitMirrorBundle.message("gitlab.mrnotes.noRepo"), NotificationType.WARNING)
-      return
-    }
-    Thread({
-      val list = MirrorApi.fileSyncList(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls)
-      SwingUtilities.invokeLater {
-        if (list.code !in 200..299) {
-          notify(LocalGitMirrorBundle.message("gitlab.mrnotes.listFail", list.code, list.message), NotificationType.ERROR)
-          return@invokeLater
-        }
-        val notes = list.items.filter { it.path.startsWith("mr-notes/") }
-        if (notes.isEmpty()) {
-          notify(LocalGitMirrorBundle.message("gitlab.mrnotes.empty"), NotificationType.INFORMATION)
-          return@invokeLater
-        }
-        val paths = notes.map { it.path }.toTypedArray()
-        val choice = Messages.showChooseDialog(
-          project,
-          LocalGitMirrorBundle.message("gitlab.mrnotes.choose"),
-          LocalGitMirrorBundle.message("gitlab.mrnotes.title"),
-          null,
-          paths,
-          paths[0]
-        )
-        if (choice < 0) return@invokeLater
-        val item = notes.first { it.path == paths[choice] }
-        Thread({
-          val enc = File.createTempFile("tmp-mrnotes-dl-", ".bin")
-          val plainTmp = File.createTempFile("tmp-mrnotes-plain-", ".md")
-          try {
-            val dl = MirrorApi.fileSyncDownload(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls, item.id, enc, null)
-            if (dl.code !in 200..299) {
-              SwingUtilities.invokeLater {
-                notify(LocalGitMirrorBundle.message("gitlab.mrnotes.dlFail", dl.code, dl.message), NotificationType.ERROR)
-              }
-              return@Thread
-            }
-            localgitmirror.idea.workkit.RepoFileSyncCrypto.decryptFile(enc, plainTmp, SecretsStore.syncPassword, null)
-            val text = plainTmp.readText(Charsets.UTF_8)
-            SwingUtilities.invokeLater { MrNotesDialog(paths[choice], text).show() }
-          } catch (t: Throwable) {
-            SwingUtilities.invokeLater {
-              notify(LocalGitMirrorBundle.message("gitlab.mrnotes.dlFail", 0, t.message ?: "error"), NotificationType.ERROR)
-            }
-          } finally {
-            runCatching { enc.delete() }
-            runCatching { plainTmp.delete() }
-          }
-        }, "MrNotes-Dl").apply { isDaemon = true }.start()
-      }
-    }, "MrNotes-List").apply { isDaemon = true }.start()
+  private fun openMrDialog(row: MrReviewService.MrRowItem) {
+    MrNotesDialog(project, row).show()
   }
 
-  private fun openMrList() {
-    val conf = localgitmirror.idea.gitlab.GitLabConfig.resolve(project)
-    if (conf.url.isBlank() || conf.project.isBlank()) {
-      notify(LocalGitMirrorBundle.message("gitlab.notify.notDetected"), NotificationType.ERROR)
-      return
+  private fun refreshReview() {
+    val service = project.getService(MrReviewService::class.java)
+    val rows = service.cachedRows()
+    val sorted = rows.sortedWith(
+      compareByDescending<MrReviewService.MrRowItem> { it.unresolved }
+        .thenByDescending { it.updatedAt }
+    )
+    val filter = mrReviewFilterField.text.trim().lowercase()
+    val visible = if (filter.isBlank()) sorted
+                  else sorted.filter {
+                    it.title.lowercase().contains(filter) ||
+                    it.sourceBranch.lowercase().contains(filter)
+                  }
+    mrReviewListModel.clear()
+    visible.forEach { mrReviewListModel.addElement(it) }
+
+    val attention = rows.count { it.unresolved > 0 }
+    mrReviewStatus.text = if (attention > 0)
+      LocalGitMirrorBundle.message("review.status.attention", attention, rows.size)
+    else
+      LocalGitMirrorBundle.message("review.status.all", rows.size)
+
+    updateReviewTabTitle()
+  }
+
+  private fun reloadReview() {
+    project.getService(MrReviewService::class.java).refreshInBackground(notify = true) {
+      if (project.isDisposed) return@refreshInBackground
+      refreshReview()
     }
-    if (!localgitmirror.idea.gitlab.GitLabConfig.hasApi(conf)) {
-      notify(LocalGitMirrorBundle.message("gitlab.notify.tokenMissingForIid"), NotificationType.WARNING)
-      return
-    }
-    Thread({
-      val res = localgitmirror.idea.gitlab.GitLabApi.listOpenMrs(conf)
-      SwingUtilities.invokeLater {
-        if (res.code !in 200..299) {
-          notify(LocalGitMirrorBundle.message("gitlab.notify.mrListFailed", res.code, res.message), NotificationType.ERROR)
-          return@invokeLater
-        }
-        if (res.mrs.isEmpty()) {
-          notify(LocalGitMirrorBundle.message("gitlab.mrlist.empty"), NotificationType.INFORMATION)
-          return@invokeLater
-        }
-        val dlg = MrListDialog(res.mrs)
-        if (!dlg.showAndGet()) return@invokeLater
-        val mr = dlg.selected ?: return@invokeLater
-        com.intellij.openapi.progress.ProgressManager.getInstance().run(
-          object : com.intellij.openapi.progress.Task.Backgroundable(
-            project, LocalGitMirrorBundle.message("gitlab.task.title"), true
-          ) {
-            override fun run(indicator: com.intellij.openapi.progress.ProgressIndicator) {
-              localgitmirror.idea.actions.GitLabMrSender.send(project, conf, mr.sourceBranch, mr.iid)
-            }
-          }
-        )
+  }
+
+  private fun updateReviewTabTitle() {
+    val attn = project.getService(MrReviewService::class.java)
+      .cachedRows().count { it.unresolved > 0 }
+    tabsPane?.let { tabs ->
+      if (tabs.tabCount > 1) {
+        tabs.setTitleAt(1, if (attn > 0)
+          LocalGitMirrorBundle.message("tab.review.count", attn)
+        else
+          LocalGitMirrorBundle.message("tab.review"))
       }
-    }, "GitLab-MrList").apply { isDaemon = true }.start()
+    }
+  }
+
+  private fun saveAllUnresolved() {
+    val service = project.getService(MrReviewService::class.java)
+    val rows = service.cachedRows().filter { it.unresolved > 0 }
+    if (rows.isEmpty()) {
+      notify(LocalGitMirrorBundle.message("review.save.ok", 0), NotificationType.INFORMATION)
+      return
+    }
+    rows.forEach { MrNotesWriter.writeForAgent(project, it) }
+    MrNotesWriter.writeIndex(project, service.cachedRows())
+    notify(LocalGitMirrorBundle.message("review.save.ok", rows.size), NotificationType.INFORMATION)
+  }
+
+  private fun saveMrForBranch(sel: BranchListItem) {
+    val iid = sel.mrIid ?: return
+    val service = project.getService(MrReviewService::class.java)
+    val row = service.cachedRows().firstOrNull { it.iid == iid } ?: return
+    MrNotesWriter.writeForAgent(project, row)
+    MrNotesWriter.writeIndex(project, service.cachedRows())
+    notify(LocalGitMirrorBundle.message("review.save.ok", 1), NotificationType.INFORMATION)
+  }
+
+  private fun showBranchContextMenu(e: MouseEvent) {
+    val idx = branchList.locationToIndex(e.point)
+    if (idx < 0 || idx >= branchListModel.size()) return
+    if (!branchList.isSelectedIndex(idx)) {
+      branchList.selectedIndex = idx
+    }
+    val sel = branchListModel.getElementAt(idx)
+    val popup = JPopupMenu()
+    popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.branch.send")).apply {
+      addActionListener { sendSelectedBranches() }
+    })
+    popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.branch.pull")).apply {
+      addActionListener { pullSelectedBranches() }
+    })
+    popup.addSeparator()
+    val iid = sel.mrIid
+    if (iid != null) {
+      popup.add(JMenuItem(LocalGitMirrorBundle.message("ctx.mr.caption", iid)).apply {
+        isEnabled = false
+      })
+      popup.add(JMenuItem(LocalGitMirrorBundle.message("ctx.mr.open")).apply {
+        addActionListener {
+          val row = project.getService(MrReviewService::class.java)
+            .cachedRows().firstOrNull { it.iid == iid } ?: return@addActionListener
+          openMrDialog(row)
+        }
+      })
+      popup.add(JMenuItem(LocalGitMirrorBundle.message("ctx.mr.fetch")).apply {
+        addActionListener { reloadReview() }
+      })
+      popup.add(JMenuItem(LocalGitMirrorBundle.message("ctx.mr.save")).apply {
+        addActionListener { saveMrForBranch(sel) }
+      })
+    } else {
+      popup.add(JMenuItem(LocalGitMirrorBundle.message("ctx.mr.none")).apply {
+        isEnabled = false
+      })
+    }
+    popup.addSeparator()
+    popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.branch.delete")).apply {
+      addActionListener { deleteSelectedBranches() }
+    })
+    popup.show(branchList, e.x, e.y)
   }
 
   internal fun notify(message: String, type: NotificationType) {
@@ -1841,13 +2016,14 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       if (tabs.tabCount > 0) {
         tabs.setTitleAt(0, LocalGitMirrorBundle.message("tab.branches.count", branchCount))
       }
-      if (tabs.tabCount > 1) {
-        tabs.setTitleAt(1, if (actionable > 0)
+      if (tabs.tabCount > 2) {
+        tabs.setTitleAt(2, if (actionable > 0)
           LocalGitMirrorBundle.message("tab.deps.count", actionable)
         else
           LocalGitMirrorBundle.message("tab.deps"))
       }
     }
+    updateReviewTabTitle()
 
     status.toolTipText = repoRes?.let {
       "Repo \u00b7 source: ${it.source.name.lowercase().replace('_', ' ')}"
