@@ -1684,15 +1684,16 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           return@invokeLater
         }
         val paths = notes.map { it.path }.toTypedArray()
-        val chosen = Messages.showChooseDialog(
+        val choice = Messages.showChooseDialog(
           project,
           LocalGitMirrorBundle.message("gitlab.mrnotes.choose"),
           LocalGitMirrorBundle.message("gitlab.mrnotes.title"),
           null,
           paths,
           paths[0]
-        ) as String? ?: return@invokeLater
-        val item = notes.first { it.path == chosen }
+        )
+        if (choice < 0) return@invokeLater
+        val item = notes.first { it.path == paths[choice] }
         Thread({
           val enc = File.createTempFile("tmp-mrnotes-dl-", ".bin")
           val plainTmp = File.createTempFile("tmp-mrnotes-plain-", ".md")
