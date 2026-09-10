@@ -41,13 +41,19 @@ def real_app(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("SYNC_PASSWORD", "test-pwd")
 
     # Force a fresh import so CONFIG and globals re-read env
-    for mod in [m for m in list(sys.modules) if m.startswith("app.")]:
+    saved = {m: mod for m, mod in list(sys.modules.items()) if m.startswith("app.")}
+    for mod in list(saved):
         del sys.modules[mod]
 
     from app.main import app
     # TestClient triggers the lifespan handler exactly once on enter
-    with TestClient(app) as client:
-        yield client
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        # Later tests hold references to the pre-reload module instances;
+        # without restoring, their monkeypatch targets a different instance.
+        sys.modules.update(saved)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

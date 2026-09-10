@@ -52,8 +52,8 @@ from app.core.artifact_store import (
     sha256_bytes,
 )
 from app.core.bundle_crypto import decrypt_dump_bytes
+from app.core import corporate_tools as ct_core
 from app.core.corporate_tools import (
-    TOOLS_BIN_DIR,
     get_path_instructions,
     install_tool,
     list_tools,
@@ -531,7 +531,7 @@ def mirror_tools():
     return {
         "success": True,
         "tools": [asdict(t) for t in tools],
-        "binDir": str(TOOLS_BIN_DIR),
+            "binDir": str(ct_core.tools_bin_dir()),
         "pathInstructions": get_path_instructions(),
     }
 
