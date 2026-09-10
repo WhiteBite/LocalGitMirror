@@ -294,3 +294,12 @@ private fun fetchAndCopy(
   notif.notify(project)
   historyService.add("Buffer paste", true, "id=$id size=$previewLen")
 }
+
+/** Paste a specific buffer entry by id; caller supplies the background thread. */
+internal fun pasteBufferEntryById(project: Project?, id: String, ts: Double) {
+  val settings = service<MirrorSettingsService>().state
+  fetchAndCopy(
+    project, settings, SecretsStore.mirrorApiKey, SecretsStore.syncPassword,
+    id, ts, service<OperationsHistoryService>()
+  )
+}
