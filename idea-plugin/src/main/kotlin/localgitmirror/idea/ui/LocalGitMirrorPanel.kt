@@ -1707,7 +1707,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
             }
             localgitmirror.idea.workkit.RepoFileSyncCrypto.decryptFile(enc, plainTmp, SecretsStore.syncPassword, null)
             val text = plainTmp.readText(Charsets.UTF_8)
-            SwingUtilities.invokeLater { MrNotesDialog(chosen, text).show() }
+            SwingUtilities.invokeLater { MrNotesDialog(paths[choice], text).show() }
           } catch (t: Throwable) {
             SwingUtilities.invokeLater {
               notify(LocalGitMirrorBundle.message("gitlab.mrnotes.dlFail", 0, t.message ?: "error"), NotificationType.ERROR)
