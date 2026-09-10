@@ -21,6 +21,17 @@ from app.core.artifact_store import ArtifactStore, MavenCoord, sha256_bytes
 from app.core.bundle_crypto import encrypt_bundle_bytes
 from app.routers import mirror as mirror_mod
 
+
+def _test_client(app, client_addr):
+    """TestClient with a spoofed peer address, without the removed ``client=`` kwarg."""
+
+    async def scoped(scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            scope = dict(scope, client=client_addr)
+        await app(scope, receive, send)
+
+    return TestClient(scoped)
+
 PASSWORD = "test-sync-password-长"
 
 PLUGIN = MavenCoord("ru.kryptonite.build", "kryptonite-gradle-plugin", "2.0.3", "", "jar")
@@ -53,7 +64,7 @@ def client(vault):
     app.include_router(mirror_mod.router)
     # TestClient по умолчанию представляется как "testclient"; data plane
     # требует loopback, поэтому подставляем его явно.
-    return TestClient(app, client=("127.0.0.1", 50000))
+    return _test_client(app, ("127.0.0.1", 50000))
 
 
 @pytest.fixture()
@@ -267,7 +278,7 @@ def test_data_plane_refuses_remote_client(vault):
     получился бы артефакт-сервер, открытый всей сети."""
     app = FastAPI()
     app.include_router(mirror_mod.router)
-    remote = TestClient(app, client=("192.168.1.50", 40000))
+    remote = _test_client(app, ("192.168.1.50", 40000))
     r = remote.get(f"/api/cache/m2/{PLUGIN.maven_path}")
     assert r.status_code == 404
 
@@ -277,7 +288,7 @@ def test_data_plane_remote_allowed_with_explicit_optin(vault, monkeypatch):
     ArtifactStore(vault).put(b"jar", PLUGIN)
     app = FastAPI()
     app.include_router(mirror_mod.router)
-    remote = TestClient(app, client=("192.168.1.50", 40000))
+    remote = _test_client(app, ("192.168.1.50", 40000))
     r = remote.get(f"/api/cache/m2/{PLUGIN.maven_path}")
     assert r.status_code == 200
 
@@ -286,7 +297,7 @@ def test_publish_is_not_restricted_to_loopback(vault):
     """Публикация приходит с рабочего ноута по сети — её ограничивать нельзя."""
     app = FastAPI()
     app.include_router(mirror_mod.router)
-    remote = TestClient(app, client=("192.168.1.50", 40000))
+    remote = _test_client(app, ("192.168.1.50", 40000))
     r = remote.post(
         "/api/cache/publish",
         files={"attachment": ("pub.bin",

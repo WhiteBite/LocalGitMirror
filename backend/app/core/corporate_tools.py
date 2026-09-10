@@ -30,16 +30,35 @@ from typing import Dict, List, Optional
 
 
 def _local_app_data() -> Path:
+    override = os.environ.get("LGM_LOCAL_APP_DATA")
+    if override:
+        return Path(override)
     local = os.environ.get("LOCALAPPDATA")
     if local:
         return Path(local)
     return Path.home() / "AppData" / "Local"
 
 
-TOOLS_CONFIG_DIR = _local_app_data() / "LocalGitMirror"
-TOOLS_CONFIG_FILE = TOOLS_CONFIG_DIR / "corporate-tools.json"
-TOOLS_INSTALL_DIR = TOOLS_CONFIG_DIR / "tools"
-TOOLS_BIN_DIR = TOOLS_INSTALL_DIR / "bin"
+def tools_config_dir() -> Path:
+    return _local_app_data() / "LocalGitMirror"
+
+
+def tools_config_file() -> Path:
+    return tools_config_dir() / "corporate-tools.json"
+
+
+def tools_install_dir() -> Path:
+    return tools_config_dir() / "tools"
+
+
+def tools_bin_dir() -> Path:
+    return tools_install_dir() / "bin"
+
+
+TOOLS_CONFIG_DIR = tools_config_dir()
+TOOLS_CONFIG_FILE = tools_config_file()
+TOOLS_INSTALL_DIR = tools_install_dir()
+TOOLS_BIN_DIR = tools_bin_dir()
 
 
 @dataclass
@@ -53,15 +72,15 @@ class ToolInfo:
 def load_tools_config() -> Dict[str, str]:
     """Load corporate-tools.json or return empty dict."""
     try:
-        return json.loads(TOOLS_CONFIG_FILE.read_text(encoding="utf-8"))
+        return json.loads(tools_config_file().read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
 
 
 def save_tools_config(tools: Dict[str, str]) -> None:
     """Save corporate-tools.json."""
-    TOOLS_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    TOOLS_CONFIG_FILE.write_text(json.dumps(tools, indent=2), encoding="utf-8")
+    tools_config_dir().mkdir(parents=True, exist_ok=True)
+    tools_config_file().write_text(json.dumps(tools, indent=2), encoding="utf-8")
 
 
 def list_tools() -> List[ToolInfo]:
@@ -69,8 +88,8 @@ def list_tools() -> List[ToolInfo]:
     config = load_tools_config()
     tools = []
     for name, version in config.items():
-        install_dir = TOOLS_INSTALL_DIR / name / version
-        bin_path = TOOLS_BIN_DIR / (name + (".cmd" if os.name == "nt" else ""))
+        install_dir = tools_install_dir() / name / version
+        bin_path = tools_bin_dir() / (name + (".cmd" if os.name == "nt" else ""))
         installed = install_dir.is_dir() and bin_path.is_file()
         tools.append(ToolInfo(
             name=name,
@@ -88,7 +107,7 @@ def install_tool(name: str, version: str, tarball_path: Path) -> bool:
     2. Create shim in tools/bin/<name>
     3. Return True on success
     """
-    install_dir = TOOLS_INSTALL_DIR / name / version
+    install_dir = tools_install_dir() / name / version
     if install_dir.is_dir():
         return True  # Already installed
 
@@ -131,7 +150,7 @@ def install_tool(name: str, version: str, tarball_path: Path) -> bool:
         return False
 
     # Create shims
-    TOOLS_BIN_DIR.mkdir(parents=True, exist_ok=True)
+    tools_bin_dir().mkdir(parents=True, exist_ok=True)
 
     for bin_name, bin_script in bin_entry.items():
         script_path = pkg_dir / bin_script
@@ -140,11 +159,11 @@ def install_tool(name: str, version: str, tarball_path: Path) -> bool:
 
         if os.name == "nt":
             # Windows: create .cmd shim
-            shim = TOOLS_BIN_DIR / f"{bin_name}.cmd"
+            shim = tools_bin_dir() / f"{bin_name}.cmd"
             shim.write_text(f'@node "{script_path}" %*\n', encoding="utf-8")
         else:
             # Unix: create shell shim
-            shim = TOOLS_BIN_DIR / bin_name
+            shim = tools_bin_dir() / bin_name
             shim.write_text(f'#!/bin/sh\nnode "{script_path}" "$@"\n', encoding="utf-8")
             shim.chmod(0o755)
 
@@ -153,4 +172,4 @@ def install_tool(name: str, version: str, tarball_path: Path) -> bool:
 
 def get_path_instructions() -> str:
     """Return instructions for adding tools/bin to PATH."""
-    return f"Add to PATH: {TOOLS_BIN_DIR}"
+    return f"Add to PATH: {tools_bin_dir()}"

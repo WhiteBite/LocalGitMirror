@@ -7,6 +7,7 @@ idempotency, and the mirror endpoints.
 
 import io
 import json
+import os
 import tarfile
 
 import pytest
@@ -56,23 +57,8 @@ def make_tool_tarball(name: str, version: str, bin_entry: dict | str | None = No
 
 @pytest.fixture()
 def tools_dir(tmp_path, monkeypatch):
-    """Override corporate tools config dir to a temp path."""
-    monkeypatch.setattr(
-        "app.core.corporate_tools.TOOLS_CONFIG_DIR",
-        tmp_path / "LocalGitMirror",
-    )
-    monkeypatch.setattr(
-        "app.core.corporate_tools.TOOLS_CONFIG_FILE",
-        tmp_path / "LocalGitMirror" / "corporate-tools.json",
-    )
-    monkeypatch.setattr(
-        "app.core.corporate_tools.TOOLS_INSTALL_DIR",
-        tmp_path / "LocalGitMirror" / "tools",
-    )
-    monkeypatch.setattr(
-        "app.core.corporate_tools.TOOLS_BIN_DIR",
-        tmp_path / "LocalGitMirror" / "tools" / "bin",
-    )
+    """Redirect corporate tools storage to a temp path (env override, instance-independent)."""
+    monkeypatch.setenv("LGM_LOCAL_APP_DATA", str(tmp_path))
     d = tmp_path / "LocalGitMirror"
     d.mkdir(parents=True, exist_ok=True)
     return d
@@ -101,8 +87,8 @@ def test_save_and_load_config(tools_dir):
 
 def test_load_config_ignores_corrupt(tools_dir):
     """Corrupt JSON returns empty dict without raising."""
-    ct.TOOLS_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    ct.TOOLS_CONFIG_FILE.write_text("{not json", encoding="utf-8")
+    ct.tools_config_file().parent.mkdir(parents=True, exist_ok=True)
+    ct.tools_config_file().write_text("{not json", encoding="utf-8")
     assert load_tools_config() == {}
 
 
@@ -148,7 +134,7 @@ def test_install_tool_creates_shim(tools_dir):
 
     assert install_tool("krypto-cli", "2.4.1", tarball_path) is True
 
-    shim = ct.TOOLS_BIN_DIR / "krypto-cli.cmd"
+    shim = ct.tools_bin_dir() / ("krypto-cli.cmd" if os.name == "nt" else "krypto-cli")
     assert shim.is_file()
     assert "node" in shim.read_text()
 
@@ -203,7 +189,7 @@ def test_install_tool_handles_string_bin(tools_dir):
     tarball_path.write_bytes(tarball)
 
     assert install_tool("krypto-cli", "2.4.1", tarball_path) is True
-    shim = ct.TOOLS_BIN_DIR / "krypto-cli.cmd"
+    shim = ct.tools_bin_dir() / ("krypto-cli.cmd" if os.name == "nt" else "krypto-cli")
     assert shim.is_file()
 
 
@@ -253,7 +239,7 @@ def test_post_install_tool(client, tools_dir):
     assert body["version"] == "2.4.1"
 
     # Verify shim exists
-    shim = ct.TOOLS_BIN_DIR / "krypto-cli.cmd"
+    shim = ct.tools_bin_dir() / ("krypto-cli.cmd" if os.name == "nt" else "krypto-cli")
     assert shim.is_file()
 
 
