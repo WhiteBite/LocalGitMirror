@@ -16,6 +16,7 @@
     <applicationService serviceImplementation="localgitmirror.idea.settings.OperationsHistoryService"/>
     <projectService serviceImplementation="localgitmirror.idea.settings.MirrorProjectSettingsService"/>
     <projectService serviceImplementation="localgitmirror.idea.deps.DepsAutomationService"/>
+    <projectService serviceImplementation="localgitmirror.idea.gitlab.MrReviewService"/>
     <projectConfigurable instance="localgitmirror.idea.settings.MirrorSettingsConfigurable"
                          id="localgitmirror.settings"
                          displayName="DocCache"
