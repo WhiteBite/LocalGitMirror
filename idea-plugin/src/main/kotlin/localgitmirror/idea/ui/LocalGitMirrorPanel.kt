@@ -249,7 +249,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   private fun makeTabComponent(tabs: JBTabbedPane, index: Int): JComponent {
     val label = JBLabel(tabs.getTitleAt(index)).apply {
       font = JBUI.Fonts.smallFont()
-      border = JBUI.Borders.empty(0, 12)
+      border = JBUI.Borders.empty(4, 12, 4, 12)
       foreground = JBColor(0x8C8F94, 0x8C8F94)
     }
     tabLabels[index] = label
@@ -272,10 +272,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       }
     }
     pill.isOpaque = false
-    pill.border = JBUI.Borders.empty(2, 0)
-    pill.add(label, BorderLayout.CENTER)
-    pill.preferredSize = Dimension(pill.preferredSize.width, JBUI.scale(28))
     pill.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+    pill.add(label, BorderLayout.CENTER)
     pill.addMouseListener(object : MouseAdapter() {
       override fun mouseEntered(e: MouseEvent) {
         pill.hovered = true
@@ -304,7 +302,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
 
   private fun setTabTitle(index: Int, text: String) {
     tabsPane?.setTitleAt(index, text)
-    tabLabels[index]?.text = text
+    tabLabels[index]?.let { label ->
+      label.text = text
+      label.revalidate()
+      tabPills[index]?.revalidate()
+      tabsPane?.revalidate()
+    }
   }
 
   private val mrReviewListModel = DefaultListModel<MrReviewService.MrRowItem>()
