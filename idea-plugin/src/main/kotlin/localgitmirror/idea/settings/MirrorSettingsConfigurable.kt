@@ -23,6 +23,8 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   // not-yet-applied persistent state.
   private var urlField: javax.swing.JTextField? = null
   private var apiKeyField: javax.swing.JPasswordField? = null
+  private var syncPasswordField: javax.swing.JPasswordField? = null
+  private var syncPwdEcho: Char = 0.toChar()
 
   // SecretsStore-backed fields — managed manually (not in PersistentStateComponent)
   private var mirrorApiKeyLocal = ""
@@ -61,6 +63,27 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           passwordField()
             .bindText(::syncPasswordLocal)
             .comment("Пароль для шифрования данных при передаче")
+            .applyToComponent { syncPasswordField = this }
+          if (localgitmirror.idea.deps.RoleDetector.detect(state) == localgitmirror.idea.deps.MachineRole.HOME) {
+            val eye = javax.swing.JButton(com.intellij.icons.AllIcons.Actions.Show).apply {
+              toolTipText = LocalGitMirrorBundle.message("settings.mirror.syncPassword.show")
+              isFocusPainted = false
+              isBorderPainted = false
+              isContentAreaFilled = false
+            }
+            eye.addActionListener {
+              val f = syncPasswordField ?: return@addActionListener
+              if (f.echoChar.code == 0) {
+                f.echoChar = syncPwdEcho
+                eye.toolTipText = LocalGitMirrorBundle.message("settings.mirror.syncPassword.show")
+              } else {
+                syncPwdEcho = f.echoChar
+                f.echoChar = 0.toChar()
+                eye.toolTipText = LocalGitMirrorBundle.message("settings.mirror.syncPassword.hide")
+              }
+            }
+            cell(eye)
+          }
         }
       }
 
