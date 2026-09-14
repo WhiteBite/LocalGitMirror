@@ -1334,6 +1334,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       add(btn(LocalGitMirrorBundle.message("review.fetch"), AllIcons.Actions.Refresh) {
         reloadReview()
       })
+      add(btn(LocalGitMirrorBundle.message("review.sendNotes"), AllIcons.Actions.Upload) {
+        mrReviewList.selectedValue?.let { sendMrNotesToCache(it) }
+      })
       add(JButton(AllIcons.Actions.MenuSaveall).apply {
         margin = JBUI.insets(2, 4)
         isFocusPainted = false
@@ -1938,6 +1941,52 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     MrNotesDialog(project, row).show()
   }
 
+  /** Send one MR's discussions to the Cache file postbox (no branch sync). */
+  private fun sendMrNotesToCache(row: MrReviewService.MrRowItem) {
+    val dir = baseDir() ?: run {
+      notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
+      return
+    }
+    val s = service<MirrorSettingsService>().state
+    if (s.baseUrl.isBlank() || SecretsStore.syncPassword.isBlank()) {
+      notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
+      return
+    }
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: send MR notes", true) {
+      override fun run(indicator: ProgressIndicator) {
+        val repo = try { syncFacade.resolveRepo(dir, s).sanitized } catch (_: Throwable) { "" }
+        if (repo.isBlank()) {
+          notify(LocalGitMirrorBundle.message("filesync.notify.repoMissing"), NotificationType.WARNING)
+          return
+        }
+        val markdown = MrNotesWriter.renderMarkdown(
+          project, row.iid, row.title, row.sourceBranch, row.updatedAt,
+          row.unresolved, row.totalThreads, row.discussions
+        )
+        val plain = File.createTempFile("tmp-mrnotes-up-", ".md")
+        val enc = File.createTempFile("tmp-mrnotes-enc-", ".bin")
+        try {
+          plain.writeText(markdown, Charsets.UTF_8)
+          localgitmirror.idea.workkit.RepoFileSyncCrypto.encryptFile(plain, enc, SecretsStore.syncPassword, null)
+          val up = MirrorApi.fileSyncUpload(
+            s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls,
+            "mr-notes/mr-!${row.iid}.md", plain.length().toLong(), enc, null
+          )
+          if (up.code in 200..299) {
+            notify(LocalGitMirrorBundle.message("review.sendNotes.ok", row.iid), NotificationType.INFORMATION)
+            historyService.add(LocalGitMirrorBundle.message("mrnotes.history.send"), true, "mr=!${row.iid} repo=$repo")
+          } else {
+            notify(LocalGitMirrorBundle.message("review.sendNotes.fail", row.iid, "HTTP ${up.code}"), NotificationType.ERROR)
+            historyService.add(LocalGitMirrorBundle.message("mrnotes.history.send"), false, "mr=!${row.iid} HTTP ${up.code}")
+          }
+        } finally {
+          runCatching { plain.delete() }
+          runCatching { enc.delete() }
+        }
+      }
+    })
+  }
+
   private fun refreshReview() {
     val service = project.getService(MrReviewService::class.java)
     val rows = service.cachedRows()
@@ -2036,6 +2085,13 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       })
       popup.add(JMenuItem(LocalGitMirrorBundle.message("ctx.mr.save")).apply {
         addActionListener { saveMrForBranch(sel) }
+      })
+      popup.add(JMenuItem(LocalGitMirrorBundle.message("review.sendNotes")).apply {
+        addActionListener {
+          val row = project.getService(MrReviewService::class.java)
+            .cachedRows().firstOrNull { it.iid == iid } ?: return@addActionListener
+          sendMrNotesToCache(row)
+        }
       })
     } else {
       popup.add(JMenuItem(LocalGitMirrorBundle.message("ctx.mr.none")).apply {
