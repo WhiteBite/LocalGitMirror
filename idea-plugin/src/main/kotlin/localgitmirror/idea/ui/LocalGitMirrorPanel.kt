@@ -126,6 +126,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   // All items before filtering — used by branchFilterField to re-apply the filter.
   private var allBranchItems: List<BranchListItem> = emptyList()
   private var respondButton: javax.swing.JButton? = null
+  private var reviewFetchButton: javax.swing.JButton? = null
   private val branchFilterField = SearchTextField(false).apply {
     textEditor.emptyText.text = LocalGitMirrorBundle.message("panel.branch.filter")
     textEditor.font = JBUI.Fonts.smallFont()
@@ -883,6 +884,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("review.tab.open"), AllIcons.Actions.Show) { tabsPane?.selectedIndex = 1 })
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.exportBundle"), AllIcons.Actions.Upload) { exportBundle() })
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.importBundle"), AllIcons.Actions.Download) { importBundle() })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.copyConfig"), AllIcons.Actions.Copy) { copyConfigLine() })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.pasteConfig"), AllIcons.Actions.Paste) { pasteConfigLine() })
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.vaultSync"), AllIcons.Actions.Download) {
       localgitmirror.idea.deps.VaultCacheSync.syncInBackground(project, "manual")
     })
@@ -1026,7 +1029,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   private fun onTabChanged(index: Int) {
     if (project.isDisposed || ApplicationManager.getApplication().isDisposeInProgress) return
     when (index) {
-      1 -> refreshReview()
+      1 -> reloadReview(notify = false)
       2 -> refreshDepsInBackground()
       3 -> refreshExchangeInBackground()
     }
@@ -1331,9 +1334,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       add(primaryBtn(LocalGitMirrorBundle.message("review.open")) {
         mrReviewList.selectedValue?.let { openMrDialog(it) }
       })
-      add(btn(LocalGitMirrorBundle.message("review.fetch"), AllIcons.Actions.Refresh) {
+      val fetchBtn = btn(LocalGitMirrorBundle.message("review.fetch"), AllIcons.Actions.Refresh) {
         reloadReview()
-      })
+      }
+      reviewFetchButton = fetchBtn
+      add(fetchBtn)
       add(btn(LocalGitMirrorBundle.message("review.sendNotes"), AllIcons.Actions.Upload) {
         mrReviewList.selectedValue?.let { sendMrNotesToCache(it) }
       })
@@ -2010,10 +2015,19 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       LocalGitMirrorBundle.message("review.status.all", rows.size)
 
     updateReviewTabTitle()
+
+    val hasGitlab = runCatching {
+      val conf = localgitmirror.idea.gitlab.GitLabConfig.resolve(project)
+      conf.url.isNotBlank() && conf.project.isNotBlank() &&
+        localgitmirror.idea.gitlab.GitLabConfig.hasApi(conf)
+    }.getOrDefault(false)
+    reviewFetchButton?.text = LocalGitMirrorBundle.message(
+      if (hasGitlab) "review.fetch" else "review.fetch.cache"
+    )
   }
 
-  private fun reloadReview() {
-    project.getService(MrReviewService::class.java).refreshInBackground(notify = true) {
+  private fun reloadReview(notify: Boolean = true) {
+    project.getService(MrReviewService::class.java).refreshInBackground(notify = notify) {
       if (project.isDisposed) return@refreshInBackground
       refreshReview()
     }
