@@ -885,7 +885,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.exportBundle"), AllIcons.Actions.Upload) { exportBundle() })
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.importBundle"), AllIcons.Actions.Download) { importBundle() })
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.copyConfig"), AllIcons.Actions.Copy) { copyConfigLine() })
-    mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.pasteConfig"), AllIcons.Actions.Paste) { pasteConfigLine() })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.pasteConfig"), AllIcons.Actions.MenuPaste) { pasteConfigLine() })
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.vaultSync"), AllIcons.Actions.Download) {
       localgitmirror.idea.deps.VaultCacheSync.syncInBackground(project, "manual")
     })
