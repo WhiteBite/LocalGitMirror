@@ -308,7 +308,7 @@ async def lifespan(app: FastAPI):
     console.print("[bold cyan]─── Plugin Connection Info ───[/bold cyan]")
     console.print(f"[cyan]Mirror URL:[/cyan]      {protocol}://{local_ip}:{CONFIG['web_port']}")
     console.print(f"[cyan]API Key:[/cyan]         {masked_key}")
-    console.print(f"[cyan]Sync Password:[/cyan]   **** (set in .env)")
+    console.print(f"[cyan]Sync Password:[/cyan]   {sync_pass if sync_pass else '(не задан в .env!)'}")
     # v3 hybrid public-key fingerprint (for out-of-band pinning verification)
     try:
         if getattr(sync_router_mod, "server_private_key", None) is not None:
