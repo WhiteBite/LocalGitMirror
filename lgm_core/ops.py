@@ -1485,10 +1485,21 @@ def op_branches(ctx: Ctx, args: dict) -> dict:
 
 def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
                 dry_run: bool = False) -> dict:
-    """Bundle a branch (or --all) from a local git project and upload it.
+    """Bundle a branch (or --all) from a local git project and upload it."""
+    branches = [branch] if branch else []
+    return send_branches(ctx, repo, project, branches, [], dry_run)
 
-    Shared by the ``send`` op and ``mr_send`` (which fetches an MR branch from
-    corporate GitLab first, then ships it to the mirror under its own name).
+
+def send_branches(ctx: Ctx, repo: str, project: str, branches: list[str],
+                  exclude_shas: list[str] | None = None,
+                  dry_run: bool = False) -> dict:
+    """Bundle one or more branches into a SINGLE bundle and upload it.
+
+    Shared history between the branches is packed once. ``exclude_shas``
+    (already-known commits, e.g. mirror tips) become ``^sha`` prerequisites:
+    only commits the mirror lacks are packed. The receiving side must already
+    hold the excluded commits — always true here because they were reported
+    by the mirror itself.
     """
     c = _client(ctx)
     if not ctx.config.sync_password:
@@ -1497,25 +1508,30 @@ def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
     if not proj.is_dir():
         raise LgmError("config", f"project not found: {proj}")
 
-    bundle_args = ["git", "bundle", "create"]
+    excludes = [s for s in dict.fromkeys(exclude_shas or []) if s]
     with tempfile.TemporaryDirectory(prefix="tmp-") as tmp:
         bundle_path = Path(tmp) / "outgoing.bundle"
-        if branch:
-            cmd = bundle_args + [str(bundle_path), branch]
+        cmd = ["git", "bundle", "create", str(bundle_path)]
+        if branches:
+            cmd += [f"refs/heads/{b}" for b in branches]
         else:
-            cmd = bundle_args + [str(bundle_path), "--all"]
+            cmd.append("--all")
+        cmd += [f"^{s}" for s in excludes]
         proc = subprocess.run(cmd, cwd=str(proj), capture_output=True, text=True, timeout=300)
         if proc.returncode != 0:
             raise LgmError("git", proc.stderr.strip() or "git bundle create failed")
         bundle_bytes = bundle_path.read_bytes()
 
+    label = ",".join(branches) if branches else "all"
     if dry_run:
-        return {"repo": repo, "branch": branch or "all",
-                "bundle_size": len(bundle_bytes), "dry_run": True}
+        return {"repo": repo, "branch": label,
+                "bundle_size": len(bundle_bytes), "excluded_bases": len(excludes),
+                "dry_run": True}
 
     res = c.sync_send(repo, bundle_bytes)
-    return {"repo": repo, "branch": branch or "all",
-            "bundle_size": len(bundle_bytes), "response": res}
+    return {"repo": repo, "branch": label,
+            "bundle_size": len(bundle_bytes), "excluded_bases": len(excludes),
+            "response": res}
 
 
 def op_send(ctx: Ctx, args: dict) -> dict:
@@ -1669,21 +1685,135 @@ def op_mr_list(ctx: Ctx, args: dict) -> dict:
     return {"count": len(items), "items": items}
 
 
-def op_mr_send(ctx: Ctx, args: dict) -> dict:
-    """Fetch a GitLab MR branch into a local project and send it to the mirror.
+def _resolve_mr_targets(c: MirrorClient, args: dict) -> list[dict]:
+    """Resolve requested MRs/branches to [{iid, branch}], deduped by branch."""
+    try:
+        iid_single = int(args.get("iid", 0) or 0)
+    except (TypeError, ValueError):
+        raise LgmError("config", "--iid must be an integer") from None
+    iids: list[int] = [iid_single] if iid_single else []
+    iids_raw = (args.get("iids") or "").strip()
+    if iids_raw:
+        for tok in iids_raw.split(","):
+            tok = tok.strip().lstrip("!").strip()
+            if not tok:
+                continue
+            try:
+                iids.append(int(tok))
+            except ValueError:
+                raise LgmError("config", f"--iids: '{tok}' is not an integer") from None
+    iids = list(dict.fromkeys(iids))
 
-    Source branch resolution: --iid (queried from GitLab) or --branch.
-    The branch is fetched from origin, then bundled and uploaded so it lands
-    on the mirror under its source_branch name.
+    targets: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(iid, branch: str) -> None:
+        branch = branch.strip()
+        if branch and branch not in seen:
+            seen.add(branch)
+            targets.append({"iid": iid, "branch": branch})
+
+    if args.get("all_open", False):
+        for m in c.gitlab_list_mrs():
+            _add(m.get("iid"), m.get("source_branch") or "")
+    for i in iids:
+        mr = c.gitlab_get_mr(i)
+        branch = (mr.get("source_branch") or "").strip()
+        if not branch:
+            raise LgmError("gitlab", f"MR !{i}: empty source branch")
+        _add(i, branch)
+    for tok in (args.get("branch") or "").split(","):
+        _add(None, tok)
+    return targets
+
+
+def _fetch_mr_branches(proj: Path, branches: list[str]) -> None:
+    """Fetch all branches from origin in one call; ensure local refs exist."""
+    refspecs = [f"+refs/heads/{b}:refs/remotes/origin/{b}" for b in branches]
+    fetch = subprocess.run(
+        ["git", "-C", str(proj), "fetch", "origin", *refspecs],
+        capture_output=True, text=True, timeout=300,
+    )
+    if fetch.returncode != 0:
+        raise LgmError("git", fetch.stderr.strip() or "git fetch origin failed")
+    for b in branches:
+        # `git fetch` only writes remote-tracking refs — create the local ref
+        # (when missing) so the bundle carries refs/heads/<branch>.
+        chk = subprocess.run(
+            ["git", "-C", str(proj), "rev-parse", "--verify", f"refs/heads/{b}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if chk.returncode != 0:
+            mk = subprocess.run(
+                ["git", "-C", str(proj), "update-ref",
+                 f"refs/heads/{b}", f"refs/remotes/origin/{b}"],
+                capture_output=True, text=True, timeout=30,
+            )
+            if mk.returncode != 0:
+                raise LgmError(
+                    "git",
+                    mk.stderr.strip() or f"branch '{b}' not found after fetch",
+                )
+
+
+def _local_tip(proj: Path, branch: str) -> str:
+    proc = subprocess.run(
+        ["git", "-C", str(proj), "rev-parse", f"refs/heads/{branch}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if proc.returncode != 0:
+        raise LgmError("git", f"cannot resolve refs/heads/{branch}")
+    return proc.stdout.strip()
+
+
+def _mirror_refs_safe(c: MirrorClient, repo: str) -> dict:
+    """Mirror branch tips; {} when the repo is not on the mirror yet."""
+    try:
+        return c.sync_refs(repo).get("refs") or {}
+    except LgmError:
+        return {}
+
+
+def _existing_shas(proj: Path, shas: list[str]) -> list[str]:
+    """Keep only SHAs present locally (a ^sha exclusion of an unknown commit
+    would make git bundle fail)."""
+    out = []
+    for sha in dict.fromkeys(shas):
+        if not sha:
+            continue
+        chk = subprocess.run(
+            ["git", "-C", str(proj), "cat-file", "-e", f"{sha}^{{commit}}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if chk.returncode == 0:
+            out.append(sha)
+    return out
+
+
+def _new_commit_count(proj: Path, branches: list[str], exclude_shas: list[str]) -> int:
+    """Commits in the sent branches that the exclusions do not cover."""
+    cmd = ["git", "-C", str(proj), "rev-list", "--count",
+           *(f"refs/heads/{b}" for b in branches)]
+    cmd += [f"^{s}" for s in exclude_shas]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    if proc.returncode != 0:
+        raise LgmError("git", proc.stderr.strip() or "git rev-list failed")
+    return int(proc.stdout.strip() or 0)
+
+
+def op_mr_send(ctx: Ctx, args: dict) -> dict:
+    """Fetch GitLab MR branches into a local project and send them to the mirror.
+
+    Multi-MR: --iid 41 / --iids 41,42,43 / --all-open / --branch a,b combine
+    into one deduplicated transfer:
+      - one `git fetch` for all branches;
+      - branches whose tip the mirror already has are skipped entirely;
+      - all remaining branches go into ONE bundle, so their shared history is
+        packed once, with mirror tips as ^exclusions (only new commits travel).
     """
     c = _client(ctx)
     repo = args.get("repo", "")
     project = args.get("project", "")
-    try:
-        iid = int(args.get("iid", 0) or 0)
-    except (TypeError, ValueError):
-        raise LgmError("config", "--iid must be an integer") from None
-    branch = (args.get("branch") or "").strip()
     if not repo:
         raise LgmError("config", "--repo is required")
     if not project:
@@ -1692,52 +1822,38 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
     if not proj.is_dir():
         raise LgmError("config", f"project not found: {proj}")
 
-    # Resolve the MR source branch: prefer the MR itself, fall back to --branch.
-    source_branch = ""
-    if iid:
-        mr = c.gitlab_get_mr(iid)
-        source_branch = (mr.get("source_branch") or "").strip()
-    if not source_branch:
-        source_branch = branch
-    if not source_branch:
-        raise LgmError("config", "--iid or --branch is required to resolve the MR source branch")
+    targets = _resolve_mr_targets(c, args)
+    if not targets:
+        raise LgmError("config", "--iid, --iids, --all-open or --branch is required")
 
-    # Fetch the branch from origin (corporate GitLab) into the local project.
-    fetch_proc = subprocess.run(
-        ["git", "-C", str(proj), "fetch", "origin", source_branch],
-        capture_output=True, text=True, timeout=300,
-    )
-    if fetch_proc.returncode != 0:
-        raise LgmError(
-            "git",
-            fetch_proc.stderr.strip() or f"git fetch origin {source_branch} failed",
-        )
+    _fetch_mr_branches(proj, [t["branch"] for t in targets])
 
-    # `git fetch origin <b>` only writes FETCH_HEAD — make sure the branch ref
-    # exists locally so the bundle carries it under refs/heads/<source_branch>.
-    ref_check = subprocess.run(
-        ["git", "-C", str(proj), "rev-parse", "--verify", f"refs/heads/{source_branch}"],
-        capture_output=True, text=True, timeout=30,
-    )
-    if ref_check.returncode != 0:
-        mk = subprocess.run(
-            ["git", "-C", str(proj), "update-ref", f"refs/heads/{source_branch}", "FETCH_HEAD"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if mk.returncode != 0:
-            raise LgmError(
-                "git",
-                mk.stderr.strip() or f"branch '{source_branch}' not found after fetch",
-            )
+    mirror_refs = _mirror_refs_safe(c, repo)
+    sent: list[dict] = []
+    skipped: list[dict] = []
+    for t in targets:
+        tip = _local_tip(proj, t["branch"])
+        mirror_sha = (mirror_refs.get(t["branch"]) or {}).get("sha", "")
+        t["tip"] = tip
+        if mirror_sha and mirror_sha == tip:
+            skipped.append(t)
+        else:
+            sent.append(t)
 
-    send_result = send_branch(ctx, repo, str(proj), source_branch)
-    return {
-        "repo": repo,
-        "project": str(proj),
-        "iid": iid or None,
-        "source_branch": source_branch,
-        "send": send_result,
-    }
+    exclude_shas = _existing_shas(
+        proj, [info.get("sha", "") for info in mirror_refs.values()]) if sent else []
+    if sent and exclude_shas and \
+            _new_commit_count(proj, [t["branch"] for t in sent], exclude_shas) == 0:
+        skipped.extend(sent)
+        sent = []
+    if not sent:
+        return {"repo": repo, "project": str(proj), "sent": [], "skipped": skipped,
+                "message": "nothing new: mirror already has all requested commits"}
+
+    send_result = send_branches(ctx, repo, str(proj), [t["branch"] for t in sent],
+                                exclude_shas)
+    return {"repo": repo, "project": str(proj), "sent": sent, "skipped": skipped,
+            "send": send_result}
 
 
 # ── REGISTRY ─────────────────────────────────────────────────────────────────
@@ -1956,10 +2072,12 @@ REGISTRY: list[Op] = [
     ),
     Op(
         name="mr_send",
-        summary="Fetch a GitLab MR branch into a local project and send it to the mirror.",
+        summary="Fetch GitLab MR branches and send them to the mirror in one deduplicated bundle (skips tips the mirror already has).",
         params=[
             Param("iid", "int", 0, "GitLab MR iid (resolves the source branch)"),
-            Param("branch", "str", "", "MR source branch (used when --iid is 0)"),
+            Param("iids", "str", "", "Comma-separated MR iids, e.g. '41,42,43'"),
+            Param("all_open", "bool", False, "Send all open MRs"),
+            Param("branch", "str", "", "MR source branch(es), comma-separated (used when no iid given)"),
             Param("project", "str", "", "Local git root to fetch into", required=True),
             Param("repo", "str", "", "Mirror repository name", required=True),
         ],

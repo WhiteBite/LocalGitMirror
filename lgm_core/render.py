@@ -332,17 +332,24 @@ def _render_mr_list(r: dict) -> list[str]:
 
 def _render_mr_send(r: dict) -> list[str]:
     out = [f"MR send repo='{r.get('repo')}'"]
-    if r.get("iid"):
-        out.append(f"  MR: !{r.get('iid')}")
-    out.append(f"  source branch: {r.get('source_branch', '?')}")
-    out.append(f"  project: {r.get('project', '?')}")
-    send = r.get("send", {})
-    out.append(f"  bundle size: {send.get('bundle_size', 0):,} bytes")
-    resp = send.get("response", {})
-    if "e" in resp:
-        out.append("  OK (envelope response)")
-    elif resp:
-        out.append(f"  Response: {resp}")
+    for t in r.get("sent") or []:
+        iid = f" !{t['iid']}" if t.get("iid") else ""
+        out.append(f"  [sent]    {t.get('branch')}{iid} ({(t.get('tip') or '')[:8]})")
+    for t in r.get("skipped") or []:
+        iid = f" !{t['iid']}" if t.get("iid") else ""
+        out.append(f"  [skipped] {t.get('branch')}{iid} (already on mirror)")
+    if r.get("message"):
+        out.append(f"  {r['message']}")
+    send = r.get("send") or {}
+    if send:
+        out.append(f"  bundle size: {send.get('bundle_size', 0):,} bytes")
+        if send.get("excluded_bases"):
+            out.append(f"  excluded bases: {send['excluded_bases']} (already on mirror)")
+        resp = send.get("response", {})
+        if "e" in resp:
+            out.append("  OK (envelope response)")
+        elif resp:
+            out.append(f"  Response: {resp}")
     return out
 
 
