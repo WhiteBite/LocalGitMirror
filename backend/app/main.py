@@ -189,13 +189,14 @@ async def lifespan(app: FastAPI):
     shared_manager = SharedManager(actual_storage_path)
 
     # 2. Inject dependencies into routers
-    from app.routers import deps, file_sync, mirror, settings
+    from app.routers import buffer, deps, file_sync, mirror, settings
 
     deps.repo_manager = repo_manager
     deps.system_logger = system_logger
     file_sync.repo_manager = repo_manager
     file_sync.system_logger = system_logger
     settings.settings_manager = settings_manager
+    buffer.storage_dir = Path(actual_storage_path) / ".lgm" / "buffer"
     # Зеркало корп-артефактов: тот же паттерн инъекции, что и у deps.
     mirror.repo_manager = repo_manager
     mirror.system_logger = system_logger
