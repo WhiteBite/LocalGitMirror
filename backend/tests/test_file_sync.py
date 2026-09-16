@@ -63,6 +63,21 @@ def test_file_sync_lifecycle_is_opaque(tmp_path: Path):
     assert client.get("/api/documents/attachment-list", params={"rid": "onyx"}).json()["items"] == []
 
 
+def test_file_sync_path_enc_passthrough(tmp_path: Path):
+    client, _ = _make_client(tmp_path)
+    uploaded = client.post(
+        "/api/documents/attachment-upload",
+        data={"rid": "onyx", "path": "x/9f3ab1", "plain_size": "0",
+              "path_enc": "ZW5jY2lwaGVyZWQtcGF0aA=="},
+        files={"attachment": ("file.lgm", b"CT", "application/octet-stream")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    item = client.get("/api/documents/attachment-list",
+                      params={"rid": "onyx"}).json()["items"][0]
+    assert item["path"] == "x/9f3ab1"
+    assert item["path_enc"] == "ZW5jY2lwaGVyZWQtcGF0aA=="
+
+
 def test_file_sync_rejects_bad_repo_path_and_id(tmp_path: Path):
     client, _ = _make_client(tmp_path)
     for bad_repo in ["../etc", "foo/bar", "x\\y", "", "."]:
