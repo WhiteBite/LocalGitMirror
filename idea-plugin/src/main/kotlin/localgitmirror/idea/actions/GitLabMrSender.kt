@@ -233,9 +233,12 @@ object GitLabMrSender {
     try {
       plain.writeText(markdown, Charsets.UTF_8)
       localgitmirror.idea.workkit.RepoFileSyncCrypto.encryptFile(plain, encrypted, SecretsStore.syncPassword, null)
+      val pathEnc = localgitmirror.idea.workkit.ExchangeCrypto.encryptHint(
+        "mr-notes/mr-!$iid.md", SecretsStore.syncPassword
+      )
       val up = localgitmirror.idea.mirror.MirrorApi.fileSyncUpload(
         settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
-        "mr-notes/mr-!$iid.md", plain.length(), encrypted, null
+        "x/${java.util.UUID.randomUUID().toString().take(8)}", 0L, encrypted, pathEnc, null
       )
       if (up.code in 200..299) {
         notify(
