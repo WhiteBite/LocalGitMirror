@@ -31,8 +31,10 @@ import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.dsl.builder.*
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import localgitmirror.idea.actions.GitLabMrSender
 import localgitmirror.idea.actions.PullFromMirrorAction
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.gitlab.GitLabConfig
 import localgitmirror.idea.gitlab.MrNotesWriter
 import localgitmirror.idea.gitlab.MrReviewService
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
@@ -330,7 +332,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     font = JBUI.Fonts.smallFont()
     fixedCellHeight = JBUI.scale(24)
     cellRenderer = MrReviewListCellRenderer()
-    selectionMode = ListSelectionModel.SINGLE_SELECTION
+    selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
     emptyText.text = LocalGitMirrorBundle.message("review.empty")
     emptyText.appendLine(
       LocalGitMirrorBundle.message("review.empty.hint"),
@@ -1313,6 +1315,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         font = JBUI.Fonts.smallFont()
         foreground = JBColor(0x2E7D32, 0x66BB6A)
       })
+      add(JBLabel(LocalGitMirrorBundle.message("review.legend.multi")).apply {
+        font = JBUI.Fonts.smallFont()
+        foreground = JBColor(0x6F7277, 0x6F7277)
+      })
     }
 
     val north = JPanel().apply {
@@ -1342,6 +1348,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       add(btn(LocalGitMirrorBundle.message("review.sendNotes"), AllIcons.Actions.Upload) {
         mrReviewList.selectedValue?.let { sendMrNotesToCache(it) }
       })
+      add(btn(LocalGitMirrorBundle.message("review.sendSelected")) { sendSelectedMrs() })
       add(JButton(AllIcons.Actions.MenuSaveall).apply {
         margin = JBUI.insets(2, 4)
         isFocusPainted = false
@@ -1988,6 +1995,22 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
           runCatching { plain.delete() }
           runCatching { enc.delete() }
         }
+      }
+    })
+  }
+
+  /** Send selected MRs (branches + notes) to Cache in one batch via GitLabMrSender.sendAll. */
+  private fun sendSelectedMrs() {
+    val rows = mrReviewList.selectedValuesList
+      .filter { it.source == MrReviewService.Source.GITLAB && it.sourceBranch.isNotBlank() }
+    if (rows.isEmpty()) {
+      notify(LocalGitMirrorBundle.message("review.sendSelected.none"), NotificationType.WARNING)
+      return
+    }
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: send ${rows.size} MR(s)", true) {
+      override fun run(indicator: ProgressIndicator) {
+        val conf = GitLabConfig.resolve(project)
+        GitLabMrSender.sendAll(project, conf, rows.map { it.sourceBranch to it.iid })
       }
     })
   }
