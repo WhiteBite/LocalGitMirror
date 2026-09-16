@@ -21,6 +21,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import localgitmirror.idea.workkit.BundleCrypto
 import localgitmirror.idea.net.HttpClient
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.workkit.EnvelopeCrypto
@@ -1375,10 +1376,14 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     val sha256: String? = null
   )
 
-  /** Query metadata of the freshest plugin build on the server (auth-gated). */
-  fun pluginInfo(baseUrl: String, apiKey: String, insecureTls: Boolean): PluginInfo {
+  /** Query metadata of the freshest plugin build on the server (auth-gated).
+   *  With a sync password the metadata travels inside the encrypted envelope —
+   *  the plain JSON would leak the tool's filename. Old servers answer plain
+   *  JSON to the same request (unknown query param), which we still parse. */
+  fun pluginInfo(baseUrl: String, apiKey: String, insecureTls: Boolean, syncPassword: String = ""): PluginInfo {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/plugin/info")
+      val enc = if (syncPassword.isNotBlank()) "?enc=1" else ""
+      val url = URL("${baseUrl.trimEnd('/')}/api/plugin/info$enc")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 15_000
@@ -1389,7 +1394,11 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
       if (code !in 200..299) {
         return PluginInfo(code, false, null, null, 0L, null, body.take(500))
       }
-      val root = Json.parseToJsonElement(body).jsonObject
+      var root = Json.parseToJsonElement(body).jsonObject
+      root["e"]?.jsonPrimitive?.contentOrNull?.let { e ->
+        root = runCatching { EnvelopeCrypto.decryptJson(e, syncPassword) }.getOrNull()
+          ?: return PluginInfo(0, false, null, null, 0L, null, "envelope decrypt failed")
+      }
       PluginInfo(
         code = code,
         available = root["available"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: true,
@@ -1415,10 +1424,12 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     apiKey: String,
     insecureTls: Boolean,
     outFile: File,
+    syncPassword: String = "",
     onProgress: ((read: Long, total: Long) -> Unit)? = null
   ): DownloadResult {
     return try {
-      val url = URL("${baseUrl.trimEnd('/')}/api/plugin/latest")
+      val enc = if (syncPassword.isNotBlank()) "?enc=1" else ""
+      val url = URL("${baseUrl.trimEnd('/')}/api/plugin/latest$enc")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 30_000
@@ -1445,6 +1456,14 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
             }
           }
           onProgress?.invoke(read, total)
+        }
+      }
+      if (syncPassword.isNotBlank()) {
+        // PK magic = a legacy server ignored ?enc=1 and sent the plain zip.
+        val head = outFile.inputStream().use { it.readNBytes(2) }
+        val isPlainZip = head.size == 2 && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte()
+        if (!isPlainZip) {
+          outFile.writeBytes(BundleCrypto.decryptDumpBytes(outFile.readBytes(), syncPassword))
         }
       }
       DownloadResult(code, outFile, "OK")

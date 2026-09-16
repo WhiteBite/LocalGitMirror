@@ -357,7 +357,7 @@ internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
         indicator.isIndeterminate = true
         indicator.text = "\u041f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u043c \u043d\u0430\u043b\u0438\u0447\u0438\u0435 \u0441\u0431\u043e\u0440\u043a\u0438\u2026"
 
-        val info = MirrorApi.pluginInfo(settings.baseUrl, SecretsStore.mirrorApiKey, settings.mirrorInsecureTls)
+        val info = MirrorApi.pluginInfo(settings.baseUrl, SecretsStore.mirrorApiKey, settings.mirrorInsecureTls, SecretsStore.syncPassword)
         if (info.code == 404 || !info.available) {
           notify(
             "\u0412 Cache \u043d\u0435\u0442 \u0441\u043e\u0431\u0440\u0430\u043d\u043d\u043e\u0433\u043e \u043f\u043b\u0430\u0433\u0438\u043d\u0430. \u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u0435 'gradle buildPlugin' \u043d\u0430 \u0441\u0435\u0440\u0432\u0435\u0440\u0435.",
@@ -384,6 +384,7 @@ internal fun LocalGitMirrorPanel.downloadLatestPlugin() {
           apiKey = SecretsStore.mirrorApiKey,
           insecureTls = settings.mirrorInsecureTls,
           outFile = outFile,
+          syncPassword = SecretsStore.syncPassword,
           onProgress = { read, total ->
             if (total > 0) {
               indicator.fraction = (read.toDouble() / total).coerceIn(0.0, 1.0)
