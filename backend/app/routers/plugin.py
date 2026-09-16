@@ -12,8 +12,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse, Response
+
+from app.core.bundle_crypto import encrypt_bundle_bytes
+from app.core.envelope_crypto import encrypt_envelope
 
 router = APIRouter(prefix="/api/plugin", tags=["plugin"])
 
@@ -144,12 +147,23 @@ def _sha256(path: Path) -> str:
     return digest
 
 
+def _enc_password() -> str:
+    password = os.getenv("SYNC_PASSWORD", "")
+    if not password:
+        raise HTTPException(status_code=503, detail="SYNC_PASSWORD not configured")
+    return password
+
+
 @router.get("/info")
-def plugin_info():
-    """Return the exact semantic-versioned archive available to the IDE."""
+def plugin_info(enc: bool = Query(False)):
+    """Return the exact semantic-versioned archive available to the IDE.
+
+    ``?enc=1`` hides the metadata (filename reveals the tool name) behind the
+    standard envelope — the work network is hostile, the mirror is trusted.
+    """
     archive = _current_zip()
     stat = archive.stat()
-    return {
+    metadata = {
         "available": True,
         "version": _parse_version(archive.name),
         "filename": archive.name,
@@ -157,10 +171,21 @@ def plugin_info():
         "built_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
         "sha256": _sha256(archive),
     }
+    if enc:
+        return {"e": encrypt_envelope(metadata, _enc_password())}
+    return metadata
 
 
 @router.get("/latest")
-def plugin_latest():
-    """Stream the same current archive described by ``/info``."""
+def plugin_latest(enc: bool = Query(False)):
+    """Stream the same current archive described by ``/info``.
+
+    ``?enc=1`` ships the archive as a bundle-format ciphertext (pure noise on
+    the wire; the raw ZIP would expose the plugin's bytecode to traffic
+    inspection). Clients detect a legacy plain response by the PK magic.
+    """
     archive = _current_zip()
+    if enc:
+        blob = encrypt_bundle_bytes(archive.read_bytes(), _enc_password())
+        return Response(content=blob, media_type="application/octet-stream")
     return FileResponse(path=str(archive), media_type="application/zip", filename=archive.name)
