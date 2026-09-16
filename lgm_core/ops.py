@@ -10,6 +10,7 @@ moved from the original ``lgm.py`` so the registry is self-contained.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -1887,12 +1888,29 @@ def op_guide(ctx: Ctx, args: dict) -> dict:
     return {"success": True, "guide": _GUIDE}
 
 
+def _postbox_display_path(item: dict, password: str) -> str:
+    """Effective postbox path: decrypt path_enc when present, else plaintext."""
+    enc = item.get("path_enc") or ""
+    if enc and password:
+        try:
+            blob = base64.b64decode(enc)
+            return decrypt_bundle(blob, password).decode("utf-8")
+        except Exception:
+            pass
+    return item.get("path") or ""
+
+
 def op_mr_notes(ctx: Ctx, args: dict) -> dict:
     """Decrypt MR discussion notes (mr-notes/mr-!N.md) from the file postbox."""
     c = _client(ctx)
     repo = _repo_arg(args)
     lst = c.file_sync_list(repo)
-    items = [i for i in (lst.get("items") or []) if str(i.get("path", "")).startswith("mr-notes/")]
+    pwd = ctx.config.sync_password
+    items = []
+    for i in (lst.get("items") or []):
+        eff = _postbox_display_path(i, pwd)
+        if eff.startswith("mr-notes/"):
+            items.append({**i, "path": eff})
     iid = int(args.get("iid") or 0)
     if iid:
         items = [i for i in items if str(i.get("path", "")).endswith(f"mr-!{iid}.md")]
