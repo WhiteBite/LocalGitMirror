@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import axios from 'axios'
-import { encryptText, decryptBytes } from '@/lib/bundleCrypto'
+import { encryptText, decryptBytes, decryptText } from '@/lib/bundleCrypto'
 
 /**
  * Cross-machine clipboard buffer.
@@ -47,9 +47,10 @@ export const useBufferStore = defineStore('buffer', () => {
   }
 
   /**
-   * Encrypt `text` and push it. `label` is an optional plaintext hint shown in
-   * the list. If omitted, we derive one from the first line (first 80 chars) —
-   * matching the plugin's buildHint() so previews look consistent across clients.
+   * Encrypt `text` and push it. The preview label travels as `hint_enc`
+   * (bundle-v2 ciphertext, base64) — the plaintext `hint` field is legacy and
+   * must never be sent. If `label` is omitted, we derive one from the first
+   * line (first 80 chars), matching the plugin's buildHint().
    */
   async function pushItem(text, label = '') {
     error.value = null
@@ -61,10 +62,31 @@ export const useBufferStore = defineStore('buffer', () => {
     const ciphertext_b64 = await encryptText(text, password)
     const hint = label || (text.split('\n')[0] || '').trim().slice(0, 80)
     const payload = { ciphertext_b64 }
-    if (hint) payload.hint = hint
+    if (hint) payload.hint_enc = await encryptText(hint, password)
     const res = await axios.post('/api/buffer', payload)
     await fetchItems()
     return res.data
+  }
+
+  /**
+   * Resolve the display label of a list entry: decrypt `hint_enc` when present,
+   * fall back to the legacy plaintext `hint`. Never throws.
+   */
+  async function revealHint(item) {
+    if (!item.hint_enc) return item.hint || ''
+    const password = await ensurePassword()
+    if (!password) return item.hint || ''
+    try {
+      return await decryptText(item.hint_enc, password)
+    } catch {
+      return item.hint || ''
+    }
+  }
+
+  async function togglePin(id, pinned) {
+    await axios.post(`/api/buffer/${id}/pin`, { pinned })
+    const item = items.value.find(it => it.id === id)
+    if (item) item.pinned = pinned
   }
 
   /**
@@ -98,6 +120,8 @@ export const useBufferStore = defineStore('buffer', () => {
     fetchItems,
     pushItem,
     revealItem,
+    revealHint,
+    togglePin,
     deleteItem,
     clearAll
   }

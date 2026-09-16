@@ -1,0 +1,178 @@
+{
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "create": "Create",
+    "refresh": "Refresh",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "copy": "Copy",
+    "show": "Show",
+    "hide": "Hide"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "files": "Files",
+    "search": "Search",
+    "buffer": "Exchange",
+    "settings": "Settings",
+    "repositories": "REPOSITORIES",
+    "new_repo": "New repository",
+    "delete_repo": "Delete repository"
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "remote_url": "Remote repository URL",
+    "copy_command": "Copy setup command",
+    "git_server": "Server",
+    "status_running": "Running",
+    "status_stopped": "Stopped",
+    "status_active_https": "Active (HTTPS)",
+    "traffic_encrypted": "Traffic encrypted (envelope)",
+    "disk_used": "used",
+    "gb": "GB",
+    "memory_used_suffix": "used",
+    "metrics": {
+      "disk": "Disk",
+      "memory": "Memory",
+      "cpu": "CPU"
+    },
+    "activity": "Recent activity",
+    "open_btn": "Open folder",
+    "no_sync_hint": "no files prepared for transfer yet",
+    "panic_tooltip": "Immediately stop the server and drop all connections",
+    "panic": "PANIC",
+    "plugin_download": {
+      "title": "IDEA Plugin",
+      "desc": "Download the LocalGitMirror plugin and install it in your IDE (Settings → Plugins → Install from Disk).",
+      "download_btn": "Download plugin",
+      "downloading": "Downloading...",
+      "unavailable": "Plugin build not available yet (artifact not found on the server).",
+      "download_error": "Failed to download the plugin"
+    },
+    "plugin_setup": {
+      "title": "IDEA Plugin Setup",
+      "desc": "These values configure the LocalGitMirror plugin on another machine. Copy individual fields or the whole config.",
+      "mirror_url": "Mirror URL (Base URL)",
+      "api_key": "API Key",
+      "sync_password": "Sync Password",
+      "default_repo": "Default repository",
+      "copy_full_config": "Copy full plugin config",
+      "copied": "Copied!",
+      "paste_hint": "Paste into IDEA: Tools > LocalGitMirror > Paste Config (or use the gear menu in the plugin panel)."
+    }
+  },
+  "files": {
+    "title": "Explorer",
+    "search_placeholder": "Search files...",
+    "project_empty": "Project is empty",
+    "root": "Root",
+    "show_diff": "Show Diff",
+    "show_file": "Show file",
+    "open_explorer": "Open in explorer",
+    "select_file": "Select a file to preview",
+    "loading_diff": "Loading changes..."
+  },
+  "search": {
+    "title": "Global Search",
+    "placeholder": "Search in code (regex supported)...",
+    "button": "Search",
+    "searching": "Searching...",
+    "found": "Found {count} matches (limit 100)",
+    "nothing_found": "Nothing found for this query",
+    "empty_state": "Enter text to search across the current repository.",
+    "line": "Line",
+    "title_with_repo": "Global search in project: {repo}"
+  },
+  "settings": {
+    "title": "Settings",
+    "tabs": {
+      "general": "General",
+      "git": "Git",
+      "ui": "Interface"
+    },
+    "general": {
+      "default_repo": "Default repository",
+      "default_repo_hint": "Project opened at startup",
+      "storage_path": "Storage path",
+      "storage_placeholder": "E.g. E:/Kryptonit",
+      "browse": "Browse...",
+      "restart_warning": "The server must be restarted after changing the path.",
+      "auto_sync": "Auto-sync",
+      "auto_sync_desc": "Update files immediately after a push from work",
+      "refresh_interval": "Refresh interval (sec)",
+      "refresh_desc": "How often the UI checks for changes on disk"
+    },
+    "git": {
+      "port": "HTTPS server port",
+      "port_desc": "Main port for browser and Git access (8443 recommended)",
+      "identity_title": "Git Identity (Who commits?)",
+      "user_name": "User name (user.name)",
+      "user_email": "Email (user.email)",
+      "identity_desc": "These values are applied to all repositories during sync.",
+      "network_status": "Current network status",
+      "security_mode": "Security mode",
+      "local_ip": "Local IP address",
+      "server_port": "Server port"
+    },
+    "actions": {
+      "save": "Save",
+      "saving": "Saving...",
+      "reset": "Reset"
+    },
+    "notifications": {
+      "browse_error": "Folder browsing unavailable",
+      "load_error": "Failed to load settings",
+      "save_success": "Settings saved",
+      "save_error": "Failed to save settings",
+      "reset_confirm": "Reset all settings to defaults?",
+      "reset_success": "Settings reset",
+      "reset_error": "Reset failed",
+      "repo_selected": "Repository '{name}' selected",
+      "repo_select_error": "Failed to switch repository",
+      "repo_created": "Repository '{name}' created",
+      "repo_create_error": "Failed to create repository",
+      "repo_deleted": "Repository '{name}' deleted",
+      "repo_delete_error": "Failed to delete repository",
+      "ip_copied": "IP copied: {ip}",
+      "ip_copy_error": "Failed to copy IP"
+    }
+  },
+  "logs": {
+    "title": "System Log",
+    "entries": "entries",
+    "live": "Live",
+    "disconnected": "Disconnected",
+    "no_logs": "No entries to display",
+    "export": "Export logs to file",
+    "clear": "Clear all logs",
+    "clear_confirm": "Are you sure you want to clear all logs?"
+  },
+  "exchange": {
+    "title": "Exchange",
+    "subtitle": "Unified cross-machine feed: clipboard entries and repo postbox files. Everything is encrypted in the browser with the sync password — the server only stores ciphertext.",
+    "filter_placeholder": "Filter by name...",
+    "empty": "Drop files here or press Ctrl+V",
+    "encrypted": "(encrypted)",
+    "source_buffer": "buffer",
+    "source_file": "file",
+    "copy": "Copy",
+    "copied": "Copied!",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "pinned": "Pinned",
+    "pin_error": "Failed to toggle pin",
+    "download": "Download",
+    "decrypt_error": "Decryption failed (wrong password or corrupted)",
+    "delete_error": "Failed to delete",
+    "clear_all": "Clear buffer",
+    "clear_confirm": "Delete all text entries from the buffer? Files are not affected.",
+    "upload_success": "File '{name}' uploaded",
+    "upload_error": "Failed to upload '{name}'",
+    "push_success": "Added to buffer",
+    "push_error": "Failed to add to buffer",
+    "no_password": "Sync password is not configured on the server — encryption unavailable. Set SYNC_PASSWORD."
+  }
+}
