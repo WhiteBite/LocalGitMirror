@@ -12,13 +12,15 @@ import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
+import localgitmirror.idea.sync.v2.SyncEngine
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
 
 /**
- * Shared tail of the MR transfer: fetch the source branch from origin and run
- * the usual send-branch pipeline (checkout -> full sync -> restore). Called on
- * a background thread by both [SendGitLabMrAction] and the panel MR list dialog.
+ * Shared tail of the MR transfer: fetch source branches from origin and run
+ * the usual send-branch pipeline (checkout -> full sync -> restore), for a
+ * single MR or a batch. Called on a background thread by [SendGitLabMrAction]
+ * and the panel MR list dialog.
  */
 object GitLabMrSender {
 
@@ -80,18 +82,87 @@ object GitLabMrSender {
     val syncRes = try {
       syncFacade.runFullSync(projectDir, settings)
     } finally {
-      if (!originalBranch.isNullOrBlank() && originalBranch != branch) {
-        val restore = GitLocal.checkout(project, projectDir, originalBranch)
-        if (!restore.ok()) {
-          notify(
-            project,
-            LocalGitMirrorBundle.message("notify.restoreBranchFailed", originalBranch, restore.stderr),
-            NotificationType.WARNING
-          )
-        }
+      restoreBranch(project, projectDir, originalBranch)
+    }
+    reportSyncOutcome(project, conf, settings, syncRes, branch, iid, history)
+  }
+
+  fun sendAll(project: Project, conf: GitLabConfig.GitLabConf, targets: List<Pair<String, Int?>>) {
+    if (targets.isEmpty()) return
+    if (!precheck(project)) return
+    val projectDir = File(project.basePath!!)
+    val settings = service<MirrorSettingsService>().state
+    val syncFacade = project.getService(SyncFacadeService::class.java)
+    val history = service<OperationsHistoryService>()
+
+    val remote = GitLocal.defaultRemote(project, projectDir)
+    val branches = targets.map { it.first }.distinct()
+    val fetchRes = GitLocal.run(project, projectDir, 300, "fetch", remote, *branches.toTypedArray())
+    if (!fetchRes.ok()) {
+      val err = fetchRes.stderr.ifBlank { fetchRes.stdout }
+      notify(project, LocalGitMirrorBundle.message("notify.gitFetchFailed", err), NotificationType.ERROR)
+      for ((branch, iid) in targets) {
+        history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
+          "branch=$branch iid=$iid err=${err.take(300)}")
       }
+      return
     }
 
+    val repoInfo = syncFacade.describeRepoTarget(projectDir, settings)
+    notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
+
+    val originalBranch = GitLocal.currentBranch(project, projectDir)
+    var sent = 0
+    val failures = mutableListOf<String>()
+    try {
+      for ((branch, iid) in targets) {
+        val co = GitLocal.checkout(project, projectDir, branch)
+        if (!co.ok()) {
+          notify(
+            project,
+            LocalGitMirrorBundle.message("action.syncBranch.checkoutFailed", branch, co.stderr),
+            NotificationType.ERROR
+          )
+          history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
+            "branch=$branch iid=$iid err=${co.stderr.take(300)}")
+          failures.add("${targetLabel(branch, iid)}: ${co.stderr.take(200)}")
+          continue
+        }
+        val syncRes = syncFacade.runFullSync(projectDir, settings)
+        if (reportSyncOutcome(project, conf, settings, syncRes, branch, iid, history)) {
+          sent++
+        } else {
+          failures.add("${targetLabel(branch, iid)}: ${syncRes.step.message.take(200)}")
+        }
+      }
+    } finally {
+      restoreBranch(project, projectDir, originalBranch)
+    }
+
+    if (failures.isEmpty()) {
+      notify(
+        project,
+        LocalGitMirrorBundle.message("gitlab.notify.batchOk", sent, targets.size),
+        NotificationType.INFORMATION
+      )
+    } else {
+      notify(
+        project,
+        LocalGitMirrorBundle.message("gitlab.notify.batchPartial", sent, targets.size, failures.joinToString("\n")),
+        NotificationType.WARNING
+      )
+    }
+  }
+
+  private fun reportSyncOutcome(
+    project: Project,
+    conf: GitLabConfig.GitLabConf,
+    settings: MirrorSettingsService.State,
+    syncRes: SyncEngine.FullSyncResult,
+    branch: String,
+    iid: Int?,
+    history: OperationsHistoryService,
+  ): Boolean {
     val result = syncRes.step
     if (!result.ok) {
       notify(
@@ -101,7 +172,7 @@ object GitLabMrSender {
       )
       history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
         "branch=$branch iid=$iid err=${result.message.take(300)}")
-      return
+      return false
     }
 
     if (settings.offlineGenerateOnly) {
@@ -112,7 +183,7 @@ object GitLabMrSender {
       )
       history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
         "offline dump=${syncRes.dump?.absolutePath ?: "?"} branch=$branch iid=$iid")
-      return
+      return true
     }
 
     val iidSuffix = if (iid != null) " (MR !$iid)" else ""
@@ -126,7 +197,24 @@ object GitLabMrSender {
     }
     history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
       "repo=${syncRes.repo ?: "?"} branch=$branch iid=$iid")
+    return true
   }
+
+  private fun restoreBranch(project: Project, projectDir: File, originalBranch: String?) {
+    if (originalBranch.isNullOrBlank()) return
+    if (GitLocal.currentBranch(project, projectDir) == originalBranch) return
+    val restore = GitLocal.checkout(project, projectDir, originalBranch)
+    if (!restore.ok()) {
+      notify(
+        project,
+        LocalGitMirrorBundle.message("notify.restoreBranchFailed", originalBranch, restore.stderr),
+        NotificationType.WARNING
+      )
+    }
+  }
+
+  private fun targetLabel(branch: String, iid: Int?): String =
+    if (iid != null) "!$iid ($branch)" else branch
 
   /** All MR discussions (open/resolved/system) as markdown into the repo file postbox. */
   private fun sendMrNotes(project: Project, conf: GitLabConfig.GitLabConf, iid: Int, repo: String, branch: String) {
