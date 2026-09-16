@@ -805,7 +805,7 @@ data class DepsItem(val id: String, val size: Long, val mtime: Long)
 data class DepsListResult(val code: Int, val items: List<DepsItem>, val message: String)
 data class DepsUploadResult(val code: Int, val id: String?, val size: Long, val message: String)
 data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, val conflicts: Int, val rejected: Int, val message: String)
-  data class FileSyncItem(val id: String, val path: String, val size: Long, val plainSize: Long, val mtime: Long)
+  data class FileSyncItem(val id: String, val path: String, val size: Long, val plainSize: Long, val mtime: Long, val pathEnc: String = "")
   data class FileSyncListResult(val code: Int, val items: List<FileSyncItem>, val message: String)
   data class FileSyncUploadResult(val code: Int, val id: String?, val path: String?, val size: Long, val message: String)
 
@@ -1146,11 +1146,14 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
   fun fileSyncUpload(
     baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,
     relativePath: String, plainSize: Long, encryptedFile: File,
+    pathEnc: String? = null,
     onProgress: ((sent: Long, total: Long) -> Unit)? = null
   ): FileSyncUploadResult {
+    val fields = mutableMapOf("rid" to rid(repo), "path" to relativePath, "plain_size" to plainSize.toString())
+    if (pathEnc != null) fields["path_enc"] = pathEnc
     val res = multipartUploadFile(
       baseUrl, apiKey, insecureTls, "/api/documents/attachment-upload",
-      fields = mapOf("rid" to rid(repo), "path" to relativePath, "plain_size" to plainSize.toString()),
+      fields = fields,
       fileFieldName = "attachment",
       fileName = "data.bin",
       file = encryptedFile,
@@ -1183,7 +1186,8 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
         val size = o["size"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
         val plain = o["plain_size"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
         val mtime = o["mtime"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
-        FileSyncItem(id, p, size, plain, mtime)
+        val pathEnc = o["path_enc"]?.jsonPrimitive?.contentOrNull ?: ""
+        FileSyncItem(id, p, size, plain, mtime, pathEnc)
       } ?: emptyList()
       FileSyncListResult(code, items, "OK")
     } catch (t: Throwable) {
@@ -1454,20 +1458,30 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
   // /api/buffer/* — cross-machine clipboard (E2E-encrypted with SYNC_PASSWORD)
   // ───────────────────────────────────────────────────────────────────────
 
-  data class BufferItem(val id: String, val ts: Double, val size: Long, val hint: String)
+  data class BufferItem(
+    val id: String,
+    val ts: Double,
+    val size: Long,
+    val hint: String,
+    val hintEnc: String = "",
+    val pinned: Boolean = false
+  )
   data class BufferListResult(val code: Int, val items: List<BufferItem>, val message: String)
   data class BufferPutResult(val code: Int, val id: String?, val ts: Double, val message: String)
 
   /**
    * Push a ciphertext blob into the server's clipboard. The body is
    * base64-wrapped JSON so the same code path works on every IDEA we support.
+   * The preview travels only as [hintEnc] (bundle-format, base64) — the legacy
+   * plaintext "hint" field is never sent.
    */
   fun bufferPut(
     baseUrl: String,
     apiKey: String,
     insecureTls: Boolean,
     ciphertext: ByteArray,
-    hint: String
+    hintEnc: String,
+    pinned: Boolean = false
   ): BufferPutResult {
     return try {
       val url = URL("${baseUrl.trimEnd('/')}/api/buffer")
@@ -1480,8 +1494,7 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
       if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
 
       val b64 = JavaBase64.getEncoder().encodeToString(ciphertext)
-      val safeHint = hint.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").take(120)
-      val payload = """{"ciphertext_b64":"$b64","hint":"$safeHint"}"""
+      val payload = """{"ciphertext_b64":"$b64","hint_enc":"$hintEnc","pinned":$pinned}"""
       conn.outputStream.use { it.write(payload.toByteArray(StandardCharsets.UTF_8)) }
 
       val code = conn.responseCode
@@ -1520,7 +1533,9 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
               id = o["id"]?.jsonPrimitive?.contentOrNull ?: continue,
               ts = o["ts"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 0.0,
               size = o["size"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L,
-              hint = o["hint"]?.jsonPrimitive?.contentOrNull ?: ""
+              hint = o["hint"]?.jsonPrimitive?.contentOrNull ?: "",
+              hintEnc = o["hint_enc"]?.jsonPrimitive?.contentOrNull ?: "",
+              pinned = o["pinned"]?.jsonPrimitive?.booleanOrNull ?: false
             )
           )
         }
@@ -1550,6 +1565,56 @@ data class MirrorPublishResult(val code: Int, val added: Int, val existed: Int, 
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)
       DownloadResult(0, null, "${e.type}: ${e.message}")
+    }
+  }
+
+  fun bufferPin(baseUrl: String, apiKey: String, insecureTls: Boolean, id: String, pinned: Boolean): HttpResult {
+    return try {
+      val safeId = java.net.URLEncoder.encode(id, "UTF-8")
+      val url = URL("${baseUrl.trimEnd('/')}/api/buffer/$safeId/pin")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "POST"
+      conn.doOutput = true
+      conn.connectTimeout = 15_000
+      conn.readTimeout = 30_000
+      conn.setRequestProperty("Content-Type", "application/json")
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      conn.outputStream.use { it.write("""{"pinned":$pinned}""".toByteArray(StandardCharsets.UTF_8)) }
+      HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  fun bufferDelete(baseUrl: String, apiKey: String, insecureTls: Boolean, id: String): HttpResult {
+    return try {
+      val safeId = java.net.URLEncoder.encode(id, "UTF-8")
+      val url = URL("${baseUrl.trimEnd('/')}/api/buffer/$safeId")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "DELETE"
+      conn.connectTimeout = 15_000
+      conn.readTimeout = 30_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  fun bufferClear(baseUrl: String, apiKey: String, insecureTls: Boolean): HttpResult {
+    return try {
+      val url = URL("${baseUrl.trimEnd('/')}/api/buffer")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "DELETE"
+      conn.connectTimeout = 15_000
+      conn.readTimeout = 30_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      HttpResult(conn.responseCode, HttpClient.readBody(conn))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      HttpResult(0, "${e.type}: ${e.message}")
     }
   }
 }

@@ -20,6 +20,7 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.workkit.BundleCrypto
+import localgitmirror.idea.workkit.ExchangeCrypto
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
@@ -78,6 +79,15 @@ private fun buildHint(text: String): String {
   return firstLine.take(80)
 }
 
+/** Decrypted preview for display: hint_enc first, legacy plaintext hint for old entries. */
+internal fun displayHint(item: MirrorApi.BufferItem, pwd: String): String {
+  val empty = LocalGitMirrorBundle.message("buffer.history.emptyHint")
+  if (item.hintEnc.isNotBlank()) {
+    return runCatching { ExchangeCrypto.decryptHint(item.hintEnc, pwd) }.getOrDefault(item.hint).ifBlank { empty }
+  }
+  return item.hint.ifBlank { empty }
+}
+
 private fun formatTs(epochSec: Double): String {
   val ms = (epochSec * 1000).toLong()
   return SimpleDateFormat("HH:mm:ss").format(Date(ms))
@@ -121,7 +131,13 @@ class SendToBufferAction : AnAction() {
           notify(project, LocalGitMirrorBundle.message("notify.buffer.encryptFail", t.message ?: ""), NotificationType.ERROR)
           return
         }
-        val res = MirrorApi.bufferPut(settings.baseUrl, apiKey, settings.mirrorInsecureTls, ciphertext, hint)
+        val hintEnc = try {
+          ExchangeCrypto.encryptHint(hint, pwd)
+        } catch (t: Throwable) {
+          notify(project, LocalGitMirrorBundle.message("notify.buffer.encryptFail", t.message ?: ""), NotificationType.ERROR)
+          return
+        }
+        val res = MirrorApi.bufferPut(settings.baseUrl, apiKey, settings.mirrorInsecureTls, ciphertext, hintEnc)
         if (res.code !in 200..299) {
           notify(project, LocalGitMirrorBundle.message("notify.buffer.sendFail", res.code.toString(), res.message.take(200)), NotificationType.ERROR)
           historyService.add("Buffer send", false, "HTTP ${res.code}: ${res.message.take(200)}")
@@ -181,6 +197,7 @@ class BufferHistoryAction : AnAction() {
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("buffer.task.history"), false) {
       private var items: List<MirrorApi.BufferItem> = emptyList()
+      private var hints: Map<String, String> = emptyMap()
       private var errorMessage: String? = null
 
       override fun run(indicator: ProgressIndicator) {
@@ -191,6 +208,7 @@ class BufferHistoryAction : AnAction() {
           return
         }
         items = res.items
+        hints = res.items.associate { it.id to displayHint(it, pwd) }
       }
 
       override fun onSuccess() {
@@ -203,7 +221,7 @@ class BufferHistoryAction : AnAction() {
           notify(project, LocalGitMirrorBundle.message("notify.buffer.empty"), NotificationType.INFORMATION)
           return
         }
-        showPicker(project, items, settings, apiKey, pwd, historyService)
+        showPicker(project, items, hints, settings, apiKey, pwd, historyService)
       }
     })
   }
@@ -211,6 +229,7 @@ class BufferHistoryAction : AnAction() {
   private fun showPicker(
     project: Project?,
     items: List<MirrorApi.BufferItem>,
+    hints: Map<String, String>,
     settings: MirrorSettingsService.State,
     apiKey: String,
     pwd: String,
@@ -224,8 +243,7 @@ class BufferHistoryAction : AnAction() {
           super.getListCellRendererComponent(l, value, idx, sel, focus)
           val it = value as? MirrorApi.BufferItem
           if (it != null) {
-            val emptyHint = LocalGitMirrorBundle.message("buffer.history.emptyHint")
-            val preview = if (it.hint.isNotBlank()) it.hint else emptyHint
+            val preview = hints[it.id] ?: LocalGitMirrorBundle.message("buffer.history.emptyHint")
             text = LocalGitMirrorBundle.message("buffer.history.row", formatTs(it.ts), it.size.toString(), preview)
           }
           return this
