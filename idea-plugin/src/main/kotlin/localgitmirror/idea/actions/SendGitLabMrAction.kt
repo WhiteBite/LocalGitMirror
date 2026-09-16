@@ -9,15 +9,15 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.ui.Messages
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.gitlab.GitLabApi
 import localgitmirror.idea.gitlab.GitLabConfig
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.OperationsHistoryService
+import localgitmirror.idea.ui.MrMultiSelectDialog
 
 /**
- * «Send MR branch to Mirror…» — transfer a GitLab MR's source branch to Mirror.
+ * «Send MR branch to Mirror…» — transfer GitLab MR source branches to Mirror.
  *
  * Flow:
  *  1. Resolve the GitLab instance: explicit settings override, else
@@ -25,13 +25,13 @@ import localgitmirror.idea.settings.OperationsHistoryService
  *     scheme://host[:port], project = remote path minus .git).
  *  2. When a token is available (PasswordSafe or GITLAB_TOKEN env), fetch the
  *     open MRs; on failure warn and continue with an empty list.
- *  3. Editable chooser on the EDT: pick an MR ("!iid  title  (branch)"), type
- *     "!123" (resolved via the API), or type a plain branch name (works
- *     without a token).
- *  4. `git fetch origin <branch>`, then the same send-branch pipeline as
- *     [SyncBranchToMirrorAction] for a specific branch: checkout → full sync
- *     → restore the original branch. The branch lands on Mirror under its
- *     own name.
+ *  3. Multi-select chooser on the EDT: check any number of MRs
+ *     ("!iid  title  (branch)"), type "!123" (resolved via the API), or type
+ *     a plain branch name (works without a token).
+ *  4. One `git fetch origin <branches...>` for all targets, then per MR the
+ *     same send-branch pipeline as [SyncBranchToMirrorAction]: checkout →
+ *     full sync → notes; the original branch is restored once at the end.
+ *     Each branch lands on Mirror under its own name.
  */
 class SendGitLabMrAction : AnAction() {
 
@@ -79,72 +79,79 @@ class SendGitLabMrAction : AnAction() {
           }
           if (indicator.isCanceled) return
 
-          // 2. Chooser on the EDT: MR items + a free-text hint entry (always).
-          val hintItem = LocalGitMirrorBundle.message("gitlab.chooser.hint")
-          val options = mrs.map { mrItemText(it) }.toMutableList()
-          options.add(hintItem)
-          val chosen = UIUtil.invokeAndWaitIfNeeded<String> {
-            Messages.showEditableChooseDialog(
-              LocalGitMirrorBundle.message("gitlab.chooser.prompt"),
-              LocalGitMirrorBundle.message("gitlab.chooser.title"),
-              null,
-              options.toTypedArray(),
-              options.firstOrNull() ?: hintItem,
-              null
-            ) ?: ""
+          // 2. Multi-select chooser on the EDT: MR checkboxes + a free-text entry.
+          val choice = UIUtil.invokeAndWaitIfNeeded<Pair<List<GitLabApi.MrInfo>, String>?> {
+            val dialog = MrMultiSelectDialog(mrs)
+            if (dialog.showAndGet()) Pair(dialog.selectedMrs, dialog.typedText) else null
           }
-          if (chosen.isBlank() || chosen == hintItem) return
+          if (choice == null) return
           if (indicator.isCanceled) return
 
-          // 3. Resolve the choice into (branch, iid).
-          val trimmed = chosen.trim()
-          val picked = mrs.firstOrNull { mrItemText(it) == chosen }
-          val typedIid = IID_RE.find(trimmed)?.groupValues?.get(1)?.toIntOrNull()
-          val branch: String
-          val iid: Int?
-          when {
-            picked != null && picked.sourceBranch.isNotBlank() -> {
-              branch = picked.sourceBranch
-              iid = picked.iid
+          // 3. Resolve the choice into (branch, iid) targets.
+          val targets = mutableListOf<Pair<String, Int?>>()
+          for (mr in choice.first) {
+            if (mr.sourceBranch.isNotBlank()) {
+              targets.add(mr.sourceBranch to mr.iid)
+              continue
             }
-            (picked != null || typedIid != null) && GitLabConfig.hasApi(conf) -> {
-              // Picked item with a blank branch, or typed "!123" — resolve via API.
-              val n = picked?.iid ?: typedIid!!
-              val br = GitLabApi.getMrSourceBranch(conf, n)
-              if (br.code !in 200..299 || br.branch.isNullOrBlank()) {
-                notify(
-                  project,
-                  LocalGitMirrorBundle.message("gitlab.notify.sourceBranchFailed", br.code, br.message),
-                  NotificationType.ERROR
-                )
-                history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
-                  "iid=$n err=${br.message.take(300)}")
-                return
-              }
-              branch = br.branch
-              iid = n
-            }
-            typedIid != null -> {
-              // "!N" typed but no token — the number cannot be resolved.
-              notify(project, LocalGitMirrorBundle.message("gitlab.notify.tokenMissingForIid"), NotificationType.ERROR)
-              return
-            }
-            else -> {
-              // Free text = branch name (works without a token).
-              branch = trimmed
-              iid = null
+            if (!GitLabConfig.hasApi(conf)) continue
+            val br = GitLabApi.getMrSourceBranch(conf, mr.iid)
+            if (br.code in 200..299 && !br.branch.isNullOrBlank()) {
+              targets.add(br.branch to mr.iid)
+            } else {
+              notify(
+                project,
+                LocalGitMirrorBundle.message("gitlab.notify.sourceBranchFailed", br.code, br.message),
+                NotificationType.ERROR
+              )
+              history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
+                "iid=${mr.iid} err=${br.message.take(300)}")
             }
           }
 
+          val typed = choice.second
+          if (typed.isNotBlank()) {
+            val typedIid = IID_RE.find(typed)?.groupValues?.get(1)?.toIntOrNull()
+            when {
+              typedIid != null && GitLabConfig.hasApi(conf) -> {
+                val br = GitLabApi.getMrSourceBranch(conf, typedIid)
+                if (br.code in 200..299 && !br.branch.isNullOrBlank()) {
+                  targets.add(br.branch to typedIid)
+                } else {
+                  notify(
+                    project,
+                    LocalGitMirrorBundle.message("gitlab.notify.sourceBranchFailed", br.code, br.message),
+                    NotificationType.ERROR
+                  )
+                  history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
+                    "iid=$typedIid err=${br.message.take(300)}")
+                }
+              }
+              typedIid != null -> {
+                // "!N" typed but no token — the number cannot be resolved.
+                notify(project, LocalGitMirrorBundle.message("gitlab.notify.tokenMissingForIid"), NotificationType.ERROR)
+              }
+              else -> {
+                // Free text = branch name (works without a token).
+                targets.add(typed to null)
+              }
+            }
+          }
+
+          val distinct = targets.distinct()
+          if (distinct.isEmpty()) return
+          if (indicator.isCanceled) return
+
           // 4-5. Fetch from origin + send-branch pipeline (shared with the MR list dialog).
-          GitLabMrSender.send(project, conf, branch, iid)
+          if (distinct.size == 1) {
+            GitLabMrSender.send(project, conf, distinct[0].first, distinct[0].second)
+          } else {
+            GitLabMrSender.sendAll(project, conf, distinct)
+          }
         }
       }
     )
   }
-
-  private fun mrItemText(mr: GitLabApi.MrInfo): String =
-    "!${mr.iid}  ${mr.title}  (${mr.sourceBranch})"
 
   private fun notify(project: Project, message: String, type: NotificationType) {
     NotificationGroupManager.getInstance()
