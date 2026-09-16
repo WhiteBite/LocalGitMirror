@@ -3,13 +3,18 @@ package localgitmirror.idea.ui
 import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.service
+import com.intellij.openapi.fileChooser.FileChooserFactory
+import com.intellij.openapi.fileChooser.FileSaverDescriptor
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -18,6 +23,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.testFramework.LightVirtualFile
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.EditorNotificationPanel
 import com.intellij.ui.JBColor
@@ -27,8 +33,10 @@ import com.intellij.ui.SearchTextField
 import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
+import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.ui.dsl.builder.*
+import com.intellij.util.Alarm
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.actions.GitLabMrSender
@@ -43,17 +51,34 @@ import localgitmirror.idea.net.LanDiscovery
 import localgitmirror.idea.settings.*
 import localgitmirror.idea.sync.HandshakeCache
 import localgitmirror.idea.sync.v2.SyncFacadeService
+import localgitmirror.idea.workkit.BundleCrypto
+import localgitmirror.idea.workkit.ExchangeCrypto
+import localgitmirror.idea.workkit.RepoFileSyncCrypto
 import java.awt.*
+import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
+import java.awt.datatransfer.Transferable
+import java.awt.datatransfer.UnsupportedFlavorException
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.image.BufferedImage
 import java.io.File
+import java.io.RandomAccessFile
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.text.SimpleDateFormat
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.Date
+import java.util.UUID
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import javax.imageio.ImageIO
 import javax.swing.*
 
-class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
+class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Disposable {
 
   // ── Quick Setup form state (local vars bound to DSL fields) ──
   private var setupUrl: String = service<MirrorSettingsService>().state.baseUrl.let {
@@ -121,6 +146,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   internal val historyService = service<OperationsHistoryService>()
   internal val syncFacade = project.getService(SyncFacadeService::class.java)
 
+  private companion object {
+    const val EXCHANGE_POLL_MS = 15_000
+    const val IDEA_LOG_TAIL_BYTES = 200 * 1024
+    const val EXPORT_FETCH_TIMEOUT_SEC = 120L
+  }
+
   // ── Branch selector (JBList with status) ──
   // Shows local branches immediately and appends Mirror-only branches after a
   // background refs request. BranchListItem keeps the raw name + status for actions.
@@ -169,19 +200,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   private var requestDepsButton: JButton? = null
   private var applyDepsButton: JButton? = null
 
-  internal val filesListModel = DefaultListModel<String>()
-  internal val filesList = JBList(filesListModel).apply {
-    font = JBUI.Fonts.smallFont()
-    fixedCellHeight = JBUI.scale(24)
-    selectionMode = ListSelectionModel.SINGLE_SELECTION
-    cellRenderer = IconTextCellRenderer(AllIcons.FileTypes.Any_type)
-    emptyText.text = LocalGitMirrorBundle.message("panel.exchange.files.empty")
-    emptyText.appendLine(
-      LocalGitMirrorBundle.message("panel.exchange.files.refresh"),
-      SimpleTextAttributes.LINK_ATTRIBUTES
-    ) { refreshExchangeInBackground() }
-  }
-
   private inner class IconTextCellRenderer(private val rowIcon: Icon) :
     ColoredListCellRenderer<String>() {
     override fun customizeCellRenderer(
@@ -193,56 +211,94 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       append(value ?: "", SimpleTextAttributes.REGULAR_ATTRIBUTES)
     }
   }
-  internal val bufferListModel = DefaultListModel<MirrorApi.BufferItem>()
-  internal val bufferEntriesList = JBList(bufferListModel).apply {
+
+  // ── Exchange feed (unified buffer + postbox list) ──
+  internal val exchangeListModel = DefaultListModel<ExchangeItem>()
+  private var allExchangeItems: List<ExchangeItem> = emptyList()
+  // hint_enc/path_enc decryption is PBKDF2-heavy; cached so the 15 s poll doesn't re-derive keys.
+  private val exchangeHintCache = ConcurrentHashMap<String, String>()
+  private val exchangeFilterField = SearchTextField(false).apply {
+    textEditor.emptyText.text = LocalGitMirrorBundle.message("panel.exchange.filter")
+    textEditor.font = JBUI.Fonts.smallFont()
+    toolTipText = LocalGitMirrorBundle.message("panel.exchange.filter")
+    addDocumentListener(object : javax.swing.event.DocumentListener {
+      override fun insertUpdate(e: javax.swing.event.DocumentEvent?) = applyExchangeFilter()
+      override fun removeUpdate(e: javax.swing.event.DocumentEvent?) = applyExchangeFilter()
+      override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = applyExchangeFilter()
+    })
+  }
+  internal val exchangeList = JBList(exchangeListModel).apply {
     font = JBUI.Fonts.smallFont()
     fixedCellHeight = JBUI.scale(24)
     selectionMode = ListSelectionModel.SINGLE_SELECTION
-    cellRenderer = BufferCellRenderer()
-    emptyText.text = LocalGitMirrorBundle.message("panel.exchange.buffer.empty")
-    emptyText.appendLine(LocalGitMirrorBundle.message("panel.exchange.buffer.emptyNote"))
+    cellRenderer = ExchangeCellRenderer()
+    emptyText.text = LocalGitMirrorBundle.message("panel.exchange.empty")
+    dragEnabled = true
+    dropMode = DropMode.ON
+    transferHandler = ExchangeTransferHandler()
     addMouseListener(object : MouseAdapter() {
       override fun mouseClicked(e: MouseEvent) {
-        if (e.clickCount >= 2) pasteSelectedBufferEntry()
+        if (e.clickCount >= 2 && !e.isPopupTrigger) {
+          selectedValue?.let { openExchangeItem(it) }
+        }
+      }
+      override fun mousePressed(e: MouseEvent) {
+        if (e.isPopupTrigger) showExchangeContextMenu(e)
+      }
+      override fun mouseReleased(e: MouseEvent) {
+        if (e.isPopupTrigger) showExchangeContextMenu(e)
       }
     })
   }
+  private val exchangePollAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
 
-  private inner class BufferCellRenderer : ColoredListCellRenderer<MirrorApi.BufferItem>() {
-    override fun customizeCellRenderer(
-      list: JList<out MirrorApi.BufferItem>,
-      value: MirrorApi.BufferItem?,
-      index: Int,
-      selected: Boolean,
-      hasFocus: Boolean
-    ) {
-      if (value == null) return
-      icon = AllIcons.Actions.Copy
-      iconTextGap = JBUI.scale(6)
+  private inner class ExchangeCellRenderer : JPanel(BorderLayout()), ListCellRenderer<ExchangeItem> {
+    private val iconLabel = JBLabel()
+    private val titleLabel = JBLabel()
+    private val metaLabel = JBLabel()
+
+    init {
+      isOpaque = true
       border = JBUI.Borders.empty(1, 6)
-      val preview = value.hint.ifBlank { LocalGitMirrorBundle.message("buffer.history.emptyHint") }
-      append(
-        LocalGitMirrorBundle.message("buffer.history.row", formatBufferTs(value.ts), value.size.toString(), preview),
-        SimpleTextAttributes.REGULAR_ATTRIBUTES
-      )
+      val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+        isOpaque = false
+        add(iconLabel)
+        add(titleLabel)
+      }
+      add(left, BorderLayout.WEST)
+      add(metaLabel, BorderLayout.EAST)
+      titleLabel.font = JBUI.Fonts.smallFont()
+      metaLabel.font = JBUI.Fonts.smallFont()
+      metaLabel.border = JBUI.Borders.empty(0, 8, 0, 4)
+    }
+
+    override fun getListCellRendererComponent(
+      list: JList<out ExchangeItem>,
+      value: ExchangeItem?,
+      index: Int,
+      isSelected: Boolean,
+      cellHasFocus: Boolean
+    ): Component {
+      background = if (isSelected) UIUtil.getListSelectionBackground(true) else UIUtil.getListBackground()
+      if (value == null) return this
+      val fg = if (isSelected) UIUtil.getListSelectionForeground(true) else UIUtil.getListForeground()
+      iconLabel.icon = exchangeIcon(value)
+      titleLabel.text = (if (value.pinned) "\u2605 " else "") + value.title
+      titleLabel.foreground = fg
+      metaLabel.text = "${formatSize(value.size)} \u00b7 ${formatBufferTs(value.ts)}"
+      metaLabel.foreground = if (isSelected) UIUtil.getListSelectionForeground(true) else JBColor(0x6F7277, 0x6F7277)
+      return this
     }
   }
 
-  private fun resetBufferEmptyText() {
-    bufferEntriesList.emptyText.clear()
-    bufferEntriesList.emptyText.text = LocalGitMirrorBundle.message("panel.exchange.buffer.empty")
-    bufferEntriesList.emptyText.appendLine(LocalGitMirrorBundle.message("panel.exchange.buffer.emptyNote"))
+  private fun exchangeIcon(item: ExchangeItem): Icon = when {
+    item.kind == ExchangeItem.Kind.BUFFER -> AllIcons.FileTypes.Text
+    item.isMrNotes -> AllIcons.Toolwindows.ToolWindowMessages
+    item.isImage -> AllIcons.FileTypes.Image
+    item.isLog -> AllIcons.Debugger.Console
+    else -> AllIcons.FileTypes.Any_type
   }
 
-  internal fun pasteSelectedBufferEntry() {
-    val item = bufferEntriesList.selectedValue ?: return
-    ProgressManager.getInstance().run(object :
-      Task.Backgroundable(project, LocalGitMirrorBundle.message("buffer.task.paste"), true) {
-      override fun run(indicator: ProgressIndicator) {
-        localgitmirror.idea.actions.pasteBufferEntryById(project, item.id, item.ts)
-      }
-    })
-  }
   internal val roleBadge = BadgeLabel("")
   internal val statusDot = JBLabel("\u25CF")
   private var tabsPane: JBTabbedPane? = null
@@ -1033,8 +1089,29 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     when (index) {
       1 -> reloadReview(notify = false)
       2 -> refreshDepsInBackground()
-      3 -> refreshExchangeInBackground()
+      3 -> {
+        refreshExchangeInBackground()
+        startExchangePolling()
+      }
     }
+    if (index != 3) stopExchangePolling()
+  }
+
+  private fun startExchangePolling() {
+    exchangePollAlarm.cancelAllRequests()
+    exchangePollAlarm.addRequest({
+      if (project.isDisposed) return@addRequest
+      if (tabsPane?.selectedIndex == 3) {
+        refreshExchangeInBackground()
+        startExchangePolling()
+      }
+    }, EXCHANGE_POLL_MS)
+  }
+
+  private fun stopExchangePolling() = exchangePollAlarm.cancelAllRequests()
+
+  override fun dispose() {
+    exchangePollAlarm.cancelAllRequests()
   }
 
   private fun sectionHeader(text: String): JBLabel = JBLabel(text).apply {
@@ -1238,60 +1315,59 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
   }
 
   private fun buildExchangeTab(): JComponent {
-    val bufferButtons = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
-      isOpaque = false
-      border = JBUI.Borders.empty(4, 0, 0, 0)
-      add(btn(LocalGitMirrorBundle.message("panel.exchange.buffer.paste"), AllIcons.Actions.Copy) {
-        pasteSelectedBufferEntry()
-      })
-      add(btn(LocalGitMirrorBundle.message("toolwindow.menu.refresh"), AllIcons.Actions.Refresh) {
-        refreshExchangeInBackground()
-      })
-      add(primaryBtn(LocalGitMirrorBundle.message("buffer.menu.send")) {
-        triggerLgmAction("LocalGitMirror.BufferSend")
-      })
+    exchangeList.inputMap.put(KeyStroke.getKeyStroke("control V"), "lgm.exchange.paste")
+    exchangeList.actionMap.put("lgm.exchange.paste", object : AbstractAction() {
+      override fun actionPerformed(e: java.awt.event.ActionEvent?) = pasteClipboardToExchange()
+    })
+
+    val moreBtn = JButton(AllIcons.Actions.MoreHorizontal).apply {
+      margin = JBUI.insets(2, 4)
+      isFocusPainted = false
+      toolTipText = LocalGitMirrorBundle.message("panel.toolbar.more")
+      addActionListener { showExchangeOverflow(this) }
     }
 
-    val bufferSection = JPanel(BorderLayout()).apply {
+    val toolbar = JPanel(BorderLayout()).apply {
       isOpaque = false
-      add(sectionHeader(LocalGitMirrorBundle.message("panel.exchange.buffer")), BorderLayout.NORTH)
-      add(JScrollPane(bufferEntriesList).apply {
-        border = BorderFactory.createEmptyBorder()
-        viewportBorder = BorderFactory.createEmptyBorder()
-      }, BorderLayout.CENTER)
-      add(bufferButtons, BorderLayout.SOUTH)
-    }
-
-    val filesSection = JPanel(BorderLayout()).apply {
-      isOpaque = false
-      add(sectionHeader(LocalGitMirrorBundle.message("panel.exchange.files")), BorderLayout.NORTH)
-      add(JScrollPane(filesList).apply {
-        border = BorderFactory.createEmptyBorder()
-        viewportBorder = BorderFactory.createEmptyBorder()
-      }, BorderLayout.CENTER)
-    }
-
-    val split = OnePixelSplitter(true, 0.45f)
-    split.firstComponent = bufferSection
-    split.secondComponent = filesSection
-
-    val bottom = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
-      isOpaque = false
-      border = JBUI.Borders.empty(4, 0, 0, 0)
-      add(btn(LocalGitMirrorBundle.message("action.LocalGitMirror.FileSendSelected.text")) {
-        triggerLgmAction("LocalGitMirror.FileSendSelected")
-      })
-      add(btn(LocalGitMirrorBundle.message("action.LocalGitMirror.FileFetch.text")) {
-        triggerLgmAction("LocalGitMirror.FileFetch")
-      })
+      border = JBUI.Borders.empty(4, 0, 4, 0)
+      add(exchangeFilterField, BorderLayout.CENTER)
+      val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(4), 0)).apply {
+        isOpaque = false
+        add(btn(LocalGitMirrorBundle.message("toolwindow.menu.refresh"), AllIcons.Actions.Refresh) {
+          refreshExchangeInBackground()
+        })
+        add(primaryBtn(LocalGitMirrorBundle.message("panel.exchange.send")) {
+          triggerLgmAction("LocalGitMirror.BufferSend")
+        })
+        add(moreBtn)
+      }
+      add(right, BorderLayout.EAST)
     }
 
     return JPanel(BorderLayout()).apply {
       isOpaque = false
       border = JBUI.Borders.empty(4, 8)
-      add(split, BorderLayout.CENTER)
-      add(bottom, BorderLayout.SOUTH)
+      add(toolbar, BorderLayout.NORTH)
+      add(JScrollPane(exchangeList).apply {
+        border = BorderFactory.createEmptyBorder()
+        viewportBorder = BorderFactory.createEmptyBorder()
+      }, BorderLayout.CENTER)
     }
+  }
+
+  private fun showExchangeOverflow(anchor: JComponent) {
+    val popup = JPopupMenu()
+    popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.exchange.more.shot")).apply {
+      addActionListener { sendClipboardScreenshot() }
+    })
+    popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.exchange.more.log")).apply {
+      addActionListener { sendIdeaLogTail() }
+    })
+    popup.addSeparator()
+    popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.exchange.more.clear")).apply {
+      addActionListener { clearExchangeFeed() }
+    })
+    popup.show(anchor, 0, anchor.height)
   }
 
   private fun buildReviewTab(): JComponent {
@@ -1980,9 +2056,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         try {
           plain.writeText(markdown, Charsets.UTF_8)
           localgitmirror.idea.workkit.RepoFileSyncCrypto.encryptFile(plain, enc, SecretsStore.syncPassword, null)
+          val pathEnc = localgitmirror.idea.workkit.ExchangeCrypto.encryptHint(
+            "mr-notes/mr-!${row.iid}.md", SecretsStore.syncPassword
+          )
           val up = MirrorApi.fileSyncUpload(
             s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls,
-            "mr-notes/mr-!${row.iid}.md", plain.length().toLong(), enc, null
+            "x/${java.util.UUID.randomUUID().toString().take(8)}", 0L, enc, pathEnc, null
           )
           if (up.code in 200..299) {
             notify(LocalGitMirrorBundle.message("review.sendNotes.ok", row.iid), NotificationType.INFORMATION)
@@ -2299,7 +2378,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     })
   }
 
-  /** Fetch buffer head entry + repo file list off the EDT for the Exchange tab. */
+  /** Fetch buffer entries + repo postbox files off the EDT into the unified exchange feed. */
   internal fun refreshExchangeInBackground() {
     if (project.isDisposed || ApplicationManager.getApplication().isDisposeInProgress) return
     val s = service<MirrorSettingsService>().state
@@ -2307,6 +2386,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: exchange", true) {
       override fun run(indicator: ProgressIndicator) {
         indicator.checkCanceled()
+        val pwd = SecretsStore.syncPassword
         val buffer = MirrorApi.bufferList(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls)
         val dir = baseDir()
         val repo = if (dir != null)
@@ -2316,29 +2396,664 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
         val files = if (repo.isNotBlank())
           MirrorApi.fileSyncList(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls)
         else null
+
+        val items = mutableListOf<ExchangeItem>()
+        val emptyHint = LocalGitMirrorBundle.message("buffer.history.emptyHint")
+        if (buffer.code in 200..299) {
+          for (b in buffer.items) {
+            val title = if (b.hintEnc.isNotBlank()) decryptExchangeHint(b.hintEnc, pwd, b.hint) else b.hint
+            items.add(
+              ExchangeItem(ExchangeItem.Kind.BUFFER, b.id, b.ts, b.size, title.ifBlank { emptyHint }, b.pinned, "", "")
+            )
+          }
+        }
+        if (files != null && files.code in 200..299) {
+          for (f in files.items) {
+            val display = if (f.pathEnc.isNotBlank()) decryptExchangeHint(f.pathEnc, pwd, f.path) else f.path
+            items.add(
+              ExchangeItem(
+                ExchangeItem.Kind.FILE, f.id, f.mtime.toDouble(), f.size,
+                display.substringAfterLast('/').ifBlank { display }, false, display, repo
+              )
+            )
+          }
+        }
+        val bufferOk = buffer.code in 200..299
+
         UIUtil.invokeLaterIfNeeded {
           if (project.isDisposed) return@invokeLaterIfNeeded
-          val selectedId = bufferEntriesList.selectedValue?.id
-          bufferListModel.clear()
-          if (buffer.code in 200..299) {
-            resetBufferEmptyText()
-            buffer.items.forEach { bufferListModel.addElement(it) }
-            val idx = (0 until bufferListModel.size()).firstOrNull { bufferListModel.getElementAt(it).id == selectedId }
-            if (idx != null) bufferEntriesList.selectedIndex = idx
-          } else {
-            bufferEntriesList.emptyText.clear()
-            bufferEntriesList.emptyText.text =
-              LocalGitMirrorBundle.message("panel.exchange.buffer.listFail", buffer.code)
-          }
-          filesListModel.clear()
-          if (files != null && files.code in 200..299) {
-            files.items.forEach {
-              filesListModel.addElement(LocalGitMirrorBundle.message("panel.exchange.files.row", it.path, it.size))
+          val selectedKey = exchangeList.selectedValue?.let { it.kind to it.id }
+          allExchangeItems = items.sortedWith(
+            compareByDescending<ExchangeItem> { it.pinned }.thenByDescending { it.ts }
+          )
+          applyExchangeFilter()
+          exchangeList.emptyText.clear()
+          exchangeList.emptyText.text = if (bufferOk)
+            LocalGitMirrorBundle.message("panel.exchange.empty")
+          else
+            LocalGitMirrorBundle.message("panel.exchange.buffer.listFail", buffer.code)
+          if (selectedKey != null) {
+            val idx = (0 until exchangeListModel.size()).firstOrNull {
+              val v = exchangeListModel.getElementAt(it)
+              (v.kind to v.id) == selectedKey
             }
+            if (idx != null) exchangeList.selectedIndex = idx
           }
         }
       }
     })
+  }
+
+  private fun decryptExchangeHint(enc: String, pwd: String, fallback: String): String =
+    exchangeHintCache.getOrPut(enc) {
+      runCatching { ExchangeCrypto.decryptHint(enc, pwd) }.getOrDefault(fallback)
+    }
+
+  private fun applyExchangeFilter() {
+    val filter = exchangeFilterField.text.trim().lowercase()
+    val visible = if (filter.isBlank()) allExchangeItems
+    else allExchangeItems.filter {
+      it.title.lowercase().contains(filter) || it.displayPath.lowercase().contains(filter)
+    }
+    exchangeListModel.clear()
+    visible.forEach { exchangeListModel.addElement(it) }
+  }
+
+  private fun showExchangeContextMenu(e: MouseEvent) {
+    val idx = exchangeList.locationToIndex(e.point)
+    if (idx < 0 || idx >= exchangeListModel.size()) return
+    if (!exchangeList.isSelectedIndex(idx)) exchangeList.selectedIndex = idx
+    val item = exchangeListModel.getElementAt(idx)
+    val popup = JPopupMenu()
+    val openKey = if (item.kind == ExchangeItem.Kind.BUFFER) "panel.exchange.ctx.paste" else "panel.exchange.ctx.open"
+    popup.add(JMenuItem(LocalGitMirrorBundle.message(openKey)).apply {
+      addActionListener { openExchangeItem(item) }
+    })
+    if (item.kind == ExchangeItem.Kind.BUFFER) {
+      val pinKey = if (item.pinned) "panel.exchange.ctx.unpin" else "panel.exchange.ctx.pin"
+      popup.add(JMenuItem(LocalGitMirrorBundle.message(pinKey)).apply {
+        addActionListener { toggleExchangePin(item) }
+      })
+    }
+    popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.exchange.ctx.delete")).apply {
+      addActionListener { deleteExchangeItem(item) }
+    })
+    popup.show(exchangeList, e.x, e.y)
+  }
+
+  private fun openExchangeItem(item: ExchangeItem) {
+    if (item.kind == ExchangeItem.Kind.BUFFER) {
+      ProgressManager.getInstance().run(object :
+        Task.Backgroundable(project, LocalGitMirrorBundle.message("buffer.task.paste"), true) {
+        override fun run(indicator: ProgressIndicator) {
+          localgitmirror.idea.actions.pasteBufferEntryById(project, item.id, item.ts)
+        }
+      })
+      return
+    }
+    when {
+      item.isMrNotes -> withDecryptedFile(item) { plain -> openMrNotesFrom(plain, item) }
+      item.isImage -> withDecryptedFile(item) { plain -> showImagePreview(plain, item) }
+      item.isText -> withDecryptedFile(item) { plain -> openTextInEditor(plain, item) }
+      else -> saveExchangeFileAs(item)
+    }
+  }
+
+  /** Download + decrypt a postbox entry off the EDT; [consume] runs on the EDT and owns the temp file. */
+  private fun withDecryptedFile(item: ExchangeItem, consume: (File) -> Unit) {
+    val s = service<MirrorSettingsService>().state
+    if (s.baseUrl.isBlank() || SecretsStore.syncPassword.isBlank()) {
+      notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
+      return
+    }
+    ProgressManager.getInstance().run(object :
+      Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.exchange.task.download"), true) {
+      private var plain: File? = null
+      override fun run(indicator: ProgressIndicator) {
+        val enc = File.createTempFile("lgm-dl-", ".bin")
+        try {
+          val dl = MirrorApi.fileSyncDownload(
+            s.baseUrl, SecretsStore.mirrorApiKey, item.repo, s.mirrorInsecureTls, item.id, enc
+          )
+          if (dl.code !in 200..299) {
+            notify(
+              LocalGitMirrorBundle.message("panel.exchange.download.fail", dl.code, dl.message.take(200)),
+              NotificationType.ERROR
+            )
+            return
+          }
+          val out = File.createTempFile("lgm-plain-", ".tmp")
+          RepoFileSyncCrypto.decryptFile(enc, out, SecretsStore.syncPassword, null)
+          plain = out
+        } catch (t: Throwable) {
+          notify(
+            LocalGitMirrorBundle.message("panel.exchange.decrypt.fail", t.message ?: t::class.simpleName ?: ""),
+            NotificationType.ERROR
+          )
+        } finally {
+          runCatching { enc.delete() }
+        }
+      }
+
+      override fun onSuccess() {
+        val f = plain ?: return
+        if (project.isDisposed) {
+          runCatching { f.delete() }
+          return
+        }
+        consume(f)
+      }
+    })
+  }
+
+  private fun openMrNotesFrom(plain: File, item: ExchangeItem) {
+    try {
+      val markdown = plain.readText(Charsets.UTF_8)
+      val iid = Regex("mr-!(\\d+)\\.md$").find(item.displayPath)?.groupValues?.getOrNull(1)?.toIntOrNull()
+      if (iid == null) {
+        notify(LocalGitMirrorBundle.message("panel.exchange.mrnotes.iidMissing"), NotificationType.WARNING)
+        return
+      }
+      val row = project.getService(MrReviewService::class.java).parseMrMarkdown(iid, markdown)
+      MrNotesDialog(project, row).show()
+    } catch (t: Throwable) {
+      notify(LocalGitMirrorBundle.message("panel.exchange.decrypt.fail", t.message ?: ""), NotificationType.ERROR)
+    } finally {
+      runCatching { plain.delete() }
+    }
+  }
+
+  private fun showImagePreview(plain: File, item: ExchangeItem) {
+    try {
+      val image = ImageIcon(plain.readBytes())
+      object : DialogWrapper(project, false) {
+        init {
+          title = item.title
+          init()
+        }
+        override fun createCenterPanel(): JComponent = JBScrollPane(JLabel(image)).apply {
+          preferredSize = Dimension(JBUI.scale(720), JBUI.scale(480))
+        }
+      }.show()
+    } catch (t: Throwable) {
+      notify(LocalGitMirrorBundle.message("panel.exchange.decrypt.fail", t.message ?: ""), NotificationType.ERROR)
+    } finally {
+      runCatching { plain.delete() }
+    }
+  }
+
+  private fun openTextInEditor(plain: File, item: ExchangeItem) {
+    try {
+      val vf = LightVirtualFile(item.title, plain.readText(Charsets.UTF_8))
+      vf.isWritable = false
+      FileEditorManager.getInstance(project).openFile(vf, true)
+    } catch (t: Throwable) {
+      notify(LocalGitMirrorBundle.message("panel.exchange.decrypt.fail", t.message ?: ""), NotificationType.ERROR)
+    } finally {
+      runCatching { plain.delete() }
+    }
+  }
+
+  private fun saveExchangeFileAs(item: ExchangeItem) {
+    val descriptor = FileSaverDescriptor(
+      LocalGitMirrorBundle.message("panel.exchange.saveAs.title"),
+      LocalGitMirrorBundle.message("panel.exchange.saveAs.desc")
+    )
+    val wrapper = FileChooserFactory.getInstance()
+      .createSaveFileDialog(descriptor, project)
+      .save(item.title) ?: return
+    val target = wrapper.file
+    withDecryptedFile(item) { plain ->
+      try {
+        Files.copy(plain.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        notify(LocalGitMirrorBundle.message("panel.exchange.saveAs.ok", target.absolutePath), NotificationType.INFORMATION)
+        historyService.add(
+          LocalGitMirrorBundle.message("history.op.exchangeSave"), true,
+          "${item.displayPath} -> ${target.absolutePath}"
+        )
+      } catch (t: Throwable) {
+        notify(LocalGitMirrorBundle.message("panel.exchange.saveAs.fail", t.message ?: ""), NotificationType.ERROR)
+      } finally {
+        runCatching { plain.delete() }
+      }
+    }
+  }
+
+  private fun toggleExchangePin(item: ExchangeItem) {
+    val s = service<MirrorSettingsService>().state
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: pin", true) {
+      override fun run(indicator: ProgressIndicator) {
+        val res = MirrorApi.bufferPin(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, item.id, !item.pinned)
+        if (res.code !in 200..299) {
+          notify(LocalGitMirrorBundle.message("panel.exchange.pin.fail", res.code), NotificationType.ERROR)
+        }
+      }
+      override fun onSuccess() = refreshExchangeInBackground()
+    })
+  }
+
+  private fun deleteExchangeItem(item: ExchangeItem) {
+    val s = service<MirrorSettingsService>().state
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: delete", true) {
+      override fun run(indicator: ProgressIndicator) {
+        val res = if (item.kind == ExchangeItem.Kind.BUFFER)
+          MirrorApi.bufferDelete(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, item.id)
+        else
+          MirrorApi.fileSyncAck(s.baseUrl, SecretsStore.mirrorApiKey, item.repo, s.mirrorInsecureTls, item.id)
+        if (res.code !in 200..299) {
+          notify(LocalGitMirrorBundle.message("panel.exchange.delete.fail", res.code), NotificationType.ERROR)
+        } else {
+          historyService.add(
+            LocalGitMirrorBundle.message("history.op.exchangeDelete"), true,
+            "id=${item.id} ${item.displayPath}"
+          )
+        }
+      }
+      override fun onSuccess() = refreshExchangeInBackground()
+    })
+  }
+
+  private fun clearExchangeFeed() {
+    val confirm = Messages.showYesNoDialog(
+      project,
+      LocalGitMirrorBundle.message("panel.exchange.clear.confirm"),
+      LocalGitMirrorBundle.message("panel.exchange.clear.title"),
+      LocalGitMirrorBundle.message("prune.confirm.yes"),
+      LocalGitMirrorBundle.message("prune.confirm.no"),
+      Messages.getWarningIcon()
+    )
+    if (confirm != Messages.YES) return
+    val s = service<MirrorSettingsService>().state
+    val fileItems = allExchangeItems.filter { it.kind == ExchangeItem.Kind.FILE }
+    ProgressManager.getInstance().run(object :
+      Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.exchange.task.clear"), true) {
+      override fun run(indicator: ProgressIndicator) {
+        val res = MirrorApi.bufferClear(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls)
+        if (res.code !in 200..299) {
+          notify(LocalGitMirrorBundle.message("panel.exchange.delete.fail", res.code), NotificationType.ERROR)
+        }
+        for (f in fileItems) {
+          indicator.checkCanceled()
+          MirrorApi.fileSyncAck(s.baseUrl, SecretsStore.mirrorApiKey, f.repo, s.mirrorInsecureTls, f.id)
+        }
+        historyService.add(
+          LocalGitMirrorBundle.message("history.op.exchangeClear"), true, "files=${fileItems.size}"
+        )
+      }
+      override fun onSuccess() {
+        notify(LocalGitMirrorBundle.message("panel.exchange.clear.ok"), NotificationType.INFORMATION)
+        refreshExchangeInBackground()
+      }
+    })
+  }
+
+  // ── Exchange sends (buffer text / postbox files) ──
+
+  private fun sendTextToBuffer(text: String) {
+    if (text.isEmpty()) {
+      notify(LocalGitMirrorBundle.message("notify.buffer.noText"), NotificationType.WARNING)
+      return
+    }
+    if (text.length > 1_000_000) {
+      notify(LocalGitMirrorBundle.message("notify.buffer.tooLarge"), NotificationType.WARNING)
+      return
+    }
+    val s = service<MirrorSettingsService>().state
+    val pwd = SecretsStore.syncPassword
+    if (s.baseUrl.isBlank() || pwd.isBlank()) {
+      notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
+      return
+    }
+    ProgressManager.getInstance().run(object :
+      Task.Backgroundable(project, LocalGitMirrorBundle.message("buffer.task.send"), false) {
+      override fun run(indicator: ProgressIndicator) {
+        indicator.isIndeterminate = true
+        sendTextToBufferSync(s, pwd, text, null)
+      }
+      override fun onSuccess() = refreshExchangeInBackground()
+    })
+  }
+
+  private fun sendTextToBufferSync(
+    s: MirrorSettingsService.State,
+    pwd: String,
+    text: String,
+    hintOverride: String?
+  ): Boolean {
+    return try {
+      val ciphertext = BundleCrypto.encryptBundleBytes(text.toByteArray(Charsets.UTF_8), pwd)
+      val hint = hintOverride ?: text.lineSequence().firstOrNull()?.trim()?.take(80) ?: ""
+      val hintEnc = ExchangeCrypto.encryptHint(hint, pwd)
+      val res = MirrorApi.bufferPut(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, ciphertext, hintEnc)
+      if (res.code !in 200..299) {
+        notify(
+          LocalGitMirrorBundle.message("notify.buffer.sendFail", res.code.toString(), res.message.take(200)),
+          NotificationType.ERROR
+        )
+        historyService.add("Buffer send", false, "HTTP ${res.code}: ${res.message.take(200)}")
+        false
+      } else {
+        notify(
+          LocalGitMirrorBundle.message("notify.buffer.sendOk", text.length.toString()),
+          NotificationType.INFORMATION
+        )
+        historyService.add("Buffer send", true, "size=${text.length}")
+        true
+      }
+    } catch (t: Throwable) {
+      notify(
+        LocalGitMirrorBundle.message("notify.buffer.encryptFail", t.message ?: t::class.simpleName ?: ""),
+        NotificationType.ERROR
+      )
+      historyService.add("Buffer send", false, t.message ?: t::class.simpleName ?: "error")
+      false
+    }
+  }
+
+  private fun sendIdeaLogTail() {
+    val s = service<MirrorSettingsService>().state
+    val pwd = SecretsStore.syncPassword
+    if (s.baseUrl.isBlank() || pwd.isBlank()) {
+      notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
+      return
+    }
+    ProgressManager.getInstance().run(object :
+      Task.Backgroundable(project, LocalGitMirrorBundle.message("buffer.task.send"), true) {
+      override fun run(indicator: ProgressIndicator) {
+        val logFile = File(PathManager.getLogPath())
+        if (!logFile.isFile) {
+          notify(LocalGitMirrorBundle.message("panel.exchange.log.missing"), NotificationType.WARNING)
+          return
+        }
+        val tail = try {
+          RandomAccessFile(logFile, "r").use { raf ->
+            val len = raf.length()
+            raf.seek(maxOf(0L, len - IDEA_LOG_TAIL_BYTES))
+            val bytes = ByteArray((len - maxOf(0L, len - IDEA_LOG_TAIL_BYTES)).toInt())
+            raf.readFully(bytes)
+            String(bytes, Charsets.UTF_8)
+          }
+        } catch (t: Throwable) {
+          notify(LocalGitMirrorBundle.message("panel.exchange.log.missing"), NotificationType.WARNING)
+          return
+        }
+        sendTextToBufferSync(s, pwd, tail, "idea.log tail")
+      }
+      override fun onSuccess() = refreshExchangeInBackground()
+    })
+  }
+
+  private fun sendClipboardScreenshot() {
+    val image = try {
+      Toolkit.getDefaultToolkit().systemClipboard.getData(DataFlavor.imageFlavor) as? Image
+    } catch (_: Throwable) {
+      null
+    }
+    if (image == null) {
+      notify(LocalGitMirrorBundle.message("panel.exchange.noClipboard"), NotificationType.WARNING)
+      return
+    }
+    sendImageToPostbox(image)
+  }
+
+  private fun sendImageToPostbox(image: Image) {
+    val s = service<MirrorSettingsService>().state
+    if (s.baseUrl.isBlank() || SecretsStore.syncPassword.isBlank()) {
+      notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
+      return
+    }
+    ProgressManager.getInstance().run(object :
+      Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.exchange.task.upload"), true) {
+      override fun run(indicator: ProgressIndicator) {
+        val name = "shot-" + SimpleDateFormat("yyyyMMdd-HHmmss").format(Date()) + ".png"
+        try {
+          val baos = java.io.ByteArrayOutputStream()
+          ImageIO.write(toBufferedImage(image), "png", baos)
+          uploadBytesToPostboxSync(s, baos.toByteArray(), name)
+        } catch (t: Throwable) {
+          notify(
+            LocalGitMirrorBundle.message("panel.exchange.upload.fail", "0", t.message ?: t::class.simpleName ?: ""),
+            NotificationType.ERROR
+          )
+        }
+      }
+      override fun onSuccess() = refreshExchangeInBackground()
+    })
+  }
+
+  private fun toBufferedImage(img: Image): BufferedImage {
+    if (img is BufferedImage) return img
+    val bi = BufferedImage(img.getWidth(null), img.getHeight(null), BufferedImage.TYPE_INT_RGB)
+    val g = bi.createGraphics()
+    g.drawImage(img, 0, 0, null)
+    g.dispose()
+    return bi
+  }
+
+  private fun uploadFilesToPostbox(files: List<File>) {
+    if (files.isEmpty()) return
+    val s = service<MirrorSettingsService>().state
+    if (s.baseUrl.isBlank() || SecretsStore.syncPassword.isBlank()) {
+      notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
+      return
+    }
+    ProgressManager.getInstance().run(object :
+      Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.exchange.task.upload"), true) {
+      override fun run(indicator: ProgressIndicator) {
+        for ((i, f) in files.withIndex()) {
+          indicator.checkCanceled()
+          indicator.fraction = i.toDouble() / files.size
+          indicator.text = f.name
+          uploadFileToPostboxSync(s, f)
+        }
+      }
+      override fun onSuccess() = refreshExchangeInBackground()
+    })
+  }
+
+  private fun uploadFileToPostboxSync(s: MirrorSettingsService.State, file: File) {
+    val repo = resolveExchangeRepo(s) ?: return
+    val enc = File.createTempFile("lgm-up-", ".bin")
+    try {
+      RepoFileSyncCrypto.encryptFile(file, enc, SecretsStore.syncPassword, null)
+      finishPostboxUpload(s, repo, enc, file.name, file.length())
+    } catch (t: Throwable) {
+      notify(
+        LocalGitMirrorBundle.message("panel.exchange.upload.fail", "0", t.message ?: t::class.simpleName ?: ""),
+        NotificationType.ERROR
+      )
+      historyService.add(LocalGitMirrorBundle.message("history.op.exchangeUpload"), false,
+        "${file.name} err=${t.message ?: t::class.simpleName}")
+    } finally {
+      runCatching { enc.delete() }
+    }
+  }
+
+  private fun uploadBytesToPostboxSync(s: MirrorSettingsService.State, bytes: ByteArray, realName: String): Boolean {
+    val repo = resolveExchangeRepo(s) ?: return false
+    val plain = File.createTempFile("lgm-up-", ".tmp")
+    val enc = File.createTempFile("lgm-up-", ".bin")
+    try {
+      plain.writeBytes(bytes)
+      RepoFileSyncCrypto.encryptFile(plain, enc, SecretsStore.syncPassword, null)
+      return finishPostboxUpload(s, repo, enc, realName, 0L)
+    } catch (t: Throwable) {
+      notify(
+        LocalGitMirrorBundle.message("panel.exchange.upload.fail", "0", t.message ?: t::class.simpleName ?: ""),
+        NotificationType.ERROR
+      )
+      historyService.add(LocalGitMirrorBundle.message("history.op.exchangeUpload"), false,
+        "$realName err=${t.message ?: t::class.simpleName}")
+      return false
+    } finally {
+      runCatching { plain.delete() }
+      runCatching { enc.delete() }
+    }
+  }
+
+  private fun finishPostboxUpload(
+    s: MirrorSettingsService.State,
+    repo: String,
+    encrypted: File,
+    realName: String,
+    plainSize: Long
+  ): Boolean {
+    val pathEnc = ExchangeCrypto.encryptHint(realName, SecretsStore.syncPassword)
+    val res = MirrorApi.fileSyncUpload(
+      s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls,
+      "x/${UUID.randomUUID().toString().take(8)}", plainSize, encrypted, pathEnc, null
+    )
+    if (res.code !in 200..299 || res.id.isNullOrBlank()) {
+      notify(
+        LocalGitMirrorBundle.message("panel.exchange.upload.fail", res.code.toString(), res.message.take(200)),
+        NotificationType.ERROR
+      )
+      historyService.add(LocalGitMirrorBundle.message("history.op.exchangeUpload"), false,
+        "$realName HTTP ${res.code}: ${res.message.take(200)}")
+      return false
+    }
+    notify(LocalGitMirrorBundle.message("panel.exchange.upload.ok", realName), NotificationType.INFORMATION)
+    historyService.add(LocalGitMirrorBundle.message("history.op.exchangeUpload"), true,
+      "$realName id=${res.id} size=$plainSize")
+    return true
+  }
+
+  private fun resolveExchangeRepo(s: MirrorSettingsService.State): String? {
+    val dir = baseDir()
+    val repo = if (dir != null)
+      try { syncFacade.resolveRepo(dir, s).sanitized } catch (_: Throwable) { "" }
+    else ""
+    if (repo.isBlank()) {
+      notify(LocalGitMirrorBundle.message("filesync.notify.repoMissing"), NotificationType.WARNING)
+      return null
+    }
+    return repo
+  }
+
+  private fun pasteClipboardToExchange() {
+    val clipboard = Toolkit.getDefaultToolkit().systemClipboard
+    try {
+      if (clipboard.isDataFlavorAvailable(DataFlavor.imageFlavor)) {
+        val image = clipboard.getData(DataFlavor.imageFlavor) as? Image
+        if (image != null) {
+          sendImageToPostbox(image)
+          return
+        }
+      }
+      if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor)) {
+        val text = clipboard.getData(DataFlavor.stringFlavor)?.toString() ?: ""
+        if (text.isNotEmpty()) {
+          sendTextToBuffer(text)
+          return
+        }
+      }
+    } catch (_: Throwable) {
+    }
+    notify(LocalGitMirrorBundle.message("panel.exchange.noClipboard"), NotificationType.WARNING)
+  }
+
+  // ── Exchange drag & drop ──
+
+  private inner class ExchangeTransferHandler : TransferHandler() {
+    override fun canImport(support: TransferSupport): Boolean {
+      if (!support.isDrop) return false
+      if (support.transferable is ExchangeTransferable) return false
+      return support.isDataFlavorSupported(DataFlavor.javaFileListFlavor) ||
+        support.isDataFlavorSupported(DataFlavor.imageFlavor) ||
+        support.isDataFlavorSupported(DataFlavor.stringFlavor)
+    }
+
+    override fun importData(support: TransferSupport): Boolean {
+      val t = support.transferable ?: return false
+      return try {
+        when {
+          t.isDataFlavorSupported(DataFlavor.javaFileListFlavor) -> {
+            @Suppress("UNCHECKED_CAST")
+            val files = t.getTransferData(DataFlavor.javaFileListFlavor) as? List<File> ?: return false
+            uploadFilesToPostbox(files.filter { it.isFile })
+            true
+          }
+          t.isDataFlavorSupported(DataFlavor.imageFlavor) -> {
+            val image = t.getTransferData(DataFlavor.imageFlavor) as? Image ?: return false
+            sendImageToPostbox(image)
+            true
+          }
+          t.isDataFlavorSupported(DataFlavor.stringFlavor) -> {
+            val text = t.getTransferData(DataFlavor.stringFlavor)?.toString() ?: return false
+            if (text.isEmpty()) return false
+            sendTextToBuffer(text)
+            true
+          }
+          else -> false
+        }
+      } catch (_: Throwable) {
+        false
+      }
+    }
+
+    override fun getSourceActions(c: JComponent): Int = COPY
+
+    override fun createTransferable(c: JComponent): Transferable? {
+      val item = (c as? JList<*>)?.selectedValue as? ExchangeItem ?: return null
+      return ExchangeTransferable(item)
+    }
+  }
+
+  /**
+   * Export payload is fetched lazily: the network round-trip starts when the
+   * drag begins and getTransferData only blocks if the drop beats the fetch.
+   */
+  private inner class ExchangeTransferable(private val item: ExchangeItem) : Transferable {
+    private val dataFuture = CompletableFuture<Any?>()
+
+    init {
+      ApplicationManager.getApplication().executeOnPooledThread {
+        dataFuture.complete(runCatching { fetchExportData(item) }.getOrNull())
+      }
+    }
+
+    override fun getTransferDataFlavors(): Array<DataFlavor> =
+      if (item.kind == ExchangeItem.Kind.BUFFER) arrayOf(DataFlavor.stringFlavor)
+      else arrayOf(DataFlavor.javaFileListFlavor)
+
+    override fun isDataFlavorSupported(flavor: DataFlavor): Boolean =
+      getTransferDataFlavors().any { it.equals(flavor) }
+
+    override fun getTransferData(flavor: DataFlavor): Any {
+      if (!isDataFlavorSupported(flavor)) throw UnsupportedFlavorException(flavor)
+      return dataFuture.get(EXPORT_FETCH_TIMEOUT_SEC, TimeUnit.SECONDS)
+        ?: throw UnsupportedFlavorException(flavor)
+    }
+  }
+
+  private fun fetchExportData(item: ExchangeItem): Any? {
+    val s = service<MirrorSettingsService>().state
+    val pwd = SecretsStore.syncPassword
+    if (s.baseUrl.isBlank() || pwd.isBlank()) return null
+    if (item.kind == ExchangeItem.Kind.BUFFER) {
+      val res = MirrorApi.bufferGet(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, item.id)
+      if (res.code !in 200..299 || res.file == null) return null
+      return try {
+        String(BundleCrypto.decryptDumpBytes(res.file.readBytes(), pwd), Charsets.UTF_8)
+      } catch (_: Throwable) {
+        null
+      } finally {
+        runCatching { res.file.delete() }
+      }
+    }
+    val enc = File.createTempFile("lgm-export-", ".bin")
+    try {
+      val dl = MirrorApi.fileSyncDownload(s.baseUrl, SecretsStore.mirrorApiKey, item.repo, s.mirrorInsecureTls, item.id, enc)
+      if (dl.code !in 200..299) return null
+      val dir = Files.createTempDirectory("lgm-export-").toFile()
+      val out = File(dir, item.title.replace(Regex("[^A-Za-z0-9._\\-]"), "_").ifBlank { "file" })
+      RepoFileSyncCrypto.decryptFile(enc, out, pwd, null)
+      return listOf(out)
+    } catch (_: Throwable) {
+      return null
+    } finally {
+      runCatching { enc.delete() }
+    }
   }
 
   private fun formatBufferTs(epochSec: Double): String {
@@ -2423,4 +3138,28 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
       return arrayOf(copyAction, closeAction)
     }
   }
+}
+
+/** One row of the unified Exchange feed: either a buffer entry or a repo postbox file. */
+internal data class ExchangeItem(
+  val kind: Kind,
+  val id: String,
+  val ts: Double,
+  val size: Long,
+  val title: String,
+  val pinned: Boolean,
+  val displayPath: String,
+  val repo: String,
+) {
+  enum class Kind { BUFFER, FILE }
+
+  private val ext: String get() = displayPath.substringAfterLast('.', "").lowercase()
+  val isMrNotes: Boolean get() = displayPath.startsWith("mr-notes/") && ext == "md"
+  val isImage: Boolean get() = ext in setOf("png", "jpg", "jpeg", "gif", "bmp")
+  val isLog: Boolean get() = ext == "log"
+  val isText: Boolean
+    get() = isLog || ext in setOf(
+      "txt", "md", "json", "xml", "yaml", "yml", "properties", "csv", "kt", "java",
+      "py", "ts", "js", "html", "css", "sh", "bat", "ini", "toml", "sql", "gradle", "kts"
+    )
 }

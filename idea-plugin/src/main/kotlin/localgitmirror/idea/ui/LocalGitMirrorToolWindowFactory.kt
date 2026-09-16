@@ -22,6 +22,7 @@ class LocalGitMirrorToolWindowFactory : ToolWindowFactory {
     toolWindow.contentManager.addContent(content)
 
     if (panel is LocalGitMirrorPanel) {
+      content.setDisposer(panel)
       // Refresh UI every time this tool window becomes visible (e.g. after Settings close)
       project.messageBus.connect(toolWindow.contentManager).subscribe(
         ToolWindowManagerListener.TOPIC,
