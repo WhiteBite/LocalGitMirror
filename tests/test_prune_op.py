@@ -252,6 +252,36 @@ def test_gitlab_get_mr_builds_url(monkeypatch):
     assert mr["source_branch"] == "mr-9"
 
 
+def test_mr_notes_decrypts_path_enc_and_keeps_plaintext_compat():
+    import base64 as b64
+    from lgm_core.crypto import encrypt_bundle
+    from lgm_core.ops import op_mr_notes
+
+    ctx = _ctx("pw")
+    enc_path = b64.b64encode(
+        encrypt_bundle(b"mr-notes/mr-!9.md", "pw")).decode()
+    plain_notes = encrypt_bundle(b"# MR !9 notes", "pw")
+    old_notes = encrypt_bundle(b"# MR !7 old notes", "pw")
+    blobs = {"e1": plain_notes, "e2": old_notes}
+
+    monkeypatch_client = ctx.client
+    monkeypatch_client.file_sync_list = lambda repo: {"items": [
+        {"id": "e1", "path": "x/9f3ab1", "path_enc": enc_path},
+        {"id": "e2", "path": "mr-notes/mr-!7.md", "path_enc": ""},
+        {"id": "e3", "path": "x/other", "path_enc": b64.b64encode(
+            encrypt_bundle(b"shots/shot.png", "pw")).decode()},
+    ]}
+    monkeypatch_client.file_sync_fetch = lambda repo, item_id: blobs[item_id]
+
+    res = op_mr_notes(ctx, {"repo": "r"})
+    paths = [n["path"] for n in res["notes"]]
+    assert paths == ["mr-notes/mr-!9.md", "mr-notes/mr-!7.md"]
+    assert res["notes"][0]["markdown"].startswith("# MR !9")
+    # The encrypted-path entry surfaces its decrypted path.
+    only9 = op_mr_notes(ctx, {"repo": "r", "iid": 9})
+    assert [n["path"] for n in only9["notes"]] == ["mr-notes/mr-!9.md"]
+
+
 # ── renderers ────────────────────────────────────────────────────────────────
 
 def test_render_prune_shows_candidates_vs_pruned():
