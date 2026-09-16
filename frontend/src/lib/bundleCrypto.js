@@ -143,3 +143,55 @@ export async function decryptBytes(dumpBytes, password) {
 export async function decryptText(b64, password) {
   return decryptBytes(base64ToBytes(b64), password)
 }
+
+/**
+ * Repo file postbox container — byte-compatible with the plugin's Kotlin
+ * `RepoFileSyncCrypto`. Same layout as the bundle dump, except the 8-byte
+ * big-endian length field holds the PLAINTEXT length, and the ciphertext
+ * runs to the end of the container.
+ */
+export async function encryptFileBytes(data, password) {
+  _assertCrypto()
+  const plain = data instanceof Uint8Array ? data : new Uint8Array(data)
+  const salt = crypto.getRandomValues(new Uint8Array(SALT_SIZE))
+  const nonce = crypto.getRandomValues(new Uint8Array(NONCE_SIZE))
+  const key = await deriveKey(password, salt)
+  const cipherBuf = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce, tagLength: TAG_BYTES * 8 },
+    key,
+    plain
+  )
+  const cipher = new Uint8Array(cipherBuf)
+
+  const out = new Uint8Array(1 + SALT_SIZE + NONCE_SIZE + 8 + cipher.length)
+  let off = 0
+  out[off] = FORMAT_VERSION
+  off += 1
+  out.set(salt, off); off += SALT_SIZE
+  out.set(nonce, off); off += NONCE_SIZE
+  new DataView(out.buffer).setBigUint64(off, BigInt(plain.length), false)
+  off += 8
+  out.set(cipher, off)
+  return out
+}
+
+/** Decrypt a repo file postbox container, returning the raw plaintext bytes. */
+export async function decryptFileBytes(containerBytes, password) {
+  _assertCrypto()
+  const bytes = containerBytes instanceof Uint8Array ? containerBytes : new Uint8Array(containerBytes)
+  const headerLen = 1 + SALT_SIZE + NONCE_SIZE + 8
+  if (bytes.length < headerLen + TAG_BYTES) throw new Error('Container too small')
+  if (bytes[0] !== FORMAT_VERSION) throw new Error('Unsupported file container version')
+
+  const salt = bytes.slice(1, 1 + SALT_SIZE)
+  const nonce = bytes.slice(1 + SALT_SIZE, 1 + SALT_SIZE + NONCE_SIZE)
+  const cipher = bytes.slice(headerLen)
+
+  const key = await deriveKey(password, salt)
+  const plainBuf = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: nonce, tagLength: TAG_BYTES * 8 },
+    key,
+    cipher
+  )
+  return new Uint8Array(plainBuf)
+}
