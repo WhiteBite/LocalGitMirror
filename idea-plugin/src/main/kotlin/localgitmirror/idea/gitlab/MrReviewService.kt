@@ -108,20 +108,30 @@ class MrReviewService(private val project: Project) {
       throw RuntimeException(listResult.message.ifBlank { "Mirror API error ${listResult.code}" })
     }
 
-    val mrItems = listResult.items.filter {
-      it.path.startsWith("mr-notes/") && it.path.endsWith(".md")
+    val mrItems = listResult.items.mapNotNull { item ->
+      val path = displayPath(item)
+      if (path.startsWith("mr-notes/") && path.endsWith(".md")) item to path else null
     }
     if (mrItems.isEmpty()) return emptyList()
 
-    return mrItems.mapNotNull { item -> parseCachedMr(item, settings, repo) }
+    return mrItems.mapNotNull { (item, path) -> parseCachedMr(item, path, settings, repo) }
+  }
+
+  /** Real path of a postbox item: decrypted path_enc when present, plaintext path for old entries. */
+  private fun displayPath(item: MirrorApi.FileSyncItem): String {
+    if (item.pathEnc.isBlank()) return item.path
+    return runCatching {
+      localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(item.pathEnc, SecretsStore.syncPassword)
+    }.getOrDefault(item.path)
   }
 
   private fun parseCachedMr(
     item: MirrorApi.FileSyncItem,
+    path: String,
     settings: MirrorSettingsService.State,
     repo: String,
   ): MrRowItem? {
-    val iid = Regex("mr-!(\\d+)\\.md$").find(item.path)?.groupValues?.getOrNull(1)?.toIntOrNull()
+    val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull()
       ?: return null
 
     val tmpEnc = File.createTempFile("mr-review-", ".bin")
