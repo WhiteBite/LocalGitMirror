@@ -602,9 +602,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()) {
     return b
   }
 
-  /** Primary (accent) button. */
+  /** Primary (accent) button — painted by the IDE theme, not by hand. */
   private fun primaryBtn(title: String, icon: Icon? = null, action: () -> Unit): JButton =
-    accentBtn(title, icon, JBColor(0x3574F0, 0x3574F0), action)
+    btn(title, icon, action).apply { putClientProperty("JButton.buttonType", "default") }
 
   private fun greenBtn(title: String, icon: Icon? = null, action: () -> Unit): JButton =
     accentBtn(title, icon, JBColor(0x4A9D54, 0x4A9D54), action)
