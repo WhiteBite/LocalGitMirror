@@ -23,9 +23,10 @@ const router = createRouter({
     },
     {
       path: '/buffer',
+      alias: '/exchange',
       name: 'buffer',
       component: () => import('@/views/BufferView.vue'),
-      meta: { title: 'Buffer' }
+      meta: { title: 'Exchange' }
     },
     {
       path: '/history',
