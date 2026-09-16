@@ -271,7 +271,9 @@ def test_render_branch_delete_and_mr_list():
 
 
 def test_render_mr_send():
-    out = render("mr_send", {"repo": "r", "iid": 5, "source_branch": "b",
-                             "project": "p", "send": {"bundle_size": 10,
-                                                      "response": {"e": "x"}}})
-    assert "!5" in out and "b" in out and "OK (envelope response)" in out
+    out = render("mr_send", {"repo": "r",
+                             "sent": [{"iid": 5, "branch": "b", "tip": "abc123"}],
+                             "skipped": [],
+                             "send": {"bundle_size": 10, "excluded_bases": 0,
+                                      "response": {"e": "x"}}})
+    assert "[sent]    b !5" in out and "OK (envelope response)" in out
