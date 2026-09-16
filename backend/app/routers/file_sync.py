@@ -113,6 +113,7 @@ def _list_items(repo: str) -> list[dict]:
             items.append({
                 "id": meta.stem,
                 "path": data.get("path", ""),
+                "path_enc": data.get("path_enc", ""),
                 "size": int(st.st_size),
                 "plain_size": int(data.get("plain_size") or 0),
                 "mtime": int(st.st_mtime),
@@ -128,6 +129,7 @@ async def docs_attachment_upload(
     rid: str = Form(""),
     path: str = Form(""),
     plain_size: int = Form(0),
+    path_enc: str = Form(""),
     attachment: UploadFile = File(...),
     x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
@@ -156,8 +158,11 @@ async def docs_attachment_upload(
         if total <= 0:
             raise HTTPException(400, "Empty file")
         tmp.replace(target)
+        meta = {"path": rel_path, "plain_size": plain_size}
+        if path_enc:
+            meta["path_enc"] = path_enc
         _meta_path(repo, item_id).write_text(
-            json.dumps({"path": rel_path, "plain_size": plain_size}, ensure_ascii=False),
+            json.dumps(meta, ensure_ascii=False),
             encoding="utf-8",
         )
     except HTTPException:
