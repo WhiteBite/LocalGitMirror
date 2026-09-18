@@ -21,6 +21,7 @@ import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.workkit.BundleCrypto
 import localgitmirror.idea.workkit.ExchangeCrypto
+import localgitmirror.idea.workkit.ExchangeMeta
 import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
@@ -74,16 +75,12 @@ private fun grabPayload(e: AnActionEvent): String? {
   }
 }
 
-private fun buildHint(text: String): String {
-  val firstLine = text.lineSequence().firstOrNull()?.trim() ?: ""
-  return firstLine.take(80)
-}
-
 /** Decrypted preview for display: hint_enc first, legacy plaintext hint for old entries. */
 internal fun displayHint(item: MirrorApi.BufferItem, pwd: String): String {
   val empty = LocalGitMirrorBundle.message("buffer.history.emptyHint")
   if (item.hintEnc.isNotBlank()) {
-    return runCatching { ExchangeCrypto.decryptHint(item.hintEnc, pwd) }.getOrDefault(item.hint).ifBlank { empty }
+    val plain = runCatching { ExchangeCrypto.decryptHint(item.hintEnc, pwd) }.getOrDefault(item.hint)
+    return ExchangeMeta.parseHint(plain).text.ifBlank { empty }
   }
   return item.hint.ifBlank { empty }
 }
@@ -119,7 +116,7 @@ class SendToBufferAction : AnAction() {
       return
     }
 
-    val hint = buildHint(payload)
+    val hint = payload.lineSequence().firstOrNull()?.trim()?.take(80) ?: ""
     val historyService = service<OperationsHistoryService>()
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("buffer.task.send"), false) {
@@ -132,7 +129,7 @@ class SendToBufferAction : AnAction() {
           return
         }
         val hintEnc = try {
-          ExchangeCrypto.encryptHint(hint, pwd)
+          ExchangeCrypto.encryptHint(ExchangeMeta.hintJson(payload), pwd)
         } catch (t: Throwable) {
           notify(project, LocalGitMirrorBundle.message("notify.buffer.encryptFail", t.message ?: ""), NotificationType.ERROR)
           return
