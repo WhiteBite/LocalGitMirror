@@ -1,6 +1,6 @@
 <template>
   <div
-    class="exchange-view"
+    class="chat-view"
     :class="{ 'drag-over': dragOver }"
     @dragenter.prevent="onDragEnter"
     @dragover.prevent
@@ -10,11 +10,7 @@
     <header class="view-header flex justify-between items-center">
       <h1>{{ t('exchange.title') }}</h1>
       <div class="header-actions">
-        <input
-          v-model="filter"
-          class="filter-input"
-          :placeholder="t('exchange.filter_placeholder')"
-        />
+        <input v-model="filter" class="filter-input" :placeholder="t('exchange.filter_placeholder')" />
         <button class="icon-btn" :title="t('common.refresh')" :disabled="loading" @click="refresh">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></svg>
         </button>
@@ -22,79 +18,118 @@
       </div>
     </header>
 
-    <div class="view-content">
-      <p class="subtitle">{{ t('exchange.subtitle') }}</p>
-
+    <div ref="scrollEl" class="chat-scroll">
       <div v-if="bufferStore.error === 'no_password'" class="alert-card">
         {{ t('exchange.no_password') }}
       </div>
-
-      <div v-if="!filteredFeed.length" class="empty-state">
-        {{ t('exchange.empty') }}
-      </div>
+      <div v-if="!filteredMessages.length" class="empty-state">{{ t('exchange.empty') }}</div>
 
       <div
-        v-for="row in filteredFeed"
-        :key="row.key"
-        class="feed-item"
-        :class="{ clickable: true }"
-        @click="openRow(row)"
+        v-for="msg in filteredMessages"
+        :key="msg.key"
+        class="msg-row"
+        :class="sideClass(msg)"
       >
-        <div class="row-main">
-          <span class="type-icon" :class="row.kind">
-            <svg v-if="row.kind === 'message'" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
-            <svg v-else-if="row.kind === 'image'" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2" /><circle cx="8.5" cy="8.5" r="1.5" /><polyline points="21 15 16 10 5 21" /></svg>
-            <svg v-else-if="row.kind === 'text'" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-            <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><polyline points="13 2 13 9 20 9" /></svg>
-          </span>
+        <div class="bubble" :class="[msg.status || '']">
+          <template v-if="msg.kind === 'message'">
+            <div class="bubble-text">{{ bubbleText(msg) }}</div>
+            <button
+              v-if="msg.source === 'buffer' && !expanded[msg.key]"
+              class="link-btn"
+              @click="expandMessage(msg)"
+            >
+              {{ t('exchange.expand') }}
+            </button>
+            <button
+              v-else-if="msg.source === 'buffer' && expanded[msg.key]"
+              class="link-btn"
+              @click="expanded[msg.key] = false"
+            >
+              {{ t('exchange.collapse') }}
+            </button>
+          </template>
 
-          <img
-            v-if="row.kind === 'image' && thumbs[row.key]"
-            :src="thumbs[row.key]"
-            class="thumb"
-            alt=""
-          />
+          <template v-else-if="msg.kind === 'image'">
+            <img
+              v-if="thumbOf(msg)"
+              :src="thumbOf(msg)"
+              class="bubble-thumb"
+              alt=""
+              @click="openImage(msg)"
+            />
+            <div v-else class="file-card" @click="openImage(msg)">
+              <span class="file-name">{{ displayText(msg) }}</span>
+            </div>
+          </template>
 
-          <div class="row-text">
-            <span class="row-name">{{ displayName(row) }}</span>
-            <span class="row-meta">
-              {{ row.source === 'buffer' ? t('exchange.source_buffer') : t('exchange.source_file') }}
-              · {{ formatBytes(row.size) }} · {{ formatTime(row.ts) }}
+          <template v-else>
+            <div class="file-card" @click="msg.kind === 'text' ? openText(msg) : downloadRow(msg)">
+              <span class="file-name">{{ displayText(msg) }}</span>
+              <span class="file-size">{{ formatBytes(msg.size) }}</span>
+            </div>
+          </template>
+
+          <div class="bubble-footer">
+            <span>{{ formatTime(msg.ts) }}</span>
+            <span v-if="msg.size">· {{ formatBytes(msg.size) }}</span>
+            <span v-if="sideLabel(msg)">· {{ sideLabel(msg) }}</span>
+            <span v-if="msg.pinned" class="pin-mark" :title="t('exchange.pinned')">★</span>
+            <span v-if="msg.status === 'pending'" class="status">{{ t('exchange.pending') }}</span>
+            <span v-else-if="msg.status === 'failed'" class="status failed">
+              {{ t('exchange.failed') }}
+              <button class="link-btn" @click="retryPending(msg)">{{ t('exchange.retry') }}</button>
             </span>
           </div>
 
-          <span v-if="row.pinned" class="pin-badge" :title="t('exchange.pinned')">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
-          </span>
-        </div>
-
-        <div class="row-actions" @click.stop>
-          <template v-if="row.source === 'buffer'">
-            <button class="item-btn" :disabled="busy[row.key]" @click="copyBuffer(row)">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-              {{ copiedKey === row.key ? t('exchange.copied') : t('exchange.copy') }}
+          <div v-if="!msg.status" class="bubble-actions">
+            <button
+              v-if="msg.source === 'buffer'"
+              class="icon-btn mini"
+              :title="copiedKey === msg.key ? t('exchange.copied') : t('exchange.copy')"
+              @click="copyBuffer(msg)"
+            >
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
             </button>
             <button
-              class="item-btn"
-              :class="{ active: row.pinned }"
-              :title="row.pinned ? t('exchange.unpin') : t('exchange.pin')"
-              :disabled="busy[row.key]"
-              @click="togglePin(row)"
+              v-if="msg.source === 'buffer'"
+              class="icon-btn mini"
+              :class="{ active: msg.pinned }"
+              :title="msg.pinned ? t('exchange.unpin') : t('exchange.pin')"
+              @click="togglePin(msg)"
             >
-              <svg viewBox="0 0 24 24" width="14" height="14" :fill="row.pinned ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
+              <svg viewBox="0 0 24 24" width="13" height="13" :fill="msg.pinned ? 'currentColor' : 'none'" stroke="currentColor" stroke-width="2"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" /></svg>
             </button>
-          </template>
-          <template v-else>
-            <button class="item-btn" :disabled="busy[row.key]" @click="downloadRow(row)">
-              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
-              {{ t('exchange.download') }}
+            <button
+              v-if="msg.source === 'file'"
+              class="icon-btn mini"
+              :title="t('exchange.download')"
+              @click="downloadRow(msg)"
+            >
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
             </button>
-          </template>
-          <button class="item-btn danger" :title="t('common.delete')" @click="removeRow(row)">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
-          </button>
+            <button class="icon-btn mini danger" :title="t('common.delete')" @click="removeRow(msg)">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+            </button>
+          </div>
         </div>
       </div>
+    </div>
+
+    <div class="composer">
+      <button class="icon-btn" :title="t('exchange.attach')" @click="fileInput?.click()">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
+      </button>
+      <input ref="fileInput" type="file" multiple hidden @change="onAttach" />
+      <textarea
+        v-model="composer"
+        class="composer-input"
+        rows="1"
+        :placeholder="t('exchange.composer_placeholder')"
+        @keydown.enter.exact.prevent="sendComposer"
+      ></textarea>
+      <button class="send-btn" :disabled="!composer.trim()" @click="sendComposer">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
+      </button>
     </div>
 
     <transition name="fade">
@@ -120,7 +155,7 @@
 </template>
 
 <script setup>
-import { ref, computed, reactive, watch, onActivated, onDeactivated, onUnmounted } from 'vue'
+import { ref, computed, reactive, watch, nextTick, onActivated, onDeactivated, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import axios from 'axios'
 import { useBufferStore } from '@/stores/buffer'
@@ -140,22 +175,31 @@ const MIME_BY_EXT = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
   gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp'
 }
+const POLL_MS = 5000
 
 const filter = ref('')
+const composer = ref('')
 const dragOver = ref(false)
 const rid = ref('')
+const scrollEl = ref(null)
+const fileInput = ref(null)
 const busy = reactive({})
-const names = reactive({})
+const metas = reactive({})
+const contents = reactive({})
+const expanded = reactive({})
 const thumbs = reactive({})
 const copiedKey = ref('')
 const textPreview = ref(null)
 const imageOverlay = ref(null)
+const pending = ref([])
 
 let dragDepth = 0
+let pollTimer = null
+let pendingSeq = 0
 
 const loading = computed(() => bufferStore.loading || postboxStore.loading)
 
-const feed = computed(() => {
+const messages = computed(() => {
   const rows = []
   for (const it of bufferStore.items) {
     rows.push({
@@ -164,7 +208,7 @@ const feed = computed(() => {
     })
   }
   for (const it of postboxStore.items) {
-    const name = names[`f-${it.id}`] || it.path || ''
+    const name = metas[`f-${it.id}`]?.text || it.path || ''
     rows.push({
       key: `f-${it.id}`, source: 'file', kind: fileKind(name),
       id: it.id, ts: it.mtime || 0,
@@ -172,14 +216,18 @@ const feed = computed(() => {
       pinned: false, raw: it
     })
   }
-  rows.sort((a, b) => (b.pinned - a.pinned) || (b.ts - a.ts))
+  for (const p of pending.value) rows.push(p)
+  rows.sort((a, b) => a.ts - b.ts)
   return rows
 })
 
-const filteredFeed = computed(() => {
+const filteredMessages = computed(() => {
   const q = filter.value.trim().toLowerCase()
-  if (!q) return feed.value
-  return feed.value.filter(row => displayName(row).toLowerCase().includes(q))
+  if (!q) return messages.value
+  return messages.value.filter(m =>
+    displayText(m).toLowerCase().includes(q) ||
+    (contents[m.key] || '').toLowerCase().includes(q)
+  )
 })
 
 function extOf(name) {
@@ -194,8 +242,32 @@ function fileKind(name) {
   return 'file'
 }
 
-function displayName(row) {
-  return names[row.key] || row.raw.hint || row.raw.path || t('exchange.encrypted')
+function displayText(msg) {
+  if (msg.source === 'pending') return msg.name || msg.text || ''
+  return metas[msg.key]?.text || msg.raw.hint || msg.raw.path || t('exchange.encrypted')
+}
+
+function bubbleText(msg) {
+  return expanded[msg.key] && contents[msg.key] ? contents[msg.key] : displayText(msg)
+}
+
+function sideOf(msg) {
+  if (msg.source === 'pending') return 'h'
+  return metas[msg.key]?.side || ''
+}
+
+function sideClass(msg) {
+  const s = sideOf(msg)
+  return s === 'h' ? 'own' : s === 'w' ? 'theirs' : 'unknown'
+}
+
+function sideLabel(msg) {
+  const s = sideOf(msg)
+  return s === 'h' ? t('exchange.side_home') : s === 'w' ? t('exchange.side_work') : ''
+}
+
+function thumbOf(msg) {
+  return thumbs[msg.key] || null
 }
 
 async function resolveRid() {
@@ -203,9 +275,7 @@ async function resolveRid() {
     await reposStore.fetchRepos()
     try {
       const statusResp = await axios.get('/api/status')
-      if (statusResp.data.current_repo) {
-        reposStore.currentRepo = statusResp.data.current_repo
-      }
+      if (statusResp.data.current_repo) reposStore.currentRepo = statusResp.data.current_repo
     } catch (err) {
       console.error('Failed to resolve current repo:', err)
     }
@@ -213,19 +283,19 @@ async function resolveRid() {
   return reposStore.currentRepo || 'default'
 }
 
-async function resolveNames() {
+async function resolveMetas() {
   const password = await bufferStore.ensurePassword()
   if (!password) return
   const jobs = []
   for (const it of bufferStore.items) {
     const key = `b-${it.id}`
-    if (names[key] !== undefined) continue
-    jobs.push(bufferStore.revealHint(it).then(n => { names[key] = n }))
+    if (metas[key] !== undefined) continue
+    jobs.push(bufferStore.revealHint(it).then(m => { metas[key] = m }))
   }
   for (const it of postboxStore.items) {
     const key = `f-${it.id}`
-    if (names[key] !== undefined) continue
-    jobs.push(postboxStore.revealName(it).then(n => { names[key] = n }))
+    if (metas[key] !== undefined) continue
+    jobs.push(postboxStore.revealName(it).then(m => { metas[key] = m }))
   }
   await Promise.all(jobs)
 }
@@ -244,7 +314,7 @@ async function buildThumbs() {
   for (const it of postboxStore.items) {
     const key = `f-${it.id}`
     if (thumbs[key]) continue
-    const name = names[key] || it.path || ''
+    const name = metas[key]?.text || it.path || ''
     if (fileKind(name) !== 'image') continue
     try {
       const bytes = await postboxStore.fetchPlainBytes(rid.value, it.id)
@@ -257,79 +327,97 @@ async function buildThumbs() {
   }
 }
 
+function scrollBottom() {
+  nextTick(() => {
+    const el = scrollEl.value
+    if (el) el.scrollTop = el.scrollHeight
+  })
+}
+
 async function refresh() {
   rid.value = await resolveRid()
   await bufferStore.ensurePassword()
   await Promise.all([bufferStore.fetchItems(), postboxStore.fetchItems(rid.value)])
-  await resolveNames()
+  await resolveMetas()
   pruneThumbs()
   await buildThumbs()
 }
 
-async function openRow(row) {
-  if (row.source === 'buffer') return copyBuffer(row)
-  if (row.kind === 'image') return openImage(row)
-  if (row.kind === 'text') return openText(row)
-  return downloadRow(row)
+async function expandMessage(msg) {
+  expanded[msg.key] = true
+  if (contents[msg.key] !== undefined) return
+  busy[msg.key] = true
+  try {
+    contents[msg.key] = await bufferStore.revealItem(msg.id)
+  } catch (err) {
+    console.error('Failed to load full message:', err)
+    systemStore.addNotification(t('exchange.decrypt_error'), 'error')
+  } finally {
+    busy[msg.key] = false
+  }
 }
 
-async function copyBuffer(row) {
-  busy[row.key] = true
+async function copyBuffer(msg) {
+  busy[msg.key] = true
   try {
-    const text = await bufferStore.revealItem(row.id)
+    const text = contents[msg.key] ?? await bufferStore.revealItem(msg.id)
+    contents[msg.key] = text
     await navigator.clipboard.writeText(text)
-    copiedKey.value = row.key
-    setTimeout(() => { if (copiedKey.value === row.key) copiedKey.value = '' }, 2000)
+    copiedKey.value = msg.key
+    setTimeout(() => { if (copiedKey.value === msg.key) copiedKey.value = '' }, 2000)
   } catch (err) {
     console.error('Failed to copy buffer entry:', err)
     systemStore.addNotification(t('exchange.decrypt_error'), 'error')
   } finally {
-    busy[row.key] = false
+    busy[msg.key] = false
   }
 }
 
-async function openImage(row) {
-  if (thumbs[row.key]) {
-    imageOverlay.value = { url: thumbs[row.key], name: displayName(row) }
+async function openImage(msg) {
+  if (msg.source === 'pending') return
+  if (thumbs[msg.key]) {
+    imageOverlay.value = { url: thumbs[msg.key], name: displayText(msg) }
     return
   }
-  busy[row.key] = true
+  busy[msg.key] = true
   try {
-    const bytes = await postboxStore.fetchPlainBytes(rid.value, row.id)
+    const bytes = await postboxStore.fetchPlainBytes(rid.value, msg.id)
     const url = URL.createObjectURL(
-      new Blob([bytes], { type: MIME_BY_EXT[extOf(displayName(row))] || 'image/png' })
+      new Blob([bytes], { type: MIME_BY_EXT[extOf(displayText(msg))] || 'image/png' })
     )
-    thumbs[row.key] = url
-    imageOverlay.value = { url, name: displayName(row) }
+    thumbs[msg.key] = url
+    imageOverlay.value = { url, name: displayText(msg) }
   } catch (err) {
     console.error('Failed to decrypt image:', err)
     systemStore.addNotification(t('exchange.decrypt_error'), 'error')
   } finally {
-    busy[row.key] = false
+    busy[msg.key] = false
   }
 }
 
-async function openText(row) {
-  busy[row.key] = true
+async function openText(msg) {
+  if (msg.source === 'pending') return
+  busy[msg.key] = true
   try {
-    const bytes = await postboxStore.fetchPlainBytes(rid.value, row.id)
-    textPreview.value = { name: displayName(row), content: new TextDecoder().decode(bytes) }
+    const bytes = await postboxStore.fetchPlainBytes(rid.value, msg.id)
+    textPreview.value = { name: displayText(msg), content: new TextDecoder().decode(bytes) }
   } catch (err) {
     console.error('Failed to decrypt text file:', err)
     systemStore.addNotification(t('exchange.decrypt_error'), 'error')
   } finally {
-    busy[row.key] = false
+    busy[msg.key] = false
   }
 }
 
-async function downloadRow(row) {
-  busy[row.key] = true
+async function downloadRow(msg) {
+  if (msg.source === 'pending') return
+  busy[msg.key] = true
   try {
-    const bytes = await postboxStore.fetchPlainBytes(rid.value, row.id)
+    const bytes = await postboxStore.fetchPlainBytes(rid.value, msg.id)
     const url = URL.createObjectURL(new Blob([bytes]))
     const a = document.createElement('a')
     a.href = url
-    a.download = displayName(row)
+    a.download = displayText(msg)
     document.body.appendChild(a)
     a.click()
     a.remove()
@@ -338,34 +426,39 @@ async function downloadRow(row) {
     console.error('Failed to download file:', err)
     systemStore.addNotification(t('exchange.decrypt_error'), 'error')
   } finally {
-    busy[row.key] = false
+    busy[msg.key] = false
   }
 }
 
-async function togglePin(row) {
-  busy[row.key] = true
+async function togglePin(msg) {
+  busy[msg.key] = true
   try {
-    await bufferStore.togglePin(row.id, !row.pinned)
+    await bufferStore.togglePin(msg.id, !msg.pinned)
   } catch (err) {
     console.error('Failed to toggle pin:', err)
     systemStore.addNotification(t('exchange.pin_error'), 'error')
   } finally {
-    busy[row.key] = false
+    busy[msg.key] = false
   }
 }
 
-async function removeRow(row) {
+async function removeRow(msg) {
   try {
-    if (row.source === 'buffer') {
-      await bufferStore.deleteItem(row.id)
+    if (msg.source === 'pending') {
+      pending.value = pending.value.filter(x => x.key !== msg.key)
+      return
+    }
+    if (msg.source === 'buffer') {
+      await bufferStore.deleteItem(msg.id)
     } else {
-      await postboxStore.deleteItem(rid.value, row.id)
-      if (thumbs[row.key]) {
-        URL.revokeObjectURL(thumbs[row.key])
-        delete thumbs[row.key]
+      await postboxStore.deleteItem(rid.value, msg.id)
+      if (thumbs[msg.key]) {
+        URL.revokeObjectURL(thumbs[msg.key])
+        delete thumbs[msg.key]
       }
     }
-    delete names[row.key]
+    delete metas[msg.key]
+    delete contents[msg.key]
   } catch (err) {
     console.error('Failed to delete entry:', err)
     systemStore.addNotification(t('exchange.delete_error'), 'error')
@@ -380,6 +473,68 @@ async function clearAll() {
     console.error('Failed to clear buffer:', err)
     systemStore.addNotification(t('exchange.delete_error'), 'error')
   }
+}
+
+function pushPending(fields) {
+  const p = {
+    key: `p-${++pendingSeq}`, source: 'pending',
+    ts: Date.now() / 1000, size: 0, pinned: false, status: 'pending',
+    ...fields
+  }
+  pending.value.push(p)
+  scrollBottom()
+  return p
+}
+
+async function settlePending(p, job) {
+  try {
+    await job()
+    pending.value = pending.value.filter(x => x.key !== p.key)
+    await resolveMetas()
+    pruneThumbs()
+    await buildThumbs()
+  } catch (err) {
+    console.error('Failed to send:', err)
+    p.status = 'failed'
+  }
+}
+
+async function sendComposer() {
+  const text = composer.value.replace(/\n+$/, '')
+  if (!text.trim()) return
+  composer.value = ''
+  const p = pushPending({ kind: 'message', text })
+  await settlePending(p, () => bufferStore.pushItem(text))
+}
+
+function onAttach(e) {
+  const files = Array.from(e.target.files || [])
+  e.target.value = ''
+  if (files.length) uploadFiles(files)
+}
+
+async function uploadFiles(files) {
+  if (!rid.value) rid.value = await resolveRid()
+  for (const file of files) {
+    const name = file.name || `shot-${Date.now()}.png`
+    const p = pushPending({ kind: fileKind(name), name, size: file.size, file })
+    await settlePending(p, async () => {
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      await postboxStore.uploadFile(rid.value, name, bytes)
+    })
+  }
+}
+
+async function retryPending(msg) {
+  msg.status = 'pending'
+  await settlePending(msg, async () => {
+    if (msg.kind === 'message') {
+      await bufferStore.pushItem(msg.text)
+    } else {
+      const bytes = new Uint8Array(await msg.file.arrayBuffer())
+      await postboxStore.uploadFile(rid.value, msg.name, bytes)
+    }
+  })
 }
 
 function onDragEnter() {
@@ -400,8 +555,6 @@ async function onDrop(e) {
 }
 
 async function onPaste(e) {
-  const el = e.target
-  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
   const dt = e.clipboardData
   if (!dt) return
   const files = Array.from(dt.files || [])
@@ -410,10 +563,13 @@ async function onPaste(e) {
     await uploadFiles(files.map(nameClipboardFile))
     return
   }
+  const el = e.target
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
   const text = dt.getData('text/plain')
   if (text && text.trim()) {
     e.preventDefault()
-    await pushText(text)
+    const p = pushPending({ kind: 'message', text })
+    await settlePending(p, () => bufferStore.pushItem(text))
   }
 }
 
@@ -424,61 +580,29 @@ function nameClipboardFile(file) {
   return file
 }
 
-async function uploadFiles(files) {
-  if (!rid.value) rid.value = await resolveRid()
-  let ok = false
-  for (const file of files) {
-    try {
-      const bytes = new Uint8Array(await file.arrayBuffer())
-      await postboxStore.uploadFile(rid.value, file.name || `shot-${Date.now()}.png`, bytes)
-      ok = true
-      systemStore.addNotification(t('exchange.upload_success', { name: file.name }), 'success')
-    } catch (err) {
-      console.error('Failed to upload file:', err)
-      systemStore.addNotification(t('exchange.upload_error', { name: file.name }), 'error')
-    }
-  }
-  if (ok) {
-    await resolveNames()
-    pruneThumbs()
-    await buildThumbs()
-  }
-}
-
-async function pushText(text) {
-  try {
-    await bufferStore.pushItem(text)
-    await resolveNames()
-    systemStore.addNotification(t('exchange.push_success'), 'success')
-  } catch (e) {
-    if (e.message && e.message.includes('password')) {
-      systemStore.addNotification(t('exchange.no_password'), 'error')
-    } else {
-      systemStore.addNotification(t('exchange.push_error'), 'error')
-    }
-  }
-}
-
 watch(() => reposStore.currentRepo, async (repo) => {
   if (!repo || repo === rid.value) return
   rid.value = repo
   await postboxStore.fetchItems(repo)
-  await resolveNames()
+  await resolveMetas()
   pruneThumbs()
   await buildThumbs()
 })
 
 onActivated(() => {
   window.addEventListener('paste', onPaste)
-  refresh()
+  refresh().then(scrollBottom)
+  pollTimer = setInterval(refresh, POLL_MS)
 })
 
 onDeactivated(() => {
   window.removeEventListener('paste', onPaste)
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 })
 
 onUnmounted(() => {
   window.removeEventListener('paste', onPaste)
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
   for (const key of Object.keys(thumbs)) {
     URL.revokeObjectURL(thumbs[key])
     delete thumbs[key]
@@ -496,7 +620,7 @@ function formatBytes(bytes) {
 
 function formatTime(ts) {
   try {
-    return new Date(ts * 1000).toLocaleString('ru-RU')
+    return new Date(ts * 1000).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
   } catch {
     return ''
   }
@@ -504,8 +628,8 @@ function formatTime(ts) {
 </script>
 
 <style scoped>
-.exchange-view { display: flex; flex-direction: column; height: 100%; color: var(--text-main); position: relative; }
-.exchange-view.drag-over::after {
+.chat-view { display: flex; flex-direction: column; height: 100%; color: var(--text-main); position: relative; }
+.chat-view.drag-over::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -518,9 +642,6 @@ function formatTime(ts) {
 .view-header { padding: 20px 30px; border-bottom: 1px solid var(--border-color); background: var(--bg-primary); }
 .view-header h1 { margin: 0; font-size: 20px; font-weight: 500; color: var(--text-bright); }
 .header-actions { display: flex; align-items: center; gap: 12px; }
-.view-content { padding: 30px; max-width: 900px; margin: 0 auto; width: 100%; }
-.subtitle { color: var(--text-secondary); font-size: 13px; margin: 0 0 20px; }
-
 .filter-input {
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
@@ -532,75 +653,95 @@ function formatTime(ts) {
   width: 200px;
 }
 .filter-input:focus { border-color: var(--accent); }
-
 .alert-card {
   background: rgba(204, 167, 0, 0.1);
   border: 1px solid rgba(204, 167, 0, 0.3);
   color: var(--warning);
   border-radius: 8px;
   padding: 12px 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   font-size: 13px;
 }
-
+.chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
 .empty-state { text-align: center; color: var(--text-secondary); padding: 60px 0; font-size: 14px; }
 
-.feed-item {
+.msg-row { display: flex; }
+.msg-row.own { justify-content: flex-end; }
+.msg-row.theirs, .msg-row.unknown { justify-content: flex-start; }
+
+.bubble {
+  position: relative;
+  max-width: 70%;
+  border-radius: 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-card);
+  word-break: break-word;
+}
+.msg-row.own .bubble { background: rgba(55, 148, 255, 0.12); border-color: rgba(55, 148, 255, 0.35); }
+.msg-row.unknown .bubble { opacity: 0.85; }
+.bubble.pending { opacity: 0.7; }
+.bubble.failed { border-color: var(--error); }
+
+.bubble-text { font-size: 14px; white-space: pre-wrap; }
+.bubble-thumb {
+  max-width: 240px;
+  max-height: 320px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: block;
+}
+.file-card {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin-bottom: 10px;
+  gap: 10px;
   cursor: pointer;
-  transition: border-color 0.2s, background 0.2s;
+  min-width: 180px;
 }
-.feed-item:hover { border-color: var(--accent); }
+.file-card:hover .file-name { color: var(--accent); }
+.file-name { font-size: 14px; color: var(--text-bright); word-break: break-all; }
+.file-size { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
 
-.row-main { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
-.type-icon { display: flex; align-items: center; color: var(--text-secondary); flex-shrink: 0; }
-.type-icon.message { color: var(--accent); }
-.type-icon.image { color: var(--success); }
-.thumb {
-  width: 44px;
-  height: 44px;
-  object-fit: cover;
+.bubble-footer {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  align-items: center;
+}
+.pin-mark { color: var(--warning); }
+.status.failed { color: var(--error); }
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+  text-decoration: underline;
+}
+.bubble-text + .link-btn { margin-top: 4px; }
+
+.bubble-actions {
+  position: absolute;
+  top: -10px;
+  right: 8px;
+  display: none;
+  gap: 4px;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
   border-radius: 6px;
-  border: 1px solid var(--border-color);
-  flex-shrink: 0;
+  padding: 2px;
 }
-.row-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.row-name {
-  font-size: 14px;
-  color: var(--text-bright);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.row-meta { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
-.pin-badge { display: flex; align-items: center; color: var(--warning); flex-shrink: 0; }
-
-.row-actions { display: flex; gap: 8px; flex-shrink: 0; }
-.item-btn {
-  display: inline-flex; align-items: center; gap: 6px;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  color: var(--text-main);
-  border-radius: 5px;
-  padding: 5px 10px;
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.item-btn:hover:not(:disabled) { background: rgba(255,255,255,0.05); color: var(--text-bright); }
-.item-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.item-btn.active { color: var(--warning); border-color: var(--warning); }
-.item-btn.danger:hover { color: var(--error); border-color: var(--error); }
-
+.bubble:hover .bubble-actions { display: flex; }
 .icon-btn {
   background: none; border: 1px solid var(--border-color); color: var(--text-secondary);
   cursor: pointer; padding: 6px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
@@ -608,11 +749,53 @@ function formatTime(ts) {
 }
 .icon-btn:hover:not(:disabled) { background: rgba(255,255,255,0.06); color: var(--text-bright); }
 .icon-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.icon-btn.mini { padding: 3px; border: none; }
+.icon-btn.mini.active { color: var(--warning); }
+.icon-btn.mini.danger:hover { color: var(--error); }
 .btn-clear {
   background: transparent; border: 1px solid var(--border-color); color: var(--text-secondary);
   border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; transition: all 0.2s;
 }
 .btn-clear:hover { color: var(--error); border-color: var(--error); }
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 12px 30px;
+  border-top: 1px solid var(--border-color);
+  background: var(--bg-primary);
+}
+.composer-input {
+  flex: 1;
+  resize: none;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  color: var(--text-main);
+  font-size: 14px;
+  font-family: inherit;
+  padding: 10px 14px;
+  outline: none;
+  min-height: 40px;
+  max-height: 160px;
+  line-height: 1.4;
+}
+.composer-input:focus { border-color: var(--accent); }
+.send-btn {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  border-radius: 10px;
+  width: 40px;
+  height: 40px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s;
+}
+.send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .preview-modal {
   width: 720px;
@@ -636,7 +819,6 @@ function formatTime(ts) {
   white-space: pre-wrap;
   word-break: break-word;
 }
-
 .image-overlay { z-index: 10001; }
 .image-overlay img {
   max-width: 92vw;
@@ -644,4 +826,6 @@ function formatTime(ts) {
   border-radius: 6px;
   box-shadow: 0 10px 40px rgba(0,0,0,0.6);
 }
+.fade-enter-active, .fade-leave-active { transition: opacity 0.15s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>

@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import axios from 'axios'
 import { encryptText, decryptBytes, decryptText } from '@/lib/bundleCrypto'
+import { buildHintMeta, parseMeta } from '@/lib/exchangeMeta'
 
 /**
  * Cross-machine clipboard buffer.
@@ -47,12 +48,12 @@ export const useBufferStore = defineStore('buffer', () => {
   }
 
   /**
-   * Encrypt `text` and push it. The preview label travels as `hint_enc`
-   * (bundle-v2 ciphertext, base64) — the plaintext `hint` field is legacy and
-   * must never be sent. If `label` is omitted, we derive one from the first
-   * line (first 80 chars), matching the plugin's buildHint().
+   * Encrypt `text` and push it. The preview travels as `hint_enc` (bundle-v2
+   * ciphertext, base64) whose plaintext is the side-metadata JSON
+   * {"s":"h","h":<first line, 80 chars>} — the plaintext `hint` field is
+   * legacy and must never be sent. Returns {id, ts} of the stored entry.
    */
-  async function pushItem(text, label = '') {
+  async function pushItem(text) {
     error.value = null
     const password = await ensurePassword()
     if (!password) {
@@ -60,26 +61,29 @@ export const useBufferStore = defineStore('buffer', () => {
       throw new Error('Sync password not configured')
     }
     const ciphertext_b64 = await encryptText(text, password)
-    const hint = label || (text.split('\n')[0] || '').trim().slice(0, 80)
-    const payload = { ciphertext_b64 }
-    if (hint) payload.hint_enc = await encryptText(hint, password)
+    const payload = {
+      ciphertext_b64,
+      hint_enc: await encryptText(buildHintMeta(text), password)
+    }
     const res = await axios.post('/api/buffer', payload)
     await fetchItems()
     return res.data
   }
 
   /**
-   * Resolve the display label of a list entry: decrypt `hint_enc` when present,
-   * fall back to the legacy plaintext `hint`. Never throws.
+   * Resolve {side, text} of a list entry: decrypt `hint_enc` and parse the
+   * side-metadata JSON; legacy entries (plaintext hint, bare-string metadata,
+   * decrypt failure) come back with side '' and the best available text.
+   * Never throws.
    */
   async function revealHint(item) {
-    if (!item.hint_enc) return item.hint || ''
+    if (!item.hint_enc) return { side: '', text: item.hint || '' }
     const password = await ensurePassword()
-    if (!password) return item.hint || ''
+    if (!password) return { side: '', text: item.hint || '' }
     try {
-      return await decryptText(item.hint_enc, password)
+      return parseMeta(await decryptText(item.hint_enc, password), 'h')
     } catch {
-      return item.hint || ''
+      return { side: '', text: item.hint || '' }
     }
   }
 
