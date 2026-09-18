@@ -120,9 +120,10 @@ class MrReviewService(private val project: Project) {
   /** Real path of a postbox item: decrypted path_enc when present, plaintext path for old entries. */
   private fun displayPath(item: MirrorApi.FileSyncItem): String {
     if (item.pathEnc.isBlank()) return item.path
-    return runCatching {
+    val plain = runCatching {
       localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(item.pathEnc, SecretsStore.syncPassword)
     }.getOrDefault(item.path)
+    return localgitmirror.idea.workkit.ExchangeMeta.parseName(plain).text.ifBlank { item.path }
   }
 
   private fun parseCachedMr(
