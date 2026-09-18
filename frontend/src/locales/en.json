@@ -173,6 +173,16 @@
     "upload_error": "Failed to upload '{name}'",
     "push_success": "Added to buffer",
     "push_error": "Failed to add to buffer",
-    "no_password": "Sync password is not configured on the server — encryption unavailable. Set SYNC_PASSWORD."
+    "no_password": "Sync password is not configured on the server — encryption unavailable. Set SYNC_PASSWORD.",
+    "composer_placeholder": "Message… (Enter — send, Shift+Enter — newline; paste a screenshot or drop a file)",
+    "send": "Send",
+    "attach": "Attach a file",
+    "side_work": "Work",
+    "side_home": "Home",
+    "pending": "sending…",
+    "failed": "not delivered",
+    "retry": "retry",
+    "expand": "expand",
+    "collapse": "collapse"
   }
 }

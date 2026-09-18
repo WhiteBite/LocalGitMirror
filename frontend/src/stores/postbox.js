@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import axios from 'axios'
 import { encryptFileBytes, decryptFileBytes, encryptText, decryptText } from '@/lib/bundleCrypto'
+import { buildPathMeta, parseMeta } from '@/lib/exchangeMeta'
 import { useBufferStore } from '@/stores/buffer'
 
 /**
@@ -47,12 +48,18 @@ export const usePostboxStore = defineStore('postbox', () => {
     return decryptFileBytes(new Uint8Array(res.data), password)
   }
 
+  /**
+   * Resolve {side, text} of an item: decrypt `path_enc` and parse the
+   * side-metadata JSON {"s":...,"n":<real name>}; legacy entries (plaintext
+   * path, bare-string metadata, decrypt failure) come back with side ''.
+   * Never throws.
+   */
   async function revealName(item) {
-    if (!item.path_enc) return item.path || ''
+    if (!item.path_enc) return { side: '', text: item.path || '' }
     try {
-      return await decryptText(item.path_enc, await syncPassword())
+      return parseMeta(await decryptText(item.path_enc, await syncPassword()), 'n')
     } catch {
-      return item.path || ''
+      return { side: '', text: item.path || '' }
     }
   }
 
@@ -63,7 +70,7 @@ export const usePostboxStore = defineStore('postbox', () => {
     form.append('rid', rid)
     form.append('path', `x/${randomToken()}`)
     form.append('plain_size', '0')
-    form.append('path_enc', await encryptText(name, password))
+    form.append('path_enc', await encryptText(buildPathMeta(name), password))
     form.append('attachment', new Blob([encrypted]), 'data.bin')
     const res = await axios.post('/api/documents/attachment-upload', form)
     await fetchItems(rid)
