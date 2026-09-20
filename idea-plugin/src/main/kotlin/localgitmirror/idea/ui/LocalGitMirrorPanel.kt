@@ -55,6 +55,7 @@ import localgitmirror.idea.net.LanDiscovery
 import localgitmirror.idea.settings.*
 import localgitmirror.idea.sync.HandshakeCache
 import localgitmirror.idea.sync.v2.SyncFacadeService
+import localgitmirror.idea.workkit.BubbleText
 import localgitmirror.idea.workkit.BundleCrypto
 import localgitmirror.idea.workkit.ExchangeCrypto
 import localgitmirror.idea.workkit.ExchangeMeta
@@ -64,6 +65,9 @@ import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.datatransfer.Transferable
 import java.awt.datatransfer.UnsupportedFlavorException
+import java.awt.event.ActionListener
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
@@ -162,7 +166,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     const val THUMB_MAX_WIDTH = 240
     const val THUMB_MAX_HEIGHT = 320
     const val BUBBLE_TEXT_MAX_WIDTH = 420
-    const val BUBBLE_MAX_LINES = 15
+    const val COPY_FLASH_MS = 1500
     const val EMPTY_HINT_MARK = "\u2022\u2022\u2022"
     const val LOCAL_ID_PREFIX = "local-"
   }
@@ -1290,6 +1294,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     val dropHandler = ChatTransferHandler(toComposer = false)
     chatPanel.transferHandler = dropHandler
     chatScroll.transferHandler = dropHandler
+    // bubble width is derived from the viewport width — rewrap on resize
+    chatScroll.viewport.addComponentListener(object : ComponentAdapter() {
+      override fun componentResized(e: ComponentEvent?) = chatPanel.revalidate()
+    })
 
     composerField.inputMap.put(KeyStroke.getKeyStroke("ENTER"), "lgm.chat.send")
     composerField.actionMap.put("lgm.chat.send", object : AbstractAction() {
@@ -2524,17 +2532,26 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   }
 
   private fun buildBubbleRow(item: ExchangeItem): JComponent {
-    val row = JPanel(BorderLayout())
+    val row = WrapMaxPanel()
+    row.layout = BorderLayout()
     row.isOpaque = false
     row.border = JBUI.Borders.empty(2, 2)
     val bubble = buildBubble(item)
     val own = item.side == ExchangeItem.Side.WORK
     row.add(bubble, if (own) BorderLayout.EAST else BorderLayout.WEST)
-    row.maximumSize = Dimension(Int.MAX_VALUE, row.preferredSize.height)
     row.alignmentX = LEFT_ALIGNMENT
     installBubbleMouse(row, item)
     installBubbleMouse(bubble, item)
     return row
+  }
+
+  /**
+   * Panel whose BoxLayout maximum height always tracks the current preferred height.
+   * A frozen maximumSize captured before layout clips bubbles once the text area
+   * rewraps at the real viewport width.
+   */
+  private class WrapMaxPanel : JPanel() {
+    override fun getMaximumSize(): Dimension = Dimension(Int.MAX_VALUE, preferredSize.height)
   }
 
   private fun bubbleTint(item: ExchangeItem): JBColor = when {
@@ -2562,12 +2579,15 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
 
   private fun buildBubble(item: ExchangeItem): JComponent {
     val bubble = BubblePanel(bubbleTint(item))
-    val content = JPanel().apply {
+    val content = WrapMaxPanel().apply {
       layout = BoxLayout(this, BoxLayout.Y_AXIS)
       isOpaque = false
     }
     when {
-      item.kind == ExchangeItem.Kind.BUFFER -> content.add(bufferBody(item))
+      item.kind == ExchangeItem.Kind.BUFFER -> {
+        bubble.add(bubbleCopyRow(item), BorderLayout.NORTH)
+        content.add(bufferBody(item))
+      }
       item.isMrNotes -> content.add(fileCard(item, AllIcons.Toolwindows.ToolWindowMessages,
         LocalGitMirrorBundle.message("panel.exchange.ctx.open")) { openExchangeItem(item) })
       item.isImage -> content.add(imageBody(item))
@@ -2578,19 +2598,58 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
         LocalGitMirrorBundle.message("panel.exchange.chat.save")) { saveExchangeFileAs(item) })
     }
     content.add(bubbleFooter(item))
-    content.maximumSize = Dimension(Int.MAX_VALUE, content.preferredSize.height)
     bubble.add(content, BorderLayout.CENTER)
     return bubble
   }
 
+  /** Always-visible copy button pinned to the bubble's top-right corner. */
+  private fun bubbleCopyRow(item: ExchangeItem): JComponent {
+    val button = JButton(AllIcons.Actions.Copy).apply {
+      margin = JBUI.insets(0)
+      isFocusPainted = false
+      isContentAreaFilled = false
+      isBorderPainted = false
+      toolTipText = LocalGitMirrorBundle.message("panel.exchange.chat.copy")
+      addActionListener { copyBubbleText(item, this) }
+    }
+    return JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
+      isOpaque = false
+      add(button)
+    }
+  }
+
+  /** Copy the FULL message text; fetches the server body first when only a preview is known. */
+  private fun copyBubbleText(item: ExchangeItem, button: JButton) {
+    val known = item.localText ?: chatBodyCache[item.id]
+    if (known != null) {
+      CopyPasteManager.getInstance().setContents(StringSelection(known))
+      flashCopied(button)
+      return
+    }
+    if (!item.canOpen) return
+    loadChatBody(item) { full ->
+      CopyPasteManager.getInstance().setContents(StringSelection(full))
+      flashCopied(button)
+    }
+  }
+
+  private fun flashCopied(button: JButton) {
+    button.icon = AllIcons.Actions.Checked
+    Timer(COPY_FLASH_MS, ActionListener { button.icon = AllIcons.Actions.Copy }).apply {
+      isRepeats = false
+      start()
+    }
+  }
+
   private fun bufferBody(item: ExchangeItem): JComponent {
     val known = item.localText ?: chatBodyCache[item.id]
-    val body = JPanel(BorderLayout())
+    val body = WrapMaxPanel()
+    body.layout = BorderLayout()
     body.isOpaque = false
     val text = known ?: item.title
-    val lines = text.lines()
-    val truncated = known != null && lines.size > BUBBLE_MAX_LINES && item.id !in expandedIds
-    val shown = if (truncated) lines.take(BUBBLE_MAX_LINES).joinToString("\n") else text
+    val expanded = item.id in expandedIds
+    val clamped = BubbleText.clamp(text)
+    val shown = if (clamped.truncated && !expanded) clamped.text else text
     body.add(BubbleTextArea(shown, looksLikeCode(shown)), BorderLayout.CENTER)
 
     val needsFetch = known == null && item.canOpen &&
@@ -2599,15 +2658,14 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       needsFetch -> chatLink(LocalGitMirrorBundle.message("panel.exchange.chat.expand")) {
         fetchChatBody(item)
       }
-      truncated -> chatLink(LocalGitMirrorBundle.message("panel.exchange.chat.expand")) {
+      clamped.truncated && !expanded -> chatLink(LocalGitMirrorBundle.message("panel.exchange.chat.expand")) {
         expandedIds.add(item.id)
         renderChat()
       }
-      known != null && lines.size > BUBBLE_MAX_LINES && item.id in expandedIds ->
-        chatLink(LocalGitMirrorBundle.message("panel.exchange.chat.collapse")) {
-          expandedIds.remove(item.id)
-          renderChat()
-        }
+      clamped.truncated -> chatLink(LocalGitMirrorBundle.message("panel.exchange.chat.collapse")) {
+        expandedIds.remove(item.id)
+        renderChat()
+      }
       else -> null
     }
     if (link != null) {
@@ -2617,7 +2675,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       }
       body.add(linkRow, BorderLayout.SOUTH)
     }
-    body.maximumSize = Dimension(Int.MAX_VALUE, body.preferredSize.height)
     return body
   }
 
@@ -2704,8 +2761,15 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     })
   }
 
-  /** Text bubble body: wraps at a capped width so long messages don't stretch the bubble. */
-  private class BubbleTextArea(text: String, mono: Boolean) : JTextArea(text) {
+  /**
+   * Text bubble body: word-boundary wrapping (JTextArea lineWrap + wrapStyleWord),
+   * width capped at ~75% of the chat viewport so long code lines don't build a
+   * skinny tall column. Preferred height is measured per hard line — a single
+   * LineBreakMeasurer over the whole text undercounts wrapped rows and clips
+   * the bubble. Tabs are expanded for measurement (overestimate, never a clip).
+   */
+  private class BubbleTextArea(raw: String, mono: Boolean) :
+    JTextArea(raw.replace("\r\n", "\n").replace('\r', '\n')) {
     init {
       isEditable = false
       lineWrap = true
@@ -2726,20 +2790,25 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
 
     override fun getPreferredSize(): Dimension {
       val d = super.getPreferredSize()
-      val cap = JBUI.scale(BUBBLE_TEXT_MAX_WIDTH)
       val vp = viewportWidth()
-      // bubble padding + row insets + vertical scrollbar chrome
-      val target = if (vp > 0) minOf(cap, vp - JBUI.scale(56)) else cap
+      val target = if (vp > 0) vp * 3 / 4 else JBUI.scale(BUBBLE_TEXT_MAX_WIDTH)
       if (target <= 0 || d.width <= target) return d
       val fm = getFontMetrics(font)
       val wrapWidth = (target - insets.left - insets.right).coerceAtLeast(1)
-      val measurer = LineBreakMeasurer(
-        java.text.AttributedString(text).getIterator(), fm.fontRenderContext
-      )
       var h = insets.top + insets.bottom
-      while (measurer.position < text.length) {
-        measurer.nextLayout(wrapWidth.toFloat())
-        h += fm.height
+      for (para in text.split('\n')) {
+        val line = para.replace("\t", "        ")
+        if (line.isEmpty()) {
+          h += fm.height
+          continue
+        }
+        val measurer = LineBreakMeasurer(
+          java.text.AttributedString(line).getIterator(), fm.fontRenderContext
+        )
+        while (measurer.position < line.length) {
+          measurer.nextLayout(wrapWidth.toFloat())
+          h += fm.height
+        }
       }
       return Dimension(target, h)
     }
@@ -2808,9 +2877,16 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
 
   /** Fetch the full buffer body off the EDT (lazy decrypt) and expand the bubble. */
   private fun fetchChatBody(item: ExchangeItem) {
-    if (chatBodyCache.containsKey(item.id)) {
+    loadChatBody(item) {
       expandedIds.add(item.id)
       renderChat()
+    }
+  }
+
+  /** Resolve the full buffer body (cache or bufferGet+decrypt); [onLoaded] runs on the EDT. */
+  private fun loadChatBody(item: ExchangeItem, onLoaded: (String) -> Unit) {
+    chatBodyCache[item.id]?.let {
+      onLoaded(it)
       return
     }
     val s = service<MirrorSettingsService>().state
@@ -2837,8 +2913,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       override fun onSuccess() {
         val text = body ?: return
         chatBodyCache[item.id] = text
-        expandedIds.add(item.id)
-        renderChat()
+        onLoaded(text)
       }
     })
   }
