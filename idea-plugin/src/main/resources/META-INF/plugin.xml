@@ -24,7 +24,7 @@
     <toolWindow id="DocCache"
                 factoryClass="localgitmirror.idea.ui.LocalGitMirrorToolWindowFactory"
                 anchor="right"
-                icon="AllIcons.Toolwindows.ToolWindowMessages"/>
+                icon="/icons/doccache.svg"/>
 
     <notificationGroup id="DocCache"
                        displayType="BALLOON"
@@ -70,6 +70,14 @@
     <action id="LocalGitMirror.SendGitLabMr"
             class="localgitmirror.idea.actions.SendGitLabMrAction"
             text="Send MR branch to Cache…" description="Fetch a GitLab MR source branch and send it to Cache"/>
+
+    <action id="LocalGitMirror.PushMrReplies"
+            class="localgitmirror.idea.actions.PushMrRepliesAction"
+            text="Push MR replies to GitLab…" description="Post the agent's review replies from Cache postbox to GitLab"/>
+
+    <action id="LocalGitMirror.UploadMrReplies"
+            class="localgitmirror.idea.actions.UploadMrRepliesAction"
+            text="Send review replies to work…" description="Upload .mr-notes/replies-!N.md to the Cache postbox"/>
 
     <!-- ── Pull actions ── -->
     <action id="LocalGitMirror.SyncPull"
@@ -168,6 +176,8 @@
       <reference ref="LocalGitMirror.SendSelectedCommits"/>
       <reference ref="LocalGitMirror.PushAs"/>
       <reference ref="LocalGitMirror.SendGitLabMr"/>
+      <reference ref="LocalGitMirror.PushMrReplies"/>
+      <reference ref="LocalGitMirror.UploadMrReplies"/>
       <reference ref="LocalGitMirror.PullBack"/>
       <reference ref="LocalGitMirror.ApplyLocalSync"/>
       <separator/>

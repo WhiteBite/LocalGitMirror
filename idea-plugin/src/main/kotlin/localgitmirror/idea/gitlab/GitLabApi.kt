@@ -3,10 +3,13 @@ package localgitmirror.idea.gitlab
 import com.intellij.openapi.components.service
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonObject
 import localgitmirror.idea.net.HttpClient
 import localgitmirror.idea.settings.MirrorSettingsService
 import java.net.HttpURLConnection
@@ -89,11 +92,19 @@ object GitLabApi {
     val line: Int? = null
   )
 
-  data class MrDiscussion(val resolved: Boolean, val notes: List<MrNote>) {
+  data class MrDiscussion(val id: String = "", val resolved: Boolean, val notes: List<MrNote>) {
     val anchorFile: String? get() = notes.firstOrNull { it.filePath != null }?.filePath
     val anchorLine: Int? get() = notes.firstOrNull { it.line != null }?.line
   }
   data class DiscussionsResult(val code: Int, val discussions: List<MrDiscussion>, val message: String)
+
+  data class DiffRefs(val baseSha: String, val headSha: String, val startSha: String)
+  data class MrDetail(val code: Int, val sourceBranch: String, val diffRefs: DiffRefs?, val message: String)
+
+  data class DiffPosition(val newPath: String, val newLine: Int)
+  data class WriteResult(val code: Int, val message: String) {
+    fun ok(): Boolean = code in 200..299
+  }
 
   /**
    * GET {url}/api/v4/projects/{project}/merge_requests/{iid}/discussions —
@@ -121,6 +132,7 @@ object GitLabApi {
         if (arr.isEmpty()) break
         for (d in arr) {
           val notesObj = d.jsonObject["notes"]?.jsonArray ?: continue
+          val discussionId = d.jsonObject["id"]?.jsonPrimitive?.contentOrNull ?: ""
           val notes = mutableListOf<MrNote>()
           var anyResolvable = false
           var resolved = true
@@ -149,7 +161,7 @@ object GitLabApi {
               )
             )
           }
-          out.add(MrDiscussion(resolved = anyResolvable && resolved, notes = notes))
+          out.add(MrDiscussion(id = discussionId, resolved = anyResolvable && resolved, notes = notes))
         }
         val next = conn.getHeaderField("X-Next-Page")?.trim().orEmpty()
         if (next.isEmpty()) break
@@ -209,5 +221,111 @@ object GitLabApi {
       val e = HttpClient.classifyError(t)
       MrBranchResult(0, null, "${e.type}: ${e.message}")
     }
+  }
+
+  /** GET {url}/api/v4/projects/{project}/merge_requests/{iid} → source_branch + diff_refs. */
+  fun getMrDetail(conf: GitLabConfig.GitLabConf, iid: Int): MrDetail {
+    return try {
+      val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+        "/merge_requests/$iid"
+      val conn = open(url, conf.token)
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+      if (code !in 200..299) return MrDetail(code, "", null, body.take(300))
+
+      val o = Json.parseToJsonElement(body).jsonObject
+      val branch = o["source_branch"]?.jsonPrimitive?.contentOrNull ?: ""
+      val refs = o["diff_refs"]?.jsonObject
+      val diffRefs = if (refs != null) {
+        DiffRefs(
+          baseSha = refs["base_sha"]?.jsonPrimitive?.contentOrNull ?: "",
+          headSha = refs["head_sha"]?.jsonPrimitive?.contentOrNull ?: "",
+          startSha = refs["start_sha"]?.jsonPrimitive?.contentOrNull ?: "",
+        )
+      } else null
+      MrDetail(code, branch, diffRefs, "OK")
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      MrDetail(0, "", null, "${e.type}: ${e.message}")
+    }
+  }
+
+  private fun openWrite(url: String, token: String, method: String, jsonBody: String): HttpURLConnection {
+    val conn = HttpClient.open(URL(url), insecureTls())
+    conn.requestMethod = method
+    conn.connectTimeout = 15_000
+    conn.readTimeout = 30_000
+    conn.setRequestProperty("PRIVATE-TOKEN", token)
+    conn.setRequestProperty("Accept", "application/json")
+    conn.setRequestProperty("Content-Type", "application/json")
+    conn.doOutput = true
+    conn.outputStream.use { it.write(jsonBody.toByteArray(Charsets.UTF_8)) }
+    return conn
+  }
+
+  private fun write(url: String, conf: GitLabConfig.GitLabConf, method: String, payload: kotlinx.serialization.json.JsonObject): WriteResult {
+    return try {
+      val conn = openWrite(url, conf.token, method, payload.toString())
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+      if (code in 200..299) WriteResult(code, "OK") else WriteResult(code, body.take(300))
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      WriteResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  /** POST a note into an existing discussion thread. */
+  fun postThreadNote(conf: GitLabConfig.GitLabConf, iid: Int, discussionId: String, body: String): WriteResult {
+    val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+      "/merge_requests/$iid/discussions/$discussionId/notes"
+    val payload = kotlinx.serialization.json.buildJsonObject { put("body", body) }
+    return write(url, conf, "POST", payload)
+  }
+
+  /** POST a general (non-anchored) note on the MR. */
+  fun postMrNote(conf: GitLabConfig.GitLabConf, iid: Int, body: String): WriteResult {
+    val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+      "/merge_requests/$iid/notes"
+    val payload = kotlinx.serialization.json.buildJsonObject { put("body", body) }
+    return write(url, conf, "POST", payload)
+  }
+
+  /**
+   * POST a brand-new discussion. With [position] GitLab anchors it to the MR
+   * diff (the line must be part of the diff, otherwise 400/422 — callers fall
+   * back to [postMrNote]); without one it is a general thread.
+   */
+  fun postNewDiscussion(
+    conf: GitLabConfig.GitLabConf,
+    iid: Int,
+    body: String,
+    diffRefs: DiffRefs?,
+    position: DiffPosition?
+  ): WriteResult {
+    val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+      "/merge_requests/$iid/discussions"
+    val payload = kotlinx.serialization.json.buildJsonObject {
+      put("body", body)
+      if (position != null && diffRefs != null) {
+        putJsonObject("position") {
+          put("base_sha", diffRefs.baseSha)
+          put("start_sha", diffRefs.startSha)
+          put("head_sha", diffRefs.headSha)
+          put("position_type", "text")
+          put("new_path", position.newPath)
+          put("new_line", position.newLine)
+        }
+      }
+    }
+    return write(url, conf, "POST", payload)
+  }
+
+  /** PUT resolved=true on a discussion thread. */
+  fun resolveDiscussion(conf: GitLabConfig.GitLabConf, iid: Int, discussionId: String): WriteResult {
+    val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+      "/merge_requests/$iid/discussions/$discussionId"
+    val payload = kotlinx.serialization.json.buildJsonObject { put("resolved", true) }
+    return write(url, conf, "PUT", payload)
   }
 }

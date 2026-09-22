@@ -279,7 +279,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     val label = JBLabel(tabs.getTitleAt(index)).apply {
       font = JBUI.Fonts.smallFont()
       border = JBUI.Borders.empty(4, 12, 4, 12)
-      foreground = JBColor(0x8C8F94, 0x8C8F94)
+      foreground = JBColor(0x6F7277, 0x8C8F94)
     }
     tabLabels[index] = label
     val pill = object : JPanel(BorderLayout()) {
@@ -288,8 +288,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
         val g2 = g.create() as Graphics2D
         g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
         val bg = when {
-          tabs.selectedIndex == index -> JBColor(0x333640, 0x333640)
-          hovered -> JBColor(0x313438, 0x313438)
+          tabs.selectedIndex == index -> JBColor(0xE3E5E8, 0x333640)
+          hovered -> JBColor(0xEBECEE, 0x313438)
           else -> null
         }
         if (bg != null) {
@@ -324,7 +324,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     val tabs = tabsPane ?: return
     for ((i, pill) in tabPills) {
       tabLabels[i]?.foreground = if (tabs.selectedIndex == i)
-        JBColor(0xDFE1E5, 0xDFE1E5) else JBColor(0x8C8F94, 0x8C8F94)
+        JBColor(0x1F2328, 0xDFE1E5) else JBColor(0x6F7277, 0x8C8F94)
       pill.repaint()
     }
   }
@@ -384,7 +384,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     ) {
       if (value == null) return
       border = JBUI.Borders.empty(1, 6)
-      val amber = JBColor(0xE3AE4D, 0xE3AE4D)
+      val amber = JBColor(0xB8860B, 0xE3AE4D)
       val green = JBColor(0x2E7D32, 0x66BB6A)
       val badgeAttr = if (value.unresolved > 0)
         SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, amber)
@@ -440,7 +440,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       glyphLabel.foreground = if (isSelected) selFg else statusFg
 
       nameLabel.text = value.name
-      nameLabel.font = JBUI.Fonts.smallFont().let { if (value.isCurrent) it.asBold() else it }
+      nameLabel.font = Font("JetBrains Mono", if (value.isCurrent) Font.BOLD else Font.PLAIN, JBUI.scale(12))
       nameLabel.foreground = when {
         isSelected -> selFg
         value.isCurrent -> JBColor(0x2E7D32, 0x5FAD65)
@@ -1028,6 +1028,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     val center = JPanel(BorderLayout()).apply { isOpaque = false }
     center.add(progressRow, BorderLayout.NORTH)
     center.add(tabs, BorderLayout.CENTER)
+    center.add(buildFooterRow(), BorderLayout.SOUTH)
     root.setContent(center)
 
     add(root, BorderLayout.CENTER)
@@ -1052,6 +1053,16 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       add(progressLabel)
     }
     add(right, BorderLayout.EAST)
+  }
+
+  private fun buildFooterRow(): JPanel = JPanel(BorderLayout()).apply {
+    isOpaque = false
+    border = JBUI.Borders.empty(2, 8)
+    add(JBLabel(LocalGitMirrorBundle.message("panel.footer.version", pluginVersionText)).apply {
+      font = JBUI.Fonts.smallFont().deriveFont(Font.PLAIN, JBUI.scale(10f).toFloat())
+      foreground = UIUtil.getContextHelpForeground()
+    }, BorderLayout.WEST)
+    add(roleBadge, BorderLayout.EAST)
   }
 
   private fun onTabChanged(index: Int) {
@@ -1102,7 +1113,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       add(status)
     }
     statusRow.add(statusLeft, BorderLayout.WEST)
-    statusRow.add(roleBadge, BorderLayout.EAST)
 
     val sectionRow = JPanel(BorderLayout()).apply { isOpaque = false }
     sectionRow.add(JBLabel(LocalGitMirrorBundle.message("panel.branch.section")).apply {
@@ -2502,11 +2512,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     bubbleThumbLabels.clear()
     chatPanel.removeAll()
     if (messages.isEmpty()) {
-      chatPanel.add(JBLabel(chatEmptyMessage).apply {
+      chatPanel.add(JBLabel(chatEmptyMessage, AllIcons.Toolwindows.ToolWindowMessages, JBLabel.CENTER).apply {
         font = JBUI.Fonts.smallFont()
         foreground = UIUtil.getContextHelpForeground()
-        border = JBUI.Borders.empty(16, 8)
-        alignmentX = LEFT_ALIGNMENT
+        border = JBUI.Borders.empty(24, 8)
+        horizontalAlignment = JBLabel.CENTER
+        alignmentX = CENTER_ALIGNMENT
         maximumSize = Dimension(Int.MAX_VALUE, preferredSize.height)
       })
     }
@@ -2701,7 +2712,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     val card = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0))
     card.isOpaque = false
     card.add(JBLabel(icon))
-    card.add(JBLabel(item.title.take(48)).apply { font = JBUI.Fonts.smallFont() })
+    card.add(JBLabel(item.title.take(48)).apply {
+      font = Font("JetBrains Mono", Font.PLAIN, JBUI.scale(11))
+    })
     if (item.size > 0) {
       card.add(JBLabel(formatSize(item.size)).apply {
         font = JBUI.Fonts.smallFont()
