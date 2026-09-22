@@ -222,7 +222,8 @@ object MrNotesWriter {
     sb.appendLine("```")
     sb.appendLine("Правила: `resolve: yes` закрывает тред после ответа (по умолчанию — no);")
     sb.appendLine("секции без текста игнорируются; ID треда копируй дословно;")
-    sb.appendLine("файл передаётся на рабочий ПК кнопкой «Отправить ответы ревью», оттуда уходит в GitLab.")
+    sb.appendLine("отправка на рабочий ПК: MCP-тул `lgm_mr_replies_send` (repo, iid, file) или кнопка «Отправить ответы ревью на работу…» в IDE;")
+    sb.appendLine("рабочий ПК публикует ответы в GitLab сам, дубликаты исключаются автоматически.")
 
     file.writeText(sb.toString(), Charsets.UTF_8)
     return file.toPath()

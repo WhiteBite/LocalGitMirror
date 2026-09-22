@@ -1925,6 +1925,35 @@ def op_mr_notes(ctx: Ctx, args: dict) -> dict:
     return {"success": True, "repo": repo, "notes": notes}
 
 
+def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
+    """Upload the agent's MR review replies (mr-replies/mr-!N.md) to the postbox."""
+    c = _client(ctx)
+    repo = _repo_arg(args)
+    iid = int(args.get("iid") or 0)
+    file_path = (args.get("file") or "").strip()
+    text = args.get("text") or ""
+    if not iid:
+        return {"success": False, "error": "iid is required"}
+    if file_path:
+        p = Path(file_path)
+        if not p.is_file():
+            return {"success": False, "error": f"file not found: {file_path}"}
+        content = p.read_text(encoding="utf-8")
+    elif text.strip():
+        content = text
+    else:
+        return {"success": False, "error": "provide file (path) or text (markdown body)"}
+    if "## thread" not in content and "## new" not in content:
+        return {"success": False, "error": "no reply sections ('## thread <id>' / '## new') found in content"}
+
+    pwd = ctx.config.sync_password
+    encrypted = encrypt_bundle(content.encode("utf-8"), pwd)
+    display = f"mr-replies/mr-!{iid}.md"
+    path_enc = base64.b64encode(encrypt_bundle(display.encode("utf-8"), pwd)).decode("ascii")
+    res = c.file_sync_send(repo, f"x/{os.urandom(4).hex()}", len(content), encrypted, path_enc=path_enc)
+    return {"success": True, "repo": repo, "path": display, "size": len(content), "response": res}
+
+
 REGISTRY: list[Op] = [
     Op(
         name="scan",
@@ -2109,6 +2138,17 @@ REGISTRY: list[Op] = [
             Param("iid", "int", 0, "Only this MR iid (0 = all)"),
         ],
         run=op_mr_notes,
+    ),
+    Op(
+        name="mr_replies_send",
+        summary="Upload agent MR review replies (thread answers, new anchored discussions) to the mirror postbox; the work machine posts them to GitLab.",
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "GitLab MR iid", required=True),
+            Param("file", "str", "", "Path to a local replies-!N.md file", ),
+            Param("text", "str", "", "Inline replies markdown (alternative to file)"),
+        ],
+        run=op_mr_replies_send,
     ),
     Op(
         name="guide",
