@@ -17,6 +17,7 @@
     <projectService serviceImplementation="localgitmirror.idea.settings.MirrorProjectSettingsService"/>
     <projectService serviceImplementation="localgitmirror.idea.deps.DepsAutomationService"/>
     <projectService serviceImplementation="localgitmirror.idea.gitlab.MrReviewService"/>
+    <projectService serviceImplementation="localgitmirror.idea.gitlab.MrReviewAutoService"/>
     <projectConfigurable instance="localgitmirror.idea.settings.MirrorSettingsConfigurable"
                          id="localgitmirror.settings"
                          displayName="DocCache"
@@ -34,6 +35,7 @@
 
     <postStartupActivity implementation="localgitmirror.idea.startup.PullCheckStartupActivity"/>
     <postStartupActivity implementation="localgitmirror.idea.startup.DepsAutomationStartupActivity"/>
+    <postStartupActivity implementation="localgitmirror.idea.startup.MrReviewAutoStartupActivity"/>
     <postStartupActivity implementation="localgitmirror.idea.ui.LgmToolWindowPlacementActivity"/>
   </extensions>
 

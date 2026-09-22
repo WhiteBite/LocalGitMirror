@@ -48,10 +48,14 @@ class MrReplyPushService(private val project: Project) {
       UIUtil.invokeLaterIfNeeded {
         if (project.isDisposed) return@invokeLaterIfNeeded
         onDone?.invoke(reports)
-        notifySummary(reports)
+        if (reports.isNotEmpty()) notifySummary(reports)
       }
     }
   }
+
+  /** Synchronous single pass over the postbox; for background pollers. */
+  fun pushOnce(): List<FileReport> = runCatching { pushAll() }
+    .getOrElse { listOf(FileReport("(service)", 0, 0, 0, 1, listOf(it.message ?: "error"))) }
 
   private fun pushAll(): List<FileReport> {
     val settings = service<MirrorSettingsService>().state
@@ -204,10 +208,6 @@ class MrReplyPushService(private val project: Project) {
   }
 
   private fun notifySummary(reports: List<FileReport>) {
-    if (reports.isEmpty()) {
-      notify(LocalGitMirrorBundle.message("mrreplies.push.none"), NotificationType.INFORMATION)
-      return
-    }
     val posted = reports.sumOf { it.posted }
     val dup = reports.sumOf { it.dupSkipped }
     val skip = reports.sumOf { it.skipped }

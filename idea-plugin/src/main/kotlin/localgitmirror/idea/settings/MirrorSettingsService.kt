@@ -69,6 +69,9 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     var autoRespondDeps: Boolean = false,
     // HOME: automatically apply received deps responses.
     var autoApplyDeps: Boolean = true,
+    // WORK: push agent review replies from the postbox to GitLab without a
+    // manual action; HOME: auto-write incoming MR notes into .mr-notes/.
+    var autoMrReview: Boolean = true,
     // Poll interval for deps auto-sync, in seconds (15..600). Default 300s
     // (5 min) for stealth; the poller applies +/-30% jitter, a 15-min fast
     // window after local events, and exponential backoff up to 4x on idle.

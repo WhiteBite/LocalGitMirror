@@ -353,6 +353,16 @@ def _render_mr_send(r: dict) -> list[str]:
     return out
 
 
+def _render_mr_replies_send(r: dict) -> list[str]:
+    if not r.get("success"):
+        return [f"mr_replies_send FAILED: {r.get('error', '?')}"]
+    return [
+        f"Replies for {r.get('path')} uploaded to postbox "
+        f"({r.get('size', 0)} bytes, repo={r.get('repo')})",
+        "The work machine will post them to GitLab automatically.",
+    ]
+
+
 _RENDERERS = {
     "scan": _render_scan,
     "pending": _render_pending,
@@ -373,4 +383,5 @@ _RENDERERS = {
     "prune": _render_prune,
     "mr_list": _render_mr_list,
     "mr_send": _render_mr_send,
+    "mr_replies_send": _render_mr_replies_send,
 }

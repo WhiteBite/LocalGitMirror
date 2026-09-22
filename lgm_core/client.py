@@ -490,11 +490,14 @@ class MirrorClient:
     # ── file sync (repo-scoped encrypted file postbox) — /api/documents/* ─
 
     def file_sync_send(self, repo: str, path: str, plain_size: int,
-                       data: bytes) -> dict:
+                       data: bytes, path_enc: str = "") -> dict:
         """POST /api/documents/attachment-upload — upload an encrypted file container."""
+        fields = {"rid": repo, "path": path, "plain_size": str(plain_size)}
+        if path_enc:
+            fields["path_enc"] = path_enc
         return self._post_multipart(
             "/api/documents/attachment-upload",
-            fields={"rid": repo, "path": path, "plain_size": str(plain_size)},
+            fields=fields,
             files={"attachment": ("file.bin", data)},
         )
 
