@@ -191,16 +191,14 @@ def test_upload_apply_bootstraps_when_workspace_has_no_branch(monkeypatch, tmp_p
             return _P(0, "")
         if args[:2] == ("bundle", "list-heads"):
             return _P(0, "abc123 refs/heads/master\n")
-        if args[:3] == ("rev-parse", "--abbrev-ref", "HEAD"):
-            # Simulate unborn/no branch state
-            return _P(128, "HEAD\n", "fatal")
-        if args[:2] == ("checkout", "--detach"):
-            return _P(0, "")
+        if args[:3] == ("symbolic-ref", "--short", "-q"):
+            # Unborn HEAD still reports its branch name via symbolic-ref
+            return _P(0, "master\n")
         if args[0] == "fetch":
             return _P(0, "")
         if args[:2] == ("checkout", "-f"):
             return _P(0, "")
-        if args[:2] == ("checkout", "-B"):
+        if args[0] == "reset":
             return _P(0, "")
         if args[0] == "push":
             return _P(0, "")
@@ -264,13 +262,13 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
             return _P(0, "")
         if args[:2] == ("bundle", "list-heads"):
             return _P(0, "def456 refs/heads/main\nabc789 refs/heads/feature\n")
-        if args[:3] == ("rev-parse", "--abbrev-ref", "HEAD"):
+        if args[:3] == ("symbolic-ref", "--short", "-q"):
             return _P(0, "main\n", "")
-        if args[:2] == ("checkout", "--detach"):
-            return _P(0, "")
         if args[0] == "fetch":
             return _P(0, "", "")
         if args[:2] == ("checkout", "-f"):
+            return _P(0, "", "")
+        if args[0] == "reset":
             return _P(0, "", "")
         if args[0] == "push":
             return _P(0, "", "")
