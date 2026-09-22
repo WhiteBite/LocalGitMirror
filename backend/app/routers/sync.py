@@ -327,6 +327,43 @@ def _ensure_clean_workspace(path: Path) -> Optional[dict]:
     return None  # Never block upload
 
 
+def _attached_branch(path: Path) -> Optional[str]:
+    """Currently checked-out branch name, or None if HEAD is detached."""
+    proc = _git(path, "symbolic-ref", "--short", "-q", "HEAD")
+    if proc.returncode != 0:
+        return None
+    name = (proc.stdout or "").strip()
+    return name or None
+
+
+def _cleanup_lgm_refs(path: Path, namespace: str = "refs/lgm/"):
+    """Delete scratch refs left behind by sync flows."""
+    proc = _git(path, "for-each-ref", "--format=%(refname)", namespace)
+    if proc.returncode != 0:
+        return
+    for line in (proc.stdout or "").splitlines():
+        refname = line.strip()
+        if refname:
+            _git(path, "update-ref", "-d", refname)
+
+
+def _attach_workspace(workspace: Path, preferred: str, target_hash: Optional[str]) -> subprocess.CompletedProcess:
+    """Land HEAD on *preferred* without ever detaching it first.
+
+    When the workspace is already on *preferred*, the caller must have skipped
+    ref updates for it and passes its target hash so ref+tree move together via
+    reset --hard. Otherwise checkout -f attaches (creating the branch if the
+    workspace somehow lost it).
+    """
+    current = _attached_branch(workspace)
+    if current == preferred and target_hash:
+        return _git(workspace, "reset", "--hard", target_hash)
+    result = _git(workspace, "checkout", "-f", preferred)
+    if result.returncode != 0 and target_hash:
+        result = _git(workspace, "checkout", "-f", "-B", preferred, target_hash)
+    return result
+
+
 def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_filename: str) -> dict:
     if not repo_manager:
         return {"success": False, "message": "Repo manager is not initialized"}
@@ -381,12 +418,10 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
         if system_logger:
             system_logger.info("Bundle refs", {"repo": repo_name, "ref_count": len(bundle_refs)})
 
-        # ── Step 2: Fetch ALL refs from the bundle at once ──────────────
-        # Detach HEAD first so fetch can update all branch refs
-        _git(workspace_path, "checkout", "--detach")
-
-        # Use refspec to map bundle's refs/heads/* into local refs/heads/*
-        fetch_proc = _git(workspace_path, "fetch", str(bundle_path), "+refs/heads/*:refs/heads/*")
+        # ── Step 2: Fetch bundle objects into a neutral namespace ────────
+        # Invariant: refs/lgm/incoming/* never collides with the checked-out
+        # branch, so HEAD stays attached on every path, including failures.
+        fetch_proc = _git(workspace_path, "fetch", str(bundle_path), "+refs/heads/*:refs/lgm/incoming/*")
         if fetch_proc.returncode != 0:
             fetch_err = (fetch_proc.stderr or "").strip()
             if "prerequisite" in fetch_err.lower():
@@ -404,49 +439,38 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
                 if fetch_bare.returncode != 0:
                     return {"success": False, "message": fetch_err or "Failed to fetch bundle"}
 
-        # ── Step 3: Identify branches to push ──────────────────────────
-        branch_names = []
+        # ── Step 3: Identify branches whose objects actually landed ──────
+        incoming = {}  # branch_name -> commit_hash (list-heads order preserved)
         for ref_name, commit_hash in bundle_refs.items():
             if ref_name.startswith("refs/heads/"):
                 branch_name = ref_name[len("refs/heads/"):]
-                branch_names.append(branch_name)
             elif ref_name == "HEAD":
-                pass  # HEAD is handled via branch refs
+                continue  # HEAD is handled via branch refs
             else:
                 # Arbitrary ref — also update it
-                branch_names.append(ref_name.split("/")[-1] if "/" in ref_name else ref_name)
+                branch_name = ref_name.split("/")[-1] if "/" in ref_name else ref_name
+            if _git(workspace_path, "cat-file", "-e", f"{commit_hash}^{{commit}}").returncode == 0:
+                incoming[branch_name] = commit_hash
 
-        if not branch_names:
-            # Fallback — no refs/heads/ found, use FETCH_HEAD
-            branch_names = ["main"]
+        if not incoming:
+            return {"success": False, "message": "No applicable refs found in bundle"}
 
         # ── Step 4: Determine preferred branch for workspace checkout ───
-        current_branch = None
-        branch_proc = _git(workspace_path, "rev-parse", "--abbrev-ref", "HEAD")
-        if branch_proc.returncode == 0:
-            branch = (branch_proc.stdout or "").strip()
-            if branch and branch != "HEAD":
-                current_branch = branch
+        current_branch = _attached_branch(workspace_path)
 
-        # Prefer the work computer's current branch (first in bundle), then master/main
-        preferred_branch = branch_names[0] if branch_names else (current_branch or "main")
+        # Prefer the work computer's current branch (first in bundle)
+        preferred_branch = next(iter(incoming))
 
-        # ── Step 5: Checkout preferred branch on workspace ──────────────
-        checkout = _git(workspace_path, "checkout", "-f", preferred_branch)
-        if checkout.returncode != 0:
-            preferred_ref = f"refs/heads/{preferred_branch}"
-            target_hash = bundle_refs.get(preferred_ref, "FETCH_HEAD")
-            _git(workspace_path, "checkout", "-B", preferred_branch, target_hash)
-
-        # ── Step 6: Push ALL branches to bare repo ──────────────────────
+        # ── Step 5: Push ALL branches to bare repo from the neutral refs ─
         push_errors = []
         pushed_branches = []
-        if bare_path.exists():
-            for branch_name in branch_names:
+        for branch_name, commit_hash in incoming.items():
+            _git(workspace_path, "update-ref", f"refs/lgm/incoming/{branch_name}", commit_hash)
+            if bare_path.exists():
                 push_proc = _git(
                     workspace_path, "push", "--force",
                     str(bare_path),
-                    f"refs/heads/{branch_name}:refs/heads/{branch_name}"
+                    f"refs/lgm/incoming/{branch_name}:refs/heads/{branch_name}"
                 )
                 if push_proc.returncode == 0:
                     pushed_branches.append(branch_name)
@@ -457,7 +481,23 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
                         system_logger.warning("Failed to push branch", {"repo": repo_name, "error": _redact_git_text(err)})
 
         if not pushed_branches and push_errors:
+            _cleanup_lgm_refs(workspace_path)
             return {"success": False, "message": f"Failed to push any branch to bare repo: {'; '.join(push_errors)}"}
+
+        # ── Step 6: Move workspace branch refs, then attach HEAD ────────
+        for branch_name, commit_hash in incoming.items():
+            if branch_name == preferred_branch and current_branch == preferred_branch:
+                continue  # moved together with the working tree by reset below
+            _git(workspace_path, "update-ref", f"refs/heads/{branch_name}", commit_hash)
+
+        attach = _attach_workspace(workspace_path, preferred_branch, incoming.get(preferred_branch))
+        _cleanup_lgm_refs(workspace_path)
+        if attach.returncode != 0 or not _attached_branch(workspace_path):
+            return {
+                "success": False,
+                "message": f"Failed to attach workspace to '{preferred_branch}': "
+                           f"{_redact_git_text((attach.stderr or '').strip())}",
+            }
 
         log_proc = _git(workspace_path, "log", "-1", "--oneline")
         commit = (log_proc.stdout or "").strip() if log_proc.returncode == 0 else ""
@@ -876,26 +916,35 @@ async def sync_apply_known(request: EnvelopeRequest):
 
     _ensure_clean_workspace(workspace)
 
-    exists_proc = _git(workspace, "cat-file", "-e", f"{commit}^{{commit}}")
-    if exists_proc.returncode != 0:
-        return {"e": encrypt_envelope({"success": False, "message": f"Commit not found locally: {commit}", "repo": repo}, password)}
-
     # ── Collect all branch→hash mappings ──────────────────────
     branch_refs = {}  # branch_name -> commit_hash
     if branches_raw:
         branch_refs.update(branches_raw)
 
-    # Ensure current HEAD commit is included for the primary branch
-    branch_proc = _git(workspace, "rev-parse", "--abbrev-ref", "HEAD")
-    primary_branch = (branch_proc.stdout or "").strip() if branch_proc.returncode == 0 else ""
-    if primary_branch and primary_branch != "HEAD" and primary_branch not in branch_refs:
-        branch_refs[primary_branch] = commit
+    current_branch = _attached_branch(workspace)
+    if current_branch and current_branch not in branch_refs:
+        branch_refs[current_branch] = commit
 
-    # ── Update workspace refs to match sender's branch tips ──
-    _git(workspace, "checkout", "--detach")
+    # Objects may live only in bare (e.g. pushed there via git-http). Pull
+    # them into the workspace under a neutral namespace — HEAD and local
+    # branches are never touched by this fetch.
+    needed = [commit, *branch_refs.values()]
+    if any(_git(workspace, "cat-file", "-e", f"{h}^{{commit}}").returncode != 0 for h in needed):
+        if bare.exists():
+            _git(workspace, "fetch", str(bare), "+refs/heads/*:refs/lgm/bare/*")
 
-    if bare.exists():
-        _git(workspace, "fetch", str(bare), "+refs/heads/*:refs/fetched/*")
+    exists_proc = _git(workspace, "cat-file", "-e", f"{commit}^{{commit}}")
+    if exists_proc.returncode != 0:
+        _cleanup_lgm_refs(workspace)
+        return {"e": encrypt_envelope({"success": False, "message": f"Commit not found locally: {commit}", "repo": repo}, password)}
+
+    # Where HEAD should end up: stay on the current branch when attached,
+    # otherwise the sender's primary branch. An already-detached workspace
+    # heals back onto `preferred` below.
+    preferred = current_branch or (next(iter(branch_refs)) if branch_refs else None)
+    if not preferred:
+        head_proc = _git(bare, "symbolic-ref", "--short", "HEAD") if bare.exists() else None
+        preferred = ((head_proc.stdout or "").strip() if head_proc and head_proc.returncode == 0 else "") or "master"
 
     pushed_branches = []
     for branch_name, branch_hash in branch_refs.items():
@@ -908,19 +957,25 @@ async def sync_apply_known(request: EnvelopeRequest):
                 )
             continue
 
-        _git(workspace, "update-ref", f"refs/heads/{branch_name}", branch_hash)
-
         if bare.exists():
-            push = _git(workspace, "push", "--force", str(bare), f"refs/heads/{branch_name}:refs/heads/{branch_name}")
+            _git(workspace, "update-ref", f"refs/lgm/ak/{branch_name}", branch_hash)
+            push = _git(workspace, "push", "--force", str(bare), f"refs/lgm/ak/{branch_name}:refs/heads/{branch_name}")
             if push.returncode == 0:
                 pushed_branches.append(branch_name)
             elif system_logger:
                 system_logger.warning("apply-known: failed to push branch", {"repo": repo, "error": _redact_git_text(push.stderr)})
 
-    _git(workspace, "for-each-ref", "--format=%(refname)", "refs/fetched/")
+        if branch_name == preferred and current_branch == preferred:
+            continue  # moved together with the working tree by reset below
+        _git(workspace, "update-ref", f"refs/heads/{branch_name}", branch_hash)
 
-    preferred = primary_branch or (list(branch_refs.keys())[0] if branch_refs else "master")
-    _git(workspace, "checkout", "-f", preferred)
+    _attach_workspace(workspace, preferred, branch_refs.get(preferred))
+    if _attached_branch(workspace) is None:
+        # Last-resort heal: pin HEAD to the sender's commit under `preferred`.
+        _git(workspace, "checkout", "-f", "-B", preferred, commit)
+    _cleanup_lgm_refs(workspace)
+    if _attached_branch(workspace) is None and system_logger:
+        system_logger.warning("apply-known: workspace HEAD still detached after attach attempt", {"repo": repo, "preferred": preferred})
 
     if system_logger:
         system_logger.info("apply-known result", {"repo": repo, "branches_count": len(pushed_branches)})
