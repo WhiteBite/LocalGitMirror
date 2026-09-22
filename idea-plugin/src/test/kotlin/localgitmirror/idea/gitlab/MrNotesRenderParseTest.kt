@@ -24,11 +24,11 @@ class MrNotesRenderParseTest {
     )
 
   private fun discussions() = listOf(
-    GitLabApi.MrDiscussion(resolved = false, notes = listOf(
+    GitLabApi.MrDiscussion(id = "8f2e4c1d", resolved = false, notes = listOf(
       note("Ivan", "EDT call", file = "ArchTarget.kt", line = 88),
       note("Me", "ok fixing"),
     )),
-    GitLabApi.MrDiscussion(resolved = true, notes = listOf(
+    GitLabApi.MrDiscussion(id = "a0b177d9", resolved = true, notes = listOf(
       note("Ivan", "rename getRefs"),
     )),
     GitLabApi.MrDiscussion(resolved = true, notes = listOf(
@@ -49,6 +49,8 @@ class MrNotesRenderParseTest {
     assertTrue(unres in 0 until res, "unresolved must precede resolved")
     assertTrue(res in 0 until sys, "resolved must precede system section")
     assertTrue(md.contains("**Место:** `ArchTarget.kt:88`"))
+    assertTrue(md.contains("<!-- lgm-thread: 8f2e4c1d -->"), "machine thread marker must be rendered")
+    assertTrue(md.contains("**ID треда:** `8f2e4c1d`"), "visible thread id must be rendered")
     assertTrue(md.contains("&nbsp;&nbsp;↳ **Me**"), "replies must be indented with arrow")
     assertTrue(!md.contains("```kt"), "no code block without project")
     assertTrue(md.startsWith("<!-- Сгенерировано плагином DocCache"))

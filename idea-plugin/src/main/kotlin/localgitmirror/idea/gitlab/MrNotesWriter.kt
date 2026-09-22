@@ -76,6 +76,10 @@ object MrNotesWriter {
       val suffix = if (closedBy != null) " · закрыл: $closedBy" else ""
       sb.appendLine("## ✓ решено · тред $n$suffix")
     }
+    if (d.id.isNotBlank()) {
+      sb.appendLine("<!-- lgm-thread: ${d.id} -->")
+      sb.appendLine("**ID треда:** `${d.id}`")
+    }
     sb.appendLine()
 
     val anchorFile = d.anchorFile
@@ -198,6 +202,27 @@ object MrNotesWriter {
     sb.appendLine("1. Открой файлы MR с нерешёнными тредами (колонка «Нерешённых» > 0).")
     sb.appendLine("2. Каждый тред помечен `## ⚠ НЕ РЕШЕНО` и содержит `файл:строка` + фрагмент кода.")
     sb.appendLine("3. Внеси правки по замечаниям. Решённые треды (`## ✓ решено`) — уже закрыты, трогать не нужно.")
+    sb.appendLine()
+    sb.appendLine("## Как ответить и оставить новые замечания")
+    sb.appendLine("Создай файл `.mr-notes/replies-!N.md` (N — номер MR) и опиши секции:")
+    sb.appendLine("```markdown")
+    sb.appendLine("<!-- lgm-replies v1 -->")
+    sb.appendLine("# MR !N — ответы")
+    sb.appendLine("- branch: <ветка из файла MR>")
+    sb.appendLine()
+    sb.appendLine("## thread <ID треда из строки «ID треда»>")
+    sb.appendLine("resolve: yes | no")
+    sb.appendLine("Текст ответа в существующий тред.")
+    sb.appendLine()
+    sb.appendLine("## new <файл>:<строка>")
+    sb.appendLine("Новое замечание по коду (создаст новый тред в MR).")
+    sb.appendLine()
+    sb.appendLine("## new")
+    sb.appendLine("Общий комментарий к MR без привязки к коду.")
+    sb.appendLine("```")
+    sb.appendLine("Правила: `resolve: yes` закрывает тред после ответа (по умолчанию — no);")
+    sb.appendLine("секции без текста игнорируются; ID треда копируй дословно;")
+    sb.appendLine("файл передаётся на рабочий ПК кнопкой «Отправить ответы ревью», оттуда уходит в GitLab.")
 
     file.writeText(sb.toString(), Charsets.UTF_8)
     return file.toPath()
