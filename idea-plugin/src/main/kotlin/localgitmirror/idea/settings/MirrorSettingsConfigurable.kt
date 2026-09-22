@@ -24,6 +24,8 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   private var urlField: javax.swing.JTextField? = null
   private var apiKeyField: javax.swing.JPasswordField? = null
   private var syncPasswordField: javax.swing.JPasswordField? = null
+  private var gitlabUrlField: javax.swing.JTextField? = null
+  private var gitlabTokenField: javax.swing.JPasswordField? = null
   private var syncPwdEcho: Char = 0.toChar()
 
   // SecretsStore-backed fields — managed manually (not in PersistentStateComponent)
@@ -104,12 +106,14 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
             .bindText(state::gitlabUrl)
             .resizableColumn()
             .comment(LocalGitMirrorBundle.message("settings.gitlab.url.comment"))
+            .applyToComponent { gitlabUrlField = this }
         }
 
         row(LocalGitMirrorBundle.message("settings.gitlab.token.label")) {
           passwordField()
             .bindText(::gitlabTokenLocal)
             .comment(LocalGitMirrorBundle.message("settings.gitlab.token.comment"))
+            .applyToComponent { gitlabTokenField = this }
         }
 
         row {
@@ -286,7 +290,12 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
   private fun onGitLabTestClicked() {
     val resolved = localgitmirror.idea.gitlab.GitLabConfig.resolve(project)
-    val conf = resolved.copy(token = gitlabTokenLocal.trim().ifBlank { resolved.token })
+    val typedUrl = resolveUrl(gitlabUrlField?.text ?: state.gitlabUrl)
+    val typedToken = gitlabTokenField?.text?.trim().orEmpty()
+    val conf = resolved.copy(
+      url = typedUrl.ifBlank { resolved.url },
+      token = typedToken.ifBlank { resolved.token }
+    )
     Thread({
       val result = runCatching { localgitmirror.idea.gitlab.GitLabApi.verify(conf) }
         .getOrElse { localgitmirror.idea.gitlab.GitLabApi.VerifyResult(0, null, it.message ?: "error") }
@@ -298,7 +307,11 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           result.code in 200..299 -> LocalGitMirrorBundle.message(
             "settings.gitlab.test.ok", conf.url, conf.project, result.projectName ?: ""
           )
-          result.code == 401 -> LocalGitMirrorBundle.message("settings.gitlab.test.badToken", conf.url)
+          result.code == 401 -> {
+            val base = LocalGitMirrorBundle.message("settings.gitlab.test.badToken", conf.url)
+            val body = result.message.take(200)
+            if (body.isBlank()) base else "$base\n$body"
+          }
           result.code == 404 -> LocalGitMirrorBundle.message("settings.gitlab.test.badProject", conf.url, conf.project)
           else -> LocalGitMirrorBundle.message("settings.gitlab.test.fail", result.code, result.message)
         }
