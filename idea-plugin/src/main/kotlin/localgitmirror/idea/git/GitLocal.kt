@@ -68,12 +68,20 @@ object GitLocal {
   }
 
   fun currentBranch(project: Project, workDir: File): String? {
-    val r = run(project, workDir, 10, "rev-parse", "--abbrev-ref", "HEAD")
+    val r = run(project, workDir, 10, "symbolic-ref", "--short", "-q", "HEAD")
     if (!r.ok()) return null
     val name = r.stdout.trim()
-    if (name.isBlank() || name == "HEAD") return null
+    if (isJunkBranchName(name)) return null
     return name
   }
+
+  /** True when HEAD has no commit yet; symbolic-ref still reports a name on unborn repos. */
+  fun hasHeadCommit(project: Project, workDir: File): Boolean =
+    run(project, workDir, 10, "rev-parse", "-q", "--verify", "HEAD").ok()
+
+  /** A branch name with a HEAD component poisons rev-parse/dwim on every machine it lands. */
+  fun isJunkBranchName(name: String): Boolean =
+    name.isBlank() || name.split("/").contains("HEAD")
 
   fun isCleanWorkTree(project: Project, workDir: File): Boolean {
     val r = run(project, workDir, 10, "status", "--porcelain")
@@ -87,7 +95,7 @@ object GitLocal {
     return r.stdout
       .lines()
       .map { it.trim() }
-      .filter { it.isNotBlank() }
+      .filter { it.isNotBlank() && !isJunkBranchName(it) }
   }
 
   fun push(project: Project, workDir: File, remote: String, branch: String, setUpstream: Boolean): Result {

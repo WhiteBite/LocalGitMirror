@@ -33,6 +33,10 @@ internal fun LocalGitMirrorPanel.syncCurrentBranch() {
 
   val chosenBranch = selectedChoice?.name ?: GitLocal.currentBranch(project, dir) ?: "(unknown)"
   val currentBranch = GitLocal.currentBranch(project, dir)
+  if (currentBranch == null) {
+    notify(LocalGitMirrorBundle.message("notify.send.detached"), NotificationType.ERROR)
+    return
+  }
   val additionalBranches = selectedAdditionalBranches.toList()
   val needsCheckout = chosenBranch != currentBranch && !chosenBranch.isBlank()
 
@@ -120,6 +124,10 @@ internal fun LocalGitMirrorPanel.syncBranch() {
 
   val branches = GitLocal.localBranches(project, dir)
   val current = GitLocal.currentBranch(project, dir)
+  if (current == null) {
+    notify(LocalGitMirrorBundle.message("notify.send.detached"), NotificationType.ERROR)
+    return
+  }
   val chosen = Messages.showEditableChooseDialog(
     LocalGitMirrorBundle.message("dialog.selectBranch.prompt"),
     LocalGitMirrorBundle.message("dialog.selectBranch.title"),
@@ -204,6 +212,10 @@ internal fun LocalGitMirrorPanel.syncSelectedCommits() {
   val commits = GitLocal.recentCommits(project, dir, 30)
   if (commits.isEmpty()) {
     notify(LocalGitMirrorBundle.message("notify.noRecentCommits"), NotificationType.WARNING)
+    return
+  }
+  if (GitLocal.currentBranch(project, dir) == null) {
+    notify(LocalGitMirrorBundle.message("notify.send.detached"), NotificationType.ERROR)
     return
   }
   val selectedHashes = pickCommitHashes(commits)
