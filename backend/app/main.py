@@ -186,6 +186,7 @@ async def lifespan(app: FastAPI):
     system_logger = get_logger(actual_storage_path)
     git_handler = GitHandler(actual_storage_path, port=CONFIG["git_port"], on_receive=on_repo_receive)
     repo_manager = RepoManager(actual_storage_path)
+    repo_manager.ensure_receive_hooks()
     shared_manager = SharedManager(actual_storage_path)
 
     # 2. Inject dependencies into routers
