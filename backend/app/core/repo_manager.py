@@ -81,7 +81,10 @@ class RepoManager:
 
     def ensure_receive_hooks(self) -> None:
         for repo_name in self.get_repos():
-            self.ensure_receive_hook(repo_name)
+            try:
+                self.ensure_receive_hook(repo_name)
+            except OSError as exc:
+                console.print(f"[yellow][!] receive hook not installed for {repo_name}: {exc}[/yellow]")
 
     def get_repos(self) -> List[str]:
         """Get list of all repositories"""
