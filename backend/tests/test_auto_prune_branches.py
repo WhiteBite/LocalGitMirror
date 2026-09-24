@@ -1,16 +1,11 @@
 """
-Tests for auto-prune of stale branches during push.
+Tests for branch pruning on the Mirror.
 
-When the plugin sends `local_branches` in the envelope, the server removes
-branches from Mirror that:
-  - exist on Mirror bare repo
-  - do NOT exist in the client's local_branches list
-  - are NOT the current HEAD of the bare repo
-
-Safety guards:
-  - HEAD is never pruned
-  - If pruning would leave zero branches, nothing is pruned
-  - Without `local_branches` in params, no prune happens (backward compat)
+Contract since the auto-prune removal: stealth sync endpoints (apply-known,
+upload-and-apply) never delete mirror branches from the sender's partial
+local view — a sender that never pulled a branch would otherwise prune it.
+Pruning is explicit via /documents/prune-branches (dry-run or apply), which
+protects the bare HEAD and refuses to empty the repo.
 """
 import json
 import subprocess
@@ -19,6 +14,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.core.bundle_crypto import encrypt_bundle_to_dump
 from app.core.repo_manager import RepoManager
 from tests import _harness
 from tests.conftest import envelope_form_post, envelope_post, parse_envelope
@@ -66,7 +62,6 @@ def _create_repo_with_branches(client, storage, rm, repo_name: str, branches: li
     """Create repo and push multiple branches into bare."""
     assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
 
-    # Use a scratch dir to create branches and push to bare
     bare = rm._get_bare_path(repo_name)
     ws = storage / repo_name
 
@@ -75,29 +70,20 @@ def _create_repo_with_branches(client, storage, rm, repo_name: str, branches: li
         (ws / f"{br}.txt").write_text(f"{br}\n")
         _run_git(ws, "add", ".")
         _run_git(ws, "commit", "-m", f"commit on {br}")
-        # Push to bare
         _run_git(ws, "push", "--force", str(bare), f"refs/heads/{br}:refs/heads/{br}")
 
-    # Set HEAD to first branch
     _run_git(bare, "symbolic-ref", "HEAD", f"refs/heads/{branches[0]}")
     _run_git(ws, "checkout", branches[0])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Tests via /documents/link (apply-known) — the pointer-only path
-# ─────────────────────────────────────────────────────────────────────────────
+# Stealth endpoints never prune
 
-def test_prune_removes_stale_branches_on_apply_known(tmp_path, monkeypatch):
-    """Branches not in local_branches get pruned after apply-known."""
+def test_apply_known_does_not_prune_stale_branches(tmp_path, monkeypatch):
     client, storage, rm = _make_client(tmp_path, monkeypatch)
     repo = f"prune-ak-{int(time.time())}"
     _create_repo_with_branches(client, storage, rm, repo, ["main", "feature", "old-spike", "dead-code"])
 
     bare = rm._get_bare_path(repo)
-    # /repos/create also creates a 'master' branch; our branches are pushed on top
-    assert {"main", "feature", "old-spike", "dead-code"}.issubset(_bare_branches(bare))
-
-    # Client says it only has main + feature locally
     head = _run_git(bare, "rev-parse", "refs/heads/main").stdout.strip()
     resp = envelope_post(client, "/api/documents/link", {
         "repo": repo,
@@ -109,120 +95,24 @@ def test_prune_removes_stale_branches_on_apply_known(tmp_path, monkeypatch):
     inner = parse_envelope(resp.json(), PASSWORD)
     assert inner["success"] is True
 
-    # old-spike and dead-code should be pruned; master too (it's not in local_branches and not HEAD)
-    pruned = set(inner.get("pruned", []))
-    assert "old-spike" in pruned
-    assert "dead-code" in pruned
     remaining = _bare_branches(bare)
-    assert "main" in remaining
-    assert "feature" in remaining
-    assert "old-spike" not in remaining
-    assert "dead-code" not in remaining
+    assert {"main", "feature", "old-spike", "dead-code"}.issubset(remaining)
+    assert inner.get("pruned") is None
 
 
-def test_prune_never_removes_head(tmp_path, monkeypatch):
-    """HEAD branch is always protected even if not in local_branches."""
-    client, storage, rm = _make_client(tmp_path, monkeypatch)
-    repo = f"prune-head-{int(time.time())}"
-    _create_repo_with_branches(client, storage, rm, repo, ["main", "feature"])
-
-    bare = rm._get_bare_path(repo)
-    _run_git(bare, "symbolic-ref", "HEAD", "refs/heads/main")
-
-    # Client says it only has feature — main is HEAD on server
-    head = _run_git(bare, "rev-parse", "refs/heads/feature").stdout.strip()
-    resp = envelope_post(client, "/api/documents/link", {
-        "repo": repo,
-        "commit": head,
-        "branches": {"feature": head},
-        "local_branches": ["feature"],
-    }, PASSWORD)
-    assert resp.status_code == 200, resp.text
-    inner = parse_envelope(resp.json(), PASSWORD)
-    assert inner["success"] is True
-
-    # main must NOT be pruned (it's HEAD)
-    assert "main" not in inner.get("pruned", [])
-    assert "main" in _bare_branches(bare)
-    assert "feature" in _bare_branches(bare)
-
-
-def test_prune_does_nothing_without_local_branches(tmp_path, monkeypatch):
-    """Backward compat: no local_branches field → no pruning."""
-    client, storage, rm = _make_client(tmp_path, monkeypatch)
-    repo = f"prune-nofield-{int(time.time())}"
-    _create_repo_with_branches(client, storage, rm, repo, ["main", "stale"])
-
-    bare = rm._get_bare_path(repo)
-    head = _run_git(bare, "rev-parse", "refs/heads/main").stdout.strip()
-
-    resp = envelope_post(client, "/api/documents/link", {
-        "repo": repo,
-        "commit": head,
-        "branches": {"main": head},
-        # no local_branches!
-    }, PASSWORD)
-    assert resp.status_code == 200, resp.text
-    inner = parse_envelope(resp.json(), PASSWORD)
-    assert inner["success"] is True
-    assert inner.get("pruned") is None or inner.get("pruned") == []
-
-    # stale must still be there
-    assert "stale" in _bare_branches(bare)
-
-
-def test_prune_wont_delete_last_branch(tmp_path, monkeypatch):
-    """Safety: if pruning would leave zero branches, skip entirely."""
-    client, storage, rm = _make_client(tmp_path, monkeypatch)
-    repo = f"prune-last-{int(time.time())}"
-    _create_repo_with_branches(client, storage, rm, repo, ["only"])
-
-    bare = rm._get_bare_path(repo)
-    head = _run_git(bare, "rev-parse", "refs/heads/only").stdout.strip()
-
-    # Client has NO branches in local_branches — extreme case
-    resp = envelope_post(client, "/api/documents/link", {
-        "repo": repo,
-        "commit": head,
-        "branches": {"only": head},
-        "local_branches": [],
-    }, PASSWORD)
-    assert resp.status_code == 200, resp.text
-    inner = parse_envelope(resp.json(), PASSWORD)
-    assert inner["success"] is True
-    # "only" is HEAD so it's protected, but even if it weren't,
-    # the "never leave zero branches" guard would save it.
-    # Note: /repos/create also creates 'master', which is also protected (not in local_branches
-    # but the guard protects HEAD='only', and 'master' is not the only branch).
-    # Key assertion: at least "only" still exists.
-    assert "only" in _bare_branches(bare)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Tests via /documents/upload — the full bundle path
-# ─────────────────────────────────────────────────────────────────────────────
-
-def test_prune_works_on_upload(tmp_path, monkeypatch):
-    """Auto-prune also fires after a successful upload-and-apply."""
+def test_upload_does_not_prune(tmp_path, monkeypatch):
     client, storage, rm = _make_client(tmp_path, monkeypatch)
     repo = f"prune-upload-{int(time.time())}"
     _create_repo_with_branches(client, storage, rm, repo, ["main", "old-branch"])
 
     bare = rm._get_bare_path(repo)
     ws = storage / repo
-    assert "old-branch" in _bare_branches(bare)
 
-    # Create a real encrypted dump to upload
-    from app.core.bundle_crypto import encrypt_bundle_to_dump
-    import tempfile
-
-    # Create a minimal bundle from workspace
     bundle_path = tmp_path / "test.bundle"
     _run_git(ws, "bundle", "create", str(bundle_path), "--all")
     dump_path = tmp_path / "test.bin"
     encrypt_bundle_to_dump(bundle_path, dump_path, PASSWORD)
 
-    # Upload with local_branches = ["main"] only
     resp = envelope_form_post(
         client, "/api/documents/upload",
         {"repo": repo, "local_branches": ["main"]},
@@ -233,7 +123,87 @@ def test_prune_works_on_upload(tmp_path, monkeypatch):
     inner = parse_envelope(resp.json(), PASSWORD)
     assert inner.get("success") is True
 
-    # old-branch should be pruned
-    assert "old-branch" in inner.get("pruned", [])
-    assert "old-branch" not in _bare_branches(bare)
-    assert "main" in _bare_branches(bare)
+    assert "old-branch" in _bare_branches(bare)
+    assert inner.get("pruned") is None
+
+
+# Explicit /documents/prune-branches
+
+def _make_merged_repo(client, storage, rm, repo: str):
+    """main (HEAD) with a merged-in branch and a live unmerged branch."""
+    _create_repo_with_branches(client, storage, rm, repo, ["main"])
+    ws = storage / repo
+    bare = rm._get_bare_path(repo)
+
+    _run_git(ws, "checkout", "-b", "merged-branch")
+    (ws / "merged.txt").write_text("m\n")
+    _run_git(ws, "add", ".")
+    _run_git(ws, "commit", "-m", "merged work")
+    _run_git(ws, "push", "--force", str(bare), "refs/heads/merged-branch:refs/heads/merged-branch")
+
+    _run_git(ws, "checkout", "main")
+    _run_git(ws, "merge", "--no-ff", "-m", "merge merged-branch", "merged-branch")
+    (ws / "later.txt").write_text("l\n")
+    _run_git(ws, "add", ".")
+    _run_git(ws, "commit", "-m", "main moves ahead")
+    _run_git(ws, "push", "--force", str(bare), "refs/heads/main:refs/heads/main")
+
+    _run_git(ws, "checkout", "-b", "unmerged-branch")
+    (ws / "unmerged.txt").write_text("u\n")
+    _run_git(ws, "add", ".")
+    _run_git(ws, "commit", "-m", "parallel work")
+    _run_git(ws, "push", "--force", str(bare), "refs/heads/unmerged-branch:refs/heads/unmerged-branch")
+    _run_git(ws, "checkout", "main")
+    return bare
+
+
+def test_manual_prune_dry_run_deletes_nothing(tmp_path, monkeypatch):
+    client, storage, rm = _make_client(tmp_path, monkeypatch)
+    repo = f"prune-dry-{int(time.time())}"
+    bare = _make_merged_repo(client, storage, rm, repo)
+
+    resp = envelope_post(client, "/api/documents/prune-branches", {
+        "repo": repo, "bases": ["main"], "apply": False,
+    }, PASSWORD)
+    assert resp.status_code == 200, resp.text
+    inner = parse_envelope(resp.json(), PASSWORD)
+    assert inner["success"] is True
+    assert "merged-branch" in inner.get("candidates", [])
+
+    assert {"main", "merged-branch", "unmerged-branch"} == _bare_branches(bare) - {"master"}
+
+
+def test_manual_prune_apply_deletes_merged_only(tmp_path, monkeypatch):
+    client, storage, rm = _make_client(tmp_path, monkeypatch)
+    repo = f"prune-apply-{int(time.time())}"
+    bare = _make_merged_repo(client, storage, rm, repo)
+
+    resp = envelope_post(client, "/api/documents/prune-branches", {
+        "repo": repo, "bases": ["main"], "apply": True,
+    }, PASSWORD)
+    assert resp.status_code == 200, resp.text
+    inner = parse_envelope(resp.json(), PASSWORD)
+    assert inner["success"] is True
+    assert "merged-branch" in inner.get("pruned", [])
+
+    remaining = _bare_branches(bare)
+    assert "merged-branch" not in remaining
+    assert "unmerged-branch" in remaining
+    assert "main" in remaining
+
+
+def test_manual_prune_protects_head(tmp_path, monkeypatch):
+    client, storage, rm = _make_client(tmp_path, monkeypatch)
+    repo = f"prune-head-{int(time.time())}"
+    bare = _make_merged_repo(client, storage, rm, repo)
+
+    # HEAD is main; even with main as a base and apply on, HEAD survives
+    resp = envelope_post(client, "/api/documents/prune-branches", {
+        "repo": repo, "bases": ["main", "unmerged-branch"], "apply": True,
+    }, PASSWORD)
+    assert resp.status_code == 200, resp.text
+    inner = parse_envelope(resp.json(), PASSWORD)
+    assert inner["success"] is True
+
+    remaining = _bare_branches(bare)
+    assert "main" in remaining

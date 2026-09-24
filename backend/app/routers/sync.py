@@ -246,54 +246,6 @@ def _decrypt_params(e: str, password: str, epk: Optional[str] = None) -> dict:
         raise HTTPException(400, "Invalid request envelope")
 
 
-def _prune_stale_branches(repo_name: str, local_branches: list, password: str) -> list:
-    """Remove branches from Mirror that don't exist locally and aren't HEAD.
-
-    Returns list of pruned branch names. Safe: never deletes HEAD or the last branch.
-    """
-    if not repo_manager or not local_branches:
-        return []
-
-    bare = repo_manager._get_bare_path(repo_name)
-    if not bare.exists():
-        return []
-
-    # Get all branches on Mirror bare repo
-    proc = _git(bare, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
-    if proc.returncode != 0:
-        return []
-    mirror_branches = {b.strip() for b in (proc.stdout or "").splitlines() if b.strip()}
-
-    # Get HEAD branch (protected)
-    head_proc = _git(bare, "symbolic-ref", "--short", "HEAD")
-    head_branch = (head_proc.stdout or "").strip() if head_proc.returncode == 0 else ""
-
-    # Normalize local branches for comparison
-    local_set = {b.strip() for b in local_branches if b and b.strip()}
-
-    # Candidates = on Mirror but NOT local and NOT HEAD
-    candidates = mirror_branches - local_set - {head_branch}
-
-    # Safety: never delete if it would leave zero branches
-    if len(mirror_branches) - len(candidates) < 1:
-        return []
-
-    pruned = []
-    workspace = repo_manager._get_workspace_path(repo_name)
-    for branch in candidates:
-        del_result = _git(bare, "update-ref", "-d", f"refs/heads/{branch}")
-        if del_result.returncode == 0:
-            pruned.append(branch)
-            # Best-effort: also remove from workspace
-            if workspace.exists():
-                _git(workspace, "branch", "-D", branch)
-
-    if pruned and system_logger:
-        system_logger.info("auto-pruned stale branches", {"repo": repo_name, "pruned_count": len(pruned)})
-
-    return pruned
-
-
 def _ensure_clean_workspace(path: Path) -> Optional[dict]:
     """Check if workspace is clean; if not, try to reset/clean. Never blocks upload."""
     status_proc = _git(path, "status", "--porcelain")
@@ -334,6 +286,11 @@ def _attached_branch(path: Path) -> Optional[str]:
         return None
     name = (proc.stdout or "").strip()
     return name or None
+
+
+def _is_junk_branch_name(name: str) -> bool:
+    # a branch with a HEAD component poisons `rev-parse --abbrev-ref HEAD` and git dwim on every machine it lands
+    return not name or "HEAD" in name.split("/")
 
 
 def _cleanup_lgm_refs(path: Path, namespace: str = "refs/lgm/"):
@@ -442,13 +399,11 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
         # ── Step 3: Identify branches whose objects actually landed ──────
         incoming = {}  # branch_name -> commit_hash (list-heads order preserved)
         for ref_name, commit_hash in bundle_refs.items():
-            if ref_name.startswith("refs/heads/"):
-                branch_name = ref_name[len("refs/heads/"):]
-            elif ref_name == "HEAD":
-                continue  # HEAD is handled via branch refs
-            else:
-                # Arbitrary ref — also update it
-                branch_name = ref_name.split("/")[-1] if "/" in ref_name else ref_name
+            if not ref_name.startswith("refs/heads/"):
+                continue
+            branch_name = ref_name[len("refs/heads/"):]
+            if _is_junk_branch_name(branch_name):
+                continue
             if _git(workspace_path, "cat-file", "-e", f"{commit_hash}^{{commit}}").returncode == 0:
                 incoming[branch_name] = commit_hash
 
@@ -457,9 +412,11 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
 
         # ── Step 4: Determine preferred branch for workspace checkout ───
         current_branch = _attached_branch(workspace_path)
+        if _is_junk_branch_name(current_branch):
+            current_branch = None
 
-        # Prefer the work computer's current branch (first in bundle)
-        preferred_branch = next(iter(incoming))
+        # The workspace keeps its own branch; the sender's order only heals detached/unborn HEAD
+        preferred_branch = current_branch or next(iter(incoming))
 
         # ── Step 5: Push ALL branches to bare repo from the neutral refs ─
         push_errors = []
@@ -920,8 +877,11 @@ async def sync_apply_known(request: EnvelopeRequest):
     branch_refs = {}  # branch_name -> commit_hash
     if branches_raw:
         branch_refs.update(branches_raw)
+    branch_refs = {k: v for k, v in branch_refs.items() if not _is_junk_branch_name(k)}
 
     current_branch = _attached_branch(workspace)
+    if _is_junk_branch_name(current_branch):
+        current_branch = None
     if current_branch and current_branch not in branch_refs:
         branch_refs[current_branch] = commit
 
@@ -980,12 +940,6 @@ async def sync_apply_known(request: EnvelopeRequest):
     if system_logger:
         system_logger.info("apply-known result", {"repo": repo, "branches_count": len(pushed_branches)})
 
-    # Auto-prune stale branches if client sent its local branch list
-    local_branches = params.get("local_branches")
-    pruned = []
-    if local_branches:
-        pruned = _prune_stale_branches(repo, local_branches, password)
-
     result = {
         "success": True,
         "repo": repo,
@@ -993,8 +947,6 @@ async def sync_apply_known(request: EnvelopeRequest):
         "branches": pushed_branches,
         "message": f"Applied known commit ({len(pushed_branches)} branch(es): {', '.join(pushed_branches)})",
     }
-    if pruned:
-        result["pruned"] = pruned
 
     return {"e": encrypt_envelope(result, password)}
 
@@ -1059,14 +1011,6 @@ async def sync_upload_and_apply(
         result = _apply_dump_to_repo_and_sync_bare(
             dump_path=dump_path, repo_name=repo_name, dump_filename=dump_path.name
         )
-
-        # Auto-prune stale branches if client sent its local branch list
-        local_branches = params.get("local_branches")
-        pruned = []
-        if local_branches and result.get("success"):
-            pruned = _prune_stale_branches(repo_name, local_branches, password)
-        if pruned:
-            result["pruned"] = pruned
 
         return {"e": encrypt_envelope(result, password)}
 
@@ -1240,9 +1184,9 @@ async def prune_branches(request: EnvelopeRequest):
                         ["master", "develop", "plan_fix"] when empty.
       apply      (bool) false = dry-run (report candidates, delete nothing);
                         true  = delete candidates from bare (+ best-effort
-                        workspace branch -D, like _prune_stale_branches).
+                        workspace branch -D).
 
-    Guards (same family as delete-ref / _prune_stale_branches):
+    Guards (same family as delete-ref):
       - HEAD branch of the bare repo is always protected.
       - Never delete if it would leave < 1 branch in the bare repo.
       - keep/bases entries must be valid git refnames.
@@ -1284,7 +1228,7 @@ async def prune_branches(request: EnvelopeRequest):
     if not bare.exists():
         raise HTTPException(404, "Repository data not found")
 
-    # All branches in the bare repo (source of truth, like _prune_stale_branches).
+    # All branches in the bare repo (source of truth).
     branches_proc = _git(bare, "for-each-ref", "--format=%(refname:short)", "refs/heads/")
     if branches_proc.returncode != 0:
         raise HTTPException(500, "Failed to list branches in bare repo")
@@ -1343,7 +1287,7 @@ async def prune_branches(request: EnvelopeRequest):
             del_result = _git(bare, "update-ref", "-d", f"refs/heads/{branch}")
             if del_result.returncode == 0:
                 pruned.append(branch)
-                # Best-effort: also remove from workspace (like _prune_stale_branches).
+                # Best-effort: also remove from workspace.
                 if workspace.exists():
                     _git(workspace, "branch", "-D", branch)
 

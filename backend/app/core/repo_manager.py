@@ -1,3 +1,4 @@
+import os
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,20 @@ from app.core.logger import get_logger
 from app.core.settings_manager import SettingsManager
 
 console = Console()
+
+# a branch with a HEAD component poisons `rev-parse --abbrev-ref HEAD` and git dwim on every machine it reaches
+_RECEIVE_HOOK = """#!/bin/sh
+# lgm-junk-guard
+while read -r oldrev newrev refname; do
+  case "$refname" in
+    refs/heads/HEAD|refs/heads/*/HEAD)
+      echo "lgm: rejected $refname (branch name collides with HEAD)" >&2
+      exit 1
+      ;;
+  esac
+done
+exit 0
+"""
 
 
 class RepoManager:
@@ -45,6 +60,28 @@ class RepoManager:
     def _get_workspace_path(self, repo_name: str) -> Path:
         """The checked out workspace for editing/viewing"""
         return self.storage_path / repo_name
+
+    def ensure_receive_hook(self, repo_name: str) -> None:
+        """Install the junk-ref receive guard on the repo's bare, idempotently."""
+        bare = self._get_bare_path(repo_name)
+        if not bare.exists():
+            return
+        hook = bare / "hooks" / "pre-receive"
+        hook.parent.mkdir(parents=True, exist_ok=True)
+        existing = hook.read_text(encoding="utf-8") if hook.exists() else ""
+        if existing == _RECEIVE_HOOK or ("lgm-junk-guard" in existing and "refs/heads/HEAD" in existing):
+            return
+        if existing.strip():
+            return  # foreign hook: never clobber
+        hook.write_text(_RECEIVE_HOOK, encoding="utf-8")
+        try:
+            os.chmod(hook, 0o755)
+        except OSError:
+            pass
+
+    def ensure_receive_hooks(self) -> None:
+        for repo_name in self.get_repos():
+            self.ensure_receive_hook(repo_name)
 
     def get_repos(self) -> List[str]:
         """Get list of all repositories"""
@@ -238,6 +275,7 @@ class RepoManager:
         try:
             bare_path.mkdir(parents=True, exist_ok=True)
             subprocess.run(["git", "init", "--bare"], cwd=str(bare_path), check=True)
+            self.ensure_receive_hook(repo_name)
 
             workspace.mkdir(parents=True, exist_ok=True)
             subprocess.run(["git", "init"], cwd=str(workspace), check=True)
