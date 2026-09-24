@@ -103,19 +103,20 @@ object BundleImporter {
    */
   private fun applyMultiAuto(workDir: File, branchInfos: List<BundleBranchInfo>): String {
     val localBranches = listLocalBranches(workDir)
-    val preBranch = currentBranch(workDir)
+    val infos = branchInfos.filter { !isJunkName(it.cleanName) }
+    if (infos.isEmpty()) return "ERROR: no applicable branches in bundle"
 
     val results = mutableListOf<String>()
-    
+
     // Sort branches so we apply defaults last (makes UI nicer, preferred feature branch usually first)
-    val sortedBranches = branchInfos.sortedBy { 
-       if (it.cleanName in listOf("main", "master")) 1 else 0 
+    val sortedBranches = infos.sortedBy {
+       if (it.cleanName in listOf("main", "master")) 1 else 0
     }
 
     for (info in sortedBranches) {
        val targetBranch = info.cleanName
        val hash = info.hash
-       
+
        if (localBranches.contains(targetBranch)) {
           val isDescendant = git(workDir, "merge-base", "--is-ancestor", targetBranch, hash).exitCode == 0
           if (isDescendant) {
@@ -142,24 +143,16 @@ object BundleImporter {
        }
     }
 
-    // Now decide which branch to checkout and stay on
-    // We prefer the feature branch (first non-main/master), then main/master, then pre-branch
-    val preferredBranch = sortedBranches.firstOrNull()?.cleanName ?: preBranch
-    if (preferredBranch != preBranch && preferredBranch.isNotBlank()) {
-        val checkout = git(workDir, "checkout", preferredBranch)
+    // working tree follows only the already-checked-out branch; unborn repos attach to the bundle's first branch
+    val target = if (!hasHeadCommit(workDir)) sortedBranches.firstOrNull()?.cleanName else null
+    if (target != null) {
+        val checkout = git(workDir, "checkout", target)
         if (checkout.exitCode != 0) {
-            results.add("  - WARN: Failed to auto-checkout $preferredBranch")
-        } else {
-            // Because we did update-ref, if we checked out the branch we need to reset hard to the working tree
-            // Actually, if we're currently ON preferredBranch and we updated its tip via update-ref, 
-            // the working directory doesn't reflect the new tip!
-            // Wait, if preBranch == preferredBranch, we did NOT checkout.
-            // If we did NOT checkout, we need to ensure the working tree matches the updated ref!
+            results.add("  - WARN: Failed to auto-checkout $target")
         }
     }
 
-    // CRITICAL: if the current branch was updated via update-ref, the working tree is out of sync.
-    // Since we verified the tree is clean at the start, we can safely reset --hard HEAD to sync the working tree.
+    // reset syncs the tree after update-ref moved the checked-out branch; tree was verified clean at entry
     val currentNow = currentBranch(workDir)
     git(workDir, "reset", "--hard", "HEAD")
     git(workDir, "clean", "-fd")
@@ -220,9 +213,10 @@ object BundleImporter {
         if (parts.size == 2 && parts[1].isNotBlank()) {
             val hash = parts[0]
             val ref = parts[1]
-            if (ref.startsWith("refs/heads/")) {
-                list.add(BundleBranchInfo(ref, ref.removePrefix("refs/heads/"), hash))
-            }
+        if (ref.startsWith("refs/heads/")) {
+          val clean = ref.removePrefix("refs/heads/")
+          if (!isJunkName(clean)) list.add(BundleBranchInfo(ref, clean, hash))
+        }
         }
     }
     return list
@@ -241,11 +235,17 @@ object BundleImporter {
   }
 
   private fun currentBranch(workDir: File): String {
-    val r = git(workDir, "rev-parse", "--abbrev-ref", "HEAD")
+    val r = git(workDir, "symbolic-ref", "--short", "-q", "HEAD")
     val name = r.stdout.trim()
-    if (r.exitCode != 0 || name.isBlank() || name == "HEAD") return ""
+    if (r.exitCode != 0 || name.isBlank() || isJunkName(name)) return ""
     return name
   }
+
+  private fun hasHeadCommit(workDir: File): Boolean =
+    git(workDir, "rev-parse", "-q", "--verify", "HEAD").exitCode == 0
+
+  private fun isJunkName(name: String): Boolean =
+    name.isBlank() || name.split("/").contains("HEAD")
 
   private fun headHash(workDir: File): String {
     val r = git(workDir, "rev-parse", "HEAD")

@@ -309,7 +309,7 @@ class SyncEngine(
     // gives us a proper ancestor candidate set.
     val byBranch = state.readLastByBranch(projectDir)
     for (br in additionalBranches) {
-      if (br.isBlank() || br == currentBranch) continue
+      if (br.isBlank() || br == currentBranch || localgitmirror.idea.git.GitLocal.isJunkBranchName(br)) continue
       val tip = git.branchHash(project, projectDir, br) ?: continue
       val recentOfBranch = git.recentCommitsOfRef(project, projectDir, br, SyncConstants.ADDITIONAL_BRANCH_DEPTH)
       val extras = LinkedHashSet<String>()
@@ -633,7 +633,7 @@ class SyncEngine(
           branchMap[currentBranch] = pointerHead
         }
         for (br in additionalBranches) {
-          if (br.isBlank()) continue
+          if (br.isBlank() || localgitmirror.idea.git.GitLocal.isJunkBranchName(br)) continue
           val tip = git.branchHash(project, projectDir, br)
           if (!tip.isNullOrBlank()) {
             branchMap[br] = tip
