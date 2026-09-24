@@ -31,6 +31,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   @Volatile private var disposed = false
   @Volatile private var started = false
   private var lastWrittenSignature = ""
+  private var lastPushSignature = ""
 
   fun start() {
     if (started) return
@@ -59,7 +60,14 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   private fun pollWork() {
     val conf = GitLabConfig.resolve(project)
     if (!GitLabConfig.hasApi(conf)) return
-    MrReplyPushService(project).pushInBackground()
+    val reports = MrReplyPushService(project).pushOnce()
+    if (reports.isEmpty()) return
+    val signature = reports.joinToString(";") { "${it.posted}/${it.dupSkipped}/${it.skipped}/${it.failed}/${it.parseErrors}/${it.details.joinToString()}" }
+    if (signature == lastPushSignature) return
+    lastPushSignature = signature
+    UIUtil.invokeLaterIfNeeded {
+      if (!project.isDisposed) MrReplyPushService(project).notifySummary(reports)
+    }
   }
 
   private fun pollHome() {

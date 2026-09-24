@@ -546,6 +546,17 @@ class SyncEngine(
     val traceId = diagnostics.traceId
     return try {
       state.migrateLegacyIfPresent(projectDir)
+      val removedJunk = git.removeJunkHeadBranches(project, projectDir)
+      if (removedJunk.isNotEmpty()) {
+        diag(
+          projectDir,
+          diagnostics,
+          id = "junk-cleanup",
+          outcome = SyncStepOutcome.OK,
+          message = "Removed junk HEAD-named local branches",
+          fields = mapOf("branches" to removedJunk.joinToString(","))
+        )
+      }
       diag(
         projectDir,
         diagnostics,

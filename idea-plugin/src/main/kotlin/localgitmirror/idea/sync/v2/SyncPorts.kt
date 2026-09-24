@@ -64,6 +64,7 @@ interface GitPort {
   /** Most recent N commit hashes reachable from [ref] (a branch name, tag, or hash). */
   fun recentCommitsOfRef(project: Project, projectDir: File, ref: String, limit: Int): List<String>
   fun branchHash(project: Project, projectDir: File, branchName: String): String?
+  fun removeJunkHeadBranches(project: Project, projectDir: File): List<String> = emptyList()
 }
 
 object DefaultGitPort : GitPort {
@@ -84,6 +85,9 @@ object DefaultGitPort : GitPort {
   }
   override fun branchHash(project: Project, projectDir: File, branchName: String): String? {
     return GitLocal.branchHash(project, projectDir, branchName)
+  }
+  override fun removeJunkHeadBranches(project: Project, projectDir: File): List<String> {
+    return GitLocal.removeJunkHeadBranches(project, projectDir)
   }
 }
 

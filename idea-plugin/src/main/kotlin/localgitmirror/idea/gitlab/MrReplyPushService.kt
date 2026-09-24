@@ -37,8 +37,9 @@ class MrReplyPushService(private val project: Project) {
     val skipped: Int,
     val failed: Int,
     val details: List<String>,
+    val parseErrors: Int = 0,
   ) {
-    val clean: Boolean get() = failed == 0
+    val clean: Boolean get() = failed == 0 && parseErrors == 0
   }
 
   fun pushInBackground(onDone: ((List<FileReport>) -> Unit)? = null) {
@@ -48,7 +49,7 @@ class MrReplyPushService(private val project: Project) {
       UIUtil.invokeLaterIfNeeded {
         if (project.isDisposed) return@invokeLaterIfNeeded
         onDone?.invoke(reports)
-        if (reports.isNotEmpty()) notifySummary(reports)
+        notifySummary(reports)
       }
     }
   }
@@ -182,6 +183,7 @@ class MrReplyPushService(private val project: Project) {
         posted++
         seenMarkers.add(marker)
         ledger.add(marker)
+        while (ledger.size > LEDGER_CAP) ledger.removeAt(0)
         if (fallbackNote.isNotEmpty()) details.add("$label: $fallbackNote, posted as general note")
       } else if (reply.kind == MrReplies.Kind.THREAD && result.code == 404) {
         skipped++
@@ -192,7 +194,7 @@ class MrReplyPushService(private val project: Project) {
       }
     }
 
-    val report = FileReport(path, posted, dupSkipped, skipped + parsed.errors.size, failed, details)
+    val report = FileReport(path, posted, dupSkipped, skipped, failed, details, parsed.errors.size)
     if (report.clean) {
       MirrorApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id)
     }
@@ -207,7 +209,7 @@ class MrReplyPushService(private val project: Project) {
     return localgitmirror.idea.workkit.ExchangeMeta.parseName(plain).text.ifBlank { item.path }
   }
 
-  private fun notifySummary(reports: List<FileReport>) {
+  internal fun notifySummary(reports: List<FileReport>) {
     val posted = reports.sumOf { it.posted }
     val dup = reports.sumOf { it.dupSkipped }
     val skip = reports.sumOf { it.skipped }
@@ -225,6 +227,7 @@ class MrReplyPushService(private val project: Project) {
 
   companion object {
     private val MARKER_RE = Regex("<!-- lgm:[0-9a-f]{8} -->")
+    private const val LEDGER_CAP = 500
 
     fun marker(iid: Int, reply: MrReplies.Reply): String {
       val key = when (reply.kind) {
