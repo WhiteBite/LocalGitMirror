@@ -121,9 +121,11 @@ object NativeBundleBuilder {
   }
 
   private fun currentBranch(workDir: File): String {
-    val res = git(workDir, "rev-parse", "--abbrev-ref", "HEAD")
-    if (res.exitCode != 0 || res.stdout.trim() == "HEAD") return ""
-    return res.stdout.trim()
+    // symbolic-ref: rev-parse --abbrev-ref degrades to empty output when a junk refs/heads/HEAD exists
+    val res = git(workDir, "symbolic-ref", "--short", "-q", "HEAD")
+    val name = res.stdout.trim()
+    if (res.exitCode != 0 || name.isBlank() || name.split("/").contains("HEAD")) return ""
+    return name
   }
 
   private data class CmdResult(val exitCode: Int, val stdout: String, val stderr: String)

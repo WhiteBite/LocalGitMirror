@@ -83,6 +83,26 @@ object GitLocal {
   fun isJunkBranchName(name: String): Boolean =
     name.isBlank() || name.split("/").contains("HEAD")
 
+  /**
+   * Deletes local refs/heads/HEAD-style junk refs (pure garbage by definition:
+   * a branch named HEAD can never be legitimate) so sends work on machines
+   * infected before the receive-side guards existed. Returns removed names.
+   */
+  fun removeJunkHeadBranches(project: Project, workDir: File): List<String> {
+    val r = run(project, workDir, 10, "for-each-ref", "--format=%(refname)", "refs/heads")
+    if (!r.ok()) return emptyList()
+    val junk = r.stdout.lines()
+      .map { it.trim() }
+      .filter { it.startsWith("refs/heads/") && isJunkBranchName(it.removePrefix("refs/heads/")) }
+    val removed = mutableListOf<String>()
+    for (ref in junk) {
+      if (run(project, workDir, 10, "update-ref", "-d", ref).ok()) {
+        removed.add(ref.removePrefix("refs/heads/"))
+      }
+    }
+    return removed
+  }
+
   fun isCleanWorkTree(project: Project, workDir: File): Boolean {
     val r = run(project, workDir, 10, "status", "--porcelain")
     if (!r.ok()) return false
