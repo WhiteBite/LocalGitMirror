@@ -392,16 +392,27 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       else
         SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, JBColor.GRAY)
       append("!${value.iid}", badgeAttr)
-      append("  ${value.title}", SimpleTextAttributes.REGULAR_ATTRIBUTES)
-      append("  ${value.sourceBranch}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
       val countAttr = SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN,
         if (value.unresolved > 0) amber else green)
       val countText = if (value.unresolved > 0) "${value.unresolved}\u26a0"
                       else "\u2713 ${value.totalThreads}"
       append("  $countText", countAttr)
-      if (value.replyStatus.isNotBlank()) {
-        append("  \u00b7 ${value.replyStatus}", SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, JBColor(0x6F7277, 0x8C8F94)))
+      if (value.replyState.isNotBlank()) {
+        val count = if (value.replyState == "failed") value.replyFailed else value.replyPosted
+        val stateColor = when (value.replyState) {
+          "failed" -> JBColor(0xC62828, 0xEF5350)
+          "posted" -> green
+          "local" -> JBColor(0x6F7277, 0x8C8F94)
+          else -> amber
+        }
+        val stateText = LocalGitMirrorBundle.message("review.state.${value.replyState}", count)
+        append("  \u00b7 $stateText", SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, stateColor))
       }
+      append("  ${value.title}", SimpleTextAttributes.REGULAR_ATTRIBUTES)
+      if (value.source == MrReviewService.Source.CACHE) {
+        append("  [${LocalGitMirrorBundle.message("review.row.cache")}]", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+      }
+      append("  ${value.sourceBranch}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
     }
   }
 
@@ -925,6 +936,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       localgitmirror.idea.deps.VaultCacheSync.syncInBackground(project, "manual")
     })
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.downloadPlugin"), AllIcons.Actions.Download) { downloadLatestPlugin() })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.sendPlugin"), AllIcons.Actions.Upload) { sendPluginBuild() })
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.installPlugin"), AllIcons.Actions.Download) { installPluginFromCache() })
     mainGroup.addSeparator()
     mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.settings"), AllIcons.General.Settings) {
       ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
@@ -1470,42 +1483,55 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       viewportBorder = BorderFactory.createEmptyBorder()
     }
 
-    val bottom = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
-      isOpaque = false
-      border = JBUI.Borders.empty(4, 0, 0, 0)
-      add(primaryBtn(LocalGitMirrorBundle.message("review.open")) {
-        mrReviewList.selectedValue?.let { openMrDialog(it) }
-      }.apply { toolTipText = LocalGitMirrorBundle.message("review.tip.open") })
-      val fetchBtn = btn(LocalGitMirrorBundle.message("review.fetch"), AllIcons.Actions.Refresh) {
-        reloadReview()
-      }
-      fetchBtn.toolTipText = LocalGitMirrorBundle.message("review.tip.fetch")
-      reviewFetchButton = fetchBtn
-      add(fetchBtn)
-      add(btn(LocalGitMirrorBundle.message("review.sendNotes"), AllIcons.Actions.Upload) {
-        mrReviewList.selectedValue?.let { sendMrNotesToCache(it) }
-      }.apply { toolTipText = LocalGitMirrorBundle.message("review.tip.sendNotes") })
-      add(btn(LocalGitMirrorBundle.message("review.sendSelected")) { sendSelectedMrs() }
-        .apply { toolTipText = LocalGitMirrorBundle.message("review.tip.sendSelected") })
-      val isWorkRole = localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) ==
-        localgitmirror.idea.deps.MachineRole.WORK
-      val repliesTip = if (isWorkRole) "review.tip.pushReplies" else "review.tip.uploadReplies"
-      add(btn(LocalGitMirrorBundle.message("review.btn.replies"), AllIcons.Actions.Commit) {
-        val iid = mrReviewList.selectedValue?.iid
-        if (iid == null) {
-          notify(LocalGitMirrorBundle.message("review.sendSelected.none"), NotificationType.WARNING)
-        } else {
-          localgitmirror.idea.gitlab.MrRepliesReviewDialog.openFor(project, iid)
-        }
-      }.apply { toolTipText = LocalGitMirrorBundle.message(repliesTip) })
-      add(JButton(AllIcons.Actions.MenuSaveall).apply {
+    val isWorkRole = localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) ==
+      localgitmirror.idea.deps.MachineRole.WORK
+    fun iconBtn(icon: javax.swing.Icon, tipKey: String, onClick: () -> Unit): JButton =
+      JButton(icon).apply {
         margin = JBUI.insets(2, 4)
         isFocusPainted = false
-        isBorderPainted = false
-        isContentAreaFilled = false
-        toolTipText = LocalGitMirrorBundle.message("review.saveAll")
-        addActionListener { saveAllUnresolved() }
-      })
+        toolTipText = LocalGitMirrorBundle.message(tipKey)
+        addActionListener { onClick() }
+      }
+    val openBtn = iconBtn(AllIcons.Actions.Show, "review.tip.open") {
+      mrReviewList.selectedValue?.let { openMrDialog(it) }
+    }
+    val fetchBtn = iconBtn(AllIcons.Actions.Refresh, "review.tip.fetch") { reloadReview() }
+    reviewFetchButton = fetchBtn
+    val sendNotesBtn = iconBtn(AllIcons.Actions.Upload, "review.tip.sendNotes") {
+      mrReviewList.selectedValue?.let { sendMrNotesToCache(it) }
+    }
+    val sendSelectedBtn = iconBtn(AllIcons.Actions.Forward, "review.tip.sendSelected") { sendSelectedMrs() }
+    val repliesBtn = iconBtn(AllIcons.Actions.Checked, if (isWorkRole) "review.tip.pushReplies" else "review.tip.uploadReplies") {
+      val iid = mrReviewList.selectedValue?.iid
+      if (iid == null) {
+        notify(LocalGitMirrorBundle.message("review.replies.none"), NotificationType.WARNING)
+      } else {
+        localgitmirror.idea.gitlab.MrRepliesReviewDialog.openFor(project, iid)
+      }
+    }
+    val saveBtn = iconBtn(AllIcons.Actions.MenuSaveall, "review.saveAll") { saveAllUnresolved() }
+    sendNotesBtn.isVisible = isWorkRole
+    sendSelectedBtn.isVisible = isWorkRole
+    val selectionGate = object : javax.swing.event.ListSelectionListener {
+      override fun valueChanged(e: javax.swing.event.ListSelectionEvent?) {
+        val has = mrReviewList.selectedValue != null
+        openBtn.isEnabled = has
+        sendNotesBtn.isEnabled = has
+        repliesBtn.isEnabled = has
+      }
+    }
+    mrReviewList.addListSelectionListener(selectionGate)
+    selectionGate.valueChanged(null)
+
+    val bottom = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
+      isOpaque = false
+      border = JBUI.Borders.empty(4, 0, 0, 0)
+      add(openBtn)
+      add(fetchBtn)
+      add(sendNotesBtn)
+      add(sendSelectedBtn)
+      add(repliesBtn)
+      add(saveBtn)
     }
 
     return JPanel(BorderLayout()).apply {
@@ -2586,7 +2612,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     row.isOpaque = false
     row.border = JBUI.Borders.empty(2, 2)
     val bubble = buildBubble(item)
-    val own = item.side == ExchangeItem.Side.WORK
+    val own = item.side == localSide()
     row.add(bubble, if (own) BorderLayout.EAST else BorderLayout.WEST)
     row.alignmentX = LEFT_ALIGNMENT
     installBubbleMouse(row, item)
@@ -3070,6 +3096,14 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     return dir
   }
 
+  /** Side marker stamped into exchange meta: the machine's detected role, not the client type. */
+  private fun localMetaSide(): String =
+    ExchangeMeta.sideOfRole(localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) == localgitmirror.idea.deps.MachineRole.WORK)
+
+  private fun localSide(): ExchangeItem.Side =
+    if (localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) == localgitmirror.idea.deps.MachineRole.WORK)
+      ExchangeItem.Side.WORK else ExchangeItem.Side.HOME
+
   private fun safeExchangeName(item: ExchangeItem): String {
     val raw = item.displayPath.substringAfterLast('/').ifBlank { item.title }
     val safe = raw.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
@@ -3093,6 +3127,90 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   private fun copyToClipboard(text: String) {
     CopyPasteManager.getInstance().setContents(StringSelection(text))
     notify(LocalGitMirrorBundle.message("panel.exchange.chat.copied"), NotificationType.INFORMATION)
+  }
+
+  /** Ship a plugin zip to the other machine through the repo postbox (plugin/ namespace). */
+  private fun sendPluginBuild() {
+    val descriptor = FileChooserDescriptor(true, false, false, false, false, false)
+    descriptor.title = LocalGitMirrorBundle.message("plugin.send.title")
+    val chosen = FileChooser.chooseFile(descriptor, project, null) ?: return
+    val file = File(chosen.path)
+    if (!file.name.endsWith(".zip")) {
+      notify(LocalGitMirrorBundle.message("plugin.send.fail", file.name), NotificationType.WARNING)
+      return
+    }
+    ProgressManager.getInstance().run(object :
+      Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.exchange.task.upload"), true) {
+      override fun run(indicator: ProgressIndicator) {
+        val ok = localgitmirror.idea.gitlab.MrRepliesTransport.uploadFile(project, "plugin/${file.name}", file)
+        notify(
+          if (ok) LocalGitMirrorBundle.message("plugin.send.ok", file.name)
+          else LocalGitMirrorBundle.message("plugin.send.fail", file.name),
+          if (ok) NotificationType.INFORMATION else NotificationType.ERROR,
+        )
+      }
+    })
+  }
+
+  /** Install a plugin zip shipped by the other machine from the postbox plugin/ namespace. */
+  private fun installPluginFromCache() {
+    val s = service<MirrorSettingsService>().state
+    ProgressManager.getInstance().run(object :
+      Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.exchange.task.download"), true) {
+      private var target: File? = null
+      override fun run(indicator: ProgressIndicator) {
+        val repo = resolveExchangeRepo(s) ?: return
+        val list = MirrorApi.fileSyncList(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls)
+        if (list.code !in 200..299) return
+        val items = list.items.mapNotNull { item ->
+          displayPathOf(item).takeIf { it.startsWith("plugin/") && it.endsWith(".zip") }?.let { item to it }
+        }
+        if (items.isEmpty()) return
+        val picked = if (items.size == 1) items[0] else {
+          var result: Pair<MirrorApi.FileSyncItem, String>? = null
+          SwingUtilities.invokeAndWait {
+            val names = items.map { it.second }.toTypedArray()
+            val name = Messages.showEditableChooseDialog(
+              LocalGitMirrorBundle.message("plugin.install.choose"),
+              LocalGitMirrorBundle.message("plugin.install.chooseTitle"),
+              null, names, names.last(), null,
+            )
+            result = items.firstOrNull { it.second == name }
+          }
+          result ?: return
+        }
+        val enc = File.createTempFile("lgm-plugin-", ".bin")
+        try {
+          val dl = MirrorApi.fileSyncDownload(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls, picked.first.id, enc)
+          if (dl.code !in 200..299 || dl.file == null) return
+          val dir = File(com.intellij.openapi.application.PathManager.getSystemPath(), "doccache-plugin").apply { mkdirs() }
+          val out = File(dir, picked.second.substringAfterLast('/'))
+          RepoFileSyncCrypto.decryptFile(enc, out, SecretsStore.syncPassword, null)
+          target = out
+        } catch (_: Throwable) {
+        } finally {
+          runCatching { enc.delete() }
+        }
+      }
+
+      override fun onSuccess() {
+        val f = target
+        if (f == null) {
+          notify(LocalGitMirrorBundle.message("plugin.install.none"), NotificationType.WARNING)
+          return
+        }
+        ShowSettingsUtil.getInstance().showSettingsDialog(project, "preferences.plugins")
+        notify(LocalGitMirrorBundle.message("plugin.install.manual", f.absolutePath), NotificationType.INFORMATION)
+      }
+    })
+  }
+
+  private fun displayPathOf(item: MirrorApi.FileSyncItem): String {
+    if (item.pathEnc.isBlank()) return item.path
+    val plain = runCatching {
+      localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(item.pathEnc, SecretsStore.syncPassword)
+    }.getOrDefault(item.path)
+    return localgitmirror.idea.workkit.ExchangeMeta.parseName(plain).text.ifBlank { item.path }
   }
 
   /** Download + decrypt a postbox entry off the EDT; [consume] runs on the EDT and receives a persistent file in .doccache/exchange (or a temp file when the project dir is unavailable). */
@@ -3405,7 +3523,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   ): Pair<Boolean, String?> {
     return try {
       val ciphertext = BundleCrypto.encryptBundleBytes(text.toByteArray(Charsets.UTF_8), pwd)
-      val hintEnc = ExchangeCrypto.encryptHint(ExchangeMeta.hintJson(text, hintOverride), pwd)
+      val hintEnc = ExchangeCrypto.encryptHint(ExchangeMeta.hintJson(text, hintOverride, localMetaSide()), pwd)
       val res = MirrorApi.bufferPut(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, ciphertext, hintEnc)
       if (res.code !in 200..299) {
         historyService.add("Buffer send", false, "HTTP ${res.code}: ${res.message.take(200)}")
@@ -3720,7 +3838,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     realName: String,
     plainSize: Long
   ): String? {
-    val pathEnc = ExchangeCrypto.encryptHint(ExchangeMeta.nameJson(realName), SecretsStore.syncPassword)
+    val pathEnc = ExchangeCrypto.encryptHint(ExchangeMeta.nameJson(realName, localMetaSide()), SecretsStore.syncPassword)
     val res = MirrorApi.fileSyncUpload(
       s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls,
       "x/${UUID.randomUUID().toString().take(8)}", plainSize, encrypted, pathEnc, null

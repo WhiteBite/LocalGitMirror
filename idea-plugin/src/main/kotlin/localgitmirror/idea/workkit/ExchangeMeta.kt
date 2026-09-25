@@ -22,12 +22,15 @@ object ExchangeMeta {
 
   private val json = Json { ignoreUnknownKeys = true }
 
-  fun hintJson(body: String, hintOverride: String? = null): String {
+  fun hintJson(body: String, hintOverride: String? = null, side: String = SIDE_PLUGIN): String {
     val h = hintOverride ?: body.lineSequence().firstOrNull()?.trim()?.take(80) ?: ""
-    return encode(SIDE_PLUGIN, "h", h)
+    return encode(side, "h", h)
   }
 
-  fun nameJson(realName: String): String = encode(SIDE_PLUGIN, "n", realName)
+  fun nameJson(realName: String, side: String = SIDE_PLUGIN): String = encode(side, "n", realName)
+
+  /** "w" for the work machine, "h" for home — the plugin stamps its detected role, not its client type. */
+  fun sideOfRole(isWork: Boolean): String = if (isWork) SIDE_PLUGIN else SIDE_WEB
 
   fun parseHint(plain: String): Meta = decode(plain, "h")
 
