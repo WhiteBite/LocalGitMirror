@@ -51,34 +51,16 @@ class UploadMrRepliesAction : AnAction() {
     }
 
     ApplicationManager.getApplication().executeOnPooledThread {
-      val settings = service<MirrorSettingsService>().state
-      val repo = runCatching {
-        project.getService(SyncFacadeService::class.java).resolveRepo(File(base), settings).sanitized
-      }.getOrDefault("")
-      if (repo.isBlank()) {
-        notify(project, LocalGitMirrorBundle.message("mrreplies.upload.fail", chosen.name, "repo not resolved"), NotificationType.ERROR)
+      val iid = Regex("^replies-!(\\d+)\\.md$").find(chosen.name)?.groupValues?.getOrNull(1)?.toIntOrNull()
+      if (iid == null) {
+        notify(project, LocalGitMirrorBundle.message("mrreplies.upload.fail", chosen.name, "bad file name"), NotificationType.ERROR)
         return@executeOnPooledThread
       }
-      val plain = File.createTempFile("mr-replies-up-", ".md")
-      val encrypted = File.createTempFile("mr-replies-up-", ".bin")
-      try {
-        chosen.copyTo(plain, overwrite = true)
-        RepoFileSyncCrypto.encryptFile(plain, encrypted, SecretsStore.syncPassword, null)
-        val pathEnc = ExchangeCrypto.encryptHint("mr-replies/${chosen.name}", SecretsStore.syncPassword)
-        val up = MirrorApi.fileSyncUpload(
-          settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
-          "x/${java.util.UUID.randomUUID().toString().take(8)}", chosen.length(), encrypted, pathEnc, null,
-        )
-        if (up.code in 200..299) {
-          notify(project, LocalGitMirrorBundle.message("mrreplies.upload.ok", chosen.name), NotificationType.INFORMATION)
-        } else {
-          notify(project, LocalGitMirrorBundle.message("mrreplies.upload.fail", chosen.name, "HTTP ${up.code} ${up.message}"), NotificationType.ERROR)
-        }
-      } catch (t: Throwable) {
-        notify(project, LocalGitMirrorBundle.message("mrreplies.upload.fail", chosen.name, t.message ?: "error"), NotificationType.ERROR)
-      } finally {
-        runCatching { plain.delete() }
-        runCatching { encrypted.delete() }
+      val ok = localgitmirror.idea.gitlab.MrRepliesTransport.uploadMarkdown(project, iid, chosen.readText(Charsets.UTF_8))
+      if (ok) {
+        notify(project, LocalGitMirrorBundle.message("mrreplies.upload.ok", chosen.name), NotificationType.INFORMATION)
+      } else {
+        notify(project, LocalGitMirrorBundle.message("mrreplies.upload.fail", chosen.name, "upload failed"), NotificationType.ERROR)
       }
     }
   }

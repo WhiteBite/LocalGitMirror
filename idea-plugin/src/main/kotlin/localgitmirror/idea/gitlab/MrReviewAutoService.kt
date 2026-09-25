@@ -32,6 +32,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   @Volatile private var started = false
   private var lastWrittenSignature = ""
   private var lastPushSignature = ""
+  private var lastPendingSignature = ""
 
   fun start() {
     if (started) return
@@ -60,13 +61,35 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   private fun pollWork() {
     val conf = GitLabConfig.resolve(project)
     if (!GitLabConfig.hasApi(conf)) return
-    val reports = MrReplyPushService(project).pushOnce()
-    if (reports.isEmpty()) return
-    val signature = reports.joinToString(";") { "${it.posted}/${it.dupSkipped}/${it.skipped}/${it.failed}/${it.parseErrors}/${it.details.joinToString()}" }
-    if (signature == lastPushSignature) return
-    lastPushSignature = signature
+    val service = MrReplyPushService(project)
+    if (settings.autoPushReplies) {
+      val reports = service.pushOnce()
+      if (reports.isEmpty()) return
+      val signature = reports.joinToString(";") { "${it.posted}/${it.dupSkipped}/${it.skipped}/${it.failed}/${it.parseErrors}/${it.details.joinToString()}" }
+      if (signature == lastPushSignature) return
+      lastPushSignature = signature
+      UIUtil.invokeLaterIfNeeded {
+        if (!project.isDisposed) service.notifySummary(reports)
+      }
+      return
+    }
+    val pending = runCatching { service.countPending() }.getOrDefault(0)
+    if (pending == 0) {
+      lastPendingSignature = ""
+      return
+    }
+    if (pending.toString() == lastPendingSignature) return
+    lastPendingSignature = pending.toString()
     UIUtil.invokeLaterIfNeeded {
-      if (!project.isDisposed) MrReplyPushService(project).notifySummary(reports)
+      if (!project.isDisposed) {
+        NotificationGroupManager.getInstance()
+          .getNotificationGroup("DocCache")
+          .createNotification(
+            LocalGitMirrorBundle.message("mrreview.pending", pending),
+            NotificationType.INFORMATION,
+          )
+          .notify(project)
+      }
     }
   }
 

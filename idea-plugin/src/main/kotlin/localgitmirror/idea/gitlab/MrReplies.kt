@@ -111,4 +111,24 @@ object MrReplies {
 
     return RepliesFile(iid, branch, replies, errors)
   }
+
+  /** Rebuild a replies file from a subset of sections (the approval gate output). */
+  fun render(iid: Int, branch: String, replies: List<Reply>): String {
+    val sb = StringBuilder()
+    sb.appendLine("<!-- lgm-replies v1 -->")
+    sb.appendLine("# MR !$iid — answers")
+    if (branch.isNotBlank()) sb.appendLine("- branch: $branch")
+    sb.appendLine()
+    for (r in replies) {
+      when (r.kind) {
+        Kind.THREAD -> sb.appendLine("## thread ${r.threadId}")
+        Kind.NEW_ANCHORED -> sb.appendLine("## new ${r.file}:${r.line}")
+        Kind.NEW_GENERAL -> sb.appendLine("## new")
+      }
+      if (r.kind == Kind.THREAD && r.resolve) sb.appendLine("resolve: yes")
+      sb.appendLine(r.body)
+      sb.appendLine()
+    }
+    return sb.toString()
+  }
 }

@@ -58,58 +58,86 @@ class MrReplyPushService(private val project: Project) {
   fun pushOnce(): List<FileReport> = runCatching { pushAll() }
     .getOrElse { listOf(FileReport("(service)", 0, 0, 0, 1, listOf(it.message ?: "error"))) }
 
+  data class PendingReplies(
+    val item: MirrorApi.FileSyncItem,
+    val path: String,
+    val parsed: MrReplies.RepliesFile,
+  )
+
+  /** Postbox mr-replies items downloaded and parsed, without posting anything. */
+  internal fun fetchPendingReplies(): List<PendingReplies> {
+    val settings = service<MirrorSettingsService>().state
+    val repo = resolveRepo(settings) ?: return emptyList()
+    val listResult = MirrorApi.fileSyncList(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls)
+    if (listResult.code !in 200..299) return emptyList()
+    return listResult.items.mapNotNull { item ->
+      val path = displayPath(item).takeIf { it.startsWith("mr-replies/") && it.endsWith(".md") } ?: return@mapNotNull null
+      downloadAndParse(item, settings, repo)?.let { PendingReplies(item, path, it) }
+    }
+  }
+
+  internal fun countPending(): Int {
+    val settings = service<MirrorSettingsService>().state
+    val repo = resolveRepo(settings) ?: return 0
+    val listResult = MirrorApi.fileSyncList(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls)
+    if (listResult.code !in 200..299) return 0
+    return listResult.items.count { displayPath(it).let { p -> p.startsWith("mr-replies/") && p.endsWith(".md") } }
+  }
+
+  /** Post only the approved sections of a pending item; acks the postbox entry when clean. */
+  internal fun pushApproved(pending: PendingReplies, approved: List<MrReplies.Reply>): FileReport {
+    val settings = service<MirrorSettingsService>().state
+    val conf = GitLabConfig.resolve(project)
+    if (!GitLabConfig.hasApi(conf)) {
+      return FileReport(pending.path, 0, 0, 0, 1, listOf("GitLab URL/project/token not configured"))
+    }
+    val repo = resolveRepo(settings)
+      ?: return FileReport(pending.path, 0, 0, 0, 1, listOf("repo not resolved"))
+    val filtered = pending.parsed.copy(replies = approved)
+    return pushParsed(pending.item, pending.path, filtered, conf, settings, repo)
+  }
+
+  private fun resolveRepo(settings: MirrorSettingsService.State): String? {
+    val baseDir = project.basePath ?: return null
+    return runCatching {
+      project.getService(SyncFacadeService::class.java).resolveRepo(File(baseDir), settings).sanitized
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+  }
+
+  private fun downloadAndParse(
+    item: MirrorApi.FileSyncItem,
+    settings: MirrorSettingsService.State,
+    repo: String,
+  ): MrReplies.RepliesFile? {
+    val tmpEnc = File.createTempFile("mr-replies-", ".bin")
+    val tmpPlain = File.createTempFile("mr-replies-", ".md")
+    return try {
+      val dl = MirrorApi.fileSyncDownload(
+        settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
+        item.id, tmpEnc,
+      )
+      if (dl.code !in 200..299 || dl.file == null) return null
+      RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
+      val parsed = MrReplies.parse(tmpPlain.readText(Charsets.UTF_8))
+      parsed.takeIf { it.iid != 0 }
+    } catch (_: Throwable) {
+      null
+    } finally {
+      runCatching { tmpEnc.delete() }
+      runCatching { tmpPlain.delete() }
+    }
+  }
+
   private fun pushAll(): List<FileReport> {
     val settings = service<MirrorSettingsService>().state
     val conf = GitLabConfig.resolve(project)
     if (!GitLabConfig.hasApi(conf)) {
       return listOf(FileReport("(gitlab)", 0, 0, 0, 1, listOf("GitLab URL/project/token not configured")))
     }
-    val baseDir = project.basePath ?: return emptyList()
-    val syncFacade = project.getService(SyncFacadeService::class.java)
-    val repo = runCatching { syncFacade.resolveRepo(File(baseDir), settings).sanitized }
-      .getOrNull()?.takeIf { it.isNotBlank() } ?: return emptyList()
-
-    val listResult = MirrorApi.fileSyncList(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls)
-    if (listResult.code !in 200..299) {
-      return listOf(FileReport("(postbox)", 0, 0, 0, 1, listOf(listResult.message.ifBlank { "HTTP ${listResult.code}" })))
-    }
-    val items = listResult.items.mapNotNull { item ->
-      displayPath(item).takeIf { it.startsWith("mr-replies/") && it.endsWith(".md") }?.let { item to it }
-    }
-    if (items.isEmpty()) return emptyList()
-
-    return items.map { (item, path) -> pushOne(item, path, settings, repo, conf) }
-  }
-
-  private fun pushOne(
-    item: MirrorApi.FileSyncItem,
-    path: String,
-    settings: MirrorSettingsService.State,
-    repo: String,
-    conf: GitLabConfig.GitLabConf,
-  ): FileReport {
-    val tmpEnc = File.createTempFile("mr-replies-", ".bin")
-    val tmpPlain = File.createTempFile("mr-replies-", ".md")
-    try {
-      val dl = MirrorApi.fileSyncDownload(
-        settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
-        item.id, tmpEnc,
-      )
-      if (dl.code !in 200..299 || dl.file == null) {
-        return FileReport(path, 0, 0, 0, 1, listOf("download failed: HTTP ${dl.code}"))
-      }
-      RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
-      val parsed = MrReplies.parse(tmpPlain.readText(Charsets.UTF_8))
-      if (parsed.iid == 0) {
-        return FileReport(path, 0, 0, 0, 1, listOf("no '# MR !N' header"))
-      }
-      return pushParsed(item, path, parsed, conf, settings, repo)
-    } catch (t: Throwable) {
-      return FileReport(path, 0, 0, 0, 1, listOf(t.message ?: "error"))
-    } finally {
-      runCatching { tmpEnc.delete() }
-      runCatching { tmpPlain.delete() }
-    }
+    val repo = resolveRepo(settings) ?: return emptyList()
+    val pending = fetchPendingReplies()
+    if (pending.isEmpty()) return emptyList()
+    return pending.map { pushParsed(it.item, it.path, it.parsed, conf, settings, repo) }
   }
 
   private fun pushParsed(

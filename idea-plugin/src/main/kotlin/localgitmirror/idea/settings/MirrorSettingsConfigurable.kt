@@ -172,6 +172,11 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
             .bindSelected(state::autoMrReview)
         }
 
+        row {
+          checkBox(LocalGitMirrorBundle.message("auto.autoPushReplies"))
+            .bindSelected(state::autoPushReplies)
+        }
+
         row(LocalGitMirrorBundle.message("auto.pollSec")) {
           textField()
             .bindIntText(state::depsPollSec)
