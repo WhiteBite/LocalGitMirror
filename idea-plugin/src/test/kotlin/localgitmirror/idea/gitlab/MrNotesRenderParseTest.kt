@@ -72,6 +72,29 @@ class MrNotesRenderParseTest {
   }
 
   @Test
+  fun `parseThreads round-trips rendered markdown`() {
+    val md = MrNotesWriter.renderMarkdown(
+      project = null, iid = 412, title = "Refactor", sourceBranch = "refactor/x",
+      updatedAt = "2026-09-10 00:40", unresolved = 1, totalThreads = 2,
+      discussions = discussions(),
+    )
+    val threads = MrReviewService(project).parseThreads(md)
+    assertEquals(2, threads.size)
+    val first = threads[0]
+    assertEquals("8f2e4c1d", first.id)
+    assertTrue(!first.resolved)
+    assertEquals("ArchTarget.kt", first.anchorFile)
+    assertEquals(88, first.anchorLine)
+    assertEquals(2, first.notes.size)
+    assertEquals("Ivan", first.notes[0].author)
+    assertTrue(first.notes[0].body.startsWith("EDT call"))
+    assertEquals("Me", first.notes[1].author)
+    val second = threads[1]
+    assertEquals("a0b177d9", second.id)
+    assertTrue(second.resolved)
+  }
+
+  @Test
   fun `gitlab rows win and cache-only MRs are appended`() {
     val svc = MrReviewService(project)
     val g = GitLabApi.MrDiscussion(id = "t1", resolved = false, notes = listOf(note("Ivan", "x")))

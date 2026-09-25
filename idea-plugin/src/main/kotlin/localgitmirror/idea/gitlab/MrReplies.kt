@@ -112,6 +112,22 @@ object MrReplies {
     return RepliesFile(iid, branch, replies, errors)
   }
 
+  data class Matched(
+    val byThread: Map<String, Reply>,
+    val newSections: List<Reply>,
+  )
+
+  /** Attach agent replies to the threads they answer; unmatched/new sections go to [Matched.newSections]. */
+  fun matchThreads(discussions: List<GitLabApi.MrDiscussion>, replies: List<Reply>): Matched {
+    val ids = discussions.map { it.id }.toSet()
+    val byThread = linkedMapOf<String, Reply>()
+    val newSections = mutableListOf<Reply>()
+    for (r in replies) {
+      if (r.kind == Kind.THREAD && r.threadId in ids) byThread[r.threadId] = r else newSections.add(r)
+    }
+    return Matched(byThread, newSections)
+  }
+
   /** Rebuild a replies file from a subset of sections (the approval gate output). */
   fun render(iid: Int, branch: String, replies: List<Reply>): String {
     val sb = StringBuilder()

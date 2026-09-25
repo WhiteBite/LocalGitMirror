@@ -76,6 +76,19 @@ class MrRepliesParseTest {
   }
 
   @Test
+  fun `matchThreads maps thread replies and isolates unknown or new sections`() {
+    val d = GitLabApi.MrDiscussion(id = "8f2e4c1d", resolved = false, notes = emptyList())
+    val replies = listOf(
+      MrReplies.Reply(MrReplies.Kind.THREAD, "8f2e4c1d", "", 0, true, "fix"),
+      MrReplies.Reply(MrReplies.Kind.THREAD, "deadbeef", "", 0, false, "gone thread"),
+      MrReplies.Reply(MrReplies.Kind.NEW_GENERAL, "", "", 0, false, "general"),
+    )
+    val m = MrReplies.matchThreads(listOf(d), replies)
+    assertEquals(setOf("8f2e4c1d"), m.byThread.keys)
+    assertEquals(2, m.newSections.size)
+  }
+
+  @Test
   fun `render of approved subset round-trips through parse`() {
     val parsed = MrReplies.parse(sample)
     val approved = parsed.replies.filter { it.kind != MrReplies.Kind.NEW_GENERAL }

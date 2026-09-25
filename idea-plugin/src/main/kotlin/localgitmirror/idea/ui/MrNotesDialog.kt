@@ -388,7 +388,7 @@ class MrNotesDialog(
       isBorderPainted = false
       isContentAreaFilled = false
       foreground = MUTED
-      addActionListener { localgitmirror.idea.gitlab.MrRepliesReviewDialog.openFor(project, row.iid) }
+      addActionListener { localgitmirror.idea.gitlab.MrReviewDialog.openFor(project, row) }
     }
     left.add(saveBtn)
     left.add(fetchBtn)

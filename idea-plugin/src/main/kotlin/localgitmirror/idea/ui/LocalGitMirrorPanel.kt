@@ -1485,12 +1485,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
 
     val isWorkRole = localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) ==
       localgitmirror.idea.deps.MachineRole.WORK
-    fun iconBtn(icon: javax.swing.Icon, tipKey: String, onClick: () -> Unit): JButton =
+    fun iconBtn(icon: javax.swing.Icon, tipKey: String, onClick: (javax.swing.JButton) -> Unit): JButton =
       JButton(icon).apply {
         margin = JBUI.insets(2, 4)
         isFocusPainted = false
         toolTipText = LocalGitMirrorBundle.message(tipKey)
-        addActionListener { onClick() }
+        addActionListener { onClick(this) }
       }
     val openBtn = iconBtn(AllIcons.Actions.Show, "review.tip.open") {
       mrReviewList.selectedValue?.let { openMrDialog(it) }
@@ -1500,24 +1500,22 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     val sendNotesBtn = iconBtn(AllIcons.Actions.Upload, "review.tip.sendNotes") {
       mrReviewList.selectedValue?.let { sendMrNotesToCache(it) }
     }
-    val sendSelectedBtn = iconBtn(AllIcons.Actions.Forward, "review.tip.sendSelected") { sendSelectedMrs() }
-    val repliesBtn = iconBtn(AllIcons.Actions.Checked, if (isWorkRole) "review.tip.pushReplies" else "review.tip.uploadReplies") {
-      val iid = mrReviewList.selectedValue?.iid
-      if (iid == null) {
-        notify(LocalGitMirrorBundle.message("review.replies.none"), NotificationType.WARNING)
-      } else {
-        localgitmirror.idea.gitlab.MrRepliesReviewDialog.openFor(project, iid)
-      }
-    }
-    val saveBtn = iconBtn(AllIcons.Actions.MenuSaveall, "review.saveAll") { saveAllUnresolved() }
     sendNotesBtn.isVisible = isWorkRole
-    sendSelectedBtn.isVisible = isWorkRole
+    val moreBtn = iconBtn(AllIcons.Actions.MoreHorizontal, "panel.toolbar.more.tooltip") {
+      val popup = javax.swing.JPopupMenu()
+      popup.add(javax.swing.JMenuItem(LocalGitMirrorBundle.message("review.sendSelected")).apply {
+        addActionListener { sendSelectedMrs() }
+      })
+      popup.add(javax.swing.JMenuItem(LocalGitMirrorBundle.message("review.saveAll")).apply {
+        addActionListener { saveAllUnresolved() }
+      })
+      popup.show(it, 0, it.height)
+    }
     val selectionGate = object : javax.swing.event.ListSelectionListener {
       override fun valueChanged(e: javax.swing.event.ListSelectionEvent?) {
         val has = mrReviewList.selectedValue != null
         openBtn.isEnabled = has
         sendNotesBtn.isEnabled = has
-        repliesBtn.isEnabled = has
       }
     }
     mrReviewList.addListSelectionListener(selectionGate)
@@ -1529,9 +1527,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       add(openBtn)
       add(fetchBtn)
       add(sendNotesBtn)
-      add(sendSelectedBtn)
-      add(repliesBtn)
-      add(saveBtn)
+      add(moreBtn)
     }
 
     return JPanel(BorderLayout()).apply {
@@ -2125,7 +2121,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   }
 
   private fun openMrDialog(row: MrReviewService.MrRowItem) {
-    MrNotesDialog(project, row).show()
+    localgitmirror.idea.gitlab.MrReviewDialog.openFor(project, row)
   }
 
   /** Send one MR's discussions to the Cache file postbox (no branch sync). */
