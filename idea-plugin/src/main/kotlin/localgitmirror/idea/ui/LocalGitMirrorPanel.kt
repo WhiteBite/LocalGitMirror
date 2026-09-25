@@ -26,6 +26,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.SimpleToolWindowPanel
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.EditorNotificationPanel
@@ -3011,7 +3012,31 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     }
   }
 
-  /** Download + decrypt a postbox entry off the EDT; [consume] runs on the EDT and owns the temp file. */
+  /** Persistent home for received exchange files: <project>/.doccache/exchange, gitignored. */
+  private fun exchangeDir(): File? {
+    val base = project.basePath ?: return null
+    val dir = File(base, ".doccache/exchange")
+    if (!dir.exists() && !dir.mkdirs()) return null
+    val gitignore = File(base, ".gitignore")
+    val entry = ".doccache/"
+    try {
+      if (!gitignore.isFile) {
+        gitignore.writeText("$entry\n", Charsets.UTF_8)
+      } else if (gitignore.readText(Charsets.UTF_8).lines().none { it.trim() == entry }) {
+        gitignore.appendText("$entry\n", Charsets.UTF_8)
+      }
+    } catch (_: Throwable) {
+    }
+    return dir
+  }
+
+  private fun safeExchangeName(item: ExchangeItem): String {
+    val raw = item.displayPath.substringAfterLast('/').ifBlank { item.title }
+    val safe = raw.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+    return safe.ifBlank { "file.bin" }
+  }
+
+  /** Download + decrypt a postbox entry off the EDT; [consume] runs on the EDT and receives a persistent file in .doccache/exchange (or a temp file when the project dir is unavailable). */
   private fun withDecryptedFile(item: ExchangeItem, consume: (File) -> Unit) {
     val s = service<MirrorSettingsService>().state
     if (s.baseUrl.isBlank() || SecretsStore.syncPassword.isBlank()) {
@@ -3021,6 +3046,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     ProgressManager.getInstance().run(object :
       Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.exchange.task.download"), true) {
       private var plain: File? = null
+      private var plainIsTemp = false
       override fun run(indicator: ProgressIndicator) {
         val enc = File.createTempFile("lgm-dl-", ".bin")
         try {
@@ -3037,7 +3063,17 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
           }
           val out = File.createTempFile("lgm-plain-", ".tmp")
           RepoFileSyncCrypto.decryptFile(enc, out, SecretsStore.syncPassword, null)
-          plain = out
+          val target = exchangeDir()?.let { dir -> File(dir, safeExchangeName(item)) }
+          val copied = target?.let { t ->
+            runCatching { Files.copy(out.toPath(), t.toPath(), StandardCopyOption.REPLACE_EXISTING) }.isSuccess
+          } ?: false
+          if (copied && target != null) {
+            runCatching { out.delete() }
+            plain = target
+          } else {
+            plain = out
+            plainIsTemp = true
+          }
         } catch (t: Throwable) {
           notify(
             LocalGitMirrorBundle.message("panel.exchange.decrypt.fail", t.message ?: t::class.simpleName ?: ""),
@@ -3054,7 +3090,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
           runCatching { f.delete() }
           return
         }
-        consume(f)
+        try {
+          consume(f)
+        } finally {
+          if (plainIsTemp) runCatching { f.delete() }
+        }
       }
     })
   }
@@ -3071,8 +3111,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       MrNotesDialog(project, row).show()
     } catch (t: Throwable) {
       notify(LocalGitMirrorBundle.message("panel.exchange.decrypt.fail", t.message ?: ""), NotificationType.ERROR)
-    } finally {
-      runCatching { plain.delete() }
     }
   }
 
@@ -3090,20 +3128,21 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       }.show()
     } catch (t: Throwable) {
       notify(LocalGitMirrorBundle.message("panel.exchange.decrypt.fail", t.message ?: ""), NotificationType.ERROR)
-    } finally {
-      runCatching { plain.delete() }
     }
   }
 
   private fun openTextInEditor(plain: File, item: ExchangeItem) {
     try {
-      val vf = LightVirtualFile(item.title, plain.readText(Charsets.UTF_8))
-      vf.isWritable = false
-      FileEditorManager.getInstance(project).openFile(vf, true)
+      val vf = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(plain)
+      if (vf != null) {
+        FileEditorManager.getInstance(project).openFile(vf, true)
+        return
+      }
+      val lvf = LightVirtualFile(item.title, plain.readText(Charsets.UTF_8))
+      lvf.isWritable = false
+      FileEditorManager.getInstance(project).openFile(lvf, true)
     } catch (t: Throwable) {
       notify(LocalGitMirrorBundle.message("panel.exchange.decrypt.fail", t.message ?: ""), NotificationType.ERROR)
-    } finally {
-      runCatching { plain.delete() }
     }
   }
 
@@ -3126,8 +3165,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
         )
       } catch (t: Throwable) {
         notify(LocalGitMirrorBundle.message("panel.exchange.saveAs.fail", t.message ?: ""), NotificationType.ERROR)
-      } finally {
-        runCatching { plain.delete() }
       }
     }
   }
@@ -3192,7 +3229,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     )
     if (confirm != Messages.YES) return
     val s = service<MirrorSettingsService>().state
-    val fileItems = allServerItems.filter { it.kind == ExchangeItem.Kind.FILE }
     ProgressManager.getInstance().run(object :
       Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.exchange.task.clear"), true) {
       override fun run(indicator: ProgressIndicator) {
@@ -3200,12 +3236,22 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
         if (res.code !in 200..299) {
           notify(LocalGitMirrorBundle.message("panel.exchange.delete.fail", res.code), NotificationType.ERROR)
         }
-        for (f in fileItems) {
-          indicator.checkCanceled()
-          MirrorApi.fileSyncAck(s.baseUrl, SecretsStore.mirrorApiKey, f.repo, s.mirrorInsecureTls, f.id)
+        // fresh listing: the cached one may miss items uploaded since the last poll
+        val repo = resolveExchangeRepo(s)
+        var acked = 0
+        if (!repo.isNullOrBlank()) {
+          val list = MirrorApi.fileSyncList(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls)
+          if (list.code in 200..299) {
+            for (f in list.items) {
+              indicator.checkCanceled()
+              if (MirrorApi.fileSyncAck(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls, f.id).code in 200..299) {
+                acked++
+              }
+            }
+          }
         }
         historyService.add(
-          LocalGitMirrorBundle.message("history.op.exchangeClear"), true, "files=${fileItems.size}"
+          LocalGitMirrorBundle.message("history.op.exchangeClear"), true, "files=$acked"
         )
       }
       override fun onSuccess() {
@@ -3214,7 +3260,18 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
         }
         chatEchoes.clear()
         echoIdByServerId.clear()
+        chatBodyCache.clear()
+        chatThumbCache.clear()
+        bubbleThumbLabels.clear()
+        expandedIds.clear()
+        thumbQueued.clear()
+        lastChatSignature = null
+        project.basePath?.let { File(it, ".doccache/exchange") }
+          ?.takeIf { it.exists() }
+          ?.listFiles()
+          ?.forEach { runCatching { it.delete() } }
         notify(LocalGitMirrorBundle.message("panel.exchange.clear.ok"), NotificationType.INFORMATION)
+        renderChat()
         refreshExchangeInBackground()
       }
     })
