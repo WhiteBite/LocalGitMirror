@@ -20,6 +20,7 @@ class BadgeLabel(text: String) : JLabel(text) {
   var status: Status = Status.NEUTRAL
     set(value) {
       field = value
+      foreground = dotColor
       repaint()
     }
 
@@ -42,19 +43,13 @@ class BadgeLabel(text: String) : JLabel(text) {
     val g2 = g.create() as Graphics2D
     g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
 
-    // Draw small colored dot on the left
     val dotSize = JBUI.scale(6)
     val dotX = JBUI.scale(2)
     val dotY = (height - dotSize) / 2
     g2.color = dotColor
     g2.fillOval(dotX, dotY, dotSize, dotSize)
-
     g2.dispose()
 
-    // Draw text with status color
-    val oldFg = foreground
-    foreground = dotColor
     super.paintComponent(g)
-    foreground = oldFg
   }
 }
