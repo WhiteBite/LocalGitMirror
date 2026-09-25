@@ -72,6 +72,32 @@ class MrNotesRenderParseTest {
   }
 
   @Test
+  fun `gitlab rows win and cache-only MRs are appended`() {
+    val svc = MrReviewService(project)
+    val g = GitLabApi.MrDiscussion(id = "t1", resolved = false, notes = listOf(note("Ivan", "x")))
+    val gitlab = listOf(
+      MrReviewService.MrRowItem(46, "Git", "b", "", 1, 1, listOf(g), MrReviewService.Source.GITLAB, null),
+    )
+    val cache = listOf(
+      MrReviewService.MrRowItem(46, "Cache", "b", "", 1, 1, emptyList(), MrReviewService.Source.CACHE, "# md"),
+      MrReviewService.MrRowItem(7, "CacheOnly", "c", "", 0, 0, emptyList(), MrReviewService.Source.CACHE, "# md7"),
+    )
+    val merged = svc.mergeRows(gitlab, cache)
+    assertEquals(listOf(46, 7), merged.map { it.iid })
+    assertEquals(MrReviewService.Source.GITLAB, merged[0].source)
+    assertEquals(MrReviewService.Source.CACHE, merged[1].source)
+  }
+
+  @Test
+  fun `status markdown parses posted and failed counts`() {
+    val svc = MrReviewService(project)
+    val md = "<!-- lgm-replies-status v1 -->\n# MR !46 — status\n- posted: 3\n- duplicates: 1\n- skipped: 0\n- failed: 2\n- at: x\n"
+    val st = svc.parseStatus(md)
+    assertEquals(3, st.posted)
+    assertEquals(2, st.failed)
+  }
+
+  @Test
   fun `newest postbox entry wins per MR iid`() {
     val svc = MrReviewService(project)
     val old = localgitmirror.idea.mirror.MirrorApi.FileSyncItem("old", "mr-notes/mr-!46.md", 1, 1, 1000)

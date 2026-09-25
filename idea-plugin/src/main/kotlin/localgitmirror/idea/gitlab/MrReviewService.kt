@@ -28,6 +28,16 @@ class MrReviewService(private val project: Project) {
     val discussions: List<GitLabApi.MrDiscussion>,
     val source: Source,
     val receivedMarkdown: String?,
+    val replyStatus: String = "",
+  )
+
+  data class StatusReport(val posted: Int, val failed: Int)
+
+  internal data class CacheData(
+    val rows: List<MrRowItem>,
+    val status: Map<Int, StatusReport>,
+    val pendingIids: Set<Int>,
+    val localIids: Set<Int>,
   )
 
   @Volatile
@@ -60,10 +70,99 @@ class MrReviewService(private val project: Project) {
 
   private fun fetchRows(): List<MrRowItem> {
     val conf = GitLabConfig.resolve(project)
-    return if (GitLabConfig.hasApi(conf)) {
-      fetchFromGitLab(conf)
-    } else {
-      fetchFromCache()
+    val cache = runCatching { fetchCacheData() }.getOrDefault(CacheData(emptyList(), emptyMap(), emptySet(), emptySet()))
+    if (!GitLabConfig.hasApi(conf)) {
+      return decorate(cache.rows, cache)
+    }
+    val gitlab = fetchFromGitLab(conf)
+    return decorate(mergeRows(gitlab, cache.rows), cache)
+  }
+
+  /** GitLab rows win; cache-only MRs are appended so a home with a GitLab token still sees transferred notes. */
+  internal fun mergeRows(gitlab: List<MrRowItem>, cache: List<MrRowItem>): List<MrRowItem> {
+    val known = gitlab.map { it.iid }.toSet()
+    return gitlab + cache.filter { it.iid !in known }
+  }
+
+  internal fun decorate(rows: List<MrRowItem>, cache: CacheData): List<MrRowItem> = rows.map { row ->
+    row.copy(replyStatus = stateFor(row.iid, cache))
+  }
+
+  internal fun stateFor(iid: Int, cache: CacheData): String {
+    val st = cache.status[iid]
+    return when {
+      st != null && st.failed > 0 -> localgitmirror.idea.i18n.LocalGitMirrorBundle.message("review.state.failed", st.failed)
+      st != null && st.posted > 0 -> localgitmirror.idea.i18n.LocalGitMirrorBundle.message("review.state.posted", st.posted)
+      iid in cache.pendingIids -> localgitmirror.idea.i18n.LocalGitMirrorBundle.message("review.state.pending")
+      iid in cache.localIids -> localgitmirror.idea.i18n.LocalGitMirrorBundle.message("review.state.local")
+      else -> ""
+    }
+  }
+
+  internal fun parseStatus(markdown: String): StatusReport {
+    val posted = Regex("^- posted:\\s*(\\d+)", RegexOption.MULTILINE).find(markdown)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+    val failed = Regex("^- failed:\\s*(\\d+)", RegexOption.MULTILINE).find(markdown)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+    return StatusReport(posted, failed)
+  }
+
+  private fun fetchCacheData(): CacheData {
+    val settings = service<MirrorSettingsService>().state
+    val baseDir = project.basePath
+    if (baseDir.isNullOrBlank()) return CacheData(emptyList(), emptyMap(), emptySet(), emptySet())
+
+    val syncFacade = project.getService(SyncFacadeService::class.java)
+    val repo = runCatching {
+      syncFacade.resolveRepo(File(baseDir), settings).sanitized
+    }.getOrNull()?.takeIf { it.isNotBlank() } ?: return CacheData(emptyList(), emptyMap(), emptySet(), localReplyIids(baseDir))
+
+    val listResult = MirrorApi.fileSyncList(
+      settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls
+    )
+    if (listResult.code !in 200..299) {
+      throw RuntimeException(listResult.message.ifBlank { "Mirror API error ${listResult.code}" })
+    }
+
+    val status = mutableMapOf<Int, StatusReport>()
+    val pendingIids = mutableSetOf<Int>()
+    val noteItems = mutableListOf<Pair<MirrorApi.FileSyncItem, String>>()
+    for (item in listResult.items) {
+      val path = displayPath(item)
+      val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
+      when {
+        path.startsWith("mr-replies-status/") -> {
+          val md = downloadPlain(item, settings, repo) ?: continue
+          status[iid] = parseStatus(md)
+        }
+        path.startsWith("mr-replies/") -> pendingIids.add(iid)
+        path.startsWith("mr-notes/") -> noteItems.add(item to path)
+      }
+    }
+    val rows = newestPerIid(noteItems).mapNotNull { (item, path) -> parseCachedMr(item, path, settings, repo) }
+    return CacheData(rows, status, pendingIids, localReplyIids(baseDir))
+  }
+
+  private fun localReplyIids(baseDir: String): Set<Int> =
+    File(baseDir, ".mr-notes")
+      .listFiles { f -> f.isFile && f.name.startsWith("replies-!") && f.name.endsWith(".md") }
+      ?.mapNotNull { Regex("^replies-!(\\d+)\\.md$").find(it.name)?.groupValues?.getOrNull(1)?.toIntOrNull() }
+      ?.toSet()
+      .orEmpty()
+
+  private fun downloadPlain(item: MirrorApi.FileSyncItem, settings: MirrorSettingsService.State, repo: String): String? {
+    val tmpEnc = File.createTempFile("mr-status-", ".bin")
+    val tmpPlain = File.createTempFile("mr-status-", ".md")
+    return try {
+      val dl = MirrorApi.fileSyncDownload(
+        settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id, tmpEnc,
+      )
+      if (dl.code !in 200..299 || dl.file == null) return null
+      RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
+      tmpPlain.readText(Charsets.UTF_8)
+    } catch (_: Throwable) {
+      null
+    } finally {
+      runCatching { tmpEnc.delete() }
+      runCatching { tmpPlain.delete() }
     }
   }
 
@@ -89,32 +188,6 @@ class MrReviewService(private val project: Project) {
         receivedMarkdown = null,
       )
     }
-  }
-
-  private fun fetchFromCache(): List<MrRowItem> {
-    val settings = service<MirrorSettingsService>().state
-    val baseDir = project.basePath
-    if (baseDir.isNullOrBlank()) return emptyList()
-
-    val syncFacade = project.getService(SyncFacadeService::class.java)
-    val repo = runCatching {
-      syncFacade.resolveRepo(File(baseDir), settings).sanitized
-    }.getOrNull()?.takeIf { it.isNotBlank() } ?: return emptyList()
-
-    val listResult = MirrorApi.fileSyncList(
-      settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls
-    )
-    if (listResult.code !in 200..299) {
-      throw RuntimeException(listResult.message.ifBlank { "Mirror API error ${listResult.code}" })
-    }
-
-    val mrItems = listResult.items.mapNotNull { item ->
-      val path = displayPath(item)
-      if (path.startsWith("mr-notes/") && path.endsWith(".md")) item to path else null
-    }
-    if (mrItems.isEmpty()) return emptyList()
-
-    return newestPerIid(mrItems).mapNotNull { (item, path) -> parseCachedMr(item, path, settings, repo) }
   }
 
   /** Repeated sends stack several postbox entries per MR; only the newest one is shown. */
