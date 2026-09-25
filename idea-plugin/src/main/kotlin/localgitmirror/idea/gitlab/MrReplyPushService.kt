@@ -226,7 +226,24 @@ class MrReplyPushService(private val project: Project) {
     if (report.clean) {
       MirrorApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id)
     }
+    if (posted > 0 || failed > 0) {
+      MrRepliesTransport.uploadStatus(project, iid, renderStatus(iid, report))
+    }
     return report
+  }
+
+  private fun renderStatus(iid: Int, r: FileReport): String {
+    val at = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+    return buildString {
+      appendLine("<!-- lgm-replies-status v1 -->")
+      appendLine("# MR !$iid — status")
+      appendLine("- posted: ${r.posted}")
+      appendLine("- duplicates: ${r.dupSkipped}")
+      appendLine("- skipped: ${r.skipped}")
+      appendLine("- failed: ${r.failed}")
+      appendLine("- at: $at")
+      r.details.forEach { appendLine("  - $it") }
+    }
   }
 
   private fun displayPath(item: MirrorApi.FileSyncItem): String {

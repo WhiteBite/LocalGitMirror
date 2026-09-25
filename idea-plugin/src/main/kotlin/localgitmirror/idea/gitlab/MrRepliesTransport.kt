@@ -10,10 +10,16 @@ import localgitmirror.idea.workkit.ExchangeCrypto
 import localgitmirror.idea.workkit.RepoFileSyncCrypto
 import java.io.File
 
-/** Postbox transport for agent review replies, shared by the upload action and the review dialog. */
+/** Postbox transport for agent review artifacts, shared by the upload action, the review dialog and status reports. */
 object MrRepliesTransport {
 
-  fun uploadMarkdown(project: Project, iid: Int, markdown: String): Boolean {
+  fun uploadMarkdown(project: Project, iid: Int, markdown: String): Boolean =
+    upload(project, "mr-replies/mr-!$iid.md", markdown)
+
+  fun uploadStatus(project: Project, iid: Int, markdown: String): Boolean =
+    upload(project, "mr-replies-status/mr-!$iid.md", markdown)
+
+  fun upload(project: Project, displayPath: String, markdown: String): Boolean {
     val settings = service<MirrorSettingsService>().state
     val base = project.basePath ?: return false
     val repo = runCatching {
@@ -26,7 +32,7 @@ object MrRepliesTransport {
     try {
       plain.writeText(markdown, Charsets.UTF_8)
       RepoFileSyncCrypto.encryptFile(plain, encrypted, SecretsStore.syncPassword, null)
-      val pathEnc = ExchangeCrypto.encryptHint("mr-replies/mr-!$iid.md", SecretsStore.syncPassword)
+      val pathEnc = ExchangeCrypto.encryptHint(displayPath, SecretsStore.syncPassword)
       val up = MirrorApi.fileSyncUpload(
         settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
         "x/${java.util.UUID.randomUUID().toString().take(8)}", markdown.length.toLong(), encrypted, pathEnc, null,

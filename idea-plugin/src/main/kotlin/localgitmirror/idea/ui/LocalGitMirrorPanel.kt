@@ -399,6 +399,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       val countText = if (value.unresolved > 0) "${value.unresolved}\u26a0"
                       else "\u2713 ${value.totalThreads}"
       append("  $countText", countAttr)
+      if (value.replyStatus.isNotBlank()) {
+        append("  \u00b7 ${value.replyStatus}", SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, JBColor(0x6F7277, 0x8C8F94)))
+      }
     }
   }
 

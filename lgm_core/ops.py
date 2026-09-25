@@ -1877,6 +1877,18 @@ CORPORATE DEPS (gradle/npm):
   Extras: scan (inspect local gradle cache), fetch-poms (public poms),
           publish / vault_status (corporate artifact vault).
 
+MR REVIEW REPLIES (home agent -> work PC -> GitLab):
+  1. mr_notes repo=<name> [iid=<N>]       — read reviewer threads transferred from work.
+  2. Write answers, then EITHER:
+     mr_replies_send repo=<name> iid=<N> file=<path to replies-!N.md>
+     mr_replies_send repo=<name> iid=<N> text=<inline markdown>
+     Replies format: sections '## thread <id>' / '## new <file>:<line>' / '## new',
+     optional 'resolve: yes' as the first line of a section.
+  3. mr_replies_status repo=<name> [iid=<N>] — work PC's publish report
+     (posted/failed counts); empty means not published yet.
+  The work PC posts approved replies to GitLab; a human may approve them in
+  the IDE first, so a pending send is normal — poll mr_replies_status.
+
 DIAGNOSTICS: status, repos, debug.
 
 Rules: never hardcode URLs/keys (config comes from .env next to lgm.py);
@@ -1952,6 +1964,28 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
     path_enc = base64.b64encode(encrypt_bundle(display.encode("utf-8"), pwd)).decode("ascii")
     res = c.file_sync_send(repo, f"x/{os.urandom(4).hex()}", len(content), encrypted, path_enc=path_enc)
     return {"success": True, "repo": repo, "path": display, "size": len(content), "response": res}
+
+
+def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:
+    """Read the work PC's publish reports (mr-replies-status/mr-!N.md) from the postbox."""
+    c = _client(ctx)
+    repo = _repo_arg(args)
+    lst = c.file_sync_list(repo)
+    pwd = ctx.config.sync_password
+    iid = int(args.get("iid") or 0)
+    statuses = []
+    for i in (lst.get("items") or []):
+        eff = _postbox_display_path(i, pwd)
+        if not eff.startswith("mr-replies-status/"):
+            continue
+        if iid and not eff.endswith(f"mr-!{iid}.md"):
+            continue
+        blob = c.file_sync_fetch(repo, i["id"])
+        try:
+            statuses.append({"path": eff, "markdown": decrypt_bundle(blob, pwd).decode("utf-8")})
+        except Exception:
+            statuses.append({"path": eff, "error": "decrypt failed: sync password mismatch?"})
+    return {"success": True, "repo": repo, "statuses": statuses}
 
 
 REGISTRY: list[Op] = [
@@ -2149,6 +2183,15 @@ REGISTRY: list[Op] = [
             Param("text", "str", "", "Inline replies markdown (alternative to file)"),
         ],
         run=op_mr_replies_send,
+    ),
+    Op(
+        name="mr_replies_status",
+        summary="Show the work PC's publish reports for agent MR replies (posted/failed per MR).",
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "Only this MR iid (0 = all)"),
+        ],
+        run=op_mr_replies_status,
     ),
     Op(
         name="guide",

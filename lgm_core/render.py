@@ -7,6 +7,7 @@ which dispatches to the right function.  ``--json`` bypasses this entirely.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
@@ -363,6 +364,25 @@ def _render_mr_replies_send(r: dict) -> list[str]:
     ]
 
 
+def _render_mr_replies_status(r: dict) -> list[str]:
+    statuses = r.get("statuses") or []
+    if not statuses:
+        return ["No publish reports yet: the work PC has not posted these replies to GitLab."]
+    out = []
+    for s in statuses:
+        if "error" in s:
+            out.append(f"{s['path']}: {s['error']}")
+            continue
+        md = s.get("markdown", "")
+        posted = re.search(r"^- posted:\s*(\d+)", md, re.M)
+        failed = re.search(r"^- failed:\s*(\d+)", md, re.M)
+        out.append(
+            f"{s['path']}: posted={posted.group(1) if posted else '?'} "
+            f"failed={failed.group(1) if failed else '?'}"
+        )
+    return out
+
+
 _RENDERERS = {
     "scan": _render_scan,
     "pending": _render_pending,
@@ -384,4 +404,5 @@ _RENDERERS = {
     "mr_list": _render_mr_list,
     "mr_send": _render_mr_send,
     "mr_replies_send": _render_mr_replies_send,
+    "mr_replies_status": _render_mr_replies_status,
 }
