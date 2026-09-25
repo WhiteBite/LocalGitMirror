@@ -1486,11 +1486,14 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
         .apply { toolTipText = LocalGitMirrorBundle.message("review.tip.sendSelected") })
       val isWorkRole = localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) ==
         localgitmirror.idea.deps.MachineRole.WORK
-      val repliesKey = if (isWorkRole) "review.btn.pushReplies" else "review.btn.uploadReplies"
       val repliesTip = if (isWorkRole) "review.tip.pushReplies" else "review.tip.uploadReplies"
-      val repliesActionId = if (isWorkRole) "LocalGitMirror.PushMrReplies" else "LocalGitMirror.UploadMrReplies"
-      add(btn(LocalGitMirrorBundle.message(repliesKey), AllIcons.Actions.Commit) {
-        triggerLgmAction(repliesActionId)
+      add(btn(LocalGitMirrorBundle.message("review.btn.replies"), AllIcons.Actions.Commit) {
+        val iid = mrReviewList.selectedValue?.iid
+        if (iid == null) {
+          notify(LocalGitMirrorBundle.message("review.sendSelected.none"), NotificationType.WARNING)
+        } else {
+          localgitmirror.idea.gitlab.MrRepliesReviewDialog.openFor(project, iid)
+        }
       }.apply { toolTipText = LocalGitMirrorBundle.message(repliesTip) })
       add(JButton(AllIcons.Actions.MenuSaveall).apply {
         margin = JBUI.insets(2, 4)

@@ -72,6 +72,9 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     // WORK: push agent review replies from the postbox to GitLab without a
     // manual action; HOME: auto-write incoming MR notes into .mr-notes/.
     var autoMrReview: Boolean = true,
+    // WORK: post approved replies without opening the review dialog; off =
+    // the poller only notifies that replies await approval in the Review tab.
+    var autoPushReplies: Boolean = false,
     // Poll interval for deps auto-sync, in seconds (15..600). Default 300s
     // (5 min) for stealth; the poller applies +/-30% jitter, a 15-min fast
     // window after local events, and exponential backoff up to 4x on idle.

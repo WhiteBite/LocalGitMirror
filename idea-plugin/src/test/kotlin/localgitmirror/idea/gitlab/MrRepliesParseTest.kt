@@ -76,6 +76,20 @@ class MrRepliesParseTest {
   }
 
   @Test
+  fun `render of approved subset round-trips through parse`() {
+    val parsed = MrReplies.parse(sample)
+    val approved = parsed.replies.filter { it.kind != MrReplies.Kind.NEW_GENERAL }
+    val md = MrReplies.render(42, "refactor/x", approved)
+    val again = MrReplies.parse(md)
+    assertEquals(42, again.iid)
+    assertEquals("refactor/x", again.branch)
+    assertEquals(approved.size, again.replies.size)
+    assertEquals(approved.map { it.body }, again.replies.map { it.body })
+    assertEquals(approved.map { it.resolve }, again.replies.map { it.resolve })
+    assertEquals(emptyList<String>(), again.errors)
+  }
+
+  @Test
   fun `marker is stable and distinct per target`() {
     val a = MrReplies.Reply(MrReplies.Kind.THREAD, "t1", "", 0, false, "body")
     val b = MrReplies.Reply(MrReplies.Kind.THREAD, "t2", "", 0, false, "body")

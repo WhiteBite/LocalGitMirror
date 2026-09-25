@@ -383,8 +383,16 @@ class MrNotesDialog(
       foreground = MUTED
       addActionListener { doFetch() }
     }
+    val repliesBtn = JButton(LocalGitMirrorBundle.message("mrdialog.replies")).apply {
+      isFocusPainted = false
+      isBorderPainted = false
+      isContentAreaFilled = false
+      foreground = MUTED
+      addActionListener { localgitmirror.idea.gitlab.MrRepliesReviewDialog.openFor(project, row.iid) }
+    }
     left.add(saveBtn)
     left.add(fetchBtn)
+    left.add(repliesBtn)
     panel.add(left, BorderLayout.WEST)
 
     panel.add(JLabel(LocalGitMirrorBundle.message("mrdialog.readonly")).apply { foreground = MUTED }, BorderLayout.EAST)
