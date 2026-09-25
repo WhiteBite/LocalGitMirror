@@ -902,6 +902,9 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       "LocalGitMirror.BufferPaste",
       "LocalGitMirror.BufferHistory"
     )
+    mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.exchange.more.clear"), AllIcons.Actions.GC) {
+      clearExchangeFeed()
+    })
     mainGroup.addSeparator()
     addRegisteredActions(
       "LocalGitMirror.Preflight",
