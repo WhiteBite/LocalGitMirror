@@ -73,7 +73,7 @@ class MrReplyPushService(private val project: Project) {
     return listResult.items.mapNotNull { item ->
       val path = displayPath(item).takeIf { it.startsWith("mr-replies/") && it.endsWith(".md") } ?: return@mapNotNull null
       downloadAndParse(item, settings, repo)?.let { PendingReplies(item, path, it) }
-    }
+    }.sortedByDescending { it.item.mtime }
   }
 
   internal fun countPending(): Int {

@@ -72,6 +72,18 @@ class MrNotesRenderParseTest {
   }
 
   @Test
+  fun `newest postbox entry wins per MR iid`() {
+    val svc = MrReviewService(project)
+    val old = localgitmirror.idea.mirror.MirrorApi.FileSyncItem("old", "mr-notes/mr-!46.md", 1, 1, 1000)
+    val fresh = localgitmirror.idea.mirror.MirrorApi.FileSyncItem("fresh", "mr-notes/mr-!46.md", 1, 1, 2000)
+    val other = localgitmirror.idea.mirror.MirrorApi.FileSyncItem("other", "mr-notes/mr-!7.md", 1, 1, 1500)
+    val picked = svc.newestPerIid(
+      listOf(old to "mr-notes/mr-!46.md", fresh to "mr-notes/mr-!46.md", other to "mr-notes/mr-!7.md")
+    )
+    assertEquals(setOf("fresh", "other"), picked.map { it.first.id }.toSet())
+  }
+
+  @Test
   fun `parse of system-only markdown yields zero threads`() {
     val md = MrNotesWriter.renderMarkdown(
       project = null, iid = 7, title = "T", sourceBranch = "b",
