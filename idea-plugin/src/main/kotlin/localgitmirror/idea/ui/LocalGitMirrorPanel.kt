@@ -2728,6 +2728,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     if (item.canOpen) {
       card.add(chatLink(actionText) { action() })
     }
+    if (item.displayPath.isNotBlank()) {
+      card.add(chatLink(LocalGitMirrorBundle.message("panel.exchange.chat.copyPath")) {
+        CopyPasteManager.getInstance().setContents(StringSelection(item.displayPath))
+        notify(LocalGitMirrorBundle.message("panel.exchange.chat.copied"), NotificationType.INFORMATION)
+      })
+    }
     card.maximumSize = Dimension(Int.MAX_VALUE, card.preferredSize.height)
     return card
   }
