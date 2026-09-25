@@ -1472,16 +1472,26 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       border = JBUI.Borders.empty(4, 0, 0, 0)
       add(primaryBtn(LocalGitMirrorBundle.message("review.open")) {
         mrReviewList.selectedValue?.let { openMrDialog(it) }
-      })
+      }.apply { toolTipText = LocalGitMirrorBundle.message("review.tip.open") })
       val fetchBtn = btn(LocalGitMirrorBundle.message("review.fetch"), AllIcons.Actions.Refresh) {
         reloadReview()
       }
+      fetchBtn.toolTipText = LocalGitMirrorBundle.message("review.tip.fetch")
       reviewFetchButton = fetchBtn
       add(fetchBtn)
       add(btn(LocalGitMirrorBundle.message("review.sendNotes"), AllIcons.Actions.Upload) {
         mrReviewList.selectedValue?.let { sendMrNotesToCache(it) }
-      })
-      add(btn(LocalGitMirrorBundle.message("review.sendSelected")) { sendSelectedMrs() })
+      }.apply { toolTipText = LocalGitMirrorBundle.message("review.tip.sendNotes") })
+      add(btn(LocalGitMirrorBundle.message("review.sendSelected")) { sendSelectedMrs() }
+        .apply { toolTipText = LocalGitMirrorBundle.message("review.tip.sendSelected") })
+      val isWorkRole = localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) ==
+        localgitmirror.idea.deps.MachineRole.WORK
+      val repliesKey = if (isWorkRole) "review.btn.pushReplies" else "review.btn.uploadReplies"
+      val repliesTip = if (isWorkRole) "review.tip.pushReplies" else "review.tip.uploadReplies"
+      val repliesActionId = if (isWorkRole) "LocalGitMirror.PushMrReplies" else "LocalGitMirror.UploadMrReplies"
+      add(btn(LocalGitMirrorBundle.message(repliesKey), AllIcons.Actions.Commit) {
+        triggerLgmAction(repliesActionId)
+      }.apply { toolTipText = LocalGitMirrorBundle.message(repliesTip) })
       add(JButton(AllIcons.Actions.MenuSaveall).apply {
         margin = JBUI.insets(2, 4)
         isFocusPainted = false
