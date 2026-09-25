@@ -2630,17 +2630,17 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   }
 
   /** Copy the FULL message text; fetches the server body first when only a preview is known. */
-  private fun copyBubbleText(item: ExchangeItem, button: JButton) {
+  private fun copyBubbleText(item: ExchangeItem, button: JButton?) {
     val known = item.localText ?: chatBodyCache[item.id]
     if (known != null) {
       CopyPasteManager.getInstance().setContents(StringSelection(known))
-      flashCopied(button)
+      button?.let { flashCopied(it) }
       return
     }
     if (!item.canOpen) return
     loadChatBody(item) { full ->
       CopyPasteManager.getInstance().setContents(StringSelection(full))
-      flashCopied(button)
+      button?.let { flashCopied(it) }
     }
   }
 
@@ -2774,13 +2774,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     })
   }
 
-  /**
-   * Text bubble body: word-boundary wrapping (JTextArea lineWrap + wrapStyleWord),
-   * width capped at ~75% of the chat viewport so long code lines don't build a
-   * skinny tall column. Preferred height is measured per hard line — a single
-   * LineBreakMeasurer over the whole text undercounts wrapped rows and clips
-   * the bubble. Tabs are expanded for measurement (overestimate, never a clip).
-   */
+  /** Text bubble body: width = min(natural text width, ~75% of viewport), height measured per hard line via LineBreakMeasurer. */
   private class BubbleTextArea(raw: String, mono: Boolean) :
     JTextArea(raw.replace("\r\n", "\n").replace('\r', '\n')) {
     init {
@@ -2802,15 +2796,16 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     }
 
     override fun getPreferredSize(): Dimension {
-      val d = super.getPreferredSize()
+      val fm = getFontMetrics(font)
+      val ins = insets
+      val lines = text.split('\n').map { it.replace("\t", "        ") }
+      val natural = lines.maxOf { fm.stringWidth(it) } + ins.left + ins.right + JBUI.scale(4)
       val vp = viewportWidth()
       val target = if (vp > 0) vp * 3 / 4 else JBUI.scale(BUBBLE_TEXT_MAX_WIDTH)
-      if (target <= 0 || d.width <= target) return d
-      val fm = getFontMetrics(font)
-      val wrapWidth = (target - insets.left - insets.right).coerceAtLeast(1)
-      var h = insets.top + insets.bottom
-      for (para in text.split('\n')) {
-        val line = para.replace("\t", "        ")
+      val width = minOf(natural, target).coerceAtLeast(JBUI.scale(120))
+      val wrapWidth = (width - ins.left - ins.right).coerceAtLeast(1)
+      var h = ins.top + ins.bottom
+      for (line in lines) {
         if (line.isEmpty()) {
           h += fm.height
           continue
@@ -2823,7 +2818,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
           h += fm.height
         }
       }
-      return Dimension(target, h)
+      return Dimension(width, h)
     }
   }
 
@@ -2867,13 +2862,17 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   private fun showBubbleContextMenu(item: ExchangeItem, comp: JComponent, x: Int, y: Int) {
     val popup = JPopupMenu()
     if (item.kind == ExchangeItem.Kind.BUFFER) {
-      val copyKey = if (item.localText != null) "panel.exchange.chat.copy" else "panel.exchange.ctx.paste"
-      popup.add(JMenuItem(LocalGitMirrorBundle.message(copyKey)).apply {
-        addActionListener { openExchangeItem(item) }
+      popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.exchange.chat.copy")).apply {
+        addActionListener { copyBubbleText(item, null) }
       })
     } else {
       popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.exchange.ctx.open")).apply {
         addActionListener { openExchangeItem(item) }
+      })
+    }
+    if (item.kind != ExchangeItem.Kind.BUFFER || item.displayPath.isNotBlank()) {
+      popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.exchange.chat.copyPath")).apply {
+        addActionListener { CopyPasteManager.getInstance().setContents(StringSelection(item.displayPath)) }
       })
     }
     if (item.kind == ExchangeItem.Kind.BUFFER && !item.isEcho) {
