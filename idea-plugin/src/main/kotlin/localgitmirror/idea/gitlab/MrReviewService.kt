@@ -309,13 +309,12 @@ class MrReviewService(private val project: Project) {
       ?.trim()
       ?: ""
 
-    val branch = lines.firstOrNull { it.contains("**\u0412\u0435\u0442\u043a\u0430:**") }
+    val branch = lines.firstOrNull { it.contains("**Ветка:**") }
       ?.let { line -> Regex("`([^`]+)`").find(line)?.groupValues?.getOrNull(1) }
       ?: ""
 
-    val unresolved = lines.count { it.startsWith("## \u26a0") }
-    val resolved = lines.count { it.startsWith("## ✓ решено") }
-    val totalThreads = unresolved + resolved
+    val threads = parseThreads(markdown)
+    val unresolved = threads.count { !it.resolved && it.notes.any { n -> !n.system } }
 
     return MrRowItem(
       iid = iid,
@@ -323,11 +322,119 @@ class MrReviewService(private val project: Project) {
       sourceBranch = branch,
       updatedAt = "",
       unresolved = unresolved,
-      totalThreads = totalThreads,
-      discussions = emptyList(),
+      totalThreads = threads.size,
+      discussions = threads,
       source = Source.CACHE,
       receivedMarkdown = markdown,
     )
+  }
+
+  private val authorLine = Regex("^\\*\\*(.+?)\\*\\* _\\(([^)]*)\\)_:\\s*$")
+  private val replyLine = Regex("^&nbsp;&nbsp;↳ \\*\\*(.+?)\\*\\* _\\(([^)]*)\\)_:\\s*$")
+
+  /** Rebuild structured threads from a transferred mr-notes markdown (home side has no GitLab API). */
+  internal fun parseThreads(markdown: String): List<GitLabApi.MrDiscussion> {
+    val out = mutableListOf<GitLabApi.MrDiscussion>()
+    var id = ""
+    var resolved = true
+    var anchorFile: String? = null
+    var anchorLine: Int? = null
+    var inThread = false
+    var inFence = false
+    var current: MutableList<GitLabApi.MrNote>? = null
+    var body: StringBuilder? = null
+
+    fun flushNote() {
+      val notes = current ?: return
+      val b = body?.toString()?.trim().orEmpty()
+      if (notes.isNotEmpty() && b.isNotEmpty()) {
+        val last = notes.removeAt(notes.size - 1)
+        notes.add(last.copy(body = b))
+      }
+      body = null
+    }
+
+    fun flushThread() {
+      flushNote()
+      val notes = current ?: return
+      if (notes.isNotEmpty()) {
+        out.add(
+          GitLabApi.MrDiscussion(
+            id = id,
+            resolved = resolved,
+            notes = notes.map { it.copy(filePath = anchorFile, line = anchorLine) },
+          )
+        )
+      }
+      current = null
+    }
+
+    for (raw in markdown.lines()) {
+      val line = raw.trimEnd()
+      if (line.startsWith("```")) {
+        inFence = !inFence
+        continue
+      }
+      if (inFence) continue
+      when {
+        line.startsWith("## \u26a0") -> {
+          flushThread()
+          inThread = true
+          resolved = false
+          id = ""
+          anchorFile = null
+          anchorLine = null
+          current = mutableListOf()
+        }
+        line.startsWith("## ✓ решено") || line.startsWith("## ✓ resolved") -> {
+          flushThread()
+          inThread = true
+          resolved = true
+          id = ""
+          anchorFile = null
+          anchorLine = null
+          current = mutableListOf()
+        }
+        line.startsWith("## ") -> {
+          flushThread()
+          inThread = false
+        }
+        !inThread -> Unit
+        line.startsWith("<!-- lgm-thread:") -> id = line.substringAfter("lgm-thread:").substringBefore("-->").trim()
+        line.startsWith("**Место:**") || line.startsWith("**Location:**") -> {
+          val ref = Regex("`([^`]+)`").find(line)?.groupValues?.getOrNull(1)
+          if (ref != null && ref.contains(":")) {
+            anchorFile = ref.substringBeforeLast(':')
+            anchorLine = ref.substringAfterLast(':').toIntOrNull()
+          }
+        }
+        else -> {
+          val notes = current ?: continue
+          val authorM = authorLine.find(line)
+          val replyM = replyLine.find(line)
+          when {
+            authorM != null || replyM != null -> {
+              flushNote()
+              val m = authorM ?: replyM!!
+              notes.add(
+                GitLabApi.MrNote(
+                  author = m.groupValues[1],
+                  createdAt = m.groupValues[2],
+                  system = false,
+                  body = "",
+                  resolved = false,
+                )
+              )
+              body = StringBuilder()
+            }
+            line == "---" -> flushNote()
+            body != null -> body?.appendLine(line)
+          }
+        }
+      }
+    }
+    flushThread()
+    return out
   }
 
   private fun notifyOk(rowCount: Int) {
