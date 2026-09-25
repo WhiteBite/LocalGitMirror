@@ -129,7 +129,10 @@ class SendToBufferAction : AnAction() {
           return
         }
         val hintEnc = try {
-          ExchangeCrypto.encryptHint(ExchangeMeta.hintJson(payload), pwd)
+          val side = ExchangeMeta.sideOfRole(
+            localgitmirror.idea.deps.RoleDetector.detect(settings) == localgitmirror.idea.deps.MachineRole.WORK
+          )
+          ExchangeCrypto.encryptHint(ExchangeMeta.hintJson(payload, side = side), pwd)
         } catch (t: Throwable) {
           notify(project, LocalGitMirrorBundle.message("notify.buffer.encryptFail", t.message ?: ""), NotificationType.ERROR)
           return

@@ -28,7 +28,9 @@ class MrReviewService(private val project: Project) {
     val discussions: List<GitLabApi.MrDiscussion>,
     val source: Source,
     val receivedMarkdown: String?,
-    val replyStatus: String = "",
+    val replyState: String = "",
+    val replyPosted: Int = 0,
+    val replyFailed: Int = 0,
   )
 
   data class StatusReport(val posted: Int, val failed: Int)
@@ -38,10 +40,17 @@ class MrReviewService(private val project: Project) {
     val status: Map<Int, StatusReport>,
     val pendingIids: Set<Int>,
     val localIids: Set<Int>,
+    val processingIids: Set<Int> = emptySet(),
   )
 
   @Volatile
   private var cache: List<MrRowItem> = emptyList()
+
+  // postbox item id -> mtime of the last downloaded+parsed copy; unchanged items are not re-downloaded
+  private val downloadedMtime = java.util.concurrent.ConcurrentHashMap<String, Long>()
+  private val parsedCache = java.util.concurrent.ConcurrentHashMap<String, Any>()
+  @Volatile
+  private var lastPendingIids: Set<Int> = emptySet()
 
   fun cachedRows(): List<MrRowItem> = cache
 
@@ -85,16 +94,23 @@ class MrReviewService(private val project: Project) {
   }
 
   internal fun decorate(rows: List<MrRowItem>, cache: CacheData): List<MrRowItem> = rows.map { row ->
-    row.copy(replyStatus = stateFor(row.iid, cache))
+    val st = cache.status[row.iid]
+    row.copy(
+      replyState = stateFor(row.iid, cache),
+      replyPosted = st?.posted ?: 0,
+      replyFailed = st?.failed ?: 0,
+    )
   }
 
+  /** Raw state key for the reply pipeline; the UI localizes and colors it. */
   internal fun stateFor(iid: Int, cache: CacheData): String {
     val st = cache.status[iid]
     return when {
-      st != null && st.failed > 0 -> localgitmirror.idea.i18n.LocalGitMirrorBundle.message("review.state.failed", st.failed)
-      st != null && st.posted > 0 -> localgitmirror.idea.i18n.LocalGitMirrorBundle.message("review.state.posted", st.posted)
-      iid in cache.pendingIids -> localgitmirror.idea.i18n.LocalGitMirrorBundle.message("review.state.pending")
-      iid in cache.localIids -> localgitmirror.idea.i18n.LocalGitMirrorBundle.message("review.state.local")
+      st != null && st.failed > 0 -> "failed"
+      st != null && st.posted > 0 -> "posted"
+      iid in cache.pendingIids -> "pending"
+      iid in cache.processingIids -> "processing"
+      iid in cache.localIids -> "local"
       else -> ""
     }
   }
@@ -121,8 +137,12 @@ class MrReviewService(private val project: Project) {
     if (listResult.code !in 200..299) {
       throw RuntimeException(listResult.message.ifBlank { "Mirror API error ${listResult.code}" })
     }
+    if (downloadedMtime.size > 500) {
+      downloadedMtime.clear()
+      parsedCache.clear()
+    }
 
-    val status = mutableMapOf<Int, StatusReport>()
+    val statusCandidates = mutableListOf<Triple<Int, MirrorApi.FileSyncItem, String>>()
     val pendingIids = mutableSetOf<Int>()
     val noteItems = mutableListOf<Pair<MirrorApi.FileSyncItem, String>>()
     for (item in listResult.items) {
@@ -130,15 +150,56 @@ class MrReviewService(private val project: Project) {
       val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
       when {
         path.startsWith("mr-replies-status/") -> {
-          val md = downloadPlain(item, settings, repo) ?: continue
-          status[iid] = parseStatus(md)
+          val md = cachedPlain(item, settings, repo) ?: continue
+          statusCandidates.add(Triple(iid, item, md))
         }
         path.startsWith("mr-replies/") -> pendingIids.add(iid)
         path.startsWith("mr-notes/") -> noteItems.add(item to path)
       }
     }
-    val rows = newestPerIid(noteItems).mapNotNull { (item, path) -> parseCachedMr(item, path, settings, repo) }
-    return CacheData(rows, status, pendingIids, localReplyIids(baseDir))
+    val status = mutableMapOf<Int, StatusReport>()
+    for ((iid, group) in statusCandidates.groupBy { it.first }) {
+      val newest = group.maxByOrNull { it.second.mtime } ?: continue
+      status[iid] = parseStatus(newest.third)
+      for (stale in group) {
+        if (stale.second.id != newest.second.id) {
+          runCatching { MirrorApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, stale.second.id) }
+        }
+      }
+    }
+    val rows = newestPerIid(noteItems).mapNotNull { (item, path) ->
+      cachedRow(item, path, settings, repo)
+    }
+    val processedIids = lastPendingIids - pendingIids - status.keys
+    lastPendingIids = pendingIids
+    return CacheData(rows, status, pendingIids, localReplyIids(baseDir), processedIids)
+  }
+
+  private fun cachedPlain(item: MirrorApi.FileSyncItem, settings: MirrorSettingsService.State, repo: String): String? {
+    val known = downloadedMtime[item.id]
+    if (known != null && known == item.mtime) {
+      (parsedCache[item.id] as? String)?.let { return it }
+    }
+    val md = downloadPlain(item, settings, repo) ?: return null
+    downloadedMtime[item.id] = item.mtime
+    parsedCache[item.id] = md
+    return md
+  }
+
+  private fun cachedRow(
+    item: MirrorApi.FileSyncItem,
+    path: String,
+    settings: MirrorSettingsService.State,
+    repo: String,
+  ): MrRowItem? {
+    val known = downloadedMtime[item.id]
+    if (known != null && known == item.mtime) {
+      (parsedCache[item.id] as? MrRowItem)?.let { return it }
+    }
+    val row = parseCachedMr(item, path, settings, repo) ?: return null
+    downloadedMtime[item.id] = item.mtime
+    parsedCache[item.id] = row
+    return row
   }
 
   private fun localReplyIids(baseDir: String): Set<Int> =
