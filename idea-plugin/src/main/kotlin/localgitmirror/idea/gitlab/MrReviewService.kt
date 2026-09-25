@@ -114,8 +114,20 @@ class MrReviewService(private val project: Project) {
     }
     if (mrItems.isEmpty()) return emptyList()
 
-    return mrItems.mapNotNull { (item, path) -> parseCachedMr(item, path, settings, repo) }
+    return newestPerIid(mrItems).mapNotNull { (item, path) -> parseCachedMr(item, path, settings, repo) }
   }
+
+  /** Repeated sends stack several postbox entries per MR; only the newest one is shown. */
+  internal fun newestPerIid(items: List<Pair<MirrorApi.FileSyncItem, String>>): List<Pair<MirrorApi.FileSyncItem, String>> =
+    items
+      .mapNotNull { pair ->
+        val iid = Regex("mr-!(\\d+)\\.md$").find(pair.second)?.groupValues?.getOrNull(1)?.toIntOrNull()
+          ?: return@mapNotNull null
+        iid to pair
+      }
+      .groupBy({ it.first }, { it.second })
+      .values
+      .map { group -> group.maxByOrNull { it.first.mtime } ?: group.first() }
 
   /** Real path of a postbox item: decrypted path_enc when present, plaintext path for old entries. */
   private fun displayPath(item: MirrorApi.FileSyncItem): String {
