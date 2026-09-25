@@ -966,6 +966,24 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   init {
     layout = BorderLayout()
 
+    // Files dropped anywhere in the tool window upload to the postbox; child
+    // components with their own handlers (composer, chat feed) keep precedence.
+    transferHandler = object : TransferHandler() {
+      override fun canImport(support: TransferSupport): Boolean =
+        support.isDrop && support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
+
+      override fun importData(support: TransferSupport): Boolean {
+        if (!canImport(support)) return false
+        val files = (support.transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>)
+          ?.filterIsInstance<File>()
+          ?.filter { it.isFile }
+          .orEmpty()
+        if (files.isEmpty()) return false
+        uploadFilesToPostbox(files)
+        return true
+      }
+    }
+
     // Auto-refresh history on any new entry, regardless of which thread added it.
     // Registered once here so it survives rebuilds (setup → main UI transition).
     val listener: () -> Unit = {
@@ -2729,10 +2747,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       card.add(chatLink(actionText) { action() })
     }
     if (item.displayPath.isNotBlank()) {
-      card.add(chatLink(LocalGitMirrorBundle.message("panel.exchange.chat.copyPath")) {
-        CopyPasteManager.getInstance().setContents(StringSelection(item.displayPath))
-        notify(LocalGitMirrorBundle.message("panel.exchange.chat.copied"), NotificationType.INFORMATION)
-      })
+      card.add(chatLink(LocalGitMirrorBundle.message("panel.exchange.chat.copyPath")) { copyExchangePath(item) })
     }
     card.maximumSize = Dimension(Int.MAX_VALUE, card.preferredSize.height)
     return card
@@ -2882,7 +2897,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     }
     if (item.kind != ExchangeItem.Kind.BUFFER || item.displayPath.isNotBlank()) {
       popup.add(JMenuItem(LocalGitMirrorBundle.message("panel.exchange.chat.copyPath")).apply {
-        addActionListener { CopyPasteManager.getInstance().setContents(StringSelection(item.displayPath)) }
+        addActionListener { copyExchangePath(item) }
       })
     }
     if (item.kind == ExchangeItem.Kind.BUFFER && !item.isEcho) {
@@ -3043,6 +3058,25 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     val raw = item.displayPath.substringAfterLast('/').ifBlank { item.title }
     val safe = raw.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
     return safe.ifBlank { "file.bin" }
+  }
+
+  /** Absolute path of the received file: the materialized copy, downloading it first when absent. */
+  private fun copyExchangePath(item: ExchangeItem) {
+    val target = exchangeDir()?.let { File(it, safeExchangeName(item)) }
+    if (target == null) {
+      copyToClipboard(item.displayPath)
+      return
+    }
+    if (target.isFile) {
+      copyToClipboard(target.absolutePath)
+      return
+    }
+    withDecryptedFile(item) { f -> copyToClipboard(f.absolutePath) }
+  }
+
+  private fun copyToClipboard(text: String) {
+    CopyPasteManager.getInstance().setContents(StringSelection(text))
+    notify(LocalGitMirrorBundle.message("panel.exchange.chat.copied"), NotificationType.INFORMATION)
   }
 
   /** Download + decrypt a postbox entry off the EDT; [consume] runs on the EDT and receives a persistent file in .doccache/exchange (or a temp file when the project dir is unavailable). */
