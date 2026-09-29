@@ -66,9 +66,12 @@ def decrypt_bundle(data: bytes, password: str) -> bytes:
     salt  = data[cursor:cursor + 16]; cursor += 16
     nonce = data[cursor:cursor + 12]; cursor += 12
     (ct_len,) = struct.unpack(">Q", data[cursor:cursor + 8]); cursor += 8
-    ct = data[cursor:cursor + ct_len]
-
-    if len(ct) != ct_len:
+    # IDE file container shares version 0x01 but stores plaintext size here.
+    if cursor + ct_len == len(data):
+        ct = data[cursor:cursor + ct_len]
+    elif cursor + ct_len + 16 == len(data):
+        ct = data[cursor:]
+    else:
         raise ValueError("Corrupted payload")
 
     key = _derive_key(password, salt)
