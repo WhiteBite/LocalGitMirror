@@ -16,6 +16,7 @@ import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.deps.MachineRole
 import localgitmirror.idea.deps.RoleDetector
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.settings.MirrorProjectSettingsService
 import localgitmirror.idea.settings.MirrorSettingsService
 import java.awt.BorderLayout
 import java.awt.Dimension
@@ -51,9 +52,13 @@ class MrReviewDialog private constructor(
   private lateinit var contentHolder: JPanel
   private val sentMarkers = mutableSetOf<String>()
   private val controls = mutableMapOf<String, Pair<JCheckBox, JButton>>()
+  private var countLabel: JLabel? = null
 
   init {
     title = LocalGitMirrorBundle.message("mrview.title", row.iid)
+    if (!isWork) {
+      sentMarkers.addAll(project.getService(MirrorProjectSettingsService::class.java).state.mrHomeSent)
+    }
     init()
   }
 
@@ -78,6 +83,14 @@ class MrReviewDialog private constructor(
       layout = BoxLayout(this, BoxLayout.Y_AXIS)
       isOpaque = false
       border = JBUI.Borders.empty(8)
+    }
+    if (replies().isEmpty() && row.discussions.isNotEmpty()) {
+      list.add(JLabel(LocalGitMirrorBundle.message(if (isWork) "mrview.waiting.work" else "mrview.waiting.home", row.iid)).apply {
+        font = JBUI.Fonts.smallFont()
+        foreground = UIUtil.getContextHelpForeground()
+        alignmentX = JLabel.LEFT_ALIGNMENT
+      })
+      list.add(Box.createRigidArea(Dimension(0, JBUI.scale(8))))
     }
     for (d in row.discussions.filter { it.notes.any { n -> !n.system } }) {
       list.add(threadCard(d, matched.byThread[d.id]))
@@ -171,9 +184,14 @@ class MrReviewDialog private constructor(
       alignmentX = JPanel.LEFT_ALIGNMENT
     }
     val top = JPanel(BorderLayout()).apply { isOpaque = false }
-    val check = JCheckBox(caption, !sentMarkers.contains(key))
+    val displayCaption = if (reply.kind == MrReplies.Kind.NEW_ANCHORED)
+      LocalGitMirrorBundle.message("mrreview.kind.anchored", reply.file.substringAfterLast('/'), reply.line)
+    else caption
+    val check = JCheckBox(displayCaption, isWork && !sentMarkers.contains(key))
     check.isOpaque = false
     check.font = JBUI.Fonts.smallFont().asBold()
+    check.toolTipText = caption
+    check.addItemListener { updateCountLabel() }
     top.add(check, BorderLayout.WEST)
     val send = JButton(LocalGitMirrorBundle.message("mrview.send")).apply {
       isEnabled = !sentMarkers.contains(key)
@@ -281,11 +299,16 @@ class MrReviewDialog private constructor(
       })
     }
     panel.add(left, BorderLayout.WEST)
-    panel.add(JLabel(LocalGitMirrorBundle.message("mrview.count", approvedReplies().size)).apply {
+    countLabel = JLabel(LocalGitMirrorBundle.message("mrview.count", approvedReplies().size)).apply {
       foreground = JBColor(0x6F7277, 0x8C8F94)
       horizontalAlignment = SwingConstants.RIGHT
-    }, BorderLayout.EAST)
+    }
+    panel.add(countLabel, BorderLayout.EAST)
     return panel
+  }
+
+  private fun updateCountLabel() {
+    countLabel?.text = LocalGitMirrorBundle.message("mrview.count", approvedReplies().size)
   }
 
   private fun send(selected: List<MrReplies.Reply>) {
@@ -307,7 +330,8 @@ class MrReviewDialog private constructor(
           markSent(selected, report.failed == 0)
         }
       } else {
-        val md = MrReplies.render(row.iid, row.sourceBranch, selected)
+        val alreadySent = replies().filter { sentMarkers.contains(replyKey(it)) }
+        val md = MrReplies.render(row.iid, row.sourceBranch, alreadySent + selected)
         val ok = MrRepliesTransport.uploadMarkdown(project, row.iid, md)
         ApplicationManager.getApplication().invokeLater {
           if (project.isDisposed) return@invokeLater
@@ -324,15 +348,23 @@ class MrReviewDialog private constructor(
 
   private fun markSent(replies: List<MrReplies.Reply>, ok: Boolean) {
     if (!ok) return
+    val homeSent = if (isWork) null else project.getService(MirrorProjectSettingsService::class.java).state.mrHomeSent
     for (r in replies) {
       val key = replyKey(r)
       sentMarkers.add(key)
+      homeSent?.let { ledger ->
+        if (key !in ledger) {
+          ledger.add(key)
+          while (ledger.size > LEDGER_CAP) ledger.removeAt(0)
+        }
+      }
       controls[key]?.let { (check, btn) ->
         check.isSelected = false
         check.isEnabled = false
         btn.isEnabled = false
       }
     }
+    updateCountLabel()
     contentHolder.revalidate()
     contentHolder.repaint()
   }
@@ -344,6 +376,8 @@ class MrReviewDialog private constructor(
       ApplicationManager.getApplication().executeOnPooledThread {
         if (isWork) {
           pending = MrReplyPushService(project).fetchPendingReplies().firstOrNull { it.parsed.iid == row.iid }
+        } else {
+          localReplies = readLocalReplies(row.iid)
         }
         ApplicationManager.getApplication().invokeLater {
           if (project.isDisposed) return@invokeLater
@@ -351,10 +385,17 @@ class MrReviewDialog private constructor(
           contentHolder.add(buildContent(), BorderLayout.CENTER)
           contentHolder.revalidate()
           contentHolder.repaint()
+          updateCountLabel()
         }
       }
     }
   }
+
+  private fun readLocalReplies(iid: Int): MrReplies.RepliesFile? =
+    project.basePath
+      ?.let { File(it, ".mr-notes/replies-!$iid.md") }
+      ?.takeIf { it.isFile }
+      ?.let { MrReplies.parse(it.readText(Charsets.UTF_8)) }
 
   private fun notify(content: String, type: NotificationType) {
     ApplicationManager.getApplication().invokeLater {
@@ -367,6 +408,8 @@ class MrReviewDialog private constructor(
   }
 
   companion object {
+    private const val LEDGER_CAP = 500
+
     fun openFor(project: Project, row: MrReviewService.MrRowItem) {
       val isWork = RoleDetector.detect(service<MirrorSettingsService>().state) == MachineRole.WORK
       if (!isWork) {

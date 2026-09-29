@@ -46,6 +46,9 @@ class MrReviewService(private val project: Project) {
   @Volatile
   private var cache: List<MrRowItem> = emptyList()
 
+  @Volatile
+  var onCacheUpdated: ((List<MrRowItem>) -> Unit)? = null
+
   // postbox item id -> mtime of the last downloaded+parsed copy; unchanged items are not re-downloaded
   private val downloadedMtime = java.util.concurrent.ConcurrentHashMap<String, Long>()
   private val parsedCache = java.util.concurrent.ConcurrentHashMap<String, Any>()
@@ -65,6 +68,7 @@ class MrReviewService(private val project: Project) {
       UIUtil.invokeLaterIfNeeded {
         if (project.isDisposed) return@invokeLaterIfNeeded
         onDone?.invoke(rows)
+        onCacheUpdated?.invoke(rows)
         if (notify) {
           if (result.isSuccess) {
             notifyOk(rows.size)

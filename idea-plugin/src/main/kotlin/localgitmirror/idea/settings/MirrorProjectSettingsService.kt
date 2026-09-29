@@ -27,7 +27,9 @@ class MirrorProjectSettingsService : PersistentStateComponent<MirrorProjectSetti
     // Per-project repo name. Empty = auto-resolve from git remote / folder.
     var repoOverride: String = "",
     // Markers of MR review replies already posted to GitLab (exactly-once ledger).
-    var mrReplyLedger: MutableList<String> = mutableListOf()
+    var mrReplyLedger: MutableList<String> = mutableListOf(),
+    // Reply keys already shipped to the work postbox (home role).
+    var mrHomeSent: MutableList<String> = mutableListOf()
   )
 
   private var state = State()
