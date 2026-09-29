@@ -1520,6 +1520,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     }
     mrReviewList.addListSelectionListener(selectionGate)
     selectionGate.valueChanged(null)
+    project.getService(MrReviewService::class.java).onCacheUpdated = { refreshReview() }
 
     val bottom = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
       isOpaque = false
