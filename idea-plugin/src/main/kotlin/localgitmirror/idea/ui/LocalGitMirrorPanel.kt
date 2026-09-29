@@ -180,6 +180,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   private var allBranchItems: List<BranchListItem> = emptyList()
   private var respondButton: javax.swing.JButton? = null
   private var reviewFetchButton: javax.swing.JButton? = null
+  private var reviewRowsSignature = ""
   private val branchFilterField = SearchTextField(false).apply {
     textEditor.emptyText.text = LocalGitMirrorBundle.message("panel.branch.filter")
     textEditor.font = JBUI.Fonts.smallFont()
@@ -2203,8 +2204,22 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
                     it.title.lowercase().contains(filter) ||
                     it.sourceBranch.lowercase().contains(filter)
                   }
-    mrReviewListModel.clear()
-    visible.forEach { mrReviewListModel.addElement(it) }
+    val signature = visible.joinToString(";") {
+      "${it.iid}:${it.unresolved}:${it.replyState}:${it.replyPosted}:${it.replyFailed}:${it.title}:${it.source}"
+    }
+    if (signature != reviewRowsSignature) {
+      reviewRowsSignature = signature
+      val selectedIids = mrReviewList.selectedValuesList.map { it.iid }.toSet()
+      val viewport = mrReviewList.parent as? javax.swing.JViewport
+      val viewPos = viewport?.viewPosition
+      mrReviewListModel.clear()
+      visible.forEach { mrReviewListModel.addElement(it) }
+      val indices = (0 until mrReviewListModel.size())
+        .filter { mrReviewListModel.getElementAt(it).iid in selectedIids }
+        .toIntArray()
+      if (indices.isNotEmpty()) mrReviewList.selectedIndices = indices
+      if (viewPos != null) viewport?.viewPosition = viewPos
+    }
 
     val attention = rows.count { it.unresolved > 0 }
     mrReviewStatus.text = if (attention > 0)
