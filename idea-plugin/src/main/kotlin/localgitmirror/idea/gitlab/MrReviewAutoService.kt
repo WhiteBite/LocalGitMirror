@@ -61,6 +61,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   private fun pollWork() {
     val conf = GitLabConfig.resolve(project)
     if (!GitLabConfig.hasApi(conf)) return
+    pollNotesRequests()
     val service = MrReplyPushService(project)
     if (settings.autoPushReplies) {
       val reports = service.pushOnce()
@@ -91,6 +92,47 @@ class MrReviewAutoService(private val project: Project) : Disposable {
           .notify(project)
       }
     }
+  }
+
+  private val handledRequestIds = mutableSetOf<String>()
+
+  private fun pollNotesRequests() {
+    val base = project.basePath ?: return
+    val repo = runCatching {
+      project.getService(localgitmirror.idea.sync.v2.SyncFacadeService::class.java)
+        .resolveRepo(File(base), settings).sanitized
+    }.getOrDefault("")
+    if (repo.isBlank()) return
+    val list = localgitmirror.idea.mirror.MirrorApi.fileSyncList(
+      settings.baseUrl, localgitmirror.idea.settings.SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls
+    )
+    if (list.code !in 200..299) return
+    for (item in list.items) {
+      val path = displayPath(item)
+      if (!path.startsWith("mr-notes-request/")) continue
+      if (!handledRequestIds.add(item.id)) continue
+      if (handledRequestIds.size > 200) handledRequestIds.clear()
+      val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
+      val ok = runCatching { localgitmirror.idea.actions.GitLabMrSender.sendNotesOnRequest(project, iid) }
+        .getOrDefault(false)
+      if (ok) {
+        runCatching {
+          localgitmirror.idea.mirror.MirrorApi.fileSyncAck(
+            settings.baseUrl, localgitmirror.idea.settings.SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id
+          )
+        }
+      }
+    }
+  }
+
+  private fun displayPath(item: localgitmirror.idea.mirror.MirrorApi.FileSyncItem): String {
+    if (item.pathEnc.isBlank()) return item.path
+    val plain = runCatching {
+      localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(
+        item.pathEnc, localgitmirror.idea.settings.SecretsStore.syncPassword
+      )
+    }.getOrDefault(item.path)
+    return localgitmirror.idea.workkit.ExchangeMeta.parseName(plain).text.ifBlank { item.path }
   }
 
   private fun pollHome() {

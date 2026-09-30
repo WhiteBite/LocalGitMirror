@@ -253,6 +253,23 @@ object GitLabMrSender {
     }
   }
 
+  /** Home asked via the postbox (mr-notes-request/mr-!N.md) for this MR's threads. */
+  internal fun sendNotesOnRequest(project: Project, iid: Int): Boolean {
+    val conf = GitLabConfig.resolve(project)
+    if (!GitLabConfig.hasApi(conf)) return false
+    val settings = service<MirrorSettingsService>().state
+    val baseDir = project.basePath ?: return false
+    val repo = runCatching {
+      project.getService(SyncFacadeService::class.java).resolveRepo(File(baseDir), settings).sanitized
+    }.getOrDefault("")
+    if (repo.isBlank()) return false
+    val branch = runCatching {
+      GitLabApi.listOpenMrs(conf).mrs.firstOrNull { it.iid == iid }?.sourceBranch
+    }.getOrNull() ?: ""
+    sendMrNotes(project, conf, iid, repo, branch)
+    return true
+  }
+
   private fun renderDiscussions(
     project: Project,
     iid: Int,

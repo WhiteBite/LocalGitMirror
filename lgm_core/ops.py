@@ -1670,19 +1670,92 @@ def op_prune(ctx: Ctx, args: dict) -> dict:
                             keep=keep, apply=apply)
 
 
-def op_mr_list(ctx: Ctx, args: dict) -> dict:
-    """List open GitLab merge requests (GITLAB_URL/TOKEN/PROJECT config)."""
-    c = _client(ctx)
-    mrs = c.gitlab_list_mrs()
-    items = [
-        {
-            "iid": m.get("iid"),
-            "title": m.get("title", ""),
-            "source_branch": m.get("source_branch", ""),
-            "updated_at": m.get("updated_at", ""),
-        }
-        for m in mrs
+_MRN_TITLE = re.compile(r"^# MR !(\d+) — (.*)$")
+_MRN_BRANCH = re.compile(r"^- \*\*Ветка:\*\* `([^`]+)`")
+
+
+def _parse_mr_notes_head(markdown: str) -> dict:
+    iid, title, branch = 0, "", ""
+    unresolved = 0
+    for line in markdown.splitlines():
+        m = _MRN_TITLE.match(line)
+        if m:
+            iid, title = int(m.group(1)), m.group(2).strip()
+            continue
+        b = _MRN_BRANCH.match(line)
+        if b:
+            branch = b.group(1)
+        if line.startswith("## ⚠"):
+            unresolved += 1
+    return {"iid": iid, "title": title, "source_branch": branch, "unresolved": unresolved}
+
+
+def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> list[dict]:
+    """Home without GitLab: MR inventory from transferred mr-notes blobs."""
+    repo = (args.get("repo") or "").strip()
+    repos = [repo] if repo else [
+        r.get("name") if isinstance(r, dict) else r
+        for r in (c.repos().get("repos") or [])
     ]
+    pwd = ctx.config.sync_password
+    out: list[dict] = []
+    for name in repos:
+        if not name:
+            continue
+        try:
+            lst = c.file_sync_list(name)
+        except LgmError:
+            continue
+        newest: dict[int, dict] = {}
+        for i in (lst.get("items") or []):
+            eff = _postbox_display_path(i, pwd)
+            if not eff.startswith("mr-notes/"):
+                continue
+            m = re.search(r"mr-!(\d+)\.md$", eff)
+            if not m:
+                continue
+            iid = int(m.group(1))
+            if iid not in newest or (i.get("mtime") or 0) > (newest[iid].get("mtime") or 0):
+                newest[iid] = i
+        for iid, item in sorted(newest.items()):
+            try:
+                plain = decrypt_bundle(c.file_sync_fetch(name, item["id"]), pwd).decode("utf-8")
+            except Exception:
+                continue
+            head = _parse_mr_notes_head(plain)
+            if not head["iid"]:
+                continue
+            out.append({
+                "iid": head["iid"],
+                "title": head["title"],
+                "source_branch": head["source_branch"],
+                "updated_at": "",
+                "unresolved": head["unresolved"],
+                "source": "cache",
+                "repo": name,
+            })
+    return out
+
+
+def op_mr_list(ctx: Ctx, args: dict) -> dict:
+    """List open GitLab merge requests; without GitLab config fall back to transferred notes."""
+    c = _client(ctx)
+    items: list[dict] = []
+    try:
+        items = [
+            {
+                "iid": m.get("iid"),
+                "title": m.get("title", ""),
+                "source_branch": m.get("source_branch", ""),
+                "updated_at": m.get("updated_at", ""),
+                "source": "gitlab",
+            }
+            for m in c.gitlab_list_mrs()
+        ]
+    except LgmError:
+        pass
+    if not items:
+        items = _mr_list_from_postbox(c, ctx, args)
     return {"count": len(items), "items": items}
 
 
@@ -1878,7 +1951,9 @@ CORPORATE DEPS (gradle/npm):
           publish / vault_status (corporate artifact vault).
 
 MR REVIEW REPLIES (home agent -> work PC -> GitLab):
+  0. mr_list [repo=<name>]                — open MRs; without GitLab config lists MRs from transferred notes.
   1. mr_notes repo=<name> [iid=<N>]       — read reviewer threads transferred from work.
+     Empty? mr_notes_request repo=<name> iid=<N> asks the work PC to transfer them; poll mr_notes after.
   2. Write answers, then EITHER:
      mr_replies_send repo=<name> iid=<N> file=<path to replies-!N.md>
      mr_replies_send repo=<name> iid=<N> text=<inline markdown>
@@ -1986,6 +2061,22 @@ def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:
         except Exception:
             statuses.append({"path": eff, "error": "decrypt failed: sync password mismatch?"})
     return {"success": True, "repo": repo, "statuses": statuses}
+
+
+def op_mr_notes_request(ctx: Ctx, args: dict) -> dict:
+    """Ask the work PC to transfer GitLab threads for an MR into the postbox."""
+    c = _client(ctx)
+    repo = _repo_arg(args)
+    iid = int(args.get("iid") or 0)
+    if not iid:
+        return {"success": False, "error": "iid is required"}
+    pwd = ctx.config.sync_password
+    display = f"mr-notes-request/mr-!{iid}.md"
+    body = f"request mr-notes for !{iid}\n"
+    encrypted = encrypt_bundle(body.encode("utf-8"), pwd)
+    path_enc = base64.b64encode(encrypt_bundle(display.encode("utf-8"), pwd)).decode("ascii")
+    res = c.file_sync_send(repo, f"x/{os.urandom(4).hex()}", len(body), encrypted, path_enc=path_enc)
+    return {"success": True, "repo": repo, "path": display, "response": res}
 
 
 REGISTRY: list[Op] = [
@@ -2147,8 +2238,10 @@ REGISTRY: list[Op] = [
     ),
     Op(
         name="mr_list",
-        summary="List open GitLab merge requests (needs GITLAB_URL/TOKEN/PROJECT config).",
-        params=[],
+        summary="List open GitLab merge requests; without GitLab config falls back to MR notes transferred via the mirror.",
+        params=[
+            Param("repo", "str", "", "Mirror repository name (cache fallback scans all repos when empty)"),
+        ],
         run=op_mr_list,
     ),
     Op(
@@ -2192,6 +2285,15 @@ REGISTRY: list[Op] = [
             Param("iid", "int", 0, "Only this MR iid (0 = all)"),
         ],
         run=op_mr_replies_status,
+    ),
+    Op(
+        name="mr_notes_request",
+        summary="Ask the work PC to transfer GitLab discussion threads for an MR into the mirror postbox.",
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "GitLab MR iid", required=True),
+        ],
+        run=op_mr_notes_request,
     ),
     Op(
         name="guide",
