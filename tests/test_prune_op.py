@@ -61,9 +61,10 @@ def test_mr_send_params():
     assert params["repo"].required is True
 
 
-def test_mr_list_no_params():
+def test_mr_list_params():
     op = get_op("mr_list")
-    assert op.params == []
+    params = {p.name: p for p in op.params}
+    assert params["repo"].required is False
 
 
 # ── op validation (no network needed) ────────────────────────────────────────
