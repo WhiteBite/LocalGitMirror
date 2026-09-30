@@ -406,7 +406,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
           "local" -> JBColor(0x6F7277, 0x8C8F94)
           else -> amber
         }
-        val stateText = LocalGitMirrorBundle.message("review.state.${value.replyState}", count)
+        val stateKey = if (value.replyState == "pending" &&
+          localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) ==
+          localgitmirror.idea.deps.MachineRole.WORK
+        ) "review.state.pending.work" else "review.state.${value.replyState}"
+        val stateText = LocalGitMirrorBundle.message(stateKey, count)
         append("  \u00b7 $stateText", SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, stateColor))
       }
       append("  ${value.title}", SimpleTextAttributes.REGULAR_ATTRIBUTES)
