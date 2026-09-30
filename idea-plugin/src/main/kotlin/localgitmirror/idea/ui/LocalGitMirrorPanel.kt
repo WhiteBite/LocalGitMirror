@@ -696,14 +696,22 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       return
     }
 
-    val localBranches = GitLocal.listBranches(project, dir)
-    val currentBranch = GitLocal.currentBranch(project, dir)
-    replaceBranchItems(localBranches, mirrorRefs, currentBranch)
-    if (withMirror) {
-      refreshMirrorBranches(dir, localBranches, currentBranch, userInitiated)
+    val selectedName = selectedBranchChoice()?.name
+    ApplicationManager.getApplication().executeOnPooledThread {
+      val localBranches = GitLocal.listBranches(project, dir)
+      val currentBranch = GitLocal.currentBranch(project, dir)
+      val items = computeBranchItems(dir, localBranches, mirrorRefs, currentBranch)
+      UIUtil.invokeLaterIfNeeded {
+        if (project.isDisposed) return@invokeLaterIfNeeded
+        applyBranchItems(items, selectedName, currentBranch)
+        if (withMirror) {
+          refreshMirrorBranches(dir, localBranches, currentBranch, userInitiated)
+        }
+      }
     }
   }
 
+  @Volatile
   private var mirrorRefs: Map<String, String> = emptyMap()
 
   private fun refreshMirrorBranches(
@@ -727,6 +735,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     }
 
     val requestGeneration = branchRefreshGeneration.incrementAndGet()
+    val selectedName = selectedBranchChoice()?.name
     setBranchRefreshInProgress(true)
     ApplicationManager.getApplication().executeOnPooledThread {
       val result = MirrorApi.getRefs(
@@ -736,12 +745,15 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
         syncPassword = SecretsStore.syncPassword,
         insecureTls = settings.mirrorInsecureTls
       )
+      val newRefs = if (result.code in 200..299 && result.refs != null)
+        result.refs.mapValues { it.value.sha } else null
+      val items = newRefs?.let { computeBranchItems(dir, localBranches, it, currentBranch) }
 
       UIUtil.invokeLaterIfNeeded {
         if (project.isDisposed || requestGeneration != branchRefreshGeneration.get()) return@invokeLaterIfNeeded
-        if (result.code in 200..299 && result.refs != null) {
-          mirrorRefs = result.refs.mapValues { it.value.sha }
-          replaceBranchItems(localBranches, mirrorRefs, currentBranch)
+        if (items != null && newRefs != null) {
+          mirrorRefs = newRefs
+          applyBranchItems(items, selectedName, currentBranch)
           finishBranchRefresh("Cache: ${mirrorRefs.size} веток")
         } else {
           val detail = "Сервер не ответил: ${result.message.take(120)}"
@@ -777,14 +789,13 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     }
   }
 
-  private fun replaceBranchItems(
+  /** Git-heavy part of the selector rebuild; safe off the EDT. */
+  private fun computeBranchItems(
+    dir: File,
     localBranches: List<String>,
     mirrorRefs: Map<String, String>,
-    currentBranch: String?
-  ) {
-    val dir = baseDir() ?: return
-    val selectedName = selectedBranchChoice()?.name
-
+    currentBranch: String?,
+  ): List<BranchListItem> {
     val allNames = (localBranches.toSet() + mirrorRefs.keys).toSortedSet()
     val items = allNames.map { name ->
       val localHash = if (name in localBranches) GitLocal.branchHash(project, dir, name) else null
@@ -817,19 +828,21 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     val mrByBranch = runCatching {
       project.getService(MrReviewService::class.java).rowsBySourceBranch()
     }.getOrDefault(emptyMap())
-    val itemsWithMr = items.map { item ->
+    return items.map { item ->
       val mr = mrByBranch[item.name]
       item.copy(mrIid = mr?.iid, mrUnresolved = mr?.unresolved ?: 0)
     }
+  }
 
-    allBranchItems = itemsWithMr
+  /** Swing part of the selector rebuild; EDT only. */
+  private fun applyBranchItems(items: List<BranchListItem>, selectedName: String?, currentBranch: String?) {
+    allBranchItems = items
 
     val preferred = BranchSelectorModel.preferredSelection(selectedName, currentBranch,
-      itemsWithMr.map { BranchChoice(it.name, it.localHash != null) })
+      items.map { BranchChoice(it.name, it.localHash != null) })
 
-    // Apply current filter (if any) before populating the model.
     val filter = branchFilterField.text.trim().lowercase()
-    val visibleItems = if (filter.isBlank()) itemsWithMr else itemsWithMr.filter { it.name.lowercase().contains(filter) }
+    val visibleItems = if (filter.isBlank()) items else items.filter { it.name.lowercase().contains(filter) }
 
     branchListModel.clear()
     visibleItems.forEach { branchListModel.addElement(it) }
