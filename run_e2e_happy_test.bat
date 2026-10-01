@@ -9,16 +9,17 @@ echo LocalGitMirror - E2E Happy Test
 echo ========================================
 echo.
 
-REM Ensure API key is available for the test script (fallback to .env API_KEY)
+REM API key and sync password are read from .env
 for /f "tokens=2 delims==" %%A in ('findstr "^API_KEY=" .env') do set API_KEY=%%A
 if not defined API_KEY (
-  set API_KEY=***REMOVED***
+  echo [error] API_KEY not set in .env
+  exit /b 1
 )
 
-REM Ensure SYNC password available
 for /f "tokens=2 delims==" %%A in ('findstr "^SYNC_PASSWORD=" .env') do set SYNC_PASSWORD=%%A
 if not defined SYNC_PASSWORD (
-  set SYNC_PASSWORD=***REMOVED***
+  echo [error] SYNC_PASSWORD not set in .env
+  exit /b 1
 )
 
 REM Try to start backend on 443 (dev/reload not needed for test). If already running, it will fail but test can still proceed.

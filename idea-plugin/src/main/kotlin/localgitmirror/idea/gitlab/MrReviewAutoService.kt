@@ -22,7 +22,7 @@ import java.util.concurrent.ThreadLocalRandom
  *
  * Deliberately simple: one daemon thread on a jittered 60 s cadence; every pass
  * re-reads role and settings so toggles apply without a restart. All push
- * safety (marker dedup, ack-only-on-clean) lives in [MrReplyPushService].
+ * safety (marker dedup, ack only on a clean full-file push) lives in [MrReplyPushService].
  */
 class MrReviewAutoService(private val project: Project) : Disposable {
 
@@ -34,6 +34,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   private var lastPushSignature = ""
   private var lastPendingSignature = ""
   private var lastNotesSignature = ""
+  private var lastHomeErrorSignature = ""
 
   fun start() {
     if (started) return
@@ -129,7 +130,17 @@ class MrReviewAutoService(private val project: Project) : Disposable {
       ApplicationManager.getApplication().executeOnPooledThread {
         if (project.isDisposed) return@executeOnPooledThread
         val cacheRows = rows.filter { it.source == MrReviewService.Source.CACHE && it.receivedMarkdown != null }
-        if (cacheRows.isEmpty()) return@executeOnPooledThread
+        if (cacheRows.isEmpty()) {
+          val error = review.cachedError()
+          if (error == null) {
+            lastHomeErrorSignature = ""
+          } else if (error != lastHomeErrorSignature) {
+            lastHomeErrorSignature = error
+            notify(LocalGitMirrorBundle.message("mrreview.home.fetch.fail", error), NotificationType.WARNING)
+          }
+          return@executeOnPooledThread
+        }
+        lastHomeErrorSignature = ""
         val signature = cacheRows.joinToString(";") { "${it.iid}:${it.receivedMarkdown.hashCode()}" }
         if (signature == lastWrittenSignature) return@executeOnPooledThread
         lastWrittenSignature = signature

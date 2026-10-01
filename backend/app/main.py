@@ -14,7 +14,6 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
-from fastapi.staticfiles import StaticFiles
 from rich.console import Console
 from starlette.status import HTTP_403_FORBIDDEN
 
@@ -452,21 +451,32 @@ app.include_router(settings_router, dependencies=[Depends(get_api_key)])
 app.include_router(websocket_router)
 
 # Frontend
+from app.routers.web import LoopbackStaticFiles
+
 frontend_dist = Path(__file__).parent.parent.parent / "frontend" / "dist"
 if frontend_dist.exists():
-    app.mount("/assets", StaticFiles(directory=str(frontend_dist / "assets")), name="assets")
-    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+    app.mount("/assets", LoopbackStaticFiles(directory=str(frontend_dist / "assets")), name="assets")
+    app.mount("/", LoopbackStaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+
+
+def _direct_run_kwargs() -> dict:
+    kwargs = {
+        "host": "0.0.0.0",
+        "port": CONFIG["web_port"],
+        "reload": False,
+        "log_level": "error",
+        # loopback-проверки должны видеть реального пира, а не X-Forwarded-For
+        "proxy_headers": False,
+    }
+    if os.path.exists("key.pem") and os.path.exists("cert.pem"):
+        kwargs["ssl_keyfile"] = "key.pem"
+        kwargs["ssl_certfile"] = "cert.pem"
+    return kwargs
+
 
 if __name__ == "__main__":
-    ssl_keyfile = "key.pem"
-    ssl_certfile = "cert.pem"
-    kwargs = {"host": "0.0.0.0", "port": CONFIG["web_port"], "reload": False, "log_level": "error"}
-    if os.path.exists(ssl_keyfile) and os.path.exists(ssl_certfile):
-        kwargs["ssl_keyfile"] = ssl_keyfile
-        kwargs["ssl_certfile"] = ssl_certfile
-
     try:
-        uvicorn.run("app.main:app", **kwargs)
+        uvicorn.run("app.main:app", **_direct_run_kwargs())
     except PermissionError:
         console.print("[bold red]❌ Permission denied: Port 443 requires administrator privileges[/bold red]")
         console.print("[yellow]Please run the terminal as Administrator and try again:[/yellow]")

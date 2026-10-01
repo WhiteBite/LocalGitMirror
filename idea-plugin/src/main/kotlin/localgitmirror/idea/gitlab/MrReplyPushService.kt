@@ -25,7 +25,7 @@ import java.security.MessageDigest
  * marker; before posting, existing discussion notes and the per-project
  * ledger are scanned for it, so retries (crash mid-batch, lost HTTP response,
  * re-click) never duplicate comments. The postbox item is acked (deleted)
- * only when the whole file went through without failures.
+ * only when the entire file was pushed without failures; partial approvals never ack.
  */
 class MrReplyPushService(private val project: Project) {
 
@@ -124,7 +124,7 @@ class MrReplyPushService(private val project: Project) {
   private fun replyIid(path: String): Int? =
     Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull()
 
-  /** Post only the approved sections of a pending item; acks every postbox entry of that MR when clean. */
+  /** Post only the approved sections of a pending item; acks the MR's postbox entries only when the approval covers every parsed reply. */
   internal fun pushApproved(pending: PendingReplies, approved: List<MrReplies.Reply>): FileReport {
     val settings = service<MirrorSettingsService>().state
     val conf = GitLabConfig.resolve(project)
@@ -279,7 +279,7 @@ class MrReplyPushService(private val project: Project) {
     }
 
     val report = FileReport(path, posted, dupSkipped, skipped, failed, details, parsed.errors.size)
-    if (report.clean) {
+    if (shouldAck(report, parsed.replies, pending.parsed.replies)) {
       pending.siblings.forEach { s ->
         MirrorPostboxApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, s.id)
       }
@@ -330,6 +330,13 @@ class MrReplyPushService(private val project: Project) {
   companion object {
     private val MARKER_RE = Regex("<!-- lgm:[0-9a-f]{8} -->")
     private const val LEDGER_CAP = 500
+
+    /** A pass may ack (delete) the postbox item only when it is clean and pushed every parsed reply; thread-gone skips leave replies dead and do not block the ack. */
+    internal fun shouldAck(
+      report: FileReport,
+      pushed: List<MrReplies.Reply>,
+      fileReplies: List<MrReplies.Reply>,
+    ): Boolean = report.clean && pushed == fileReplies
 
     fun marker(iid: Int, reply: MrReplies.Reply): String {
       val key = when (reply.kind) {

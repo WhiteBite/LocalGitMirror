@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from app.core.artifact_store import ArtifactStore
+from app.core.artifact_store import ArtifactStore, rmw_lock
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Protected npm scopes
@@ -346,15 +346,17 @@ def add_to_npm_index(vault_root: Path, artifact: NpmArtifact, sha256: str) -> No
 
         {"@krypto-ui/components": {"1.2.3": {"tarball_sha256": "...", "integrity": "...", "shasum": "..."}}}
     """
-    index = load_npm_index(vault_root)
-    pkg_entry = dict(index.get(artifact.name, {}))
-    pkg_entry[artifact.version] = {
-        "tarball_sha256": sha256,
-        "integrity": artifact.integrity,
-        "shasum": artifact.shasum,
-    }
-    index[artifact.name] = pkg_entry
-    save_npm_index(vault_root, index)
+    index_path = vault_root / "npm-index.json"
+    with rmw_lock(index_path):
+        index = load_npm_index(vault_root)
+        pkg_entry = dict(index.get(artifact.name, {}))
+        pkg_entry[artifact.version] = {
+            "tarball_sha256": sha256,
+            "integrity": artifact.integrity,
+            "shasum": artifact.shasum,
+        }
+        index[artifact.name] = pkg_entry
+        save_npm_index(vault_root, index)
 
 
 def build_packument(package_name: str, index: dict) -> Optional[dict]:

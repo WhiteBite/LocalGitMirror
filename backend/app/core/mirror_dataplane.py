@@ -21,9 +21,13 @@ def _is_loopback(host: str) -> bool:
     if host in ("localhost", "::1"):
         return True
     try:
-        return ipaddress.ip_address(host).is_loopback
+        ip = ipaddress.ip_address(host)
     except ValueError:
         return False
+    # ::ffff:127.0.0.1 — dual-stack клиент приходит как IPv4-mapped IPv6.
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
 
 
 def _guard_data_plane(request: Request) -> None:

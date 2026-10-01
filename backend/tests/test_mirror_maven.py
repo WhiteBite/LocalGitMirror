@@ -292,6 +292,28 @@ def test_data_plane_refuses_remote_client(vault):
     assert r.status_code == 404
 
 
+def test_is_loopback_recognises_ipv4_mapped_ipv6():
+    from app.core.mirror_dataplane import _is_loopback
+
+    assert _is_loopback("::ffff:127.0.0.1")
+    assert not _is_loopback("::ffff:192.168.1.50")
+    assert _is_loopback("127.0.0.1")
+    assert _is_loopback("::1")
+    assert _is_loopback("localhost")
+    assert not _is_loopback("192.168.1.50")
+    assert not _is_loopback("")
+
+
+def test_data_plane_accepts_ipv4_mapped_loopback(vault):
+    """Dual-stack клиент приходит как ::ffff:127.0.0.1 — это loopback."""
+    ArtifactStore(vault).put(b"jar", PLUGIN)
+    app = FastAPI()
+    app.include_router(mirror_mod.router)
+    client = _test_client(app, ("::ffff:127.0.0.1", 50000))
+    r = client.get(f"/api/cache/m2/{PLUGIN.maven_path}")
+    assert r.status_code == 200
+
+
 def test_data_plane_remote_allowed_with_explicit_optin(vault, monkeypatch):
     monkeypatch.setenv("LGM_M2_ALLOW_REMOTE", "1")
     ArtifactStore(vault).put(b"jar", PLUGIN)
@@ -394,18 +416,24 @@ def test_gradle_init_omits_auth_when_no_key(client, monkeypatch):
     assert "HttpHeaderCredentials" not in resp.text
 
 
-def test_gradle_init_rejects_remote_client(client, vault, monkeypatch):
+def test_gradle_init_rejects_remote_client(vault, monkeypatch):
     """Data plane только для loopback — в скрипте API-ключ."""
     monkeypatch.setenv("API_KEY", "secret")
-    # Имитируем удалённый запрос через headers.
-    resp = client.get(
-        "/api/cache/gradle-init",
-        headers={"X-Forwarded-For": "203.0.113.5"},
-    )
-    # FastAPI TestClient не устанавливает request.client.host из заголовков,
-    # поэтому проверяем, что без явного override скрипт отдаётся.
-    # Реальная проверка loopback работает в production через request.client.
+    app = FastAPI()
+    app.include_router(mirror_mod.router)
+    remote = _test_client(app, ("203.0.113.5", 40000))
+    resp = remote.get("/api/cache/gradle-init")
+    assert resp.status_code == 404
+
+
+def test_gradle_init_accepts_loopback_client(vault, monkeypatch):
+    monkeypatch.setenv("API_KEY", "secret")
+    app = FastAPI()
+    app.include_router(mirror_mod.router)
+    local = _test_client(app, ("127.0.0.1", 50000))
+    resp = local.get("/api/cache/gradle-init")
     assert resp.status_code == 200
+    assert "secret" in resp.text
 
 
 def test_gradle_init_suggested_filename(client):

@@ -7,6 +7,7 @@
 """
 
 import json
+import threading
 
 import pytest
 
@@ -184,6 +185,28 @@ def test_cas_deduplicates_identical_bytes_across_coordinates(store):
 def test_put_rejects_invalid_coordinate(store):
     with pytest.raises(ValueError):
         store.put(b"x", MavenCoord("g", "..", "1.0", "", "jar"))
+
+
+def test_concurrent_put_from_separate_instances_persists_all_entries(tmp_path):
+    """Роутер создаёт новый ArtifactStore на каждый запрос: сериализация
+    записи обязана жить на уровне модуля, а не экземпляра."""
+    root = tmp_path / "vault"
+    n = 8
+    start = threading.Barrier(n)
+
+    def worker(i: int) -> None:
+        store = ArtifactStore(root)
+        start.wait()
+        store.put(b"payload", MavenCoord("g", f"art{i}", "1.0", "", "jar"))
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    entries = ArtifactStore(root).load_index()["entries"]
+    assert len(entries) == n
 
 
 # ── устойчивость ─────────────────────────────────────────────────────────────
