@@ -263,6 +263,24 @@ def sha1_bytes(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
+def _sha_digests(data: bytes) -> Tuple[str, str]:
+    """(sha256, sha1) — оба хеша за один проход по байтам."""
+    h256 = hashlib.sha256()
+    h1 = hashlib.sha1()
+    view = memoryview(data)
+    for off in range(0, len(view), 1 << 20):
+        chunk = view[off : off + (1 << 20)]
+        h256.update(chunk)
+        h1.update(chunk)
+    return h256.hexdigest(), h1.hexdigest()
+
+
+# кеш на уровне модуля: роутер создаёт новый ArtifactStore на каждый HTTP-запрос
+_INDEX_CACHE_LOCK = threading.Lock()
+_INDEX_CACHE: Dict[str, Tuple[Optional[Tuple[int, int]], dict]] = {}
+_INDEX_CACHE_MAX_PATHS = 16
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Хранилище
 # ─────────────────────────────────────────────────────────────────────────────
@@ -322,16 +340,44 @@ class ArtifactStore:
 
     # ── индекс ───────────────────────────────────────────────────────────────
 
-    def load_index(self) -> dict:
+    def _index_stat_key(self) -> Optional[Tuple[int, int]]:
+        try:
+            st = self.index_path.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    def _cached_index(self) -> dict:
+        """Авторитетный индекс из кеша; перечитывается при смене mtime+size."""
+        stat_key = self._index_stat_key()
+        path_key = str(self.index_path)
+        with _INDEX_CACHE_LOCK:
+            cached = _INDEX_CACHE.get(path_key)
+        if cached is not None and cached[0] == stat_key:
+            return cached[1]
         data = self._read_json(self.index_path, None)
         if not isinstance(data, dict) or "entries" not in data:
-            return {"schema": self.INDEX_SCHEMA, "entries": {}}
+            data = {"schema": self.INDEX_SCHEMA, "entries": {}}
+        with _INDEX_CACHE_LOCK:
+            if len(_INDEX_CACHE) >= _INDEX_CACHE_MAX_PATHS and path_key not in _INDEX_CACHE:
+                _INDEX_CACHE.clear()
+            _INDEX_CACHE[path_key] = (stat_key, data)
         return data
+
+    def load_index(self) -> dict:
+        """Копия индекса: вызывающий код может мутировать её без риска для кеша."""
+        with self._lock:
+            data = self._cached_index()
+            out = dict(data)
+            out["entries"] = dict(data["entries"])
+            return out
 
     def _save_index(self, index: dict) -> None:
         index["schema"] = self.INDEX_SCHEMA
         index["updated"] = int(time.time())
-        self._write_json_atomic(self.index_path, index)
+        with _INDEX_CACHE_LOCK:
+            self._write_json_atomic(self.index_path, index)
+            _INDEX_CACHE[str(self.index_path)] = (self._index_stat_key(), index)
 
     def cas_path(self, digest: str) -> Path:
         return self.cas_dir / digest[:2] / digest
@@ -341,7 +387,7 @@ class ArtifactStore:
     def put(self, data: bytes, coord: MavenCoord) -> PutResult:
         """Положить артефакт. Идемпотентно; конфликт байтов не перезаписывает."""
         coord.validate()
-        digest = sha256_bytes(data)
+        digest, sha1 = _sha_digests(data)
         maven_path = coord.maven_path
 
         with self._lock:
@@ -364,7 +410,7 @@ class ArtifactStore:
             self._write_cas(data, digest)
             entries[maven_path] = {
                 "sha256": digest,
-                "sha1": sha1_bytes(data),
+                "sha1": sha1,
                 "size": len(data),
                 "coord": coord.to_dict(),
                 "added": int(time.time()),
@@ -615,11 +661,11 @@ class ArtifactStore:
                 if coord is None:
                     continue
                 data = path.read_bytes()
-                digest = sha256_bytes(data)
+                digest, sha1 = _sha_digests(data)
                 self._write_cas(data, digest)
                 entries[rel] = {
                     "sha256": digest,
-                    "sha1": sha1_bytes(data),
+                    "sha1": sha1,
                     "size": len(data),
                     "coord": coord.to_dict(),
                     "added": int(time.time()),

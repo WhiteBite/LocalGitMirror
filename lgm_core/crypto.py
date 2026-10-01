@@ -14,6 +14,7 @@ import json
 import os
 import struct
 import sys
+from functools import lru_cache
 
 # ── Bundle format constants (identical to bundle_crypto.py) ──────────────────
 #
@@ -28,6 +29,7 @@ _FORMAT_V2 = 0x01
 _PBKDF2_ITERS = 200_000
 
 
+@lru_cache(maxsize=64)
 def _derive_key(password: str, salt: bytes) -> bytes:
     try:
         from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
@@ -107,6 +109,7 @@ _SALT = 16
 _NONCE = 12
 
 
+@lru_cache(maxsize=64)
 def _envelope_derive_key(password: str, salt: bytes) -> bytes:
     from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives import hashes
