@@ -5,14 +5,7 @@ import { encryptFileBytes, decryptFileBytes, encryptText, decryptText } from '@/
 import { buildPathMeta, parseMeta } from '@/lib/exchangeMeta'
 import { useBufferStore } from '@/stores/buffer'
 
-/**
- * Repo-scoped encrypted file postbox (/api/documents/attachment-*).
- *
- * The server stores opaque containers; encryption/decryption happens here with
- * the shared sync password (same one the buffer store resolves). Wire path is
- * an opaque "x/<random8>" token; the real file name travels as `path_enc`
- * (bundle-v2 ciphertext, base64).
- */
+// The server terminates postbox crypto and re-seals per reader; this store speaks the legacy password mode.
 export const usePostboxStore = defineStore('postbox', () => {
   const items = ref([])
   const loading = ref(false)
