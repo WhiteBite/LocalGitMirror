@@ -7,7 +7,8 @@ import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.dsl.builder.*
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.HttpResult
+import localgitmirror.idea.mirror.MirrorAuthApi
 import localgitmirror.idea.net.LanDiscovery
 import javax.swing.JComponent
 import javax.swing.SwingUtilities
@@ -26,6 +27,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   private var syncPasswordField: javax.swing.JPasswordField? = null
   private var gitlabUrlField: javax.swing.JTextField? = null
   private var gitlabTokenField: javax.swing.JPasswordField? = null
+  private var pinField: javax.swing.JTextField? = null
   private var syncPwdEcho: Char = 0.toChar()
 
   // SecretsStore-backed fields — managed manually (not in PersistentStateComponent)
@@ -86,6 +88,23 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
             }
             cell(eye)
           }
+        }
+
+        row {
+          checkBox("Pin server TLS certificate")
+            .bindSelected(state::tlsPinEnabled)
+        }
+
+        row("Fingerprint") {
+          textField()
+            .bindText(state::serverCertSha256)
+            .resizableColumn()
+            .comment("SHA-256 сертификата сервера; запоминается при первом подключении (TOFU)")
+            .applyToComponent {
+              isEditable = false
+              pinField = this
+            }
+          button("Clear pin") { pinField?.text = "" }
         }
       }
 
@@ -281,8 +300,8 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
     val apiKeyToTest = apiKeyField?.text?.takeIf { it.isNotBlank() } ?: mirrorApiKeyLocal
 
     Thread({
-      val pingResult = runCatching { MirrorApi.ping(urlToTest, apiKeyToTest, state.mirrorInsecureTls) }
-        .getOrElse { MirrorApi.HttpResult(0, it.message ?: "error") }
+      val pingResult = runCatching { MirrorAuthApi.ping(urlToTest, apiKeyToTest, state.mirrorInsecureTls) }
+        .getOrElse { HttpResult(0, it.message ?: "error") }
 
       SwingUtilities.invokeLater {
         if (pingResult.code !in 200..299) {

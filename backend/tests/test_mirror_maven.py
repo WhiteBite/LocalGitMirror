@@ -7,6 +7,7 @@ fail-closed по защищённым группам, отказ принима�
 уйти по пути за пределы хранилища.
 """
 
+import base64
 import io
 import json
 import os
@@ -14,9 +15,14 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core import hybrid_crypto as hc
 from app.core.artifact_store import ArtifactStore, MavenCoord, sha256_bytes
 from app.core.bundle_crypto import encrypt_bundle_bytes
 from app.routers import mirror as mirror_mod
@@ -83,11 +89,14 @@ def make_publication(entries: dict, manifest: dict | None = None) -> bytes:
     return encrypt_bundle_bytes(buf.getvalue(), PASSWORD)
 
 
-def publish(client, payload: bytes):
+def publish(client, payload: bytes, k: str = ""):
+    data = {"repo": "onyx-platform"}
+    if k:
+        data["k"] = k
     return client.post(
         "/api/cache/publish",
         files={"attachment": ("pub.bin", payload, "application/octet-stream")},
-        data={"repo": "onyx-platform"},
+        data=data,
     )
 
 
@@ -411,3 +420,83 @@ def test_gradle_init_covers_protected_groups(client):
     # Дефолтная группа из DEFAULT_PROTECTED_MAVEN_GROUPS
     assert "ru" in resp.text
     assert "kryptonite" in resp.text
+
+
+@pytest.fixture()
+def server_key(vault):
+    priv = X25519PrivateKey.generate()
+    mirror_mod.server_private_key = priv
+    yield priv
+    mirror_mod.server_private_key = None
+
+
+def make_v3_publication(entries: dict, server_priv, aad: bytes | None = None) -> tuple:
+    """Запечатать публикацию как рабочая машина: relay_seal к ключу сервера → (blob, epk_b64)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for maven_path, data in entries.items():
+            zf.writestr(f"maven/{maven_path}", data)
+
+    client_priv = X25519PrivateKey.generate()
+    epk = client_priv.public_key().public_bytes_raw()
+    shared = client_priv.exchange(
+        X25519PublicKey.from_public_bytes(server_priv.public_key().public_bytes_raw())
+    )
+    blob = hc.relay_seal(shared, epk, buf.getvalue(), aad or hc.RELAY_AAD_VAULT)
+    epk_b64 = base64.urlsafe_b64encode(epk).decode("ascii").rstrip("=")
+    return blob, epk_b64
+
+
+def test_publish_v3_imports_artifact(client, server_key):
+    blob, epk = make_v3_publication({PLUGIN.maven_path: b"jar"}, server_key)
+    r = publish(client, blob, k=epk)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["added"] == 1
+    assert body["stats"]["artifacts"] == 1
+
+
+def test_publish_v3_serves_artifact_from_m2(client, server_key):
+    blob, epk = make_v3_publication({PLUGIN.maven_path: b"jar"}, server_key)
+    publish(client, blob, k=epk)
+    assert client.get(f"/api/cache/m2/{PLUGIN.maven_path}").content == b"jar"
+
+
+def test_publish_v3_wrong_aad_returns_400(client, server_key):
+    blob, epk = make_v3_publication(
+        {PLUGIN.maven_path: b"jar"}, server_key, aad=hc.RELAY_AAD_BUFFER
+    )
+    r = publish(client, blob, k=epk)
+    assert r.status_code == 400
+
+
+def test_publish_v3_wrong_server_key_returns_400(client, server_key):
+    blob, epk = make_v3_publication({PLUGIN.maven_path: b"jar"}, X25519PrivateKey.generate())
+    r = publish(client, blob, k=epk)
+    assert r.status_code == 400
+
+
+def test_publish_v3_tampered_blob_returns_400(client, server_key):
+    blob, epk = make_v3_publication({PLUGIN.maven_path: b"jar"}, server_key)
+    r = publish(client, blob[:-4] + bytes(4), k=epk)
+    assert r.status_code == 400
+
+
+def test_publish_v3_works_without_sync_password(client, server_key, monkeypatch):
+    monkeypatch.delenv("SYNC_PASSWORD", raising=False)
+    blob, epk = make_v3_publication({PLUGIN.maven_path: b"jar"}, server_key)
+    r = publish(client, blob, k=epk)
+    assert r.status_code == 200
+    assert r.json()["added"] == 1
+
+
+def test_publish_v3_without_server_key_falls_back_to_password(client, vault):
+    blob, epk = make_v3_publication({PLUGIN.maven_path: b"jar"}, X25519PrivateKey.generate())
+    r = publish(client, blob, k=epk)
+    assert r.status_code == 400
+
+
+def test_publish_legacy_password_still_works_with_server_key(client, server_key):
+    r = publish(client, make_publication({PLUGIN.maven_path: b"jar"}))
+    assert r.status_code == 200
+    assert r.json()["added"] == 1

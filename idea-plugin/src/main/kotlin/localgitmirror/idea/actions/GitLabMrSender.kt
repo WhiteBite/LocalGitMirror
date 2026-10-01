@@ -11,7 +11,7 @@ import localgitmirror.idea.gitlab.MrNotesWriter
 import localgitmirror.idea.gitlab.MrSendPlanner
 import localgitmirror.idea.gitlab.MrUploadResult
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -179,7 +179,7 @@ object GitLabMrSender {
     val repo = runCatching { syncFacade.resolveRepo(projectDir, settings).sanitized }.getOrDefault("")
     if (repo.isBlank()) return MrSendPlanner.Plan(branches, emptyList(), emptyList())
     val refsResult = runCatching {
-      MirrorApi.getRefs(settings.baseUrl, SecretsStore.mirrorApiKey, repo, SecretsStore.syncPassword, settings.mirrorInsecureTls)
+      MirrorSyncApi.getRefs(settings.baseUrl, SecretsStore.mirrorApiKey, repo, SecretsStore.syncPassword, settings.mirrorInsecureTls)
     }.getOrNull()
     val localTips = mutableMapOf<String, String>()
     for (branch in branches) {
@@ -201,7 +201,7 @@ object GitLabMrSender {
     return if (unresolvable.isEmpty()) plan else plan.copy(sent = plan.sent + unresolvable)
   }
 
-  internal fun mirrorRefsFrom(res: MirrorApi.RefsResult?): Map<String, String> {
+  internal fun mirrorRefsFrom(res: MirrorSyncApi.RefsResult?): Map<String, String> {
     if (res == null || res.code !in 200..299) return emptyMap()
     return res.refs?.mapValues { it.value.sha } ?: emptyMap()
   }
@@ -302,13 +302,17 @@ object GitLabMrSender {
       val encrypted = File.createTempFile("tmp-mrnotes-", ".bin")
       try {
         plain.writeText(markdown, Charsets.UTF_8)
-        localgitmirror.idea.workkit.RepoFileSyncCrypto.encryptFile(plain, encrypted, SecretsStore.syncPassword, null)
-        val pathEnc = localgitmirror.idea.workkit.ExchangeCrypto.encryptHint(
-          "mr-notes/mr-!$iid.md", SecretsStore.syncPassword
+        val displayPath = "mr-notes/mr-!$iid.md"
+        val sealed = localgitmirror.idea.mirror.MirrorCrypto.sealPostboxPayload(
+          plain.readBytes(), SecretsStore.syncPassword, displayPath, 0L
         )
-        val up = localgitmirror.idea.mirror.MirrorApi.fileSyncUpload(
+        encrypted.writeBytes(sealed.bytes)
+        val (relPath, pathEnc) = localgitmirror.idea.mirror.MirrorCrypto.postboxRoute(
+          displayPath, SecretsStore.syncPassword
+        )
+        val up = localgitmirror.idea.mirror.MirrorPostboxApi.fileSyncUpload(
           settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
-          "x/${java.util.UUID.randomUUID().toString().take(8)}", 0L, encrypted, pathEnc, null
+          relPath, 0L, encrypted, pathEnc, sealed.epkB64, sealed.meta, null
         )
         if (up.code !in 200..299) {
           MrUploadResult.Failed(up.code, "HTTP ${up.code}: ${up.message}")

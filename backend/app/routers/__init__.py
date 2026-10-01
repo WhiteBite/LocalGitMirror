@@ -2,6 +2,7 @@
 API routers
 """
 
+from app.routers.auth import router as auth_router
 from app.routers.buffer import router as buffer_router
 from app.routers.deps import router as deps_router
 from app.routers.file_sync import router as file_sync_router
@@ -17,6 +18,7 @@ from app.routers.web import router as web_router
 from app.routers.websocket import router as websocket_router
 
 __all__ = [
+    "auth_router",
     "buffer_router",
     "deps_router",
     "file_sync_router",

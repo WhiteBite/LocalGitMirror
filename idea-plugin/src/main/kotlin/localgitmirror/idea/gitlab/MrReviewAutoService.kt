@@ -12,6 +12,7 @@ import localgitmirror.idea.deps.RoleDetector
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import java.io.File
+import java.util.concurrent.ThreadLocalRandom
 
 /**
  * Background driver of the MR review loop, gated by `autoMrReview`:
@@ -20,7 +21,7 @@ import java.io.File
  *  - HOME: writes incoming `mr-notes/mr-!N.md` into `.mr-notes/` so agents on
  *    this machine see fresh review notes without opening the IDE panel.
  *
- * Deliberately simple: one daemon thread on a fixed 60 s cadence; every pass
+ * Deliberately simple: one daemon thread on a jittered 60 s cadence; every pass
  * re-reads role and settings so toggles apply without a restart. All push
  * safety (marker dedup, ack-only-on-clean) lives in [MrReplyPushService].
  */
@@ -40,7 +41,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
     Thread({
       while (!disposed && !Thread.currentThread().isInterrupted) {
         try {
-          Thread.sleep(POLL_MS)
+          Thread.sleep(nextSleepMs())
         } catch (_: InterruptedException) {
           break
         }
@@ -114,7 +115,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
         .resolveRepo(File(base), settings).sanitized
     }.getOrDefault("")
     if (repo.isBlank()) return
-    val list = localgitmirror.idea.mirror.MirrorApi.fileSyncList(
+    val list = localgitmirror.idea.mirror.MirrorPostboxApi.fileSyncList(
       settings.baseUrl, localgitmirror.idea.settings.SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls
     )
     if (list.code !in 200..299) return
@@ -128,7 +129,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
         .getOrElse { MrUploadResult.Failed(0, it.message ?: "error") }
       when (outcome) {
         is MrUploadResult.Ok -> runCatching {
-          localgitmirror.idea.mirror.MirrorApi.fileSyncAck(
+          localgitmirror.idea.mirror.MirrorPostboxApi.fileSyncAck(
             settings.baseUrl, localgitmirror.idea.settings.SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id
           )
         }
@@ -140,7 +141,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
     }
   }
 
-  private fun displayPath(item: localgitmirror.idea.mirror.MirrorApi.FileSyncItem): String {
+  private fun displayPath(item: localgitmirror.idea.mirror.MirrorPostboxApi.FileSyncItem): String {
     if (item.pathEnc.isBlank()) return item.path
     val plain = runCatching {
       localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(
@@ -185,5 +186,11 @@ class MrReviewAutoService(private val project: Project) : Disposable {
 
   companion object {
     private const val POLL_MS = 60_000L
+
+    private fun nextSleepMs(): Long {
+      val min = (POLL_MS * 0.7).toLong()
+      val max = (POLL_MS * 1.3).toLong()
+      return ThreadLocalRandom.current().nextLong(min, max + 1)
+    }
   }
 }

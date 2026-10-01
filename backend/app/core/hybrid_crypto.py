@@ -30,8 +30,10 @@ Consequences for the threat model (adversary on the work PC):
     that is an accepted tradeoff. Full FS against the recipient key would need
     an interactive ephemeral-ephemeral handshake (extra round trip).
   * Client authentication is still provided by the API key (Bearer). Leaking
-    the API key only lets an attacker WRITE to the server; it does not break
-    confidentiality of recorded traffic.
+    the API key grants read+write over the transport (the holder can post its
+    own ephemeral key and receive sealed responses); it does not, however,
+    break confidentiality of previously recorded ciphertext, which stays
+    sealed to the server X25519 key.
   * Unbreakable wall (unchanged): plaintext + an active session key must
     coexist in RAM *during* a sync. A memory dump taken mid-sync defeats any
     scheme. v3 does not claim to fix that.
@@ -55,6 +57,15 @@ HKDF info labels (must match the Kotlin client byte-for-byte):
   response envelope (server -> client):  b"lgm/v3/env/resp"
   request  bundle   (client -> server):  b"lgm/v3/bundle/req"
   response bundle   (server -> client):  b"lgm/v3/bundle/resp"
+  request  relay    (client -> server):  b"lgm/v3/relay/req"
+  response relay    (server -> client):  b"lgm/v3/relay/resp"
+
+Relay (v3 postbox flows) additionally binds a per-purpose AAD into the GCM
+tag, so a blob sealed for one purpose (deps/postbox/buffer/vault) cannot be
+replayed as another. At rest the server stores relay plaintexts re-encrypted
+under an independent random RELAY_KEY (NOT derived from the X25519 key):
+  0x04 || nonce[12] || AES-256-GCM(plaintext, key=RELAY_KEY, aad=PURPOSE_AAD)
+Legacy at-rest blobs (first byte 0x01 or 'L') are unrelated to this format.
 """
 
 from __future__ import annotations
@@ -83,6 +94,18 @@ INFO_ENV_REQ = b"lgm/v3/env/req"
 INFO_ENV_RESP = b"lgm/v3/env/resp"
 INFO_BUNDLE_REQ = b"lgm/v3/bundle/req"
 INFO_BUNDLE_RESP = b"lgm/v3/bundle/resp"
+INFO_RELAY_REQ = b"lgm/v3/relay/req"
+INFO_RELAY_RESP = b"lgm/v3/relay/resp"
+
+# Per-purpose AAD bound into the relay GCM tag — keep in sync with HybridCrypto.kt.
+RELAY_AAD_DEPS_REQ = b"lgm/v3/relay/deps/req"
+RELAY_AAD_DEPS_RESP = b"lgm/v3/relay/deps/resp"
+RELAY_AAD_POSTBOX = b"lgm/v3/relay/postbox"
+RELAY_AAD_BUFFER = b"lgm/v3/relay/buffer"
+RELAY_AAD_VAULT = b"lgm/v3/relay/vault"
+
+# First byte of a relay at-rest blob (0x01/'L' are legacy bundle formats).
+RELAY_AT_REST_VERSION = 0x04
 
 
 # ─────────────────────────── server key management ──────────────────────────
@@ -111,6 +134,30 @@ def load_or_create_server_key(path: Path) -> X25519PrivateKey:
     except Exception:
         pass
     return priv
+
+
+def load_or_create_relay_key(path: Path) -> bytes:
+    """Load the independent relay at-rest key, creating it on first use.
+
+    Raw 32 random bytes, 0600 permissions, deliberately NOT derived from the
+    server X25519 key: sealing at rest must stay independent of the wire
+    hybrid so rotating one never silently rewrites the other's trust model.
+    """
+    path = Path(path)
+    if path.exists():
+        raw = path.read_bytes()
+        if len(raw) != 32:
+            raise ValueError(f"Corrupt relay key at {path}: expected 32 bytes, got {len(raw)}")
+        return raw
+
+    raw = os.urandom(_KEY_SIZE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(raw)
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except Exception:
+        pass
+    return raw
 
 
 def public_bytes(priv: X25519PrivateKey) -> bytes:
@@ -155,6 +202,19 @@ def _open(key: bytes, blob: bytes) -> bytes:
     return AESGCM(key).decrypt(nonce, ct, None)
 
 
+def _seal_aad(key: bytes, plaintext: bytes, aad: bytes) -> bytes:
+    nonce = os.urandom(_NONCE_SIZE)
+    ct = AESGCM(key).encrypt(nonce, plaintext, aad)
+    return nonce + ct
+
+
+def _open_aad(key: bytes, blob: bytes, aad: bytes) -> bytes:
+    if len(blob) < _NONCE_SIZE + 16:
+        raise ValueError("ciphertext too short")
+    nonce, ct = blob[:_NONCE_SIZE], blob[_NONCE_SIZE:]
+    return AESGCM(key).decrypt(nonce, ct, aad)
+
+
 class HybridServerContext:
     """Server-side per-request crypto context bound to one client ephemeral key.
 
@@ -188,6 +248,15 @@ class HybridServerContext:
         key = _derive(self._shared, self.epk, INFO_BUNDLE_RESP)
         return _seal(key, plaintext)
 
+    # — relay payloads (purpose-bound AAD) —
+    def open_relay(self, blob: bytes, aad: bytes) -> bytes:
+        key = _derive(self._shared, self.epk, INFO_RELAY_REQ)
+        return _open_aad(key, blob, aad)
+
+    def seal_relay(self, plaintext: bytes, aad: bytes) -> bytes:
+        key = _derive(self._shared, self.epk, INFO_RELAY_RESP)
+        return _seal_aad(key, plaintext, aad)
+
 
 def decode_epk(epk_b64: str) -> bytes:
     """Decode a base64 (standard or url-safe) ephemeral public key to 32 bytes."""
@@ -199,3 +268,41 @@ def decode_epk(epk_b64: str) -> bytes:
     if len(raw) != _X25519_PUB_SIZE:
         raise ValueError("invalid ephemeral public key length")
     return raw
+
+
+# ───────────────────────────── relay wire + at-rest ──────────────────────────
+
+
+def relay_seal(shared: bytes, epk: bytes, plaintext: bytes, aad: bytes, resp: bool = False) -> bytes:
+    """Client-side relay seal: nonce[12] || AES-GCM(plaintext, aad).
+
+    resp=False seals a request (INFO_RELAY_REQ, opened by the server via
+    HybridServerContext.open_relay); resp=True seals a response
+    (INFO_RELAY_RESP, the server side of the wire).
+    """
+    info = INFO_RELAY_RESP if resp else INFO_RELAY_REQ
+    return _seal_aad(_derive(shared, epk, info), plaintext, aad)
+
+
+def relay_open(shared: bytes, epk: bytes, blob: bytes, aad: bytes, resp: bool = False) -> bytes:
+    """Client-side relay open, mirroring relay_seal's label selection.
+
+    resp=False opens a request (server side); resp=True opens a response
+    sealed by HybridServerContext.seal_relay.
+    """
+    info = INFO_RELAY_RESP if resp else INFO_RELAY_REQ
+    return _open_aad(_derive(shared, epk, info), blob, aad)
+
+
+def relay_encrypt_at_rest(relay_key: bytes, plaintext: bytes, aad: bytes) -> bytes:
+    """Seal under the independent RELAY_KEY: 0x04 || nonce[12] || AES-GCM."""
+    nonce = os.urandom(_NONCE_SIZE)
+    ct = AESGCM(relay_key).encrypt(nonce, plaintext, aad)
+    return bytes([RELAY_AT_REST_VERSION]) + nonce + ct
+
+
+def relay_decrypt_at_rest(relay_key: bytes, blob: bytes, aad: bytes) -> bytes:
+    if len(blob) < 1 + _NONCE_SIZE + 16 or blob[0] != RELAY_AT_REST_VERSION:
+        raise ValueError("not a v3 relay at-rest blob (expected first byte 0x04)")
+    nonce, ct = blob[1 : 1 + _NONCE_SIZE], blob[1 + _NONCE_SIZE :]
+    return AESGCM(relay_key).decrypt(nonce, ct, aad)

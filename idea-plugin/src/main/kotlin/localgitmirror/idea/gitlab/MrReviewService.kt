@@ -7,7 +7,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
@@ -135,7 +135,7 @@ class MrReviewService(private val project: Project) {
       syncFacade.resolveRepo(File(baseDir), settings).sanitized
     }.getOrNull()?.takeIf { it.isNotBlank() } ?: return CacheData(emptyList(), emptyMap(), emptySet(), localReplyIids(baseDir))
 
-    val listResult = MirrorApi.fileSyncList(
+    val listResult = MirrorPostboxApi.fileSyncList(
       settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls
     )
     if (listResult.code !in 200..299) {
@@ -146,9 +146,9 @@ class MrReviewService(private val project: Project) {
       parsedCache.clear()
     }
 
-    val statusCandidates = mutableListOf<Triple<Int, MirrorApi.FileSyncItem, String>>()
+    val statusCandidates = mutableListOf<Triple<Int, MirrorPostboxApi.FileSyncItem, String>>()
     val pendingIids = mutableSetOf<Int>()
-    val noteItems = mutableListOf<Pair<MirrorApi.FileSyncItem, String>>()
+    val noteItems = mutableListOf<Pair<MirrorPostboxApi.FileSyncItem, String>>()
     for (item in listResult.items) {
       val path = displayPath(item)
       val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
@@ -167,7 +167,7 @@ class MrReviewService(private val project: Project) {
       status[iid] = parseStatus(newest.third)
       for (stale in group) {
         if (stale.second.id != newest.second.id) {
-          runCatching { MirrorApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, stale.second.id) }
+          runCatching { MirrorPostboxApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, stale.second.id) }
         }
       }
     }
@@ -179,7 +179,7 @@ class MrReviewService(private val project: Project) {
     return CacheData(rows, status, pendingIids, localReplyIids(baseDir), processedIids)
   }
 
-  private fun cachedPlain(item: MirrorApi.FileSyncItem, settings: MirrorSettingsService.State, repo: String): String? {
+  private fun cachedPlain(item: MirrorPostboxApi.FileSyncItem, settings: MirrorSettingsService.State, repo: String): String? {
     val known = downloadedMtime[item.id]
     if (known != null && known == item.mtime) {
       (parsedCache[item.id] as? String)?.let { return it }
@@ -191,7 +191,7 @@ class MrReviewService(private val project: Project) {
   }
 
   private fun cachedRow(
-    item: MirrorApi.FileSyncItem,
+    item: MirrorPostboxApi.FileSyncItem,
     path: String,
     settings: MirrorSettingsService.State,
     repo: String,
@@ -213,16 +213,17 @@ class MrReviewService(private val project: Project) {
       ?.toSet()
       .orEmpty()
 
-  private fun downloadPlain(item: MirrorApi.FileSyncItem, settings: MirrorSettingsService.State, repo: String): String? {
+  private fun downloadPlain(item: MirrorPostboxApi.FileSyncItem, settings: MirrorSettingsService.State, repo: String): String? {
     val tmpEnc = File.createTempFile("mr-status-", ".bin")
     val tmpPlain = File.createTempFile("mr-status-", ".md")
     return try {
-      val dl = MirrorApi.fileSyncDownload(
+      val dl = MirrorPostboxApi.fileSyncDownload(
         settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id, tmpEnc,
       )
       if (dl.code !in 200..299 || dl.file == null) return null
+      if (dl.decrypted) return tmpEnc.readText(Charsets.UTF_8)
       RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
-      tmpPlain.readText(Charsets.UTF_8)
+      return tmpPlain.readText(Charsets.UTF_8)
     } catch (_: Throwable) {
       null
     } finally {
@@ -256,7 +257,7 @@ class MrReviewService(private val project: Project) {
   }
 
   /** Repeated sends stack several postbox entries per MR; only the newest one is shown. */
-  internal fun newestPerIid(items: List<Pair<MirrorApi.FileSyncItem, String>>): List<Pair<MirrorApi.FileSyncItem, String>> =
+  internal fun newestPerIid(items: List<Pair<MirrorPostboxApi.FileSyncItem, String>>): List<Pair<MirrorPostboxApi.FileSyncItem, String>> =
     items
       .mapNotNull { pair ->
         val iid = Regex("mr-!(\\d+)\\.md$").find(pair.second)?.groupValues?.getOrNull(1)?.toIntOrNull()
@@ -268,7 +269,7 @@ class MrReviewService(private val project: Project) {
       .map { group -> group.maxByOrNull { it.first.mtime } ?: group.first() }
 
   /** Real path of a postbox item: decrypted path_enc when present, plaintext path for old entries. */
-  private fun displayPath(item: MirrorApi.FileSyncItem): String {
+  private fun displayPath(item: MirrorPostboxApi.FileSyncItem): String {
     if (item.pathEnc.isBlank()) return item.path
     val plain = runCatching {
       localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(item.pathEnc, SecretsStore.syncPassword)
@@ -277,7 +278,7 @@ class MrReviewService(private val project: Project) {
   }
 
   private fun parseCachedMr(
-    item: MirrorApi.FileSyncItem,
+    item: MirrorPostboxApi.FileSyncItem,
     path: String,
     settings: MirrorSettingsService.State,
     repo: String,
@@ -288,14 +289,17 @@ class MrReviewService(private val project: Project) {
     val tmpEnc = File.createTempFile("mr-review-", ".bin")
     val tmpPlain = File.createTempFile("mr-review-", ".md")
     try {
-      val dl = MirrorApi.fileSyncDownload(
+      val dl = MirrorPostboxApi.fileSyncDownload(
         settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
         item.id, tmpEnc,
       )
       if (dl.code !in 200..299 || dl.file == null) return null
 
-      RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
-      val markdown = tmpPlain.readText(Charsets.UTF_8)
+      val markdown = if (dl.decrypted) tmpEnc.readText(Charsets.UTF_8)
+      else {
+        RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
+        tmpPlain.readText(Charsets.UTF_8)
+      }
       return parseMrMarkdown(iid, markdown)
     } catch (_: Throwable) {
       return null

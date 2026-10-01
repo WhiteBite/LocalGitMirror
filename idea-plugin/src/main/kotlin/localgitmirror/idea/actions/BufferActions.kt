@@ -15,7 +15,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.ui.components.JBList
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorBufferApi
+import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -31,12 +32,7 @@ import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
 import javax.swing.JList
 
-/**
- * Cross-machine clipboard buffer actions. Data is encrypted client-side with
- * SYNC_PASSWORD before it ever touches the wire — the server only stores
- * ciphertext plus an unencrypted preview hint. End-to-end model matches the
- * existing sync bundles so no new secret surface is introduced.
- */
+/** Buffer actions: the body is sealed v3-relay (pinned key) or SYNC_PASSWORD bundle; the server never stores plaintext. */
 
 private fun notify(project: Project?, message: String, type: NotificationType) {
   NotificationGroupManager.getInstance()
@@ -52,7 +48,7 @@ private fun preconditionsOk(project: Project?): Triple<MirrorSettingsService.Sta
     return null
   }
   val pwd = SecretsStore.syncPassword
-  if (pwd.isBlank()) {
+  if (pwd.isBlank() && !MirrorCrypto.isV3Pinned()) {
     notify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
     return null
   }
@@ -76,13 +72,13 @@ private fun grabPayload(e: AnActionEvent): String? {
 }
 
 /** Decrypted preview for display: hint_enc first, legacy plaintext hint for old entries. */
-internal fun displayHint(item: MirrorApi.BufferItem, pwd: String): String {
+internal fun displayHint(item: MirrorBufferApi.BufferItem, pwd: String): String {
   val empty = LocalGitMirrorBundle.message("buffer.history.emptyHint")
   if (item.hintEnc.isNotBlank()) {
     val plain = runCatching { ExchangeCrypto.decryptHint(item.hintEnc, pwd) }.getOrDefault(item.hint)
     return ExchangeMeta.parseHint(plain).text.ifBlank { empty }
   }
-  return item.hint.ifBlank { empty }
+  return ExchangeMeta.parseHint(item.hint).text.ifBlank { empty }
 }
 
 private fun formatTs(epochSec: Double): String {
@@ -122,22 +118,28 @@ class SendToBufferAction : AnAction() {
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("buffer.task.send"), false) {
       override fun run(indicator: ProgressIndicator) {
         indicator.isIndeterminate = true
-        val ciphertext = try {
-          BundleCrypto.encryptBundleBytes(payload.toByteArray(Charsets.UTF_8), pwd)
+        val sealed = try {
+          MirrorCrypto.sealBufferPayload(payload.toByteArray(Charsets.UTF_8), pwd)
         } catch (t: Throwable) {
           notify(project, LocalGitMirrorBundle.message("notify.buffer.encryptFail", t.message ?: ""), NotificationType.ERROR)
           return
         }
-        val hintEnc = try {
-          val side = ExchangeMeta.sideOfRole(
+        val meta = ExchangeMeta.hintJson(
+          payload,
+          side = ExchangeMeta.sideOfRole(
             localgitmirror.idea.deps.RoleDetector.detect(settings) == localgitmirror.idea.deps.MachineRole.WORK
           )
-          ExchangeCrypto.encryptHint(ExchangeMeta.hintJson(payload, side = side), pwd)
+        )
+        val hintEnc = if (pwd.isBlank()) "" else try {
+          ExchangeCrypto.encryptHint(meta, pwd)
         } catch (t: Throwable) {
           notify(project, LocalGitMirrorBundle.message("notify.buffer.encryptFail", t.message ?: ""), NotificationType.ERROR)
           return
         }
-        val res = MirrorApi.bufferPut(settings.baseUrl, apiKey, settings.mirrorInsecureTls, ciphertext, hintEnc)
+        val res = MirrorBufferApi.bufferPut(
+          settings.baseUrl, apiKey, settings.mirrorInsecureTls,
+          sealed.bytes, hintEnc, false, sealed.epkB64, if (hintEnc.isBlank()) meta else ""
+        )
         if (res.code !in 200..299) {
           notify(project, LocalGitMirrorBundle.message("notify.buffer.sendFail", res.code.toString(), res.message.take(200)), NotificationType.ERROR)
           historyService.add("Buffer send", false, "HTTP ${res.code}: ${res.message.take(200)}")
@@ -166,7 +168,7 @@ class PasteFromBufferAction : AnAction() {
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("buffer.task.paste"), false) {
       override fun run(indicator: ProgressIndicator) {
         indicator.isIndeterminate = true
-        val list = MirrorApi.bufferList(settings.baseUrl, apiKey, settings.mirrorInsecureTls)
+        val list = MirrorBufferApi.bufferList(settings.baseUrl, apiKey, settings.mirrorInsecureTls)
         if (list.code !in 200..299) {
           notify(project, LocalGitMirrorBundle.message("notify.buffer.listFail", list.code.toString(), list.message.take(200)), NotificationType.ERROR)
           return
@@ -196,13 +198,13 @@ class BufferHistoryAction : AnAction() {
     val historyService = service<OperationsHistoryService>()
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("buffer.task.history"), false) {
-      private var items: List<MirrorApi.BufferItem> = emptyList()
+      private var items: List<MirrorBufferApi.BufferItem> = emptyList()
       private var hints: Map<String, String> = emptyMap()
       private var errorMessage: String? = null
 
       override fun run(indicator: ProgressIndicator) {
         indicator.isIndeterminate = true
-        val res = MirrorApi.bufferList(settings.baseUrl, apiKey, settings.mirrorInsecureTls)
+        val res = MirrorBufferApi.bufferList(settings.baseUrl, apiKey, settings.mirrorInsecureTls)
         if (res.code !in 200..299) {
           errorMessage = "HTTP ${res.code}: ${res.message.take(200)}"
           return
@@ -228,7 +230,7 @@ class BufferHistoryAction : AnAction() {
 
   private fun showPicker(
     project: Project?,
-    items: List<MirrorApi.BufferItem>,
+    items: List<MirrorBufferApi.BufferItem>,
     hints: Map<String, String>,
     settings: MirrorSettingsService.State,
     apiKey: String,
@@ -241,7 +243,7 @@ class BufferHistoryAction : AnAction() {
       .setRenderer(object : DefaultListCellRenderer() {
         override fun getListCellRendererComponent(l: JList<*>?, value: Any?, idx: Int, sel: Boolean, focus: Boolean): java.awt.Component {
           super.getListCellRendererComponent(l, value, idx, sel, focus)
-          val it = value as? MirrorApi.BufferItem
+          val it = value as? MirrorBufferApi.BufferItem
           if (it != null) {
             val preview = hints[it.id] ?: LocalGitMirrorBundle.message("buffer.history.emptyHint")
             text = LocalGitMirrorBundle.message("buffer.history.row", formatTs(it.ts), it.size.toString(), preview)
@@ -277,7 +279,7 @@ private fun fetchAndCopy(
   ts: Double,
   historyService: OperationsHistoryService
 ) {
-  val res = MirrorApi.bufferGet(settings.baseUrl, apiKey, settings.mirrorInsecureTls, id)
+  val res = MirrorBufferApi.bufferGet(settings.baseUrl, apiKey, settings.mirrorInsecureTls, id)
   if (res.code !in 200..299 || res.file == null) {
     notify(project, LocalGitMirrorBundle.message("notify.buffer.getFail", res.code.toString(), res.message.take(200)), NotificationType.ERROR)
     historyService.add("Buffer paste", false, "HTTP ${res.code}: ${res.message.take(200)}")
@@ -291,7 +293,8 @@ private fun fetchAndCopy(
   }
 
   val plain = try {
-    String(BundleCrypto.decryptDumpBytes(ciphertext, pwd), Charsets.UTF_8)
+    val bytes = if (res.decrypted) ciphertext else BundleCrypto.decryptDumpBytes(ciphertext, pwd)
+    String(bytes, Charsets.UTF_8)
   } catch (t: Throwable) {
     notify(project, LocalGitMirrorBundle.message("notify.buffer.decryptFail", t.message ?: t::class.simpleName ?: ""), NotificationType.ERROR)
     historyService.add("Buffer paste", false, "decrypt failed: ${t::class.simpleName}")

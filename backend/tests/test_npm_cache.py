@@ -5,6 +5,7 @@
 npm publish endpoint.
 """
 
+import base64
 import io
 import json
 import os
@@ -13,9 +14,14 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core import hybrid_crypto as hc
 from app.core.artifact_store import ArtifactStore, sha256_bytes
 from app.core.bundle_crypto import encrypt_bundle_bytes
 from app.core.npm_cache import (
@@ -320,3 +326,60 @@ class TestNpmServeEndpoints:
     def test_serve_missing_returns_404(self, client, vault):
         resp = client.get("/api/cache/npm/@krypto-ui/missing/1.0.0")
         assert resp.status_code == 404
+
+
+@pytest.fixture()
+def server_key(vault):
+    priv = X25519PrivateKey.generate()
+    mirror_mod.server_private_key = priv
+    yield priv
+    mirror_mod.server_private_key = None
+
+
+def _seal_v3(plaintext: bytes, server_priv) -> tuple:
+    client_priv = X25519PrivateKey.generate()
+    epk = client_priv.public_key().public_bytes_raw()
+    shared = client_priv.exchange(
+        X25519PublicKey.from_public_bytes(server_priv.public_key().public_bytes_raw())
+    )
+    blob = hc.relay_seal(shared, epk, plaintext, hc.RELAY_AAD_VAULT)
+    return blob, base64.urlsafe_b64encode(epk).decode("ascii").rstrip("=")
+
+
+class TestNpmPublishV3:
+    def test_publish_v3_imports_tarballs(self, client, server_key):
+        tar = _make_tarball(Path("/tmp"), "@krypto-ui/components", "1.2.3")
+        pub = _make_npm_publication({"@krypto-ui/components@1.2.3": tar})
+        blob, epk = _seal_v3(pub, server_key)
+
+        resp = client.post(
+            "/api/cache/publish-npm",
+            files={"attachment": ("pub.enc", blob, "application/octet-stream")},
+            data={"k": epk},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["added"] == 1
+
+    def test_publish_v3_wrong_server_key_returns_400(self, client, server_key):
+        tar = _make_tarball(Path("/tmp"), "@krypto-ui/components", "1.2.3")
+        pub = _make_npm_publication({"@krypto-ui/components@1.2.3": tar})
+        blob, epk = _seal_v3(pub, X25519PrivateKey.generate())
+
+        resp = client.post(
+            "/api/cache/publish-npm",
+            files={"attachment": ("pub.enc", blob, "application/octet-stream")},
+            data={"k": epk},
+        )
+        assert resp.status_code == 400
+
+    def test_publish_legacy_password_still_works_with_server_key(self, client, server_key):
+        tar = _make_tarball(Path("/tmp"), "@krypto-ui/components", "1.2.3")
+        pub = _make_npm_publication({"@krypto-ui/components@1.2.3": tar})
+        encrypted = encrypt_bundle_bytes(pub, PASSWORD)
+
+        resp = client.post(
+            "/api/cache/publish-npm",
+            files={"attachment": ("pub.enc", encrypted, "application/octet-stream")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["added"] == 1

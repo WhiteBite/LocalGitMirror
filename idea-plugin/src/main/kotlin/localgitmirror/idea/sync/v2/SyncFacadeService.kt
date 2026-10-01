@@ -3,7 +3,7 @@ package localgitmirror.idea.sync.v2
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.git.GitLocal
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.SyncStateStore
@@ -157,7 +157,7 @@ class SyncFacadeService(private val project: Project) {
       addAll(recent)
     }.toList()
 
-    val has = MirrorApi.hasCommits(settings.baseUrl, SecretsStore.mirrorApiKey, repo, candidates, SecretsStore.syncPassword, settings.mirrorInsecureTls)
+    val has = MirrorSyncApi.hasCommits(settings.baseUrl, SecretsStore.mirrorApiKey, repo, candidates, SecretsStore.syncPassword, settings.mirrorInsecureTls)
     val known = if (has.code in 200..299) engine.parseKnownCommitHashes(has.body) else emptySet()
     val remoteHasHead = known.contains(head.lowercase())
     val bestBase = engine.pickBestKnownBase(head, candidates, known)
@@ -218,7 +218,7 @@ class SyncFacadeService(private val project: Project) {
     val localHead = GitLocal.headHash(project, projectDir)
     val since = SyncStateStore.readLastPulledHead(projectDir)
 
-    val preview = MirrorApi.previewPull(
+    val preview = MirrorSyncApi.previewPull(
       baseUrl = settings.baseUrl,
       apiKey = SecretsStore.mirrorApiKey,
       repo = repo,

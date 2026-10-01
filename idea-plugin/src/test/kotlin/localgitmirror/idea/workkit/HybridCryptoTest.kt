@@ -1,5 +1,6 @@
 package localgitmirror.idea.workkit
 
+import java.security.GeneralSecurityException
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.SecureRandom
@@ -13,7 +14,11 @@ import javax.crypto.spec.GCMParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Verifies protocol v3 (hybrid ECIES) byte-for-byte against the Python backend.
@@ -31,6 +36,12 @@ class HybridCryptoTest {
   private val INFO_ENV_RESP = "lgm/v3/env/resp".toByteArray(Charsets.US_ASCII)
   private val INFO_BUNDLE_REQ = "lgm/v3/bundle/req".toByteArray(Charsets.US_ASCII)
   private val INFO_BUNDLE_RESP = "lgm/v3/bundle/resp".toByteArray(Charsets.US_ASCII)
+  private val INFO_RELAY_REQ = "lgm/v3/relay/req".toByteArray(Charsets.US_ASCII)
+  private val INFO_RELAY_RESP = "lgm/v3/relay/resp".toByteArray(Charsets.US_ASCII)
+
+  private val relayVector: Map<String, String> =
+    Json.parseToJsonElement(javaClass.getResourceAsStream("/v3_relay.json")!!.readBytes().decodeToString())
+      .jsonObject.mapValues { it.value.jsonPrimitive.content }
 
   private fun hex(b: ByteArray) = b.joinToString("") { "%02x".format(it) }
   private fun unhex(s: String) = ByteArray(s.length / 2) { ((s[it * 2].digitToInt(16) shl 4) or s[it * 2 + 1].digitToInt(16)).toByte() }
@@ -107,6 +118,101 @@ class HybridCryptoTest {
     assertEquals(32, HybridCrypto.decodeServerPub(epk).size)
   }
 
+  @Test
+  fun `relay KAT matches python vector`() {
+    val v = relayVector
+    val serverPubRaw = unhex(v.getValue("server_pub_hex"))
+    val clientPrivRaw = unhex(v.getValue("client_priv_hex"))
+    val epk = unhex(v.getValue("client_pub_hex"))
+
+    val ka = KeyAgreement.getInstance("XDH")
+    ka.init(privFromRaw(clientPrivRaw))
+    ka.doPhase(HybridCrypto.rawToPublicKey(serverPubRaw), true)
+    val shared = ka.generateSecret()
+    assertEquals(v.getValue("shared_hex"), hex(shared), "X25519 shared secret must match Python")
+
+    val keyReq = HybridCrypto.hkdf(shared, epk, INFO_RELAY_REQ)
+    assertEquals(v.getValue("key_req_hex"), hex(keyReq))
+    val keyResp = HybridCrypto.hkdf(shared, epk, INFO_RELAY_RESP)
+    assertEquals(v.getValue("key_resp_hex"), hex(keyResp))
+
+    assertEquals(v.getValue("aad_deps_req_hex"), hex(HybridCrypto.RELAY_AAD_DEPS_REQ))
+    assertEquals(v.getValue("aad_deps_resp_hex"), hex(HybridCrypto.RELAY_AAD_DEPS_RESP))
+    assertEquals(v.getValue("aad_postbox_hex"), hex(HybridCrypto.RELAY_AAD_POSTBOX))
+    assertEquals(v.getValue("aad_buffer_hex"), hex(HybridCrypto.RELAY_AAD_BUFFER))
+    assertEquals(v.getValue("aad_vault_hex"), hex(HybridCrypto.RELAY_AAD_VAULT))
+
+    val nonce = unhex(v.getValue("nonce_hex"))
+    val plaintext = unhex(v.getValue("plaintext_hex"))
+    val ctReq = sealGcmAad(keyReq, plaintext, HybridCrypto.RELAY_AAD_DEPS_REQ, nonce)
+    assertEquals(v.getValue("ct_req_hex"), hex(ctReq))
+    val ctResp = sealGcmAad(keyResp, plaintext, HybridCrypto.RELAY_AAD_DEPS_RESP, nonce)
+    assertEquals(v.getValue("ct_resp_hex"), hex(ctResp))
+
+    assertTrue(openGcmAad(keyReq, ctReq, HybridCrypto.RELAY_AAD_DEPS_REQ).contentEquals(plaintext))
+    assertTrue(openGcmAad(keyResp, ctResp, HybridCrypto.RELAY_AAD_DEPS_RESP).contentEquals(plaintext))
+  }
+
+  @Test
+  fun `relay session round-trips for every purpose aad`() {
+    val kpg = KeyPairGenerator.getInstance("XDH").apply { initialize(NamedParameterSpec.X25519) }
+    val serverKp = kpg.generateKeyPair()
+    val serverPubRaw = HybridCrypto.publicKeyToRaw(serverKp.public as XECPublicKey)
+    val session = HybridCrypto.Session.create(serverPubRaw)
+
+    val ka = KeyAgreement.getInstance("XDH")
+    ka.init(serverKp.private)
+    ka.doPhase(HybridCrypto.rawToPublicKey(session.ephemeralPub), true)
+    val shared = ka.generateSecret()
+
+    val aads = listOf(
+      HybridCrypto.RELAY_AAD_DEPS_REQ,
+      HybridCrypto.RELAY_AAD_DEPS_RESP,
+      HybridCrypto.RELAY_AAD_POSTBOX,
+      HybridCrypto.RELAY_AAD_BUFFER,
+      HybridCrypto.RELAY_AAD_VAULT,
+    )
+    val payload = ByteArray(300) { (it * 7).toByte() }
+    for (aad in aads) {
+      val kReq = HybridCrypto.hkdf(shared, session.ephemeralPub, INFO_RELAY_REQ)
+      assertTrue(openGcmAad(kReq, session.sealRelay(payload, aad), aad).contentEquals(payload))
+
+      val kResp = HybridCrypto.hkdf(shared, session.ephemeralPub, INFO_RELAY_RESP)
+      val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
+      assertTrue(session.openRelay(sealGcmAad(kResp, payload, aad, nonce), aad).contentEquals(payload))
+    }
+  }
+
+  @Test
+  fun `relay wrong label and flipped aad fail closed`() {
+    val kpg = KeyPairGenerator.getInstance("XDH").apply { initialize(NamedParameterSpec.X25519) }
+    val serverKp = kpg.generateKeyPair()
+    val serverPubRaw = HybridCrypto.publicKeyToRaw(serverKp.public as XECPublicKey)
+    val session = HybridCrypto.Session.create(serverPubRaw)
+
+    val ka = KeyAgreement.getInstance("XDH")
+    ka.init(serverKp.private)
+    ka.doPhase(HybridCrypto.rawToPublicKey(session.ephemeralPub), true)
+    val shared = ka.generateSecret()
+
+    val aad = HybridCrypto.RELAY_AAD_POSTBOX
+    val flipped = aad.copyOf().also { it[0] = (it[0].toInt() xor 1).toByte() }
+    val payload = "payload".toByteArray()
+    val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
+
+    val kReq = HybridCrypto.hkdf(shared, session.ephemeralPub, INFO_RELAY_REQ)
+    val kResp = HybridCrypto.hkdf(shared, session.ephemeralPub, INFO_RELAY_RESP)
+
+    val reqSealed = sealGcmAad(kReq, payload, aad, nonce)
+    assertFailsWith<GeneralSecurityException> { session.openRelay(reqSealed, aad) }
+
+    val respSealed = sealGcmAad(kResp, payload, aad, nonce)
+    assertFailsWith<GeneralSecurityException> { session.openRelay(respSealed, flipped) }
+
+    val clientSealed = session.sealRelay(payload, aad)
+    assertFailsWith<GeneralSecurityException> { openGcmAad(kReq, clientSealed, flipped) }
+  }
+
   // — local AES-256-GCM mirror of HybridCrypto's wire (nonce[12] || ct) —
   private fun sealGcm(key: ByteArray, pt: ByteArray): ByteArray {
     val nonce = ByteArray(12).also { SecureRandom().nextBytes(it) }
@@ -120,6 +226,22 @@ class HybridCryptoTest {
     val ct = blob.copyOfRange(12, blob.size)
     val c = Cipher.getInstance("AES/GCM/NoPadding")
     c.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+    return c.doFinal(ct)
+  }
+
+  private fun sealGcmAad(key: ByteArray, pt: ByteArray, aad: ByteArray, nonce: ByteArray): ByteArray {
+    val c = Cipher.getInstance("AES/GCM/NoPadding")
+    c.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+    c.updateAAD(aad)
+    return nonce + c.doFinal(pt)
+  }
+
+  private fun openGcmAad(key: ByteArray, blob: ByteArray, aad: ByteArray): ByteArray {
+    val nonce = blob.copyOfRange(0, 12)
+    val ct = blob.copyOfRange(12, blob.size)
+    val c = Cipher.getInstance("AES/GCM/NoPadding")
+    c.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, nonce))
+    c.updateAAD(aad)
     return c.doFinal(ct)
   }
 }

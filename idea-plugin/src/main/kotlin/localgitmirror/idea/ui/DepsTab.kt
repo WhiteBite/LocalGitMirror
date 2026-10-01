@@ -13,7 +13,7 @@ import com.intellij.ui.components.JBList
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorDepsApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.ui.exchange.formatBufferTs
@@ -109,7 +109,7 @@ internal fun LocalGitMirrorPanel.refreshDepsInBackground() {
       val repo = try { syncFacade.resolveRepo(dir, s).sanitized } catch (_: Throwable) { "" }
       if (repo.isBlank()) return
       indicator.checkCanceled()
-      val pending = MirrorApi.depsPending(
+      val pending = MirrorDepsApi.depsPending(
         baseUrl = s.baseUrl,
         apiKey = SecretsStore.mirrorApiKey,
         repo = repo,
@@ -118,7 +118,7 @@ internal fun LocalGitMirrorPanel.refreshDepsInBackground() {
       val role = localgitmirror.idea.deps.RoleDetector.detect(s)
       indicator.checkCanceled()
       val responses = if (role == localgitmirror.idea.deps.MachineRole.HOME)
-        MirrorApi.depsResponses(
+        MirrorDepsApi.depsResponses(
           baseUrl = s.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           repo = repo,

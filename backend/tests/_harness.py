@@ -15,9 +15,10 @@ Usage:
                                      "storage_path": storage})
     client = TestClient(app)
 
-Sync helpers (_git, _apply_dump_to_repo_and_sync_bare, _pick_bundle_ref,
-_infer_repo_from_dump_filename, sync_export_dump, MAGIC, decrypt_dump_to_bundle)
-now live in app.routers.sync — patch/import them from there.
+Sync git helpers (_git, _apply_dump_to_repo_and_sync_bare, _pick_bundle_ref,
+_infer_repo_from_dump_filename) live in app.core.git_bundle — patch them
+there. sync_export_dump lives in app.routers.sync; MAGIC and
+decrypt_dump_to_bundle live in app.core.bundle_crypto.
 """
 import sys
 from pathlib import Path
@@ -29,10 +30,14 @@ if str(BACKEND_DIR) not in sys.path:
 
 from fastapi import FastAPI
 
-from app.routers import files, repos, shared, sync, system
+from app.core import git_bundle
+from app.routers import auth, files, repos, shared, sync, system
 
 # All modular routers, in mount order.
-_MODULES = (system, repos, sync, files, shared)
+_MODULES = (system, repos, sync, files, shared, auth)
+
+# Non-router modules with the same injectable globals as the routers.
+_INJECTABLES = _MODULES + (git_bundle,)
 
 _UNSET = object()
 
@@ -59,7 +64,7 @@ def inject(
         "system_logger": system_logger,
         "config": config,
     }
-    for module in _MODULES:
+    for module in _INJECTABLES:
         for attr, val in values.items():
             if val is not _UNSET and hasattr(module, attr):
                 setattr(module, attr, val)

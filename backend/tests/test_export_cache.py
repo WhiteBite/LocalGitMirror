@@ -17,8 +17,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.bundle_crypto import FORMAT_VERSION, decrypt_dump_bytes, decrypt_dump_to_bundle
+from app.core.git_bundle import _EXPORT_CACHE_MAX_ENTRIES
 from app.core.repo_manager import RepoManager
-from app.routers import sync as sync_module
 from tests import _harness
 from tests.conftest import envelope_form_post, parse_envelope
 
@@ -183,7 +183,7 @@ def test_cache_is_bounded(tmp_path, monkeypatch):
     monkeypatch.setenv("SYNC_PASSWORD", PASSWORD)
     client, repo, bare, work, rm, storage = _make_repo(tmp_path)
 
-    cap = sync_module._EXPORT_CACHE_MAX_ENTRIES
+    cap = _EXPORT_CACHE_MAX_ENTRIES
     cache_dir = storage / ".lgm" / "_export_cache"
 
     # Each distinct commit -> distinct head -> distinct cache key.

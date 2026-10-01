@@ -4,6 +4,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import localgitmirror.idea.sync.v2.SyncEngine
+import localgitmirror.idea.sync.v2.parseKnownCommitHashes
+import localgitmirror.idea.sync.v2.pickBestKnownBase
 
 class SyncSmartHelpersTest {
   private val engine = SyncEngine()

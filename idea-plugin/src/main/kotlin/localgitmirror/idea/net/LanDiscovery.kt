@@ -4,9 +4,6 @@ import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import javax.jmdns.JmDNS
-import javax.jmdns.ServiceEvent
-import javax.jmdns.ServiceListener
-import localgitmirror.idea.mirror.MirrorConnectionContract
 
 object LanDiscovery {
   private const val MDNS_SERVICE_TYPE = "_http._tcp.local."
@@ -25,7 +22,7 @@ object LanDiscovery {
   }
 
   /**
-   * Discover servers on LAN via mDNS first, then UDP fallback, then subnet scan.
+   * Discover servers on LAN via mDNS first, then UDP fallback.
    * [authPassword] (SYNC_PASSWORD) enables HMAC verification of UDP beacons:
    * a configured client then ignores embedded IPs from untagged or
    * incorrectly tagged beacons, closing the LAN spoofing hole.
@@ -57,15 +54,6 @@ object LanDiscovery {
     } catch (_: Exception) {
       // Silently fail
     }
-
-    // 3. Subnet scan fallback — probe common ports on local /24 subnet
-    try {
-      val scanResults = discoverSubnetScan(timeoutMs)
-      for (s in scanResults) {
-        val key = "${s.ip}:${s.port}"
-        if (seen.add(key)) results.add(s)
-      }
-    } catch (_: Exception) {}
 
     return results
   }
@@ -178,84 +166,5 @@ object LanDiscovery {
     }
 
     return results
-  }
-
-  // ── Subnet scan fallback ────────────────────────────────────────────
-  // Probes the local /24 subnet on common ports (443, 8443) for the
-  // DocCache capabilities endpoint. Works through firewalls that block
-  // mDNS/UDP broadcast. Parallelized with short connect timeouts.
-
-  private val SCAN_PORTS = intArrayOf(443, 8443, 8080)
-
-  private fun discoverSubnetScan(timeoutMs: Int): List<DiscoveredServer> {
-    val results = java.util.concurrent.CopyOnWriteArrayList<DiscoveredServer>()
-    val localIp = try {
-      java.net.NetworkInterface.getNetworkInterfaces()?.toList()
-        ?.flatMap { it.inetAddresses.toList() }
-        ?.filterIsInstance<java.net.Inet4Address>()
-        ?.firstOrNull { !it.isLoopbackAddress && it.hostAddress.startsWith("192.168.") }
-        ?.hostAddress
-    } catch (_: Exception) { null } ?: return emptyList()
-
-    // Determine /24 prefix
-    val prefix = localIp.substringBeforeLast('.') + "."
-    val perHostTimeout = (timeoutMs / 50).coerceIn(200, 1500)  // ~120ms per host
-
-    val executor = java.util.concurrent.Executors.newFixedThreadPool(32)
-    val futures = mutableListOf<java.util.concurrent.Future<*>>()
-
-    for (i in 1..254) {
-      val ip = "$prefix$i"
-      // NOTE: do NOT skip localIp — the server commonly runs on the same
-      // machine as the IDE, and that is exactly the address we want to find.
-
-      futures.add(executor.submit {
-        for (port in SCAN_PORTS) {
-          try {
-            val url = java.net.URL("https://$ip:$port${MirrorConnectionContract.PUBLIC_CAPABILITIES_PATH}")
-            val conn = url.openConnection() as javax.net.ssl.HttpsURLConnection
-            conn.connectTimeout = perHostTimeout
-            conn.readTimeout = perHostTimeout
-            conn.requestMethod = "GET"
-            // Accept any cert (self-signed)
-            conn.sslSocketFactory = trustAllFactory
-            conn.hostnameVerifier = javax.net.ssl.HostnameVerifier { _, _ -> true }
-
-            val code = conn.responseCode
-            if (code in 200..299) {
-              val body = conn.inputStream.bufferedReader().readText()
-              if (body.contains("DocCache")) {
-                results.add(DiscoveredServer(ip, port, tls = true))
-              }
-            }
-            conn.disconnect()
-          } catch (_: Exception) {
-            // Not reachable or not our server — skip
-          }
-        }
-      })
-    }
-
-    // Wait with overall timeout
-    try {
-      executor.shutdown()
-      executor.awaitTermination(timeoutMs.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
-    } catch (_: InterruptedException) {}
-    executor.shutdownNow()
-
-    return results.toList()
-  }
-
-  private val trustAllFactory: javax.net.ssl.SSLSocketFactory by lazy {
-    val trustAll = arrayOf<javax.net.ssl.TrustManager>(
-      object : javax.net.ssl.X509TrustManager {
-        override fun getAcceptedIssuers() = arrayOf<java.security.cert.X509Certificate>()
-        override fun checkClientTrusted(c: Array<java.security.cert.X509Certificate>, t: String) {}
-        override fun checkServerTrusted(c: Array<java.security.cert.X509Certificate>, t: String) {}
-      }
-    )
-    val ctx = javax.net.ssl.SSLContext.getInstance("TLS")
-    ctx.init(null, trustAll, java.security.SecureRandom())
-    ctx.socketFactory
   }
 }

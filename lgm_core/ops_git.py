@@ -204,7 +204,7 @@ def op_pull(ctx: Ctx, args: dict) -> dict:
 def op_deps_request(ctx: Ctx, args: dict) -> dict:
     """Post a pre-built encrypted manifest file to /api/documents/submit."""
     c = _client(ctx)
-    repo = args.get("repo", "onyx-platform")
+    repo = args.get("repo") or "onyx-platform"
     manifest_path = args.get("manifest", "")
     if not manifest_path:
         raise LgmError("config", "--manifest is required (path to encrypted manifest)")

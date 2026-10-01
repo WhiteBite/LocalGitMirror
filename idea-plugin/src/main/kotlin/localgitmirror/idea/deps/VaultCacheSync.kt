@@ -5,7 +5,7 @@ import com.intellij.openapi.project.Project
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorVaultApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -39,7 +39,7 @@ object VaultCacheSync {
       return
     }
 
-    val indexRes = MirrorApi.mirrorIndex(
+    val indexRes = MirrorVaultApi.mirrorIndex(
       baseUrl = settings.baseUrl,
       apiKey = SecretsStore.mirrorApiKey,
       insecureTls = settings.mirrorInsecureTls
@@ -73,7 +73,7 @@ object VaultCacheSync {
               skipped.incrementAndGet()
               return@submit
             }
-            val res = MirrorApi.vaultM2Fetch(
+            val res = MirrorVaultApi.vaultM2Fetch(
               baseUrl = settings.baseUrl,
               apiKey = SecretsStore.mirrorApiKey,
               insecureTls = settings.mirrorInsecureTls,

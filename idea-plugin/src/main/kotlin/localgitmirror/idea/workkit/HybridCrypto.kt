@@ -55,6 +55,14 @@ object HybridCrypto {
   private val INFO_ENV_RESP = "lgm/v3/env/resp".toByteArray(Charsets.US_ASCII)
   private val INFO_BUNDLE_REQ = "lgm/v3/bundle/req".toByteArray(Charsets.US_ASCII)
   private val INFO_BUNDLE_RESP = "lgm/v3/bundle/resp".toByteArray(Charsets.US_ASCII)
+  private val INFO_RELAY_REQ = "lgm/v3/relay/req".toByteArray(Charsets.US_ASCII)
+  private val INFO_RELAY_RESP = "lgm/v3/relay/resp".toByteArray(Charsets.US_ASCII)
+
+  val RELAY_AAD_DEPS_REQ = "lgm/v3/relay/deps/req".toByteArray(Charsets.US_ASCII)
+  val RELAY_AAD_DEPS_RESP = "lgm/v3/relay/deps/resp".toByteArray(Charsets.US_ASCII)
+  val RELAY_AAD_POSTBOX = "lgm/v3/relay/postbox".toByteArray(Charsets.US_ASCII)
+  val RELAY_AAD_BUFFER = "lgm/v3/relay/buffer".toByteArray(Charsets.US_ASCII)
+  val RELAY_AAD_VAULT = "lgm/v3/relay/vault".toByteArray(Charsets.US_ASCII)
 
   /** Decode a pinned server public key from base64 (standard or url-safe). */
   fun decodeServerPub(b64: String): ByteArray {
@@ -98,6 +106,18 @@ object HybridCrypto {
       return open(key, blob)
     }
 
+    /** Seal a relay request (client -> server, INFO_RELAY_REQ, Python relay_seal(resp=false)). */
+    fun sealRelay(plaintext: ByteArray, aad: ByteArray): ByteArray {
+      val key = hkdf(shared, ephemeralPub, INFO_RELAY_REQ)
+      return sealAad(key, plaintext, aad)
+    }
+
+    /** Open a relay response (server -> client, INFO_RELAY_RESP, Python relay_open(resp=true)). */
+    fun openRelay(blob: ByteArray, aad: ByteArray): ByteArray {
+      val key = hkdf(shared, ephemeralPub, INFO_RELAY_RESP)
+      return openAad(key, blob, aad)
+    }
+
     /** Best-effort: zero the shared secret. (JVM may keep copies; not guaranteed.) */
     fun wipe() {
       java.util.Arrays.fill(shared, 0)
@@ -136,6 +156,24 @@ object HybridCrypto {
     val ct = blob.copyOfRange(NONCE_SIZE, blob.size)
     val cipher = Cipher.getInstance("AES/GCM/NoPadding")
     cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
+    return cipher.doFinal(ct)
+  }
+
+  private fun sealAad(key: ByteArray, plaintext: ByteArray, aad: ByteArray): ByteArray {
+    val nonce = ByteArray(NONCE_SIZE).also { SecureRandom().nextBytes(it) }
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    cipher.init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
+    cipher.updateAAD(aad)
+    return nonce + cipher.doFinal(plaintext)
+  }
+
+  private fun openAad(key: ByteArray, blob: ByteArray, aad: ByteArray): ByteArray {
+    require(blob.size >= NONCE_SIZE + 16) { "ciphertext too short" }
+    val nonce = blob.copyOfRange(0, NONCE_SIZE)
+    val ct = blob.copyOfRange(NONCE_SIZE, blob.size)
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(GCM_TAG_BITS, nonce))
+    cipher.updateAAD(aad)
     return cipher.doFinal(ct)
   }
 

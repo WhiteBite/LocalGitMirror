@@ -2,12 +2,11 @@ package localgitmirror.idea.gitlab
 
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorCrypto
+import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
-import localgitmirror.idea.workkit.ExchangeCrypto
-import localgitmirror.idea.workkit.RepoFileSyncCrypto
 import java.io.File
 
 /** code = 0 marks a local failure (no HTTP round trip happened). */
@@ -66,11 +65,12 @@ object MrRepliesTransport {
     return try {
       val encrypted = File.createTempFile("lgm-upload-", ".bin")
       try {
-        RepoFileSyncCrypto.encryptFile(file, encrypted, SecretsStore.syncPassword, null)
-        val pathEnc = ExchangeCrypto.encryptHint(displayPath, SecretsStore.syncPassword)
-        val up = MirrorApi.fileSyncUpload(
+        val sealed = MirrorCrypto.sealPostboxPayload(file.readBytes(), SecretsStore.syncPassword, displayPath, file.length())
+        encrypted.writeBytes(sealed.bytes)
+        val (relPath, pathEnc) = MirrorCrypto.postboxRoute(displayPath, SecretsStore.syncPassword)
+        val up = MirrorPostboxApi.fileSyncUpload(
           settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
-          "x/${java.util.UUID.randomUUID().toString().take(8)}", file.length(), encrypted, pathEnc, null,
+          relPath, file.length(), encrypted, pathEnc, sealed.epkB64, sealed.meta, null,
         )
         if (up.code in 200..299) MrUploadResult.Ok
         else MrUploadResult.Failed(up.code, "HTTP ${up.code}: ${up.message}")

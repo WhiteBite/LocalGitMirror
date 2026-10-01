@@ -13,8 +13,11 @@ whether to retry.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import ssl
+import subprocess
 import urllib.parse
 import uuid
 import urllib.request
@@ -24,6 +27,11 @@ from typing import Optional
 
 from .crypto import encrypt_envelope, decrypt_envelope, encrypt_bundle
 from .config import cfg
+
+
+def repo_to_rid(repo_name: str) -> str:
+    """First 16 hex chars of SHA-256("lgm-repo-id:" + name); the server resolves it via _rid.py."""
+    return hashlib.sha256(("lgm-repo-id:" + repo_name).encode("utf-8")).hexdigest()[:16]
 
 
 class LgmError(Exception):
@@ -43,9 +51,34 @@ def _ssl_ctx(insecure: bool = True) -> ssl.SSLContext:
     return ctx
 
 
+_user_agent_value: Optional[str] = None
+
+
+def _user_agent() -> str:
+    global _user_agent_value
+    if _user_agent_value is not None:
+        return _user_agent_value
+    version = os.environ.get("DOCACHE_VERSION")
+    if not version:
+        try:
+            proc = subprocess.run(
+                ["git", "rev-list", "--count", "HEAD"],
+                cwd=str(Path(__file__).resolve().parent.parent),
+                capture_output=True, text=True, timeout=5,
+            )
+            if proc.returncode == 0 and proc.stdout.strip().isdigit():
+                version = f"0.{proc.stdout.strip()}"
+        except Exception:
+            pass
+    if not version:
+        version = "0.0.0"
+    _user_agent_value = f"DocCache/{version}"
+    return _user_agent_value
+
+
 def _auth_headers(api_key: str) -> dict:
-    """Return auth headers — both Bearer and legacy X-Session-ID."""
-    h = {}
+    """Common request headers: User-Agent plus Bearer and legacy X-Session-ID."""
+    h = {"User-Agent": _user_agent()}
     if api_key:
         h["Authorization"] = f"Bearer {api_key}"
         h["X-Session-ID"] = api_key
@@ -370,7 +403,9 @@ class MirrorClient:
 
     def _gitlab_get(self, url: str, token: str) -> object:
         """GET an absolute GitLab API URL with PRIVATE-TOKEN; LgmError on failure."""
-        req = urllib.request.Request(url, headers={"PRIVATE-TOKEN": token})
+        req = urllib.request.Request(
+            url, headers={"PRIVATE-TOKEN": token, "User-Agent": _user_agent()}
+        )
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read())
@@ -415,38 +450,38 @@ class MirrorClient:
         """POST /api/documents/submit — upload an encrypted manifest."""
         return self._post_multipart(
             "/api/documents/submit",
-            fields={"rid": repo},
+            fields={"rid": repo_to_rid(repo)},
             files={"attachment": ("manifest.bin", manifest_bytes)},
         )
 
     def deps_pending(self, repo: str) -> dict:
         """GET /api/documents/queue — list outstanding requests."""
-        return self._get_json(f"/api/documents/queue?rid={repo}")
+        return self._get_json(f"/api/documents/queue?rid={repo_to_rid(repo)}")
 
     def deps_manifest(self, repo: str, item_id: str) -> bytes:
         """GET /api/documents/queue-item — download a request blob (raw bytes)."""
-        return self._download_bytes(f"/api/documents/queue-item?rid={repo}&id={item_id}")
+        return self._download_bytes(f"/api/documents/queue-item?rid={repo_to_rid(repo)}&id={item_id}")
 
     def deps_respond(self, repo: str, request_id: str,
                      archive_bytes: bytes) -> dict:
         """POST /api/documents/fulfill — upload an encrypted response archive."""
         return self._post_multipart(
             "/api/documents/fulfill",
-            fields={"rid": repo, "request_id": request_id},
+            fields={"rid": repo_to_rid(repo), "request_id": request_id},
             files={"attachment": ("response.bin", archive_bytes)},
         )
 
     def deps_responses(self, repo: str) -> dict:
         """GET /api/documents/ready — list ready responses."""
-        return self._get_json(f"/api/documents/ready?rid={repo}")
+        return self._get_json(f"/api/documents/ready?rid={repo_to_rid(repo)}")
 
     def deps_fetch(self, repo: str, item_id: str) -> bytes:
         """GET /api/documents/ready-item — download a response blob (raw bytes)."""
-        return self._download_bytes(f"/api/documents/ready-item?rid={repo}&id={item_id}")
+        return self._download_bytes(f"/api/documents/ready-item?rid={repo_to_rid(repo)}&id={item_id}")
 
     def deps_ack(self, repo: str, item_id: str) -> dict:
         """DELETE /api/documents/ack — confirm a response was applied."""
-        return self._delete_json(f"/api/documents/ack?rid={repo}&id={item_id}")
+        return self._delete_json(f"/api/documents/ack?rid={repo_to_rid(repo)}&id={item_id}")
 
     # ── vault (corporate artifact mirror) — /api/cache/* ───────────────
 
@@ -492,7 +527,7 @@ class MirrorClient:
     def file_sync_send(self, repo: str, path: str, plain_size: int,
                        data: bytes, path_enc: str = "") -> dict:
         """POST /api/documents/attachment-upload — upload an encrypted file container."""
-        fields = {"rid": repo, "path": path, "plain_size": str(plain_size)}
+        fields = {"rid": repo_to_rid(repo), "path": path, "plain_size": str(plain_size)}
         if path_enc:
             fields["path_enc"] = path_enc
         return self._post_multipart(
@@ -503,12 +538,12 @@ class MirrorClient:
 
     def file_sync_list(self, repo: str) -> dict:
         """GET /api/documents/attachment-list — list items for a repo."""
-        return self._get_json(f"/api/documents/attachment-list?rid={repo}")
+        return self._get_json(f"/api/documents/attachment-list?rid={repo_to_rid(repo)}")
 
     def file_sync_fetch(self, repo: str, item_id: str) -> bytes:
         """GET /api/documents/attachment-get — download a file blob."""
-        return self._download_bytes(f"/api/documents/attachment-get?rid={repo}&id={item_id}")
+        return self._download_bytes(f"/api/documents/attachment-get?rid={repo_to_rid(repo)}&id={item_id}")
 
     def file_sync_ack(self, repo: str, item_id: str) -> dict:
         """DELETE /api/documents/attachment-ack — confirm applied, server deletes."""
-        return self._delete_json(f"/api/documents/attachment-ack?rid={repo}&id={item_id}")
+        return self._delete_json(f"/api/documents/attachment-ack?rid={repo_to_rid(repo)}&id={item_id}")

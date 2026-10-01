@@ -1,11 +1,17 @@
 package localgitmirror.idea.sync
 
 import com.intellij.openapi.project.Project
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.HttpResult
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.sync.v2.SettingsSnapshot
 import localgitmirror.idea.sync.v2.SyncEngine
 import localgitmirror.idea.sync.v2.SyncStep
+import localgitmirror.idea.sync.v2.findLatestDump
+import localgitmirror.idea.sync.v2.generateDump
+import localgitmirror.idea.sync.v2.parseJsonSuccess
+import localgitmirror.idea.sync.v2.parseKnownCommitHashes
+import localgitmirror.idea.sync.v2.pickBestKnownBase
+import localgitmirror.idea.sync.v2.uploadAndApply
 import java.io.File
 
 /**
@@ -24,7 +30,7 @@ object SyncOrchestrator {
 
   data class FullSyncResult(
     val step: StepResult,
-    val http: MirrorApi.HttpResult?,
+    val http: HttpResult?,
     val dump: File?,
     val repo: String?,
     val traceId: String,
@@ -76,7 +82,7 @@ object SyncOrchestrator {
   }
 
   @Suppress("HttpCallOnEdt")
-  fun uploadAndApply(settings: SettingsSnapshot, repoName: String, dump: File): Pair<StepResult, MirrorApi.HttpResult> {
+  fun uploadAndApply(settings: SettingsSnapshot, repoName: String, dump: File): Pair<StepResult, HttpResult> {
     val (step, http) = engine.uploadAndApply(settings, repoName, dump)
     return step.toLegacy() to http
   }

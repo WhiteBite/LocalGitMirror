@@ -16,7 +16,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorVaultApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.ui.VaultDiagnosticsPanel
@@ -48,7 +48,7 @@ class ShowVaultDiagnosticsAction : AnAction() {
 
         panel.onRefresh = {
             ApplicationManager.getApplication().executeOnPooledThread {
-                val result = MirrorApi.mirrorStatus(
+                val result = MirrorVaultApi.mirrorStatus(
                     baseUrl = settings.baseUrl,
                     apiKey = SecretsStore.mirrorApiKey,
                     insecureTls = settings.mirrorInsecureTls
@@ -65,7 +65,7 @@ class ShowVaultDiagnosticsAction : AnAction() {
 
         // Trigger initial fetch
         ApplicationManager.getApplication().executeOnPooledThread {
-            val result = MirrorApi.mirrorStatus(
+            val result = MirrorVaultApi.mirrorStatus(
                 baseUrl = settings.baseUrl,
                 apiKey = SecretsStore.mirrorApiKey,
                 insecureTls = settings.mirrorInsecureTls

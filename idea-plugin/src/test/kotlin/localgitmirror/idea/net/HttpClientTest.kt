@@ -38,4 +38,11 @@ class HttpClientTest {
     val info = HttpClient.classifyError(IllegalStateException("boom"))
     assertEquals("network", info.type)
   }
+
+  @Test
+  fun `classify tls pin mismatch inside ssl exception cause chain`() {
+    val wrapped = SSLException("certificate_unknown", TlsPinMismatchException("aa", "bb"))
+    val info = HttpClient.classifyError(wrapped)
+    assertEquals("tls-pin", info.type)
+  }
 }

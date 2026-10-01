@@ -1,6 +1,6 @@
 package localgitmirror.idea.sync
 
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorAuthApi
 import localgitmirror.idea.sync.v2.DefaultMirrorPort
 import localgitmirror.idea.sync.v2.MirrorPort
 import java.security.MessageDigest
@@ -12,9 +12,9 @@ internal object HandshakeCache {
     private data class Entry<T>(val value: T, val expiresAt: Long)
 
     private val lock = Any()
-    private val capsCache = HashMap<Key, Entry<MirrorApi.CapabilitiesResult>>()
-    private val probeCache = HashMap<Key, Entry<MirrorApi.ProbeResult>>()
-    private val pubKeyCache = HashMap<Key, Entry<MirrorApi.PubKeyResult>>()
+    private val capsCache = HashMap<Key, Entry<MirrorAuthApi.CapabilitiesResult>>()
+    private val probeCache = HashMap<Key, Entry<MirrorAuthApi.ProbeResult>>()
+    private val pubKeyCache = HashMap<Key, Entry<MirrorAuthApi.PubKeyResult>>()
 
     private fun hash(password: String): String {
         val md = MessageDigest.getInstance("SHA-256")
@@ -29,7 +29,7 @@ internal object HandshakeCache {
     fun capabilities(
         baseUrl: String, apiKey: String, syncPassword: String, insecureTls: Boolean,
         port: MirrorPort = DefaultMirrorPort
-    ): MirrorApi.CapabilitiesResult {
+    ): MirrorAuthApi.CapabilitiesResult {
         val k = key(baseUrl, syncPassword)
         synchronized(lock) {
             val e = capsCache[k]
@@ -45,7 +45,7 @@ internal object HandshakeCache {
     fun passwordProbe(
         baseUrl: String, apiKey: String, syncPassword: String, insecureTls: Boolean,
         port: MirrorPort = DefaultMirrorPort
-    ): MirrorApi.ProbeResult {
+    ): MirrorAuthApi.ProbeResult {
         val k = key(baseUrl, syncPassword)
         synchronized(lock) {
             val e = probeCache[k]
@@ -60,13 +60,13 @@ internal object HandshakeCache {
 
     fun fetchServerPubKey(
         baseUrl: String, apiKey: String, syncPassword: String, insecureTls: Boolean
-    ): MirrorApi.PubKeyResult {
+    ): MirrorAuthApi.PubKeyResult {
         val k = key(baseUrl, syncPassword)
         synchronized(lock) {
             val e = pubKeyCache[k]
             if (e != null && e.expiresAt > System.currentTimeMillis()) return e.value
         }
-        val r = MirrorApi.fetchServerPubKey(baseUrl, apiKey, insecureTls)
+        val r = MirrorAuthApi.fetchServerPubKey(baseUrl, apiKey, insecureTls)
         if (r.code in 200..299 && r.pubB64 != null) {
             synchronized(lock) { pubKeyCache[k] = Entry(r, System.currentTimeMillis() + TTL_MS) }
         }

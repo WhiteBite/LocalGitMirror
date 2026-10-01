@@ -23,6 +23,8 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.bundle_crypto import decrypt_dump_to_bundle, MAGIC
+from app.core import sync_envelope
+from app.routers import auth as auth_router
 from app.routers import sync as api_router
 import pytest
 
@@ -31,6 +33,7 @@ def _make_client(monkeypatch, password: str = "test-probe-pw") -> TestClient:
     monkeypatch.setenv("SYNC_PASSWORD", password)
     app = FastAPI()
     app.include_router(api_router.router)
+    app.include_router(auth_router.router)
     return TestClient(app)
 
 
@@ -101,9 +104,10 @@ def test_probe_decrypt_wrong_password_fails(monkeypatch):
 def test_probe_not_available_without_password(monkeypatch):
     """A v3-only server returns 503 and directs clients to its public key."""
     monkeypatch.delenv("SYNC_PASSWORD", raising=False)
-    monkeypatch.setattr(api_router, "server_private_key", object())
+    monkeypatch.setattr(sync_envelope, "server_private_key", object())
     app = FastAPI()
     app.include_router(api_router.router)
+    app.include_router(auth_router.router)
     client = TestClient(app)
 
     res = client.get("/api/auth/verify")

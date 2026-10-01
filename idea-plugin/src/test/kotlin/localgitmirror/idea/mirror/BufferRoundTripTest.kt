@@ -14,7 +14,7 @@ import kotlin.test.assertTrue
 /**
  * Long chat messages must reach the server and come back byte-complete:
  * the "message got cut" report is a rendering issue, not a wire issue.
- * Runs the real plugin path — BundleCrypto + MirrorApi.bufferPut/bufferGet —
+ * Runs the real plugin path — BundleCrypto + MirrorBufferApi.bufferPut/bufferGet —
  * against a stub buffer store.
  */
 class BufferRoundTripTest {
@@ -69,11 +69,11 @@ class BufferRoundTripTest {
 
       val ciphertext = BundleCrypto.encryptBundleBytes(text.toByteArray(Charsets.UTF_8), "pw")
       val hintEnc = ExchangeCrypto.encryptHint(ExchangeMeta.hintJson(text), "pw")
-      val put = MirrorApi.bufferPut(base, "", false, ciphertext, hintEnc)
+      val put = MirrorBufferApi.bufferPut(base, "", false, ciphertext, hintEnc)
       assertTrue(put.code in 200..299, "put failed: ${put.code} ${put.message}")
       val id = assertNotNull(put.id)
 
-      val get = MirrorApi.bufferGet(base, "", false, id)
+      val get = MirrorBufferApi.bufferGet(base, "", false, id)
       assertEquals(200, get.code)
       val file = assertNotNull(get.file)
       try {

@@ -13,7 +13,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.popup.JBPopupFactory
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorCrypto
+import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -109,18 +110,20 @@ class SendSelectedFileAction : AnAction() {
         val encrypted = File.createTempFile("tmp-", ".bin")
         try {
           indicator.text = LocalGitMirrorBundle.message("filesync.progress.encrypt")
-          RepoFileSyncCrypto.encryptFile(file, encrypted, ctx.password) { done, total ->
-            indicator.fraction = if (total > 0) done.toDouble() / total.toDouble() else 0.0
-          }
+          val sealed = MirrorCrypto.sealPostboxPayload(file.readBytes(), ctx.password, relativePath, file.length())
+          encrypted.writeBytes(sealed.bytes)
           indicator.text = LocalGitMirrorBundle.message("filesync.progress.upload")
-          val res = MirrorApi.fileSyncUpload(
+          val res = MirrorPostboxApi.fileSyncUpload(
             ctx.settings.baseUrl,
             ctx.apiKey,
             ctx.repo,
             ctx.settings.mirrorInsecureTls,
             relativePath,
             file.length(),
-            encrypted
+            encrypted,
+            null,
+            sealed.epkB64,
+            sealed.meta
           ) { sent, total ->
             indicator.fraction = if (total > 0) sent.toDouble() / total.toDouble() else 0.0
           }
@@ -153,12 +156,12 @@ class FetchRepoFilesAction : AnAction() {
     val history = service<OperationsHistoryService>()
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("filesync.task.list"), false) {
-      private var items: List<MirrorApi.FileSyncItem> = emptyList()
+      private var items: List<MirrorPostboxApi.FileSyncItem> = emptyList()
       private var error: String? = null
 
       override fun run(indicator: ProgressIndicator) {
         indicator.isIndeterminate = true
-        val res = MirrorApi.fileSyncList(ctx.settings.baseUrl, ctx.apiKey, ctx.repo, ctx.settings.mirrorInsecureTls)
+        val res = MirrorPostboxApi.fileSyncList(ctx.settings.baseUrl, ctx.apiKey, ctx.repo, ctx.settings.mirrorInsecureTls)
         if (res.code !in 200..299) error = "HTTP ${res.code}: ${res.message.take(200)}" else items = res.items
       }
 
@@ -178,14 +181,14 @@ class FetchRepoFilesAction : AnAction() {
     })
   }
 
-  private fun showFilePicker(project: Project, ctx: FileSyncContext, items: List<MirrorApi.FileSyncItem>, history: OperationsHistoryService) {
+  private fun showFilePicker(project: Project, ctx: FileSyncContext, items: List<MirrorPostboxApi.FileSyncItem>, history: OperationsHistoryService) {
     val popup = JBPopupFactory.getInstance()
       .createPopupChooserBuilder(items)
       .setTitle(LocalGitMirrorBundle.message("filesync.picker.title"))
       .setRenderer(object : DefaultListCellRenderer() {
         override fun getListCellRendererComponent(list: JList<*>?, value: Any?, index: Int, selected: Boolean, focus: Boolean): java.awt.Component {
           super.getListCellRendererComponent(list, value, index, selected, focus)
-          val item = value as? MirrorApi.FileSyncItem
+          val item = value as? MirrorPostboxApi.FileSyncItem
           if (item != null) {
             text = LocalGitMirrorBundle.message("filesync.picker.row", item.path, item.plainSize.toString(), formatFileSyncTs(item.mtime))
           }
@@ -197,7 +200,7 @@ class FetchRepoFilesAction : AnAction() {
     popup.showCenteredInCurrentWindow(project)
   }
 
-  private fun applyFile(project: Project, ctx: FileSyncContext, item: MirrorApi.FileSyncItem, history: OperationsHistoryService) {
+  private fun applyFile(project: Project, ctx: FileSyncContext, item: MirrorPostboxApi.FileSyncItem, history: OperationsHistoryService) {
     val target = File(ctx.projectDir, item.path).canonicalFile
     val rootPath = ctx.projectDir.canonicalFile.toPath()
     if (!target.toPath().startsWith(rootPath)) {
@@ -222,7 +225,7 @@ class FetchRepoFilesAction : AnAction() {
         val plainTmp = File.createTempFile("tmp-plain-", ".tmp", targetParent)
         try {
           indicator.text = LocalGitMirrorBundle.message("filesync.progress.download")
-          val dl = MirrorApi.fileSyncDownload(ctx.settings.baseUrl, ctx.apiKey, ctx.repo, ctx.settings.mirrorInsecureTls, item.id, encrypted) { read, total ->
+          val dl = MirrorPostboxApi.fileSyncDownload(ctx.settings.baseUrl, ctx.apiKey, ctx.repo, ctx.settings.mirrorInsecureTls, item.id, encrypted) { read, total ->
             indicator.fraction = if (total > 0) read.toDouble() / total.toDouble() else 0.0
           }
           if (dl.code !in 200..299) {
@@ -231,11 +234,15 @@ class FetchRepoFilesAction : AnAction() {
             return
           }
           indicator.text = LocalGitMirrorBundle.message("filesync.progress.decrypt")
-          RepoFileSyncCrypto.decryptFile(encrypted, plainTmp, ctx.password) { done, total ->
-            indicator.fraction = if (total > 0) done.toDouble() / total.toDouble() else 0.0
+          if (dl.decrypted) {
+            Files.copy(encrypted.toPath(), plainTmp.toPath(), StandardCopyOption.REPLACE_EXISTING)
+          } else {
+            RepoFileSyncCrypto.decryptFile(encrypted, plainTmp, ctx.password) { done, total ->
+              indicator.fraction = if (total > 0) done.toDouble() / total.toDouble() else 0.0
+            }
           }
           Files.move(plainTmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
-          MirrorApi.fileSyncAck(ctx.settings.baseUrl, ctx.apiKey, ctx.repo, ctx.settings.mirrorInsecureTls, item.id)
+          MirrorPostboxApi.fileSyncAck(ctx.settings.baseUrl, ctx.apiKey, ctx.repo, ctx.settings.mirrorInsecureTls, item.id)
           fileSyncNotify(project, LocalGitMirrorBundle.message("filesync.notify.fetchOk", item.path), NotificationType.INFORMATION)
           history.add("File sync fetch", true, "${item.path} id=${item.id}")
         } catch (t: Throwable) {

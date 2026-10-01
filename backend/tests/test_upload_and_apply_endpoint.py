@@ -10,6 +10,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from app.core.bundle_crypto import MAGIC
+from app.core import git_bundle
 from app.routers import sync as api_router
 from tests.conftest import envelope_form_post, parse_envelope
 
@@ -121,8 +122,8 @@ def test_pick_bundle_ref_prefers_current_branch(monkeypatch, tmp_path):
         assert args[1] == "list-heads"
         return _P(0, "abc refs/heads/main\ndef refs/heads/master\n")
 
-    monkeypatch.setattr(api_router, "_git", _fake_git)
-    ref = api_router._pick_bundle_ref(work, bundle, preferred_branch="main")
+    monkeypatch.setattr(git_bundle, "_git", _fake_git)
+    ref = git_bundle._pick_bundle_ref(work, bundle, preferred_branch="main")
     assert ref == "refs/heads/main"
 
 
@@ -141,8 +142,8 @@ def test_pick_bundle_ref_falls_back_first_ref(monkeypatch, tmp_path):
     def _fake_git(_wd, *args):
         return _P(0, "111 refs/heads/feature\n222 refs/heads/dev\n")
 
-    monkeypatch.setattr(api_router, "_git", _fake_git)
-    ref = api_router._pick_bundle_ref(work, bundle, preferred_branch="master")
+    monkeypatch.setattr(git_bundle, "_git", _fake_git)
+    ref = git_bundle._pick_bundle_ref(work, bundle, preferred_branch="master")
     assert ref == "refs/heads/feature"
 
 
@@ -166,16 +167,16 @@ def test_upload_apply_bootstraps_when_workspace_has_no_branch(monkeypatch, tmp_p
         def sync_workspace(self, _repo):
             return {"success": True}
 
-    monkeypatch.setattr(api_router, "repo_manager", _RM(), raising=False)
+    monkeypatch.setattr(git_bundle, "repo_manager", _RM(), raising=False)
     monkeypatch.setenv("SYNC_PASSWORD", "pwd")
 
     dump = tmp_path / "dump_bootstrap_repo_20260313_0000.dmp"
-    dump.write_bytes(api_router.MAGIC + b"x" * 64)
+    dump.write_bytes(MAGIC + b"x" * 64)
 
     def _fake_decrypt(_dump, out, _pwd):
         out.write_bytes(b"bundle")
 
-    monkeypatch.setattr(api_router, "decrypt_dump_to_bundle", _fake_decrypt)
+    monkeypatch.setattr(git_bundle, "decrypt_dump_to_bundle", _fake_decrypt)
 
     calls = []
 
@@ -206,9 +207,9 @@ def test_upload_apply_bootstraps_when_workspace_has_no_branch(monkeypatch, tmp_p
             return _P(0, "abc123 Initial\n")
         return _P(0, "")
 
-    monkeypatch.setattr(api_router, "_git", _fake_git)
+    monkeypatch.setattr(git_bundle, "_git", _fake_git)
 
-    res = api_router._apply_dump_to_repo_and_sync_bare(
+    res = git_bundle._apply_dump_to_repo_and_sync_bare(
         dump_path=dump,
         repo_name=repo,
         dump_filename=dump.name,
@@ -237,16 +238,16 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
         def _get_bare_path(self, _repo):
             return bare
 
-    monkeypatch.setattr(api_router, "repo_manager", _RM(), raising=False)
+    monkeypatch.setattr(git_bundle, "repo_manager", _RM(), raising=False)
     monkeypatch.setenv("SYNC_PASSWORD", "pwd")
 
     dump = tmp_path / "dump_unrelated_repo_20260313_0001.dmp"
-    dump.write_bytes(api_router.MAGIC + b"x" * 64)
+    dump.write_bytes(MAGIC + b"x" * 64)
 
     def _fake_decrypt(_dump, out, _pwd):
         out.write_bytes(b"bundle")
 
-    monkeypatch.setattr(api_router, "decrypt_dump_to_bundle", _fake_decrypt)
+    monkeypatch.setattr(git_bundle, "decrypt_dump_to_bundle", _fake_decrypt)
 
     calls = []
 
@@ -276,9 +277,9 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
             return _P(0, "def456 Replace branch\n", "")
         return _P(0, "", "")
 
-    monkeypatch.setattr(api_router, "_git", _fake_git)
+    monkeypatch.setattr(git_bundle, "_git", _fake_git)
 
-    res = api_router._apply_dump_to_repo_and_sync_bare(
+    res = git_bundle._apply_dump_to_repo_and_sync_bare(
         dump_path=dump,
         repo_name=repo,
         dump_filename=dump.name,
@@ -311,11 +312,11 @@ def test_apply_dump_proceeds_despite_dirty_workspace(monkeypatch, tmp_path):
         def _get_bare_path(self, _repo):
             return bare
 
-    monkeypatch.setattr(api_router, "repo_manager", _RM(), raising=False)
+    monkeypatch.setattr(git_bundle, "repo_manager", _RM(), raising=False)
     monkeypatch.setenv("SYNC_PASSWORD", "pwd")
 
     dump = tmp_path / "dump_dirty_repo_20260313_0002.dmp"
-    dump.write_bytes(api_router.MAGIC + b"x" * 64)
+    dump.write_bytes(MAGIC + b"x" * 64)
 
     class _P:
         def __init__(self, rc=0, out="", err=""):
@@ -328,9 +329,9 @@ def test_apply_dump_proceeds_despite_dirty_workspace(monkeypatch, tmp_path):
             return _P(0, " M README.md\n", "")
         return _P(0, "", "")
 
-    monkeypatch.setattr(api_router, "_git", _fake_git)
+    monkeypatch.setattr(git_bundle, "_git", _fake_git)
 
-    res = api_router._apply_dump_to_repo_and_sync_bare(
+    res = git_bundle._apply_dump_to_repo_and_sync_bare(
         dump_path=dump,
         repo_name=repo,
         dump_filename=dump.name,
@@ -358,16 +359,16 @@ def test_apply_dump_force_push_failure_after_unrelated_histories(monkeypatch, tm
         def _get_bare_path(self, _repo):
             return bare
 
-    monkeypatch.setattr(api_router, "repo_manager", _RM(), raising=False)
+    monkeypatch.setattr(git_bundle, "repo_manager", _RM(), raising=False)
     monkeypatch.setenv("SYNC_PASSWORD", "pwd")
 
     dump = tmp_path / "dump_force_fail_repo_20260313_0003.dmp"
-    dump.write_bytes(api_router.MAGIC + b"x" * 64)
+    dump.write_bytes(MAGIC + b"x" * 64)
 
     def _fake_decrypt(_dump, out, _pwd):
         out.write_bytes(b"bundle")
 
-    monkeypatch.setattr(api_router, "decrypt_dump_to_bundle", _fake_decrypt)
+    monkeypatch.setattr(git_bundle, "decrypt_dump_to_bundle", _fake_decrypt)
 
     class _P:
         def __init__(self, rc=0, out="", err=""):
@@ -394,9 +395,9 @@ def test_apply_dump_force_push_failure_after_unrelated_histories(monkeypatch, tm
             return _P(0, "def456 Replace branch\n", "")
         return _P(0, "", "")
 
-    monkeypatch.setattr(api_router, "_git", _fake_git)
+    monkeypatch.setattr(git_bundle, "_git", _fake_git)
 
-    res = api_router._apply_dump_to_repo_and_sync_bare(
+    res = git_bundle._apply_dump_to_repo_and_sync_bare(
         dump_path=dump,
         repo_name=repo,
         dump_filename=dump.name,

@@ -5,22 +5,27 @@ Simulates both sides:
   Dome: posts a manifest (encrypted blob) -> waits for response -> applies
   Work: pulls the manifest -> uploads an archive -> request gets cleaned up
 
-The server must NEVER inspect the encrypted payloads. Tests below verify
-that, plus the request/response lifecycle.
+The server terminates the crypto: it decrypts on write, stores at rest under
+the relay key and re-seals on read, so the contract under test is that the
+PLAINTEXT round-trips (not the raw wire bytes), plus the request/response
+lifecycle.
 """
 import json
-import time
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.bundle_crypto import decrypt_dump_bytes, encrypt_bundle_bytes
 from app.core.repo_manager import RepoManager
 from app.routers import deps as deps_router_mod
 from tests import _harness
 
+PASSWORD = "deps-flow-test-password"
 
-def _make_client(tmp_path: Path):
+
+def _make_client(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("SYNC_PASSWORD", PASSWORD)
     storage = tmp_path / "storage"
     storage.mkdir(parents=True, exist_ok=True)
     (storage / "settings.json").write_text(
@@ -47,13 +52,14 @@ def _make_client(tmp_path: Path):
 # Happy path: full request → respond → fetch → ack lifecycle
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_deps_full_lifecycle(tmp_path: Path):
-    client, storage = _make_client(tmp_path)
+def test_deps_full_lifecycle(tmp_path: Path, monkeypatch):
+    client, storage = _make_client(tmp_path, monkeypatch)
     repo = "onyx-platform"
     # Repo doesn't need to exist for deps endpoints — they only validate name.
 
     # 1. Dome posts a manifest
-    fake_manifest = b"\x01ENCRYPTED-MANIFEST-PAYLOAD-PRETEND-IS-CIPHERTEXT" * 10
+    manifest_plain = b"ENCRYPTED_MANIFEST_PAYLOAD" * 10
+    fake_manifest = encrypt_bundle_bytes(manifest_plain, PASSWORD)
     resp = client.post(
         "/api/documents/submit",
         data={"rid": repo},
@@ -69,13 +75,14 @@ def test_deps_full_lifecycle(tmp_path: Path):
     ids = [it["id"] for it in pending["items"]]
     assert request_id in ids
 
-    # 3. Work downloads the manifest blob — server returns bytes-for-bytes
+    # 3. Work downloads the manifest blob — the plaintext must round-trip
     got = client.get("/api/documents/queue-item", params={"rid": repo, "id": request_id})
     assert got.status_code == 200
-    assert got.content == fake_manifest, "Server must NOT mutate encrypted payload"
+    assert decrypt_dump_bytes(got.content, PASSWORD) == manifest_plain
 
     # 4. Work uploads a response (zip-like blob)
-    fake_archive = b"\x01ENCRYPTED-ARCHIVE-CONTENT" * 1000
+    archive_plain = b"ENCRYPTED_ARCHIVE_PAYLOAD" * 100
+    fake_archive = encrypt_bundle_bytes(archive_plain, PASSWORD)
     rr = client.post(
         "/api/documents/fulfill",
         data={"rid": repo, "request_id": request_id},
@@ -92,10 +99,10 @@ def test_deps_full_lifecycle(tmp_path: Path):
     resps = client.get("/api/documents/ready", params={"rid": repo}).json()
     assert response_id in [it["id"] for it in resps["items"]]
 
-    # 7. Dome fetches the response — same bytes back
+    # 7. Dome fetches the response — the plaintext must round-trip
     fetched = client.get("/api/documents/ready-item", params={"rid": repo, "id": response_id})
     assert fetched.status_code == 200
-    assert fetched.content == fake_archive
+    assert decrypt_dump_bytes(fetched.content, PASSWORD) == archive_plain
 
     # 8. Dome ACKs — server deletes the response
     ack = client.delete("/api/documents/ack", params={"rid": repo, "id": response_id})
@@ -108,23 +115,23 @@ def test_deps_full_lifecycle(tmp_path: Path):
 # Validation: malicious / invalid input
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_deps_rejects_path_traversal(tmp_path: Path):
-    client, _ = _make_client(tmp_path)
+def test_deps_rejects_path_traversal(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
     # Attempted path traversal in repo name
     for bad in ["../etc", "foo/bar", "x\\y", "", "."]:
         resp = client.get("/api/documents/queue", params={"rid": bad})
         assert resp.status_code == 400, f"Should reject {bad!r}, got {resp.status_code}"
 
 
-def test_deps_rejects_bad_id(tmp_path: Path):
-    client, _ = _make_client(tmp_path)
+def test_deps_rejects_bad_id(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
     for bad in ["../something", "a/b", "", "x" * 100]:
         resp = client.get("/api/documents/queue-item", params={"rid": "onyx", "id": bad})
         assert resp.status_code == 400, f"Should reject id {bad!r}"
 
 
-def test_deps_rejects_empty_payload(tmp_path: Path):
-    client, _ = _make_client(tmp_path)
+def test_deps_rejects_empty_payload(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
     resp = client.post(
         "/api/documents/submit",
         data={"rid": "onyx"},
@@ -133,8 +140,8 @@ def test_deps_rejects_empty_payload(tmp_path: Path):
     assert resp.status_code == 400
 
 
-def test_deps_fetch_unknown_returns_404(tmp_path: Path):
-    client, _ = _make_client(tmp_path)
+def test_deps_fetch_unknown_returns_404(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
     resp = client.get("/api/documents/ready-item", params={"rid": "onyx", "id": "deadbeef"})
     assert resp.status_code == 404
     resp = client.get("/api/documents/queue-item", params={"rid": "onyx", "id": "deadbeef"})
@@ -145,14 +152,15 @@ def test_deps_fetch_unknown_returns_404(tmp_path: Path):
 # Multiple parallel requests don't conflict
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_deps_multiple_requests_each_has_unique_id(tmp_path: Path):
-    client, _ = _make_client(tmp_path)
+def test_deps_multiple_requests_each_has_unique_id(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
     ids = []
     for i in range(5):
+        blob = encrypt_bundle_bytes(f"payload{i}".encode() * 100, PASSWORD)
         r = client.post(
             "/api/documents/submit",
             data={"rid": "onyx"},
-            files={"attachment": (f"m{i}.bin", f"payload{i}".encode() * 100, "application/octet-stream")},
+            files={"attachment": (f"m{i}.bin", blob, "application/octet-stream")},
         )
         assert r.status_code == 200
         ids.append(r.json()["id"])
@@ -166,10 +174,10 @@ def test_deps_multiple_requests_each_has_unique_id(tmp_path: Path):
 # X-Doc-Ref header: alternative to ?rid= query param
 # ─────────────────────────────────────────────────────────────────────────────
 
-def test_deps_queue_via_x_doc_ref_header(tmp_path: Path):
-    client, _ = _make_client(tmp_path)
+def test_deps_queue_via_x_doc_ref_header(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
     repo = "onyx-platform"
-    fake_manifest = b"\x01ENCRYPTED-MANIFEST-PAYLOAD" * 10
+    fake_manifest = encrypt_bundle_bytes(b"ENCRYPTED-MANIFEST-PAYLOAD" * 10, PASSWORD)
     client.post(
         "/api/documents/submit",
         data={"rid": repo},

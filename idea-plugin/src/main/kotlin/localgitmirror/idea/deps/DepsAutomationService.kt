@@ -8,7 +8,8 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorCrypto
+import localgitmirror.idea.mirror.MirrorDepsApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -86,7 +87,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
     started = true
 
     val s = settings
-    if (s.baseUrl.isBlank() || syncPwd.isBlank()) return
+    if (!depsTransferAllowed(s.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) return
 
     val baseDir = project.basePath ?: return
     val dir = File(baseDir)
@@ -150,11 +151,11 @@ class DepsAutomationService(private val project: Project) : Disposable {
 
   private fun pollHome() {
     val s = settings
-    if (s.baseUrl.isBlank() || syncPwd.isBlank()) return
+    if (!depsTransferAllowed(s.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) return
 
     // Check for available responses
     val responses = runCatching {
-      MirrorApi.depsResponses(
+      MirrorDepsApi.depsResponses(
         baseUrl = s.baseUrl,
         apiKey = SecretsStore.mirrorApiKey,
         repo = repoName,
@@ -184,13 +185,13 @@ class DepsAutomationService(private val project: Project) : Disposable {
   private fun processHomeResponse(id: String, s: MirrorSettingsService.State) {
     val tmpResp = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
     try {
-      val dl = MirrorApi.depsDownload(
+      val dl = MirrorDepsApi.depsDownload(
         baseUrl = s.baseUrl,
         apiKey = SecretsStore.mirrorApiKey,
         repo = repoName,
         insecureTls = s.mirrorInsecureTls,
         id = id,
-        kind = MirrorApi.DepsKind.RESPONSE,
+        kind = MirrorDepsApi.DepsKind.RESPONSE,
         outFile = tmpResp
       )
       if (dl.code !in 200..299 || dl.file == null) {
@@ -199,12 +200,12 @@ class DepsAutomationService(private val project: Project) : Disposable {
       }
 
       if (s.autoApplyDeps) {
-        val result = DepsApplier.apply(project, s, syncPwd, tmpResp.readBytes(), null)
+        val result = DepsApplier.apply(project, s, syncPwd, tmpResp.readBytes(), null, dl.decrypted)
         val history = service<OperationsHistoryService>()
         if (result.success) {
           // Ack the response on the server (one-shot: server deletes it).
           runCatching {
-            MirrorApi.depsAck(
+            MirrorDepsApi.depsAck(
               baseUrl = s.baseUrl,
               apiKey = SecretsStore.mirrorApiKey,
               repo = repoName,
@@ -287,12 +288,12 @@ class DepsAutomationService(private val project: Project) : Disposable {
 
   private fun doMissingCheck() {
     val s = settings
-    if (s.baseUrl.isBlank() || syncPwd.isBlank()) return
+    if (!depsTransferAllowed(s.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) return
     if (repoName.isBlank()) return
 
     // Check if a request is already pending — skip if so
     val pending = runCatching {
-      MirrorApi.depsPending(
+      MirrorDepsApi.depsPending(
         baseUrl = s.baseUrl,
         apiKey = SecretsStore.mirrorApiKey,
         repo = repoName,
@@ -327,11 +328,11 @@ class DepsAutomationService(private val project: Project) : Disposable {
 
   private fun pollWork() {
     val s = settings
-    if (s.baseUrl.isBlank() || syncPwd.isBlank()) return
+    if (!depsTransferAllowed(s.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) return
     if (!s.autoRespondDeps) return
 
     val pending = runCatching {
-      MirrorApi.depsPending(
+      MirrorDepsApi.depsPending(
         baseUrl = s.baseUrl,
         apiKey = SecretsStore.mirrorApiKey,
         repo = repoName,
@@ -359,13 +360,13 @@ class DepsAutomationService(private val project: Project) : Disposable {
   private fun processWorkRequest(id: String, s: MirrorSettingsService.State) {
     val tmpManifest = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
     try {
-      val dl = MirrorApi.depsDownload(
+      val dl = MirrorDepsApi.depsDownload(
         baseUrl = s.baseUrl,
         apiKey = SecretsStore.mirrorApiKey,
         repo = repoName,
         insecureTls = s.mirrorInsecureTls,
         id = id,
-        kind = MirrorApi.DepsKind.MANIFEST,
+        kind = MirrorDepsApi.DepsKind.MANIFEST,
         outFile = tmpManifest
       )
       if (dl.code !in 200..299 || dl.file == null) {
@@ -374,7 +375,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
       }
 
       val manifestBlob = tmpManifest.readBytes()
-      val result = DepsResponder.respond(project, s, syncPwd, repoName, id, manifestBlob, null)
+      val result = DepsResponder.respond(project, s, syncPwd, repoName, id, manifestBlob, null, dl.decrypted)
       val history = service<OperationsHistoryService>()
 
       if (result.success) {

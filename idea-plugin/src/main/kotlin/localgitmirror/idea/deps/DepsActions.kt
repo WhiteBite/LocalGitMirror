@@ -11,7 +11,8 @@ import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorCrypto
+import localgitmirror.idea.mirror.MirrorDepsApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -43,6 +44,13 @@ fun computeRespondEnabled(configured: Boolean, lastKnownPending: Int): Boolean {
 fun computeApplyEnabled(configured: Boolean, lastKnownPending: Int): Boolean =
   computeRespondEnabled(configured, lastKnownPending)
 
+/**
+ * Pure gate for deps request/respond/apply: a blank sync password is
+ * acceptable when a v3 server key is pinned (relay crypto replaces it).
+ */
+fun depsTransferAllowed(baseUrl: String, syncPwd: String, v3Pinned: Boolean): Boolean =
+  baseUrl.isNotBlank() && (syncPwd.isNotBlank() || v3Pinned)
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. RequestDepsAction (DOME): figure out what we can't resolve locally, send it
 // ─────────────────────────────────────────────────────────────────────────────
@@ -56,7 +64,7 @@ class RequestDepsAction : AnAction() {
       return
     }
     val settings = service<MirrorSettingsService>().state
-    val configured = settings.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+    val configured = depsTransferAllowed(settings.baseUrl, SecretsStore.syncPassword, MirrorCrypto.isV3Pinned())
     val dir = project.basePath?.let { java.io.File(it) } ?: java.io.File(".")
     val hasEcosystem = configured && DepsEcosystems.detect(dir).isNotEmpty()
     e.presentation.isEnabled = hasEcosystem
@@ -66,7 +74,7 @@ class RequestDepsAction : AnAction() {
     val project = e.project ?: return
     val settings = service<MirrorSettingsService>().state
     val syncPwd = SecretsStore.syncPassword
-    if (settings.baseUrl.isBlank() || syncPwd.isBlank()) {
+    if (!depsTransferAllowed(settings.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) {
       notify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
       return
     }
@@ -112,7 +120,7 @@ class RespondDepsAction : AnAction() {
     val project = e.project
     if (project == null) { e.presentation.isEnabled = false; return }
     val settings = service<MirrorSettingsService>().state
-    val configured = settings.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+    val configured = depsTransferAllowed(settings.baseUrl, SecretsStore.syncPassword, MirrorCrypto.isV3Pinned())
     e.presentation.isEnabled = computeRespondEnabled(configured, lastKnownPendingCount.get())
   }
 
@@ -120,7 +128,7 @@ class RespondDepsAction : AnAction() {
     val project = e.project ?: return
     val settings = service<MirrorSettingsService>().state
     val syncPwd = SecretsStore.syncPassword
-    if (settings.baseUrl.isBlank() || syncPwd.isBlank()) {
+    if (!depsTransferAllowed(settings.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) {
       notify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
       return
     }
@@ -132,7 +140,7 @@ class RespondDepsAction : AnAction() {
       override fun run(indicator: ProgressIndicator) {
         indicator.isIndeterminate = true
         indicator.text = "Проверяем запросы для repo='$repo'…"
-        val pending = MirrorApi.depsPending(
+        val pending = MirrorDepsApi.depsPending(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           repo = repo,
@@ -156,13 +164,13 @@ class RespondDepsAction : AnAction() {
         indicator.text = "Скачиваем запрос ${req.id.take(8)}…"
         val tmpManifest = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
         try {
-          val dl = MirrorApi.depsDownload(
+          val dl = MirrorDepsApi.depsDownload(
             baseUrl = settings.baseUrl,
             apiKey = SecretsStore.mirrorApiKey,
             repo = repo,
             insecureTls = settings.mirrorInsecureTls,
             id = req.id,
-            kind = MirrorApi.DepsKind.MANIFEST,
+            kind = MirrorDepsApi.DepsKind.MANIFEST,
             outFile = tmpManifest
           )
           if (dl.code !in 200..299 || dl.file == null) {
@@ -172,7 +180,7 @@ class RespondDepsAction : AnAction() {
 
           val manifestBlob = tmpManifest.readBytes()
 
-          val result = DepsResponder.respond(project, settings, syncPwd, repo, req.id, manifestBlob, indicator)
+          val result = DepsResponder.respond(project, settings, syncPwd, repo, req.id, manifestBlob, indicator, dl.decrypted)
 
           if (result.success) {
             notify(project, result.message, NotificationType.INFORMATION)
@@ -251,7 +259,7 @@ class ApplyDepsAction : AnAction() {
     val project = e.project
     if (project == null) { e.presentation.isEnabled = false; return }
     val settings = service<MirrorSettingsService>().state
-    val configured = settings.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+    val configured = depsTransferAllowed(settings.baseUrl, SecretsStore.syncPassword, MirrorCrypto.isV3Pinned())
     e.presentation.isEnabled = computeApplyEnabled(configured, lastKnownResponseCount.get())
   }
 
@@ -259,7 +267,7 @@ class ApplyDepsAction : AnAction() {
     val project = e.project ?: return
     val settings = service<MirrorSettingsService>().state
     val syncPwd = SecretsStore.syncPassword
-    if (settings.baseUrl.isBlank() || syncPwd.isBlank()) {
+    if (!depsTransferAllowed(settings.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) {
       notify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
       return
     }
@@ -270,7 +278,7 @@ class ApplyDepsAction : AnAction() {
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Применить полученные deps", true) {
       override fun run(indicator: ProgressIndicator) {
         indicator.text = "Проверяем готовые ответы…"
-        val list = MirrorApi.depsResponses(
+        val list = MirrorDepsApi.depsResponses(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           repo = repo,
@@ -301,13 +309,13 @@ class ApplyDepsAction : AnAction() {
         try {
           indicator.text = "Скачивание (${humanBytes(resp.size)})…"
           indicator.isIndeterminate = false
-          val dl = MirrorApi.depsDownload(
+          val dl = MirrorDepsApi.depsDownload(
             baseUrl = settings.baseUrl,
             apiKey = SecretsStore.mirrorApiKey,
             repo = repo,
             insecureTls = settings.mirrorInsecureTls,
             id = resp.id,
-            kind = MirrorApi.DepsKind.RESPONSE,
+            kind = MirrorDepsApi.DepsKind.RESPONSE,
             outFile = tmpResp,
             onProgress = { read, total ->
               if (total > 0) {
@@ -323,7 +331,7 @@ class ApplyDepsAction : AnAction() {
 
           val responseBlob = tmpResp.readBytes()
 
-          val result = DepsApplier.apply(project, settings, syncPwd, responseBlob, indicator)
+          val result = DepsApplier.apply(project, settings, syncPwd, responseBlob, indicator, dl.decrypted)
 
           if (!result.success) {
             notify(project, result.message, NotificationType.ERROR)
@@ -332,7 +340,7 @@ class ApplyDepsAction : AnAction() {
           }
 
           // Ack the response on the server (one-shot: server deletes it).
-          MirrorApi.depsAck(
+          MirrorDepsApi.depsAck(
             baseUrl = settings.baseUrl,
             apiKey = SecretsStore.mirrorApiKey,
             repo = repo,

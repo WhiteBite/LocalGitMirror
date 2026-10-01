@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
 from fastapi.testclient import TestClient
 
 from app.core import hybrid_crypto as hc
+from app.core import sync_envelope
 from app.core.repo_manager import RepoManager
 from app.routers import sync as sync_mod
 from tests import _harness
@@ -192,9 +193,9 @@ def _build_client(tmp_path, *, with_server_key: bool):
         config={"git_port": 0, "web_port": 0, "storage_path": storage},
     )
     if with_server_key:
-        sync_mod.server_private_key = hc.load_or_create_server_key(storage / ".lgm" / "srv.key")
+        sync_envelope.server_private_key = hc.load_or_create_server_key(storage / ".lgm" / "srv.key")
     else:
-        sync_mod.server_private_key = None
+        sync_envelope.server_private_key = None
     return TestClient(app), rm
 
 
@@ -203,7 +204,7 @@ def test_router_check_v3_round_trip(tmp_path, monkeypatch):
     monkeypatch.delenv("SYNC_PASSWORD", raising=False)
     client, _ = _build_client(tmp_path, with_server_key=True)
 
-    server_pub = hc.public_bytes(sync_mod.server_private_key)
+    server_pub = hc.public_bytes(sync_envelope.server_private_key)
     fake = FakeClient(server_pub)
 
     body = {"epk": fake.epk_b64, "e": fake.seal_env({"repo": "ghost-repo", "commits": ["abc"]})}
@@ -238,6 +239,23 @@ def test_router_legacy_no_password_returns_503(tmp_path, monkeypatch):
     assert resp.status_code == 503
 
 
+def test_router_epk_without_server_key_returns_503(tmp_path, monkeypatch):
+    """A v3-intent client (epk present) must not silently fall back to the password path."""
+    monkeypatch.setenv("SYNC_PASSWORD", "legacy-pw")
+    client, _ = _build_client(tmp_path, with_server_key=False)
+
+    resp = client.post("/api/documents/check", json={"e": "x", "epk": "AAAA"})
+    assert resp.status_code == 503
+
+
+def test_router_bad_epk_returns_400(tmp_path, monkeypatch):
+    monkeypatch.delenv("SYNC_PASSWORD", raising=False)
+    client, _ = _build_client(tmp_path, with_server_key=True)
+
+    resp = client.post("/api/documents/check", json={"e": "x", "epk": "AAAA"})
+    assert resp.status_code == 400
+
+
 def test_router_upload_v3_seals_bundle_with_separate_kb(tmp_path, monkeypatch):
     """A v3 upload: envelope sealed with `k`, attachment sealed with `kb`.
 
@@ -263,14 +281,14 @@ def test_router_upload_v3_seals_bundle_with_separate_kb(tmp_path, monkeypatch):
     app = FastAPI()
     app.include_router(sync_mod.router)
     monkeypatch.setattr(sync_mod, "repo_manager", _FakeRepoManager(), raising=False)
-    sync_mod.server_private_key = hc.load_or_create_server_key(tmp_path / "srv.key")
-    server_pub = hc.public_bytes(sync_mod.server_private_key)
+    sync_envelope.server_private_key = hc.load_or_create_server_key(tmp_path / "srv.key")
+    server_pub = hc.public_bytes(sync_envelope.server_private_key)
 
     captured = {}
 
     def _fake_apply(**kwargs):
         dump_path = kwargs["dump_path"]
-        ctx = sync_mod._hybrid_bundle_ctx.get()
+        ctx = sync_envelope._hybrid_bundle_ctx.get()
         assert ctx is not None, "bundle context must be bound from kb"
         captured["plaintext"] = ctx.open_bundle(dump_path.read_bytes())
         return {"success": True, "repo": kwargs["repo_name"], "attachment": kwargs["dump_filename"]}

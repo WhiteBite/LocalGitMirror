@@ -3,10 +3,12 @@ package localgitmirror.idea.deps
 import com.intellij.openapi.components.service
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorCrypto
+import localgitmirror.idea.mirror.MirrorDepsApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.workkit.BundleCrypto
+import localgitmirror.idea.workkit.HybridCrypto
 import java.io.File
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -53,7 +55,7 @@ internal fun sweepLegacyDepsFiles(projectDir: File) {
 /**
  * Extracted core of [RequestDepsAction]. Detects which gradle/npm dependencies
  * the project needs but cannot resolve locally, builds an encrypted manifest,
- * and uploads it to the Mirror server via [MirrorApi.depsRequest].
+ * and uploads it to the Mirror server via [MirrorDepsApi.depsRequest].
  *
  * The caller is responsible for:
  *  - checking that baseUrl/syncPassword are configured
@@ -132,15 +134,17 @@ object DepsRequester {
       missing = missing,
       present = ecosystems.flatMap { it.enumeratePresent() }
     )
-    val encrypted = BundleCrypto.encryptBundleBytes(DepsRequestManifest.toJsonBytes(manifest), syncPwd)
+    val sealed = MirrorCrypto.sealDepsPayload(
+      DepsRequestManifest.toJsonBytes(manifest), syncPwd, HybridCrypto.RELAY_AAD_DEPS_REQ)
 
     indicator?.text = "Отправляем запрос (${missing.size} координат)…"
-    val res = MirrorApi.depsRequest(
+    val res = MirrorDepsApi.depsRequest(
       baseUrl = settings.baseUrl,
       apiKey = SecretsStore.mirrorApiKey,
       repo = repo,
       insecureTls = settings.mirrorInsecureTls,
-      encryptedManifest = encrypted
+      encryptedManifest = sealed.bytes,
+      epkB64 = sealed.epkB64
     )
     if (res.code !in 200..299 || res.id == null) {
       return Result(
@@ -170,14 +174,14 @@ object DepsRequester {
 /**
  * Extracted core of [RespondDepsAction]. Decrypts the manifest, scans local
  * caches for the requested coordinates, packs them into a ZIP, encrypts it,
- * and uploads the response via [MirrorApi.depsRespond].
+ * and uploads the response via [MirrorDepsApi.depsRespond].
  *
  * The caller is responsible for:
  *  - listing pending requests and downloading the manifest blob
  *  - notifications and history
  *  - updating [RespondDepsAction.lastKnownPendingCount]
  *
- * @param manifestBlob  the encrypted manifest bytes (downloaded from the server)
+ * @param manifestBlob  manifest bytes: v3 plaintext or legacy-encrypted
  * @param requestId     the server-assigned request ID (needed for depsRespond)
  */
 object DepsResponder {
@@ -197,13 +201,15 @@ object DepsResponder {
     repo: String,
     requestId: String,
     manifestBlob: ByteArray,
-    indicator: ProgressIndicator? = null
+    indicator: ProgressIndicator? = null,
+    manifestPlaintext: Boolean = false
   ): Result {
     indicator?.isIndeterminate = true
     project.basePath?.let { sweepLegacyDepsFiles(File(it)) }
 
     val manifest = try {
-      DepsRequestManifest.fromJsonBytes(BundleCrypto.decryptDumpBytes(manifestBlob, syncPwd))
+      val manifestBytes = if (manifestPlaintext) manifestBlob else BundleCrypto.decryptDumpBytes(manifestBlob, syncPwd)
+      DepsRequestManifest.fromJsonBytes(manifestBytes)
     } catch (t: Throwable) {
       return Result(
         success = false,
@@ -327,16 +333,17 @@ object DepsResponder {
       val diffSize = prefixed.sumOf { it.size }
       indicator?.text = "Упаковываем ${prefixed.size} файлов (${humanBytes(diffSize)})…"
       val zipBytes = DepsBundler.packEntries(prefixed)
-      val encrypted = BundleCrypto.encryptBundleBytes(zipBytes, syncPwd)
+      val sealed = MirrorCrypto.sealDepsPayload(zipBytes, syncPwd, HybridCrypto.RELAY_AAD_DEPS_RESP)
 
-      indicator?.text = "Отправляем (${humanBytes(encrypted.size.toLong())})…"
-      val res = MirrorApi.depsRespond(
+      indicator?.text = "Отправляем (${humanBytes(sealed.bytes.size.toLong())})…"
+      val res = MirrorDepsApi.depsRespond(
         baseUrl = settings.baseUrl,
         apiKey = SecretsStore.mirrorApiKey,
         repo = repo,
         insecureTls = settings.mirrorInsecureTls,
         requestId = requestId,
-        encryptedArchive = encrypted
+        encryptedArchive = sealed.bytes,
+        epkB64 = sealed.epkB64
       )
       if (res.code !in 200..299 || res.id == null) {
         return Result(
@@ -415,11 +422,11 @@ object DepsResponder {
  *
  * The caller is responsible for:
  *  - listing responses and downloading the response blob
- *  - calling [MirrorApi.depsAck] after a successful apply
+ *  - calling [MirrorDepsApi.depsAck] after a successful apply
  *  - showing the "run npm/yarn install?" dialog (action only)
  *  - notifications and history
  *
- * @param responseBlob  the encrypted response bytes (downloaded from the server)
+ * @param responseBlob  response bytes: v3 plaintext or legacy-encrypted
  */
 object DepsApplier {
 
@@ -442,13 +449,14 @@ object DepsApplier {
     settings: MirrorSettingsService.State,
     syncPwd: String,
     responseBlob: ByteArray,
-    indicator: ProgressIndicator? = null
+    indicator: ProgressIndicator? = null,
+    responsePlaintext: Boolean = false
   ): Result {
     indicator?.isIndeterminate = true
     indicator?.text = "Расшифровка и распаковка…"
 
     val unpackResult = try {
-      val decrypted = BundleCrypto.decryptDumpBytes(responseBlob, syncPwd)
+      val decrypted = if (responsePlaintext) responseBlob else BundleCrypto.decryptDumpBytes(responseBlob, syncPwd)
       val applyProjectDir = project.basePath?.let { File(it) }
       GradleEcosystem.collectProjectDir = applyProjectDir
       try {
