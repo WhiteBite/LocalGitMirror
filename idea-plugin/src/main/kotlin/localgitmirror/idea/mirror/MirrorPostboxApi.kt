@@ -3,7 +3,6 @@ package localgitmirror.idea.mirror
 import java.io.File
 import java.net.URL
 import java.util.Base64 as JavaBase64
-import java.util.UUID
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
@@ -14,25 +13,21 @@ import localgitmirror.idea.net.HttpClient
 import localgitmirror.idea.workkit.HybridCrypto
 
 object MirrorPostboxApi {
-  data class FileSyncItem(val id: String, val path: String, val size: Long, val plainSize: Long, val mtime: Long, val pathEnc: String = "")
+  data class FileSyncItem(val id: String, val path: String, val size: Long, val plainSize: Long, val mtime: Long)
   data class FileSyncListResult(val code: Int, val items: List<FileSyncItem>, val message: String)
   data class FileSyncUploadResult(val code: Int, val id: String?, val path: String?, val size: Long, val message: String)
 
+  /** v3-only upload: multipart fields `rid`, `k` (url-safe b64 epk), `meta` (b64 of relay-sealed {"path","plain_size"}) and the relay-sealed `attachment`; no cleartext path fields. */
   fun fileSyncUpload(
     baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,
-    relativePath: String, plainSize: Long, encryptedFile: File,
-    pathEnc: String? = null,
-    epkB64: String? = null,
-    metaSealed: ByteArray? = null,
+    epkB64: String, metaSealed: ByteArray, encryptedFile: File,
     onProgress: ((sent: Long, total: Long) -> Unit)? = null
   ): FileSyncUploadResult {
-    // sealed metadata on the wire means the clear path/plain_size fields must stay neutral
-    val wirePath = if (metaSealed == null) relativePath else "x/${UUID.randomUUID().toString().take(8)}"
-    val wireSize = if (metaSealed == null) plainSize else 0L
-    val fields = mutableMapOf("rid" to MirrorTransport.rid(repo), "path" to wirePath, "plain_size" to wireSize.toString())
-    if (pathEnc != null) fields["path_enc"] = pathEnc
-    if (epkB64 != null) fields["k"] = epkB64
-    if (metaSealed != null) fields["meta"] = JavaBase64.getEncoder().encodeToString(metaSealed)
+    val fields = mapOf(
+      "rid" to MirrorTransport.rid(repo),
+      "k" to epkB64,
+      "meta" to JavaBase64.getEncoder().encodeToString(metaSealed),
+    )
     val res = MirrorTransport.multipartUploadFile(
       baseUrl, apiKey, insecureTls, "/api/documents/attachment-upload",
       fields = fields,
@@ -68,8 +63,7 @@ object MirrorPostboxApi {
         val size = o["size"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
         val plain = o["plain_size"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
         val mtime = o["mtime"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
-        val pathEnc = o["path_enc"]?.jsonPrimitive?.contentOrNull ?: ""
-        FileSyncItem(id, p, size, plain, mtime, pathEnc)
+        FileSyncItem(id, p, size, plain, mtime)
       } ?: emptyList()
       FileSyncListResult(code, items, "OK")
     } catch (t: Throwable) {
@@ -78,19 +72,14 @@ object MirrorPostboxApi {
     }
   }
 
-  /**
-   * Download a postbox blob.
-   *
-   * In v3 mode (pinned server key) the request carries `X-LGM-Epk` and the
-   * server re-seals the blob to that ephemeral; it is opened here, so the
-   * output file holds PLAINTEXT and [DownloadResult.decrypted] is true.
-   * Otherwise the file holds the legacy password container as before.
-   */
+  /** v3-only: carries X-LGM-Epk; the server re-seals to it, so the output file holds plaintext ([DownloadResult.decrypted] is true). */
   fun fileSyncDownload(
     baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,
     id: String, outFile: File, onProgress: ((read: Long, total: Long) -> Unit)? = null
   ): DownloadResult {
-    val session = MirrorCrypto.pinnedServerPub()?.let { HybridCrypto.Session.create(it) }
+    val pub = MirrorCrypto.pinnedServerPub()
+      ?: return DownloadResult(0, null, "v3 server key not pinned")
+    val session = HybridCrypto.Session.create(pub)
     return try {
       val r = MirrorTransport.rid(repo)
       val url = URL(
@@ -102,7 +91,7 @@ object MirrorPostboxApi {
       conn.connectTimeout = 60_000
       conn.readTimeout = 600_000
       if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
-      session?.let { conn.setRequestProperty("X-LGM-Epk", it.epkB64) }
+      conn.setRequestProperty("X-LGM-Epk", session.epkB64)
       val code = conn.responseCode
       if (code !in 200..299) return DownloadResult(code, null, HttpClient.readBody(conn).take(500))
       val total = conn.contentLengthLong
@@ -119,17 +108,13 @@ object MirrorPostboxApi {
           }
         }
       }
-      if (session != null) {
-        outFile.writeBytes(session.openRelay(outFile.readBytes(), HybridCrypto.RELAY_AAD_POSTBOX))
-        DownloadResult(code, outFile, "OK", decrypted = true)
-      } else {
-        DownloadResult(code, outFile, "OK")
-      }
+      outFile.writeBytes(session.openRelay(outFile.readBytes(), HybridCrypto.RELAY_AAD_POSTBOX))
+      DownloadResult(code, outFile, "OK", decrypted = true)
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)
       DownloadResult(0, null, "${e.type}: ${e.message}")
     } finally {
-      session?.wipe()
+      session.wipe()
     }
   }
 

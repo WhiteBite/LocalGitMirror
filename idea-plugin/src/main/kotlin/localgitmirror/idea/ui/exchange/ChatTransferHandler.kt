@@ -9,7 +9,6 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.ui.LocalGitMirrorPanel
 import localgitmirror.idea.workkit.BundleCrypto
-import localgitmirror.idea.workkit.RepoFileSyncCrypto
 import java.awt.Image
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.Transferable
@@ -121,11 +120,7 @@ private fun LocalGitMirrorPanel.fetchExportData(item: ExchangeItem): Any? {
     if (dl.code !in 200..299) return null
     val dir = Files.createTempDirectory("lgm-export-").toFile()
     val out = File(dir, item.title.replace(Regex("[^A-Za-z0-9._\\-]"), "_").ifBlank { "file" })
-    if (dl.decrypted) {
-      Files.copy(enc.toPath(), out.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-    } else {
-      RepoFileSyncCrypto.decryptFile(enc, out, pwd, null)
-    }
+    Files.copy(enc.toPath(), out.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
     return listOf(out)
   } catch (_: Throwable) {
     return null

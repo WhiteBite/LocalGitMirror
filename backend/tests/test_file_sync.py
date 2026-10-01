@@ -1,23 +1,47 @@
-"""Tests for /api/documents/attachment-* encrypted file postbox (legacy password mode)."""
+"""Tests for /api/documents/attachment-* — v3-only relay postbox contract."""
+import base64
 import json
 from pathlib import Path
-from typing import Optional
 
+import pytest
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
 from fastapi.testclient import TestClient
 
-from app.core.bundle_crypto import decrypt_dump_bytes, encrypt_bundle_bytes
+from app.core import hybrid_crypto as hc
 from app.core.repo_manager import RepoManager
 from app.routers import file_sync as file_sync_router_mod
 from tests import _harness
 
-PASSWORD = "file-sync-test-password"
+
+@pytest.fixture(autouse=True)
+def _reset_relay_globals():
+    yield
+    file_sync_router_mod.server_private_key = None
+    file_sync_router_mod.relay_key = None
 
 
-def _make_client(tmp_path: Path, monkeypatch, password: Optional[str] = PASSWORD):
-    if password is None:
-        monkeypatch.delenv("SYNC_PASSWORD", raising=False)
-    else:
-        monkeypatch.setenv("SYNC_PASSWORD", password)
+class _ClientSession:
+    """One ephemeral X25519 keypair bound to one API call."""
+
+    def __init__(self, server_pub: bytes):
+        self._eph = X25519PrivateKey.generate()
+        self.epk = self._eph.public_key().public_bytes_raw()
+        self._shared = self._eph.exchange(X25519PublicKey.from_public_bytes(server_pub))
+
+    def epk_b64(self) -> str:
+        return base64.urlsafe_b64encode(self.epk).decode().rstrip("=")
+
+    def seal(self, plaintext: bytes, aad: bytes) -> bytes:
+        return hc.relay_seal(self._shared, self.epk, plaintext, aad)
+
+    def open(self, blob: bytes, aad: bytes) -> bytes:
+        return hc.relay_open(self._shared, self.epk, blob, aad, resp=True)
+
+
+def _make_client(tmp_path: Path):
     storage = tmp_path / "storage"
     storage.mkdir(parents=True, exist_ok=True)
     (storage / "settings.json").write_text(
@@ -35,26 +59,44 @@ def _make_client(tmp_path: Path, monkeypatch, password: Optional[str] = PASSWORD
     )
     file_sync_router_mod.repo_manager = rm
     file_sync_router_mod.system_logger = None
-    file_sync_router_mod.server_private_key = None
-    file_sync_router_mod.relay_key = None
+    file_sync_router_mod.server_private_key = X25519PrivateKey.generate()
+    file_sync_router_mod.relay_key = b"\x07" * 32
     app.include_router(file_sync_router_mod.router)
     return TestClient(app), storage
 
 
-def test_file_sync_lifecycle_legacy_password(tmp_path: Path, monkeypatch):
-    client, _ = _make_client(tmp_path, monkeypatch)
-    payload = encrypt_bundle_bytes(b"ENCRYPTED-FILE-CONTAINER" * 1024, PASSWORD)
+def _server_pub() -> bytes:
+    return hc.public_bytes(file_sync_router_mod.server_private_key)
 
-    uploaded = client.post(
+
+def _seal_meta(session: _ClientSession, path: str, plain_size: int) -> str:
+    payload = json.dumps({"path": path, "plain_size": plain_size}).encode("utf-8")
+    return base64.b64encode(session.seal(payload, hc.RELAY_AAD_POSTBOX)).decode("ascii")
+
+
+def _upload(client, repo: str, blob: bytes, k: str, meta: str):
+    return client.post(
         "/api/documents/attachment-upload",
-        data={"rid": "onyx", "path": "docs/big-model.bin", "plain_size": "123456"},
-        files={"attachment": ("file.lgm", payload, "application/octet-stream")},
+        data={"rid": repo, "k": k, "meta": meta},
+        files={"attachment": ("file.lgm", blob, "application/octet-stream")},
+    )
+
+
+def test_file_sync_v3_lifecycle(tmp_path: Path):
+    client, _ = _make_client(tmp_path)
+    plaintext = b"ENCRYPTED-FILE-CONTAINER" * 1024
+    session = _ClientSession(_server_pub())
+    sealed = session.seal(plaintext, hc.RELAY_AAD_POSTBOX)
+
+    uploaded = _upload(
+        client, "onyx", sealed, session.epk_b64(),
+        _seal_meta(session, "docs/big-model.bin", 123456),
     )
     assert uploaded.status_code == 200, uploaded.text
     body = uploaded.json()
     item_id = body["id"]
     assert body["path"] == "docs/big-model.bin"
-    assert body["size"] == len(payload)
+    assert body["size"] == len(sealed)
 
     listed = client.get("/api/documents/attachment-list", params={"rid": "onyx"})
     assert listed.status_code == 200
@@ -62,10 +104,16 @@ def test_file_sync_lifecycle_legacy_password(tmp_path: Path, monkeypatch):
     assert [it["id"] for it in items] == [item_id]
     assert items[0]["path"] == "docs/big-model.bin"
     assert items[0]["plain_size"] == 123456
+    assert "path_enc" not in items[0]
 
-    downloaded = client.get("/api/documents/attachment-get", params={"rid": "onyx", "id": item_id})
+    reader = _ClientSession(_server_pub())
+    downloaded = client.get(
+        "/api/documents/attachment-get",
+        params={"rid": "onyx", "id": item_id},
+        headers={"X-LGM-Epk": reader.epk_b64()},
+    )
     assert downloaded.status_code == 200
-    assert decrypt_dump_bytes(downloaded.content, PASSWORD) == b"ENCRYPTED-FILE-CONTAINER" * 1024
+    assert reader.open(downloaded.content, hc.RELAY_AAD_POSTBOX) == plaintext
 
     ack = client.delete("/api/documents/attachment-ack", params={"rid": "onyx", "id": item_id})
     assert ack.status_code == 200
@@ -73,32 +121,31 @@ def test_file_sync_lifecycle_legacy_password(tmp_path: Path, monkeypatch):
     assert client.get("/api/documents/attachment-list", params={"rid": "onyx"}).json()["items"] == []
 
 
-def test_file_sync_path_enc_passthrough(tmp_path: Path, monkeypatch):
-    client, _ = _make_client(tmp_path, monkeypatch)
-    uploaded = client.post(
-        "/api/documents/attachment-upload",
-        data={"rid": "onyx", "path": "x/9f3ab1", "plain_size": "0",
-              "path_enc": "ZW5jY2lwaGVyZWQtcGF0aA=="},
-        files={"attachment": ("file.lgm", encrypt_bundle_bytes(b"CT", PASSWORD), "application/octet-stream")},
-    )
-    assert uploaded.status_code == 200, uploaded.text
-    item = client.get("/api/documents/attachment-list",
-                      params={"rid": "onyx"}).json()["items"][0]
-    assert item["path"] == "x/9f3ab1"
-    assert item["path_enc"] == "ZW5jY2lwaGVyZWQtcGF0aA=="
+def test_file_sync_upload_requires_k_and_meta(tmp_path: Path):
+    client, _ = _make_client(tmp_path)
+    session = _ClientSession(_server_pub())
+    sealed = session.seal(b"payload", hc.RELAY_AAD_POSTBOX)
+    meta = _seal_meta(session, "a/b.md", 1)
+
+    missing_k = _upload(client, "onyx", sealed, "", meta)
+    assert missing_k.status_code == 400
+
+    missing_meta = _upload(client, "onyx", sealed, session.epk_b64(), "")
+    assert missing_meta.status_code == 400
+    assert client.get("/api/documents/attachment-list", params={"rid": "onyx"}).json()["items"] == []
 
 
-def test_file_sync_rejects_bad_repo_path_and_id(tmp_path: Path, monkeypatch):
-    client, _ = _make_client(tmp_path, monkeypatch, password=None)
+def test_file_sync_rejects_bad_repo_path_and_id(tmp_path: Path):
+    client, _ = _make_client(tmp_path)
     for bad_repo in ["../etc", "foo/bar", "x\\y", "", "."]:
         resp = client.get("/api/documents/attachment-list", params={"rid": bad_repo})
         assert resp.status_code == 400, bad_repo
 
+    session = _ClientSession(_server_pub())
     for bad_path in ["../secret.bin", "/abs/file", "a/../../b", "", "."]:
-        resp = client.post(
-            "/api/documents/attachment-upload",
-            data={"rid": "onyx", "path": bad_path, "plain_size": "1"},
-            files={"attachment": ("x.bin", b"payload", "application/octet-stream")},
+        resp = _upload(
+            client, "onyx", session.seal(b"payload", hc.RELAY_AAD_POSTBOX),
+            session.epk_b64(), _seal_meta(session, bad_path, 1),
         )
         assert resp.status_code == 400, bad_path
 
@@ -107,38 +154,21 @@ def test_file_sync_rejects_bad_repo_path_and_id(tmp_path: Path, monkeypatch):
         assert resp.status_code == 400, bad_id
 
 
-def test_file_sync_rejects_empty_payload(tmp_path: Path, monkeypatch):
-    client, _ = _make_client(tmp_path, monkeypatch, password=None)
-    resp = client.post(
-        "/api/documents/attachment-upload",
-        data={"rid": "onyx", "path": "a.bin", "plain_size": "0"},
-        files={"attachment": ("x.bin", b"", "application/octet-stream")},
+def test_file_sync_rejects_empty_payload(tmp_path: Path):
+    client, _ = _make_client(tmp_path)
+    session = _ClientSession(_server_pub())
+    resp = _upload(
+        client, "onyx", b"", session.epk_b64(), _seal_meta(session, "a.bin", 0),
     )
     assert resp.status_code == 400
 
 
-def test_file_sync_sealed_meta_without_v3_key_fails_closed(tmp_path: Path, monkeypatch):
-    client, _ = _make_client(tmp_path, monkeypatch)
-    resp = client.post(
-        "/api/documents/attachment-upload",
-        data={"rid": "onyx", "path": "x/ab", "plain_size": "0", "k": "AAAA", "meta": "AAAA"},
-        files={"attachment": ("x.bin", encrypt_bundle_bytes(b"CT", PASSWORD), "application/octet-stream")},
-    )
-    assert resp.status_code == 400
-    assert client.get("/api/documents/attachment-list", params={"rid": "onyx"}).json()["items"] == []
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# X-Doc-Ref header: alternative to ?rid= query param
-# ─────────────────────────────────────────────────────────────────────────────
-
-def test_file_sync_list_via_x_doc_ref_header(tmp_path: Path, monkeypatch):
-    client, _ = _make_client(tmp_path, monkeypatch)
-    payload = encrypt_bundle_bytes(b"ENCRYPTED-FILE-CONTAINER" * 1024, PASSWORD)
-    client.post(
-        "/api/documents/attachment-upload",
-        data={"rid": "onyx", "path": "docs/file.bin", "plain_size": "123"},
-        files={"attachment": ("file.lgm", payload, "application/octet-stream")},
+def test_file_sync_list_via_x_doc_ref_header(tmp_path: Path):
+    client, _ = _make_client(tmp_path)
+    session = _ClientSession(_server_pub())
+    _upload(
+        client, "onyx", session.seal(b"payload", hc.RELAY_AAD_POSTBOX),
+        session.epk_b64(), _seal_meta(session, "docs/file.bin", 123),
     )
 
     resp = client.get("/api/documents/attachment-list", headers={"X-Doc-Ref": "onyx"})

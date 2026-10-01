@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-import base64
-import os
 import re
 import subprocess
 from pathlib import Path
 
 from .client import MirrorClient, LgmError
-from .crypto import encrypt_bundle, decrypt_bundle
 from .op_models import Ctx, _client, _repo_arg
 from .ops_git import send_branches
 
@@ -39,7 +36,6 @@ def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
         r.get("name") if isinstance(r, dict) else r
         for r in (c.repos().get("repos") or [])
     ]
-    pwd = ctx.config.sync_password
     out: list[dict] = []
     errors: list[dict] = []
     for name in repos:
@@ -52,7 +48,7 @@ def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
             continue
         newest: dict[int, dict] = {}
         for i in (lst.get("items") or []):
-            eff = _postbox_display_path(i, pwd)
+            eff = i.get("path") or ""
             if not eff.startswith("mr-notes/"):
                 continue
             m = re.search(r"mr-!(\d+)\.md$", eff)
@@ -63,7 +59,7 @@ def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
                 newest[iid] = i
         for iid, item in sorted(newest.items()):
             try:
-                plain = decrypt_bundle(c.file_sync_fetch(name, item["id"]), pwd).decode("utf-8")
+                plain = c.file_sync_fetch(name, item["id"]).decode("utf-8")
             except Exception:
                 continue
             head = _parse_mr_notes_head(plain)
@@ -279,40 +275,25 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
             "send": send_result}
 
 
-def _postbox_display_path(item: dict, password: str) -> str:
-    """Effective postbox path: decrypt path_enc when present, else plaintext."""
-    enc = item.get("path_enc") or ""
-    if enc and password:
-        try:
-            blob = base64.b64decode(enc)
-            return decrypt_bundle(blob, password).decode("utf-8")
-        except Exception:
-            pass
-    return item.get("path") or ""
-
-
 def op_mr_notes(ctx: Ctx, args: dict) -> dict:
-    """Decrypt MR discussion notes (mr-notes/mr-!N.md) from the file postbox."""
+    """Read MR discussion notes (mr-notes/mr-!N.md) from the v3 file postbox."""
     c = _client(ctx)
     repo = _repo_arg(args)
     lst = c.file_sync_list(repo)
-    pwd = ctx.config.sync_password
-    items = []
-    for i in (lst.get("items") or []):
-        eff = _postbox_display_path(i, pwd)
-        if eff.startswith("mr-notes/"):
-            items.append({**i, "path": eff})
+    items = [
+        i for i in (lst.get("items") or [])
+        if (i.get("path") or "").startswith("mr-notes/")
+    ]
     iid = int(args.get("iid") or 0)
     if iid:
         items = [i for i in items if str(i.get("path", "")).endswith(f"mr-!{iid}.md")]
     notes = []
     for i in items:
-        blob = c.file_sync_fetch(repo, i["id"])
         try:
-            plain = decrypt_bundle(blob, ctx.config.sync_password)
+            plain = c.file_sync_fetch(repo, i["id"])
             notes.append({"path": i["path"], "markdown": plain.decode("utf-8")})
         except Exception:
-            notes.append({"path": i["path"], "error": "decrypt failed: sync password mismatch?"})
+            notes.append({"path": i["path"], "error": "fetch/decrypt failed (v3 relay)"})
     return {"success": True, "repo": repo, "notes": notes}
 
 
@@ -337,11 +318,8 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
     if "## thread" not in content and "## new" not in content:
         return {"success": False, "error": "no reply sections ('## thread <id>' / '## new') found in content"}
 
-    pwd = ctx.config.sync_password
-    encrypted = encrypt_bundle(content.encode("utf-8"), pwd)
     display = f"mr-replies/mr-!{iid}.md"
-    path_enc = base64.b64encode(encrypt_bundle(display.encode("utf-8"), pwd)).decode("ascii")
-    res = c.file_sync_send(repo, f"x/{os.urandom(4).hex()}", len(content), encrypted, path_enc=path_enc)
+    res = c.file_sync_send(repo, display, len(content), content.encode("utf-8"))
     return {"success": True, "repo": repo, "path": display, "size": len(content), "response": res}
 
 
@@ -350,34 +328,17 @@ def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:
     c = _client(ctx)
     repo = _repo_arg(args)
     lst = c.file_sync_list(repo)
-    pwd = ctx.config.sync_password
     iid = int(args.get("iid") or 0)
     statuses = []
     for i in (lst.get("items") or []):
-        eff = _postbox_display_path(i, pwd)
+        eff = i.get("path") or ""
         if not eff.startswith("mr-replies-status/"):
             continue
         if iid and not eff.endswith(f"mr-!{iid}.md"):
             continue
-        blob = c.file_sync_fetch(repo, i["id"])
         try:
-            statuses.append({"path": eff, "markdown": decrypt_bundle(blob, pwd).decode("utf-8")})
+            plain = c.file_sync_fetch(repo, i["id"])
+            statuses.append({"path": eff, "markdown": plain.decode("utf-8")})
         except Exception:
-            statuses.append({"path": eff, "error": "decrypt failed: sync password mismatch?"})
+            statuses.append({"path": eff, "error": "fetch/decrypt failed (v3 relay)"})
     return {"success": True, "repo": repo, "statuses": statuses}
-
-
-def op_mr_notes_request(ctx: Ctx, args: dict) -> dict:
-    """Ask the work PC to transfer GitLab threads for an MR into the postbox."""
-    c = _client(ctx)
-    repo = _repo_arg(args)
-    iid = int(args.get("iid") or 0)
-    if not iid:
-        return {"success": False, "error": "iid is required"}
-    pwd = ctx.config.sync_password
-    display = f"mr-notes-request/mr-!{iid}.md"
-    body = f"request mr-notes for !{iid}\n"
-    encrypted = encrypt_bundle(body.encode("utf-8"), pwd)
-    path_enc = base64.b64encode(encrypt_bundle(display.encode("utf-8"), pwd)).decode("ascii")
-    res = c.file_sync_send(repo, f"x/{os.urandom(4).hex()}", len(body), encrypted, path_enc=path_enc)
-    return {"success": True, "repo": repo, "path": display, "response": res}

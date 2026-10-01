@@ -30,7 +30,7 @@ import localgitmirror.idea.ui.MrMultiSelectDialog
  *     a plain branch name (works without a token).
  *  4. One `git fetch origin <branches...>` for all targets, then per MR the
  *     same send-branch pipeline as [SyncBranchToMirrorAction]: checkout →
- *     full sync → notes; the original branch is restored once at the end.
+ *     full sync; the original branch is restored once at the end.
  *     Each branch lands on Mirror under its own name.
  */
 class SendGitLabMrAction : AnAction() {
@@ -144,9 +144,9 @@ class SendGitLabMrAction : AnAction() {
 
           // 4-5. Fetch from origin + send-branch pipeline (shared with the MR list dialog).
           if (distinct.size == 1) {
-            GitLabMrSender.send(project, conf, distinct[0].first, distinct[0].second)
+            GitLabMrSender.send(project, distinct[0].first, distinct[0].second)
           } else {
-            GitLabMrSender.sendAll(project, conf, distinct)
+            GitLabMrSender.sendAll(project, distinct)
           }
         }
       }

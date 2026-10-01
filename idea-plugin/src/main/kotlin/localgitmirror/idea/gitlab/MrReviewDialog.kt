@@ -51,7 +51,7 @@ class MrReviewDialog private constructor(
 
   private lateinit var contentHolder: JPanel
   private val sentMarkers = mutableSetOf<String>()
-  private val controls = mutableMapOf<String, Pair<JCheckBox, JButton>>()
+  private val controls = mutableMapOf<String, JCheckBox>()
   private var countLabel: JLabel? = null
 
   init {
@@ -193,11 +193,6 @@ class MrReviewDialog private constructor(
     check.toolTipText = caption
     check.addItemListener { updateCountLabel() }
     top.add(check, BorderLayout.WEST)
-    val send = JButton(LocalGitMirrorBundle.message("mrview.send")).apply {
-      isEnabled = !sentMarkers.contains(key)
-      addActionListener { send(listOf(reply)) }
-    }
-    top.add(send, BorderLayout.EAST)
     box.add(top, BorderLayout.NORTH)
     box.add(JTextArea(reply.body).apply {
       isEditable = false
@@ -208,7 +203,7 @@ class MrReviewDialog private constructor(
       rows = reply.body.lines().size.coerceIn(1, 8)
       border = JBUI.Borders.emptyLeft(24)
     }, BorderLayout.CENTER)
-    controls[key] = check to send
+    controls[key] = check
     box.maximumSize = Dimension(Int.MAX_VALUE, box.preferredSize.height + JBUI.scale(4))
     return box
   }
@@ -262,7 +257,7 @@ class MrReviewDialog private constructor(
   private fun approvedReplies(): List<MrReplies.Reply> =
     replies().filter { r ->
       val key = replyKey(r)
-      val c = controls[key]?.first
+      val c = controls[key]
       c != null && c.isSelected && !sentMarkers.contains(key)
     }
 
@@ -362,10 +357,9 @@ class MrReviewDialog private constructor(
           while (ledger.size > LEDGER_CAP) ledger.removeAt(0)
         }
       }
-      controls[key]?.let { (check, btn) ->
+      controls[key]?.let { check ->
         check.isSelected = false
         check.isEnabled = false
-        btn.isEnabled = false
       }
     }
     updateCountLabel()

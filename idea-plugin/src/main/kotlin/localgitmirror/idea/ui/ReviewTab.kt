@@ -14,19 +14,14 @@ import com.intellij.ui.components.JBList
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.actions.GitLabMrSender
-import localgitmirror.idea.gitlab.GitLabConfig
 import localgitmirror.idea.gitlab.MrNotesWriter
 import localgitmirror.idea.gitlab.MrReviewService
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorCrypto
-import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorSettingsService
-import localgitmirror.idea.settings.SecretsStore
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
-import java.io.File
 import javax.swing.BorderFactory
 import javax.swing.BoxLayout
 import javax.swing.JButton
@@ -67,6 +62,7 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
     layout = BoxLayout(this, BoxLayout.Y_AXIS)
     isOpaque = false
     add(statusRow)
+    add(mrReviewErrorLabel)
     add(searchRow)
     add(headerRow)
   }
@@ -90,10 +86,12 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
   }
   val fetchBtn = iconBtn(AllIcons.Actions.Refresh, "review.tip.fetch") { reloadReview() }
   reviewFetchButton = fetchBtn
-  val sendNotesBtn = iconBtn(AllIcons.Actions.Upload, "review.tip.sendNotes") {
-    mrReviewList.selectedValue?.let { sendMrNotesToCache(it) }
+  val syncNotesBtn = iconBtn(AllIcons.Actions.Upload, "review.tip.syncNotes") { syncMrNotes() }
+  syncNotesBtn.isVisible = isWorkRole
+  val pushRepliesBtn = iconBtn(AllIcons.Actions.Download, "review.tip.pushReplies") {
+    localgitmirror.idea.gitlab.MrReplyPushService(project).pushInBackground()
   }
-  sendNotesBtn.isVisible = isWorkRole
+  pushRepliesBtn.isVisible = isWorkRole
   val moreBtn = iconBtn(AllIcons.Actions.MoreHorizontal, "panel.toolbar.more.tooltip") {
     val popup = javax.swing.JPopupMenu()
     popup.add(javax.swing.JMenuItem(LocalGitMirrorBundle.message("review.sendSelected")).apply {
@@ -106,9 +104,7 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
   }
   val selectionGate = object : javax.swing.event.ListSelectionListener {
     override fun valueChanged(e: javax.swing.event.ListSelectionEvent?) {
-      val has = mrReviewList.selectedValue != null
-      openBtn.isEnabled = has
-      sendNotesBtn.isEnabled = has
+      openBtn.isEnabled = mrReviewList.selectedValue != null
     }
   }
   mrReviewList.addListSelectionListener(selectionGate)
@@ -120,7 +116,8 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
     border = JBUI.Borders.empty(4, 0, 0, 0)
     add(openBtn)
     add(fetchBtn)
-    add(sendNotesBtn)
+    add(syncNotesBtn)
+    add(pushRepliesBtn)
     add(moreBtn)
   }
 
@@ -137,56 +134,32 @@ internal fun LocalGitMirrorPanel.openMrDialog(row: MrReviewService.MrRowItem) {
   localgitmirror.idea.gitlab.MrReviewDialog.openFor(project, row)
 }
 
-/** Send one MR's discussions to the Cache file postbox (no branch sync). */
-internal fun LocalGitMirrorPanel.sendMrNotesToCache(row: MrReviewService.MrRowItem) {
-  val dir = baseDir() ?: run {
-    notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
-    return
-  }
-  val s = service<MirrorSettingsService>().state
-  if (s.baseUrl.isBlank()) {
-    notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
-    return
-  }
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: send MR notes", true) {
-    override fun run(indicator: ProgressIndicator) {
-      val repo = try { syncFacade.resolveRepo(dir, s).sanitized } catch (_: Throwable) { "" }
-      if (repo.isBlank()) {
-        notify(LocalGitMirrorBundle.message("filesync.notify.repoMissing"), NotificationType.WARNING)
-        return
-      }
-      val markdown = MrNotesWriter.renderMarkdown(
-        project, row.iid, row.title, row.sourceBranch, row.updatedAt,
-        row.unresolved, row.totalThreads, row.discussions
+/** Upload mr-notes for the selected MRs (all open MRs when none is selected) when their rendered content changed. */
+internal fun LocalGitMirrorPanel.syncMrNotes(onlyIids: Set<Int>? = null) {
+  val only = onlyIids ?: mrReviewList.selectedValuesList.map { it.iid }.toSet().ifEmpty { null }
+  localgitmirror.idea.gitlab.MrNotesSync.syncInBackground(project, only) { report ->
+    if (project.isDisposed) return@syncInBackground
+    if (report.failures.isEmpty()) {
+      notify(
+        LocalGitMirrorBundle.message("mrnotes.sync.ok", report.uploaded.size, report.unchanged),
+        NotificationType.INFORMATION,
       )
-      val plain = File.createTempFile("tmp-mrnotes-up-", ".md")
-      val enc = File.createTempFile("tmp-mrnotes-enc-", ".bin")
-      try {
-        plain.writeText(markdown, Charsets.UTF_8)
-        val displayPath = "mr-notes/mr-!${row.iid}.md"
-        val sealed = MirrorCrypto.sealPostboxPayload(plain.readBytes(), SecretsStore.syncPassword, displayPath, 0L)
-        enc.writeBytes(sealed.bytes)
-        val (relPath, pathEnc) = MirrorCrypto.postboxRoute(displayPath, SecretsStore.syncPassword)
-        val up = MirrorPostboxApi.fileSyncUpload(
-          s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls,
-          relPath, 0L, enc, pathEnc, sealed.epkB64, sealed.meta, null
-        )
-        if (up.code in 200..299) {
-          notify(LocalGitMirrorBundle.message("review.sendNotes.ok", row.iid), NotificationType.INFORMATION)
-          historyService.add(LocalGitMirrorBundle.message("mrnotes.history.send"), true, "mr=!${row.iid} repo=$repo")
-        } else {
-          notify(LocalGitMirrorBundle.message("review.sendNotes.fail", row.iid, "HTTP ${up.code}"), NotificationType.ERROR)
-          historyService.add(LocalGitMirrorBundle.message("mrnotes.history.send"), false, "mr=!${row.iid} HTTP ${up.code}")
-        }
-      } finally {
-        runCatching { plain.delete() }
-        runCatching { enc.delete() }
-      }
+    } else {
+      notify(
+        LocalGitMirrorBundle.message("mrnotes.sync.fail", report.failures.joinToString("; ").take(300)),
+        NotificationType.WARNING,
+      )
     }
-  })
+    historyService.add(
+      LocalGitMirrorBundle.message("mrnotes.history.send"),
+      report.failures.isEmpty(),
+      "uploaded=${report.uploaded} unchanged=${report.unchanged}",
+    )
+    reloadReview(notify = false)
+  }
 }
 
-/** Send selected MRs (branches + notes) to Cache in one batch via GitLabMrSender.sendAll. */
+/** Send selected MRs' branches to Cache in one batch via GitLabMrSender.sendAll. */
 internal fun LocalGitMirrorPanel.sendSelectedMrs() {
   val rows = mrReviewList.selectedValuesList
     .filter { it.source == MrReviewService.Source.GITLAB && it.sourceBranch.isNotBlank() }
@@ -196,8 +169,7 @@ internal fun LocalGitMirrorPanel.sendSelectedMrs() {
   }
   ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: send ${rows.size} MR(s)", true) {
     override fun run(indicator: ProgressIndicator) {
-      val conf = GitLabConfig.resolve(project)
-      GitLabMrSender.sendAll(project, conf, rows.map { it.sourceBranch to it.iid })
+      GitLabMrSender.sendAll(project, rows.map { it.sourceBranch to it.iid })
     }
   })
 }
@@ -211,12 +183,12 @@ internal fun LocalGitMirrorPanel.refreshReview() {
   )
   val filter = mrReviewFilterField.text.trim().lowercase()
   val visible = if (filter.isBlank()) sorted
-                else sorted.filter {
-                  it.title.lowercase().contains(filter) ||
-                  it.sourceBranch.lowercase().contains(filter)
-                }
+                 else sorted.filter {
+                   it.title.lowercase().contains(filter) ||
+                   it.sourceBranch.lowercase().contains(filter)
+                 }
   val signature = visible.joinToString(";") {
-    "${it.iid}:${it.unresolved}:${it.replyState}:${it.replyPosted}:${it.replyFailed}:${it.title}:${it.source}"
+    "${it.iid}:${it.unresolved}:${it.replyState}:${it.replyPosted}:${it.replyFailed}:${it.notesSentAt}:${it.title}:${it.source}"
   }
   if (signature != reviewRowsSignature) {
     reviewRowsSignature = signature
@@ -231,6 +203,10 @@ internal fun LocalGitMirrorPanel.refreshReview() {
     if (indices.isNotEmpty()) mrReviewList.selectedIndices = indices
     if (viewPos != null) viewport?.viewPosition = viewPos
   }
+
+  val err = service.cachedError()
+  mrReviewErrorLabel.text = err?.let { LocalGitMirrorBundle.message("review.error.cache", it) } ?: ""
+  mrReviewErrorLabel.isVisible = err != null
 
   val attention = rows.count { it.unresolved > 0 }
   mrReviewStatus.text = if (attention > 0)
@@ -313,10 +289,14 @@ internal class MrReviewListCellRenderer : ColoredListCellRenderer<MrReviewServic
     val countText = if (value.unresolved > 0) "${value.unresolved}\u26a0"
                     else "\u2713 ${value.totalThreads}"
     append("  $countText", countAttr)
+    val notesText = value.notesSentAt
+      ?.let { LocalGitMirrorBundle.message("review.notes.sent", it) }
+      ?: LocalGitMirrorBundle.message("review.notes.notsent")
+    append("  \u00b7 $notesText", SimpleTextAttributes.GRAYED_ATTRIBUTES)
     if (value.replyState.isNotBlank()) {
       val count = if (value.replyState == "failed") value.replyFailed else value.replyPosted
       val stateColor = when (value.replyState) {
-        "failed" -> JBColor(0xC62828, 0xEF5350)
+        "failed", "error" -> JBColor(0xC62828, 0xEF5350)
         "posted" -> green
         "local" -> JBColor(0x6F7277, 0x8C8F94)
         else -> amber

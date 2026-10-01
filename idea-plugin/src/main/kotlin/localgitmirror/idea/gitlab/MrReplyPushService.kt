@@ -12,7 +12,6 @@ import localgitmirror.idea.settings.MirrorProjectSettingsService
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
-import localgitmirror.idea.workkit.RepoFileSyncCrypto
 import java.io.File
 import java.security.MessageDigest
 
@@ -74,9 +73,10 @@ class MrReplyPushService(private val project: Project) {
     val item: MirrorPostboxApi.FileSyncItem,
     val path: String,
     val parsed: MrReplies.RepliesFile,
+    val siblings: List<MirrorPostboxApi.FileSyncItem>,
   )
 
-  /** Postbox mr-replies items downloaded and parsed, without posting anything. */
+  /** Newest mr-replies item per MR, downloaded and parsed, without posting anything. */
   internal fun fetchPendingReplies(): PendingRepliesResult {
     val settings = service<MirrorSettingsService>().state
     val repo = resolveRepo(settings) ?: return PendingRepliesResult.Unavailable("repo not resolved")
@@ -85,21 +85,23 @@ class MrReplyPushService(private val project: Project) {
       return PendingRepliesResult.Unavailable("HTTP ${listResult.code} ${listResult.message}")
     }
     val skipped = mutableListOf<SkippedItem>()
-    val items = listResult.items.mapNotNull { item ->
-      val path = displayPath(item)
-      if (!path.startsWith("mr-replies/")) return@mapNotNull null
-      if (!path.endsWith(".md")) {
-        skipped.add(SkippedItem(path, "not a .md reply file"))
-        return@mapNotNull null
-      }
-      when (val parsed = downloadAndParse(item, settings, repo)) {
-        is Downloaded.Parsed -> PendingReplies(item, path, parsed.replies)
-        is Downloaded.Skipped -> {
-          skipped.add(SkippedItem(path, parsed.reason))
-          null
+    val items = listResult.items
+      .filter { it.path.startsWith("mr-replies/") }
+      .groupBy { item -> replyIid(item.path) }
+      .mapNotNull { (iid, group) ->
+        if (iid == null) {
+          group.forEach { skipped.add(SkippedItem(it.path, "not an mr-!N.md reply file")) }
+          return@mapNotNull null
         }
-      }
-    }.sortedByDescending { it.item.mtime }
+        val newest = group.maxByOrNull { it.mtime } ?: return@mapNotNull null
+        when (val parsed = downloadAndParse(newest, settings, repo)) {
+          is Downloaded.Parsed -> PendingReplies(newest, newest.path, parsed.replies, group)
+          is Downloaded.Skipped -> {
+            skipped.add(SkippedItem(newest.path, parsed.reason))
+            null
+          }
+        }
+      }.sortedByDescending { it.item.mtime }
     return PendingRepliesResult.Available(items, skipped)
   }
 
@@ -111,11 +113,18 @@ class MrReplyPushService(private val project: Project) {
       return PendingCount.Unavailable("HTTP ${listResult.code} ${listResult.message}")
     }
     return PendingCount.Available(
-      listResult.items.count { displayPath(it).let { p -> p.startsWith("mr-replies/") && p.endsWith(".md") } }
+      listResult.items
+        .filter { it.path.startsWith("mr-replies/") }
+        .mapNotNull { replyIid(it.path) }
+        .toSet()
+        .size
     )
   }
 
-  /** Post only the approved sections of a pending item; acks the postbox entry when clean. */
+  private fun replyIid(path: String): Int? =
+    Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
+  /** Post only the approved sections of a pending item; acks every postbox entry of that MR when clean. */
   internal fun pushApproved(pending: PendingReplies, approved: List<MrReplies.Reply>): FileReport {
     val settings = service<MirrorSettingsService>().state
     val conf = GitLabConfig.resolve(project)
@@ -125,7 +134,7 @@ class MrReplyPushService(private val project: Project) {
     val repo = resolveRepo(settings)
       ?: return FileReport(pending.path, 0, 0, 0, 1, listOf("repo not resolved"))
     val filtered = pending.parsed.copy(replies = approved)
-    return pushParsed(pending.item, pending.path, filtered, conf, settings, repo)
+    return pushParsed(pending, filtered, conf, settings, repo)
   }
 
   private fun resolveRepo(settings: MirrorSettingsService.State): String? {
@@ -145,11 +154,8 @@ class MrReplyPushService(private val project: Project) {
     settings: MirrorSettingsService.State,
     repo: String,
   ): Downloaded {
-    var tmpEnc: File? = null
-    var tmpPlain: File? = null
+    val tmpEnc = File.createTempFile("mr-replies-", ".bin")
     return try {
-      tmpEnc = File.createTempFile("mr-replies-", ".bin")
-      tmpPlain = File.createTempFile("mr-replies-", ".md")
       val dl = MirrorPostboxApi.fileSyncDownload(
         settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
         item.id, tmpEnc,
@@ -157,19 +163,13 @@ class MrReplyPushService(private val project: Project) {
       if (dl.code !in 200..299 || dl.file == null) {
         return Downloaded.Skipped("download: HTTP ${dl.code} ${dl.message}")
       }
-      val markdown = if (dl.decrypted) tmpEnc.readText(Charsets.UTF_8)
-      else {
-        RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
-        tmpPlain.readText(Charsets.UTF_8)
-      }
-      val parsed = MrReplies.parse(markdown)
+      val parsed = MrReplies.parse(tmpEnc.readText(Charsets.UTF_8))
       if (parsed.iid == 0) Downloaded.Skipped("no '# MR !N' header")
       else Downloaded.Parsed(parsed)
     } catch (e: Throwable) {
       Downloaded.Skipped("decrypt/parse: ${e.message ?: "error"}")
     } finally {
-      tmpEnc?.let { runCatching { it.delete() } }
-      tmpPlain?.let { runCatching { it.delete() } }
+      runCatching { tmpEnc.delete() }
     }
   }
 
@@ -189,7 +189,7 @@ class MrReplyPushService(private val project: Project) {
           reports.add(FileReport(s.path, 0, 0, 1, 0, listOf(s.reason)))
         }
         for (p in pending.items) {
-          reports.add(pushParsed(p.item, p.path, p.parsed, conf, settings, repo))
+          reports.add(pushParsed(p, p.parsed, conf, settings, repo))
         }
         reports
       }
@@ -197,14 +197,14 @@ class MrReplyPushService(private val project: Project) {
   }
 
   private fun pushParsed(
-    item: MirrorPostboxApi.FileSyncItem,
-    path: String,
+    pending: PendingReplies,
     parsed: MrReplies.RepliesFile,
     conf: GitLabConfig.GitLabConf,
     settings: MirrorSettingsService.State,
     repo: String,
   ): FileReport {
     val iid = parsed.iid
+    val path = pending.path
     val discussions = GitLabApi.listMrDiscussions(conf, iid)
     if (discussions.code !in 200..299) {
       return FileReport(path, 0, 0, 0, 1, listOf("list discussions: HTTP ${discussions.code} ${discussions.message}"))
@@ -280,7 +280,9 @@ class MrReplyPushService(private val project: Project) {
 
     val report = FileReport(path, posted, dupSkipped, skipped, failed, details, parsed.errors.size)
     if (report.clean) {
-      MirrorPostboxApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id)
+      pending.siblings.forEach { s ->
+        MirrorPostboxApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, s.id)
+      }
     }
     if (posted > 0 || failed > 0) {
       val status = MrRepliesTransport.uploadStatusResult(project, iid, renderStatus(iid, report))
@@ -303,14 +305,6 @@ class MrReplyPushService(private val project: Project) {
       appendLine("- at: $at")
       r.details.forEach { appendLine("  - $it") }
     }
-  }
-
-  private fun displayPath(item: MirrorPostboxApi.FileSyncItem): String {
-    if (item.pathEnc.isBlank()) return item.path
-    val plain = runCatching {
-      localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(item.pathEnc, SecretsStore.syncPassword)
-    }.getOrDefault(item.path)
-    return localgitmirror.idea.workkit.ExchangeMeta.parseName(plain).text.ifBlank { item.path }
   }
 
   internal fun notifySummary(reports: List<FileReport>) {

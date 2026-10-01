@@ -1,5 +1,8 @@
 package localgitmirror.idea.mirror
 
+import com.sun.net.httpserver.HttpServer
+import java.io.File
+import java.net.InetSocketAddress
 import java.security.GeneralSecurityException
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -15,7 +18,6 @@ import kotlin.test.assertNull
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 import localgitmirror.idea.workkit.BundleCrypto
-import localgitmirror.idea.workkit.ExchangeCrypto
 import localgitmirror.idea.workkit.HybridCrypto
 
 class MirrorApiSealPostboxPayloadTest {
@@ -66,13 +68,13 @@ class MirrorApiSealPostboxPayloadTest {
     val serverPub = HybridCrypto.publicKeyToRaw(serverKp.public as XECPublicKey)
     val body = ByteArray(64) { it.toByte() }
 
-    val sealed = MirrorCrypto.sealPostboxPayload(body, "unused", serverPub, "mr-replies/mr-!42.md", 1234L)
+    val sealed = MirrorCrypto.sealPostboxPayload(body, serverPub, "mr-replies/mr-!42.md", 1234L)
 
-    assertTrue(sealed.meta != null)
-    val epk = HybridCrypto.decodeServerPub(sealed.epkB64!!)
+    val epk = HybridCrypto.decodeServerPub(sealed.epkB64)
     val key = HybridCrypto.hkdf(serverShared(serverKp, epk), epk, INFO_RELAY_REQ)
-    val metaJson = String(openGcmAad(key, sealed.meta!!, HybridCrypto.RELAY_AAD_POSTBOX))
+    val metaJson = String(openGcmAad(key, sealed.meta, HybridCrypto.RELAY_AAD_POSTBOX))
     assertEquals("""{"path":"mr-replies/mr-!42.md","plain_size":1234}""", metaJson)
+    assertTrue(openGcmAad(key, sealed.bytes, HybridCrypto.RELAY_AAD_POSTBOX).contentEquals(body))
   }
 
   @Test
@@ -80,39 +82,84 @@ class MirrorApiSealPostboxPayloadTest {
     val serverKp = newX25519()
     val serverPub = HybridCrypto.publicKeyToRaw(serverKp.public as XECPublicKey)
 
-    val sealed = MirrorCrypto.sealPostboxPayload(ByteArray(8), "unused", serverPub, "a/b.md", 1L)
+    val sealed = MirrorCrypto.sealPostboxPayload(ByteArray(8), serverPub, "a/b.md", 1L)
 
-    val epk = HybridCrypto.decodeServerPub(sealed.epkB64!!)
+    val epk = HybridCrypto.decodeServerPub(sealed.epkB64)
     val key = HybridCrypto.hkdf(serverShared(serverKp, epk), epk, INFO_RELAY_REQ)
     assertFailsWith<GeneralSecurityException> {
-      openGcmAad(key, sealed.meta!!, HybridCrypto.RELAY_AAD_VAULT)
+      openGcmAad(key, sealed.meta, HybridCrypto.RELAY_AAD_VAULT)
     }
   }
 
   @Test
-  fun `legacy postbox seal carries no sealed metadata`() {
-    val sealed = MirrorCrypto.sealPostboxPayload(ByteArray(8), "pw", null, "a/b.md", 1L)
+  fun `upload wire carries only rid k meta and the sealed attachment`() {
+    val serverKp = newX25519()
+    val serverPub = HybridCrypto.publicKeyToRaw(serverKp.public as XECPublicKey)
+    val body = ByteArray(300) { (it * 7).toByte() }
+    val sealed = MirrorCrypto.sealPostboxPayload(body, serverPub, "mr-notes/mr-!7.md", 300L)
 
-    assertNull(sealed.epkB64)
-    assertNull(sealed.meta)
-    assertTrue(BundleCrypto.decryptDumpBytes(sealed.bytes, "pw").contentEquals(ByteArray(8)))
+    val fields = mutableMapOf<String, String>()
+    val files = mutableListOf<ByteArray>()
+    val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    server.createContext("/api/documents/attachment-upload") { ex ->
+      try {
+        val (capturedFields, capturedFiles) = parseMultipart(ex.requestBody.readBytes())
+        fields.putAll(capturedFields)
+        files.addAll(capturedFiles)
+        val resp = """{"success":true,"repo":"myrepo","id":"abc123","path":"mr-notes/mr-!7.md","size":300}"""
+        ex.sendResponseHeaders(200, resp.length.toLong())
+        ex.responseBody.use { it.write(resp.toByteArray(Charsets.UTF_8)) }
+      } finally {
+        ex.close()
+      }
+    }
+    server.start()
+    try {
+      val enc = File.createTempFile("postbox-wire-", ".bin")
+      try {
+        enc.writeBytes(sealed.bytes)
+        val res = MirrorPostboxApi.fileSyncUpload(
+          "http://127.0.0.1:${server.address.port}", "", "myrepo", false,
+          sealed.epkB64, sealed.meta, enc,
+        )
+        assertTrue(res.code in 200..299, "upload failed: ${res.code} ${res.message}")
+        assertEquals("abc123", res.id)
+        assertEquals("mr-notes/mr-!7.md", res.path)
+      } finally {
+        runCatching { enc.delete() }
+      }
+
+      assertEquals(setOf("rid", "k", "meta"), fields.keys)
+      assertEquals(MirrorTransport.rid("myrepo"), fields["rid"])
+      assertEquals(sealed.epkB64, fields["k"])
+      assertEquals(java.util.Base64.getEncoder().encodeToString(sealed.meta), fields["meta"])
+      assertEquals(1, files.size)
+      assertTrue(files[0].contentEquals(sealed.bytes))
+    } finally {
+      server.stop(0)
+    }
   }
 
-  @Test
-  fun `postbox route hides the display path behind path_enc with a password`() {
-    val route = MirrorCrypto.postboxRoute("mr-replies/mr-!42.md", "pw")
-
-    assertEquals("x/", route.first.take(2))
-    assertTrue(route.second != null)
-    assertEquals("mr-replies/mr-!42.md", ExchangeCrypto.decryptHint(route.second!!, "pw"))
-  }
-
-  @Test
-  fun `postbox route passes the display path through without a password`() {
-    val route = MirrorCrypto.postboxRoute("mr-notes/mr-!7.md", "")
-
-    assertEquals("mr-notes/mr-!7.md", route.first)
-    assertNull(route.second)
+  private fun parseMultipart(body: ByteArray): Pair<Map<String, String>, List<ByteArray>> {
+    val text = String(body, Charsets.ISO_8859_1)
+    val boundary = text.substringBefore("\r\n").removePrefix("--")
+    val fields = mutableMapOf<String, String>()
+    val files = mutableListOf<ByteArray>()
+    for (raw in text.split("--$boundary")) {
+      val part = raw.removePrefix("\r\n").removeSuffix("\r\n")
+      if (part.isBlank() || part == "--") continue
+      val headerEnd = part.indexOf("\r\n\r\n")
+      if (headerEnd < 0) continue
+      val headers = part.substring(0, headerEnd)
+      val content = part.substring(headerEnd + 4)
+      val name = Regex("name=\"([^\"]+)\"").find(headers)?.groupValues?.getOrNull(1) ?: continue
+      if (headers.contains("filename=")) {
+        files.add(content.toByteArray(Charsets.ISO_8859_1))
+      } else {
+        fields[name] = content
+      }
+    }
+    return fields to files
   }
 
   private fun newX25519(): KeyPair =

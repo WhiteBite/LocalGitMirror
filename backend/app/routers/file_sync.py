@@ -1,21 +1,17 @@
 """
-Repo-scoped encrypted file postbox.
+Repo-scoped encrypted file postbox — protocol v3 relay only.
 
-The backend stores encrypted file containers uploaded by the plugin. Uploads
-arrive sealed either with the v3 relay (form field "k" carries the client's
-ephemeral X25519 public key) or with the legacy shared password. A v3 upload
-carries its routing metadata (path, plain_size) relay-sealed in the "meta"
-form field; the cleartext path/plain_size fields then hold only neutral
-values. The server
-terminates the crypto: it decrypts on write, stores the plaintext re-sealed at
-rest under an independent relay key (0x04 || nonce || AES-GCM), and re-seals on
-read for whichever mode the reader speaks — the "X-LGM-Epk" request header
-selects the v3 relay, its absence falls back to the legacy password bundle.
+Uploads arrive relay-sealed to the server's long-term X25519 key: the "k" form
+field carries the client's ephemeral public key, "meta" the relay-sealed
+routing metadata {"path", "plain_size"}, and the attachment body is a
+relay-sealed blob. The server terminates the crypto: it decrypts on write,
+stores the plaintext re-sealed at rest under the independent relay key
+(0x04 || nonce || AES-GCM), and re-seals on read for the ephemeral key sent
+in the "X-LGM-Epk" request header.
 """
 import base64
 import hashlib
 import json
-import os
 import re
 import time
 import uuid
@@ -26,14 +22,12 @@ from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadF
 from fastapi.responses import Response
 
 from app.core import hybrid_crypto
-from app.core.bundle_crypto import decrypt_dump_bytes, encrypt_bundle_bytes
 from app.routers._rid import resolve_repo_identifier
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 repo_manager = None
 system_logger = None
-# v3 relay: X25519 wire key + independent at-rest key; None => password-only.
 server_private_key = None
 relay_key = None
 
@@ -126,7 +120,6 @@ def _list_items(repo: str) -> list[dict]:
             items.append({
                 "id": meta.stem,
                 "path": data.get("path", ""),
-                "path_enc": data.get("path_enc", ""),
                 "size": int(st.st_size),
                 "plain_size": int(data.get("plain_size") or 0),
                 "mtime": int(st.st_mtime),
@@ -137,58 +130,36 @@ def _list_items(repo: str) -> list[dict]:
     return items
 
 
-def _sync_password() -> str:
-    return os.getenv("SYNC_PASSWORD", "")
-
-
 def _decrypt_incoming(payload: bytes, k: str, aad: bytes) -> bytes:
-    """Open an uploaded blob and return the bytes to store at rest."""
-    password = _sync_password()
-    if k and server_private_key is not None:
-        if relay_key is None:
-            raise HTTPException(503, "relay key not initialised")
-        try:
-            ctx = hybrid_crypto.HybridServerContext(server_private_key, hybrid_crypto.decode_epk(k))
-            plaintext = ctx.open_relay(payload, aad)
-        except Exception:
-            raise HTTPException(400, "Failed to decrypt blob (v3): wrong server key or corrupted data")
-        return hybrid_crypto.relay_encrypt_at_rest(relay_key, plaintext, aad)
-    if password:
-        try:
-            plaintext = decrypt_dump_bytes(payload, password)
-        except Exception:
-            raise HTTPException(400, "Failed to decrypt blob: check that SYNC_PASSWORD matches")
-        if relay_key is None:
-            return payload
-        return hybrid_crypto.relay_encrypt_at_rest(relay_key, plaintext, aad)
-    raise HTTPException(400, "Blob is not v3-sealed and SYNC_PASSWORD is not set — nothing to decrypt with")
+    """Open a v3 relay-sealed upload and return the bytes to store at rest."""
+    if relay_key is None:
+        raise HTTPException(503, "relay key not initialised")
+    try:
+        ctx = hybrid_crypto.HybridServerContext(server_private_key, hybrid_crypto.decode_epk(k))
+        plaintext = ctx.open_relay(payload, aad)
+    except Exception:
+        raise HTTPException(400, "Failed to decrypt blob (v3): wrong server key or corrupted data")
+    return hybrid_crypto.relay_encrypt_at_rest(relay_key, plaintext, aad)
 
 
 def _serve_blob(path: Path, aad: bytes, epk: Optional[str]) -> Response:
-    """Read a stored blob and re-seal it for the requesting reader."""
+    """Read a stored v3 blob and re-seal it for the requesting reader's ephemeral key."""
+    if not epk:
+        raise HTTPException(400, "X-LGM-Epk header is required (v3-only postbox)")
+    if server_private_key is None:
+        raise HTTPException(503, "Server hybrid key not initialised")
+    if relay_key is None:
+        raise HTTPException(503, "relay key not initialised")
     blob = path.read_bytes()
-    password = _sync_password()
-    if blob[:1] == b"\x04":
-        try:
-            plaintext = hybrid_crypto.relay_decrypt_at_rest(relay_key, blob, aad)
-        except Exception:
-            raise HTTPException(400, "Stored blob failed to decrypt: corrupted or sealed under a different AAD")
-    elif blob[:1] in (b"\x01", b"L") and password:
-        try:
-            plaintext = decrypt_dump_bytes(blob, password)
-        except Exception:
-            raise HTTPException(400, "Stored legacy blob failed to decrypt: wrong SYNC_PASSWORD")
-    else:
-        raise HTTPException(409, "Stored blob is in a legacy format the reader cannot decrypt (no password on server)")
-    if epk and server_private_key is not None:
-        try:
-            ctx = hybrid_crypto.HybridServerContext(server_private_key, hybrid_crypto.decode_epk(epk))
-        except Exception:
-            raise HTTPException(400, "Invalid ephemeral key (X-LGM-Epk)")
-        return Response(ctx.seal_relay(plaintext, aad), media_type="application/octet-stream")
-    if password:
-        return Response(encrypt_bundle_bytes(plaintext, password), media_type="application/octet-stream")
-    raise HTTPException(400, "Reader sent no X-LGM-Epk and SYNC_PASSWORD is not set — nothing to seal with")
+    try:
+        plaintext = hybrid_crypto.relay_decrypt_at_rest(relay_key, blob, aad)
+    except Exception:
+        raise HTTPException(400, "Stored blob failed to decrypt: not a v3 at-rest blob, corrupted, or sealed under a different AAD")
+    try:
+        ctx = hybrid_crypto.HybridServerContext(server_private_key, hybrid_crypto.decode_epk(epk))
+    except Exception:
+        raise HTTPException(400, "Invalid ephemeral key (X-LGM-Epk)")
+    return Response(ctx.seal_relay(plaintext, aad), media_type="application/octet-stream")
 
 
 def _open_sealed_meta(k: str, meta_b64: str) -> tuple[str, int]:
@@ -213,21 +184,15 @@ def _open_sealed_meta(k: str, meta_b64: str) -> tuple[str, int]:
 @router.post("/attachment-upload")
 async def docs_attachment_upload(
     rid: str = Form(""),
-    path: str = Form(""),
-    plain_size: int = Form(0),
-    path_enc: str = Form(""),
     k: str = Form(""),
     meta: str = Form(""),
     attachment: UploadFile = File(...),
     x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
     repo = _resolve_repo(rid, x_doc_ref)
-    if meta:
-        rel_path, plain_size = _open_sealed_meta(k, meta)
-    else:
-        rel_path = _validate_rel_path(path)
-        if plain_size < 0 or plain_size > _MAX_FILE_SIZE:
-            raise HTTPException(400, "Invalid file size")
+    if not k or not meta:
+        raise HTTPException(400, "v3 upload requires form fields 'k' and 'meta'")
+    rel_path, plain_size = _open_sealed_meta(k, meta)
 
     payload = await attachment.read()
     if not payload:
@@ -246,11 +211,8 @@ async def docs_attachment_upload(
     try:
         tmp.write_bytes(at_rest)
         tmp.replace(target)
-        item_meta = {"path": rel_path, "plain_size": plain_size}
-        if path_enc:
-            item_meta["path_enc"] = path_enc
         _meta_path(repo, item_id).write_text(
-            json.dumps(item_meta, ensure_ascii=False),
+            json.dumps({"path": rel_path, "plain_size": plain_size}, ensure_ascii=False),
             encoding="utf-8",
         )
     except OSError as exc:

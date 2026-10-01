@@ -131,7 +131,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   // Local optimistic echoes: shown instantly, confirmed with the server id after HTTP 200.
   internal val chatEchoes = mutableListOf<ExchangeItem>()
   internal val echoIdByServerId = ConcurrentHashMap<String, String>()
-  // hint_enc/path_enc decryption is PBKDF2-heavy; cached so the 5 s poll doesn't re-derive keys.
+  // hint_enc decryption is PBKDF2-heavy; cached so the 5 s poll doesn't re-derive keys.
   internal val exchangeHintCache = ConcurrentHashMap<String, String>()
   // Full buffer bodies fetched on "expand"; thumbnails decoded in background on arrival.
   internal val chatBodyCache = ConcurrentHashMap<String, String>()
@@ -173,6 +173,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   internal val mrReviewStatus = JBLabel("").apply {
     font = JBUI.Fonts.smallFont()
     foreground = UIUtil.getContextHelpForeground()
+  }
+  internal val mrReviewErrorLabel = JBLabel("").apply {
+    font = JBUI.Fonts.smallFont()
+    foreground = com.intellij.ui.JBColor(0xC62828, 0xEF5350)
+    isVisible = false
   }
   internal val mrReviewFilterField = SearchTextField(false).apply {
     textEditor.emptyText.text = LocalGitMirrorBundle.message("review.filter")

@@ -1,7 +1,6 @@
 package localgitmirror.idea.mirror
 
 import java.nio.charset.StandardCharsets
-import java.util.UUID
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -11,7 +10,6 @@ import kotlinx.serialization.json.put
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.workkit.BundleCrypto
 import localgitmirror.idea.workkit.EnvelopeCrypto
-import localgitmirror.idea.workkit.ExchangeCrypto
 import localgitmirror.idea.workkit.HybridCrypto
 import com.intellij.openapi.components.service
 
@@ -77,24 +75,22 @@ internal object MirrorCrypto {
   fun sealDepsPayload(plaintext: ByteArray, syncPassword: String, aad: ByteArray): SealedPublication =
     sealRelayPayload(plaintext, syncPassword, pinnedServerPub(), aad)
 
-  /** Seal a postbox file body plus its routing metadata: v3 relay to the pinned server key, else the shared-password bundle. */
-  fun sealPostboxPayload(plaintext: ByteArray, syncPassword: String,
-                         displayPath: String, plainSize: Long): SealedPublication =
-    sealPostboxPayload(plaintext, syncPassword, pinnedServerPub(), displayPath, plainSize)
+  /** Postbox payload sealed for v3 upload: relay-sealed body plus relay-sealed routing metadata. */
+  data class SealedPostbox(val epkB64: String, val bytes: ByteArray, val meta: ByteArray)
 
-  internal fun sealPostboxPayload(plaintext: ByteArray, syncPassword: String,
-                                  serverPub: ByteArray?, displayPath: String,
-                                  plainSize: Long): SealedPublication {
-    if (serverPub == null) {
-      return SealedPublication(null, BundleCrypto.encryptBundleBytes(plaintext, syncPassword))
-    }
+  /** Seal a postbox body plus its {"path","plain_size"} meta for [MirrorPostboxApi.fileSyncUpload]; throws when no v3 server key is pinned. */
+  fun sealPostboxPayload(plaintext: ByteArray, displayPath: String, plainSize: Long): SealedPostbox =
+    sealPostboxPayload(plaintext, pinnedServerPub() ?: error("v3 server key not pinned"), displayPath, plainSize)
+
+  internal fun sealPostboxPayload(plaintext: ByteArray, serverPub: ByteArray,
+                                  displayPath: String, plainSize: Long): SealedPostbox {
     val session = HybridCrypto.Session.create(serverPub)
     try {
       val meta = buildJsonObject {
         put("path", displayPath)
         put("plain_size", plainSize)
       }.toString().toByteArray(StandardCharsets.UTF_8)
-      return SealedPublication(
+      return SealedPostbox(
         session.epkB64,
         session.sealRelay(plaintext, HybridCrypto.RELAY_AAD_POSTBOX),
         session.sealRelay(meta, HybridCrypto.RELAY_AAD_POSTBOX),
@@ -103,12 +99,6 @@ internal object MirrorCrypto {
       session.wipe()
     }
   }
-
-  /** Routing pair for [MirrorPostboxApi.fileSyncUpload]: the display path travels as path_enc with a password, inside the sealed meta in v3, in the clear only with neither. */
-  fun postboxRoute(displayPath: String, syncPassword: String): Pair<String, String?> =
-    if (syncPassword.isBlank() && pinnedServerPub() == null) displayPath to null
-    else "x/${UUID.randomUUID().toString().take(8)}" to
-      (if (syncPassword.isBlank()) null else ExchangeCrypto.encryptHint(displayPath, syncPassword))
 
   internal fun sealRelayPayload(
     plaintext: ByteArray,

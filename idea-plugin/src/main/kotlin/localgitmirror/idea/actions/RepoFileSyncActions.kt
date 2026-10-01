@@ -19,7 +19,6 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.RepoResolver
-import localgitmirror.idea.workkit.RepoFileSyncCrypto
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -38,7 +37,6 @@ private fun fileSyncNotify(project: Project?, message: String, type: Notificatio
 private data class FileSyncContext(
   val settings: MirrorSettingsService.State,
   val apiKey: String,
-  val password: String,
   val projectDir: File,
   val repo: String
 )
@@ -54,8 +52,7 @@ private fun fileSyncContext(project: Project?): FileSyncContext? {
     fileSyncNotify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
     return null
   }
-  val password = SecretsStore.syncPassword
-  if (password.isBlank()) {
+  if (!MirrorCrypto.isV3Pinned()) {
     fileSyncNotify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
     return null
   }
@@ -65,7 +62,7 @@ private fun fileSyncContext(project: Project?): FileSyncContext? {
     fileSyncNotify(project, LocalGitMirrorBundle.message("filesync.notify.repoMissing"), NotificationType.WARNING)
     return null
   }
-  return FileSyncContext(settings, SecretsStore.mirrorApiKey, password, dir, repo)
+  return FileSyncContext(settings, SecretsStore.mirrorApiKey, dir, repo)
 }
 
 private fun selectedProjectFile(e: AnActionEvent, projectDir: File): Pair<File, String>? {
@@ -110,7 +107,7 @@ class SendSelectedFileAction : AnAction() {
         val encrypted = File.createTempFile("tmp-", ".bin")
         try {
           indicator.text = LocalGitMirrorBundle.message("filesync.progress.encrypt")
-          val sealed = MirrorCrypto.sealPostboxPayload(file.readBytes(), ctx.password, relativePath, file.length())
+          val sealed = MirrorCrypto.sealPostboxPayload(file.readBytes(), relativePath, file.length())
           encrypted.writeBytes(sealed.bytes)
           indicator.text = LocalGitMirrorBundle.message("filesync.progress.upload")
           val res = MirrorPostboxApi.fileSyncUpload(
@@ -118,12 +115,9 @@ class SendSelectedFileAction : AnAction() {
             ctx.apiKey,
             ctx.repo,
             ctx.settings.mirrorInsecureTls,
-            relativePath,
-            file.length(),
-            encrypted,
-            null,
             sealed.epkB64,
-            sealed.meta
+            sealed.meta,
+            encrypted
           ) { sent, total ->
             indicator.fraction = if (total > 0) sent.toDouble() / total.toDouble() else 0.0
           }
@@ -222,7 +216,6 @@ class FetchRepoFilesAction : AnAction() {
         val encrypted = File.createTempFile("tmp-download-", ".bin")
         val targetParent = target.parentFile ?: ctx.projectDir
         targetParent.mkdirs()
-        val plainTmp = File.createTempFile("tmp-plain-", ".tmp", targetParent)
         try {
           indicator.text = LocalGitMirrorBundle.message("filesync.progress.download")
           val dl = MirrorPostboxApi.fileSyncDownload(ctx.settings.baseUrl, ctx.apiKey, ctx.repo, ctx.settings.mirrorInsecureTls, item.id, encrypted) { read, total ->
@@ -234,14 +227,7 @@ class FetchRepoFilesAction : AnAction() {
             return
           }
           indicator.text = LocalGitMirrorBundle.message("filesync.progress.decrypt")
-          if (dl.decrypted) {
-            Files.copy(encrypted.toPath(), plainTmp.toPath(), StandardCopyOption.REPLACE_EXISTING)
-          } else {
-            RepoFileSyncCrypto.decryptFile(encrypted, plainTmp, ctx.password) { done, total ->
-              indicator.fraction = if (total > 0) done.toDouble() / total.toDouble() else 0.0
-            }
-          }
-          Files.move(plainTmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+          Files.copy(encrypted.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
           MirrorPostboxApi.fileSyncAck(ctx.settings.baseUrl, ctx.apiKey, ctx.repo, ctx.settings.mirrorInsecureTls, item.id)
           fileSyncNotify(project, LocalGitMirrorBundle.message("filesync.notify.fetchOk", item.path), NotificationType.INFORMATION)
           history.add("File sync fetch", true, "${item.path} id=${item.id}")
@@ -250,7 +236,6 @@ class FetchRepoFilesAction : AnAction() {
           history.add("File sync fetch", false, t.message ?: t::class.simpleName ?: "error")
         } finally {
           try { encrypted.delete() } catch (_: Throwable) {}
-          try { plainTmp.delete() } catch (_: Throwable) {}
         }
       }
     })

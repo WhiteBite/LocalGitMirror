@@ -65,12 +65,11 @@ object MrRepliesTransport {
     return try {
       val encrypted = File.createTempFile("lgm-upload-", ".bin")
       try {
-        val sealed = MirrorCrypto.sealPostboxPayload(file.readBytes(), SecretsStore.syncPassword, displayPath, file.length())
+        val sealed = MirrorCrypto.sealPostboxPayload(file.readBytes(), displayPath, file.length())
         encrypted.writeBytes(sealed.bytes)
-        val (relPath, pathEnc) = MirrorCrypto.postboxRoute(displayPath, SecretsStore.syncPassword)
         val up = MirrorPostboxApi.fileSyncUpload(
           settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
-          relPath, file.length(), encrypted, pathEnc, sealed.epkB64, sealed.meta, null,
+          sealed.epkB64, sealed.meta, encrypted,
         )
         if (up.code in 200..299) MrUploadResult.Ok
         else MrUploadResult.Failed(up.code, "HTTP ${up.code}: ${up.message}")

@@ -1,14 +1,10 @@
-"""Home without GitLab: mr_list falls back to transferred notes; mr_notes_request uploads a request."""
-import base64
+"""Home without GitLab: mr_list falls back to transferred notes (v3 postbox)."""
 from types import SimpleNamespace
 
 import pytest
 
-from lgm_core.crypto import decrypt_bundle, encrypt_bundle
 from lgm_core.client import LgmError
-from lgm_core.ops import Ctx, op_mr_list, op_mr_notes_request
-
-PWD = "test-sync-password"
+from lgm_core.ops import Ctx, op_mr_list, op_mr_replies_send
 
 MD = "\n".join([
     "<!-- note -->",
@@ -25,7 +21,6 @@ MD = "\n".join([
 
 class _StubClient:
     def __init__(self, markdown=MD, gitlab_error=None):
-        self.sync_password = PWD
         self._md = markdown
         self._gitlab_error = gitlab_error or LgmError("config", "GitLab not configured")
         self.sent = None
@@ -37,19 +32,19 @@ class _StubClient:
         return {"repos": [{"name": "r1"}]}
 
     def file_sync_list(self, repo):
-        enc = base64.b64encode(encrypt_bundle(b"mr-notes/mr-!7.md", PWD)).decode()
-        return {"items": [{"id": "i1", "path": "x/ab", "path_enc": enc, "mtime": 5}]}
+        return {"items": [{"id": "i1", "path": "mr-notes/mr-!7.md", "mtime": 5,
+                           "plain_size": len(MD)}]}
 
     def file_sync_fetch(self, repo, item_id):
-        return encrypt_bundle(self._md.encode("utf-8"), PWD)
+        return self._md.encode("utf-8")
 
-    def file_sync_send(self, repo, path, size, data, path_enc=None):
-        self.sent = (repo, path, size, data, path_enc)
+    def file_sync_send(self, repo, path, plain_size, data):
+        self.sent = (repo, path, plain_size, data)
         return {"id": "new1"}
 
 
 def test_mr_list_falls_back_to_postbox_without_gitlab():
-    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=PWD), client=_StubClient()), {})
+    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=""), client=_StubClient()), {})
     assert res["count"] == 1
     item = res["items"][0]
     assert item["iid"] == 7
@@ -64,14 +59,12 @@ def test_mr_list_falls_back_to_postbox_without_gitlab():
 def test_mr_list_reraises_non_config_gitlab_error():
     client = _StubClient(gitlab_error=LgmError(500, "GitLab API error 500: boom"))
     with pytest.raises(LgmError) as ei:
-        op_mr_list(Ctx(config=SimpleNamespace(sync_password=PWD), client=client), {})
+        op_mr_list(Ctx(config=SimpleNamespace(sync_password=""), client=client), {})
     assert ei.value.code == 500
 
 
 def test_mr_list_collects_postbox_errors():
     class _TwoRepoClient:
-        sync_password = PWD
-
         def gitlab_list_mrs(self):
             raise LgmError("config", "GitLab not configured")
 
@@ -83,27 +76,28 @@ def test_mr_list_collects_postbox_errors():
                 raise LgmError("network", "mirror unreachable")
             return {"items": []}
 
-    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=PWD),
+    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=""),
                          client=_TwoRepoClient()), {})
     assert res["count"] == 0
     assert res["items"] == []
     assert res["errors"] == [{"repo": "bad", "error": "mirror unreachable"}]
 
 
-def test_mr_notes_request_uploads_encrypted_request():
+def test_mr_replies_send_uploads_plaintext_with_real_path():
     client = _StubClient()
-    res = op_mr_notes_request(Ctx(config=SimpleNamespace(sync_password=PWD), client=client),
-                              {"repo": "r1", "iid": 7})
+    res = op_mr_replies_send(Ctx(config=SimpleNamespace(sync_password=""), client=client),
+                             {"repo": "r1", "iid": 7, "text": "## new\nanswer"})
     assert res["success"] is True
-    repo, _path, _size, _data, path_enc = client.sent
+    repo, path, plain_size, data = client.sent
     assert repo == "r1"
-    display = decrypt_bundle(base64.b64decode(path_enc), PWD).decode("utf-8")
-    assert display == "mr-notes-request/mr-!7.md"
+    assert path == "mr-replies/mr-!7.md"
+    assert plain_size == len("## new\nanswer")
+    assert data == b"## new\nanswer"
 
 
-def test_mr_notes_request_requires_iid():
-    res = op_mr_notes_request(Ctx(config=SimpleNamespace(sync_password=PWD), client=_StubClient()),
-                              {"repo": "r1"})
+def test_mr_replies_send_requires_iid():
+    res = op_mr_replies_send(Ctx(config=SimpleNamespace(sync_password=""), client=_StubClient()),
+                             {"repo": "r1", "text": "## new\nx"})
     assert res["success"] is False
 
 
