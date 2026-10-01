@@ -104,11 +104,14 @@ def decrypt_dump_bytes(raw: bytes, password: str) -> bytes:
     cursor += SALT_SIZE
     nonce = raw[cursor : cursor + NONCE_SIZE]
     cursor += NONCE_SIZE
-    (ciphertext_len,) = struct.unpack(">Q", raw[cursor : cursor + 8])
+    (stored_len,) = struct.unpack(">Q", raw[cursor : cursor + 8])
     cursor += 8
-    ciphertext = raw[cursor : cursor + ciphertext_len]
-
-    if len(ciphertext) != ciphertext_len:
+    # IDE file container also starts with 0x01 but stores plaintext size; its ciphertext runs to EOF.
+    if cursor + stored_len == len(raw):
+        ciphertext = raw[cursor : cursor + stored_len]
+    elif cursor + stored_len + 16 == len(raw):
+        ciphertext = raw[cursor:]
+    else:
         raise ValueError("Corrupted payload")
 
     key = _derive_key(password, salt)
