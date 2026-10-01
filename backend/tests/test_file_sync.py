@@ -1,4 +1,4 @@
-"""Tests for /api/documents/attachment-* — v3-only relay postbox contract."""
+"""Tests for /api/documents/attachment-* — v3 relay postbox plus the loopback plaintext path."""
 import base64
 import json
 from pathlib import Path
@@ -41,7 +41,7 @@ class _ClientSession:
         return hc.relay_open(self._shared, self.epk, blob, aad, resp=True)
 
 
-def _make_client(tmp_path: Path):
+def _make_client(tmp_path: Path, client_addr: tuple = ("testclient", 50000)):
     storage = tmp_path / "storage"
     storage.mkdir(parents=True, exist_ok=True)
     (storage / "settings.json").write_text(
@@ -62,7 +62,13 @@ def _make_client(tmp_path: Path):
     file_sync_router_mod.server_private_key = X25519PrivateKey.generate()
     file_sync_router_mod.relay_key = b"\x07" * 32
     app.include_router(file_sync_router_mod.router)
-    return TestClient(app), storage
+
+    async def scoped(scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            scope = dict(scope, client=client_addr)
+        await app(scope, receive, send)
+
+    return TestClient(scoped), storage
 
 
 def _server_pub() -> bytes:
@@ -80,6 +86,18 @@ def _upload(client, repo: str, blob: bytes, k: str, meta: str):
         data={"rid": repo, "k": k, "meta": meta},
         files={"attachment": ("file.lgm", blob, "application/octet-stream")},
     )
+
+
+def _upload_plain(client, repo: str, blob: bytes, path: str, plain_size):
+    return client.post(
+        "/api/documents/attachment-upload",
+        data={"rid": repo, "path": path, "plain_size": str(plain_size)},
+        files={"attachment": ("file.bin", blob, "application/octet-stream")},
+    )
+
+
+def _stored_blob(repo: str, item_id: str) -> bytes:
+    return (file_sync_router_mod._repo_dir(repo) / f"{item_id}.bin").read_bytes()
 
 
 def test_file_sync_v3_lifecycle(tmp_path: Path):
@@ -177,3 +195,122 @@ def test_file_sync_list_via_x_doc_ref_header(tmp_path: Path):
 
     resp = client.get("/api/documents/attachment-list")
     assert resp.status_code == 400
+
+
+def test_file_sync_loopback_plaintext_lifecycle(tmp_path: Path):
+    client, _ = _make_client(tmp_path, ("127.0.0.1", 50000))
+    plaintext = b"PLAINTEXT-ATTACHMENT" * 128
+
+    uploaded = _upload_plain(client, "onyx", plaintext, "shots/screen.png", len(plaintext))
+    assert uploaded.status_code == 200, uploaded.text
+    body = uploaded.json()
+    item_id = body["id"]
+    assert body["path"] == "shots/screen.png"
+    assert body["size"] == len(plaintext)
+
+    listed = client.get("/api/documents/attachment-list", params={"rid": "onyx"})
+    assert listed.status_code == 200
+    items = listed.json()["items"]
+    assert [it["id"] for it in items] == [item_id]
+    assert items[0]["path"] == "shots/screen.png"
+    assert items[0]["plain_size"] == len(plaintext)
+
+    at_rest = _stored_blob("onyx", item_id)
+    assert at_rest != plaintext
+    assert at_rest[0] == 0x04
+    assert hc.relay_decrypt_at_rest(
+        file_sync_router_mod.relay_key, at_rest, hc.RELAY_AAD_POSTBOX) == plaintext
+
+    got = client.get("/api/documents/attachment-get", params={"rid": "onyx", "id": item_id})
+    assert got.status_code == 200, got.text
+    assert got.headers["content-type"].startswith("application/octet-stream")
+    assert got.content == plaintext
+
+    ack = client.delete("/api/documents/attachment-ack", params={"rid": "onyx", "id": item_id})
+    assert ack.status_code == 200
+    assert ack.json()["deleted"] is True
+
+
+def test_file_sync_loopback_get_returns_plaintext_for_v3_item(tmp_path: Path):
+    client, _ = _make_client(tmp_path, ("127.0.0.1", 50000))
+    plaintext = b"sealed-at-work" * 32
+    session = _ClientSession(_server_pub())
+    sealed = session.seal(plaintext, hc.RELAY_AAD_POSTBOX)
+
+    r = _upload(client, "onyx", sealed, session.epk_b64(),
+                _seal_meta(session, "mr-replies/mr-!42.md", len(plaintext)))
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    got = client.get("/api/documents/attachment-get", params={"rid": "onyx", "id": item_id})
+    assert got.status_code == 200, got.text
+    assert got.content == plaintext
+
+
+def test_file_sync_loopback_get_with_epk_still_v3(tmp_path: Path):
+    client, _ = _make_client(tmp_path, ("127.0.0.1", 50000))
+    plaintext = b"reader-sealed" * 16
+    session = _ClientSession(_server_pub())
+    sealed = session.seal(plaintext, hc.RELAY_AAD_POSTBOX)
+
+    r = _upload(client, "onyx", sealed, session.epk_b64(),
+                _seal_meta(session, "a/b.md", len(plaintext)))
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    reader = _ClientSession(_server_pub())
+    got = client.get(
+        "/api/documents/attachment-get",
+        params={"rid": "onyx", "id": item_id},
+        headers={"X-LGM-Epk": reader.epk_b64()},
+    )
+    assert got.status_code == 200, got.text
+    assert reader.open(got.content, hc.RELAY_AAD_POSTBOX) == plaintext
+
+
+def test_file_sync_loopback_upload_without_relay_key_stores_raw(tmp_path: Path):
+    client, _ = _make_client(tmp_path, ("127.0.0.1", 50000))
+    file_sync_router_mod.relay_key = None
+    plaintext = b"raw-at-rest"
+
+    r = _upload_plain(client, "onyx", plaintext, "a.bin", len(plaintext))
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    assert _stored_blob("onyx", item_id) == plaintext
+
+    got = client.get("/api/documents/attachment-get", params={"rid": "onyx", "id": item_id})
+    assert got.status_code == 200, got.text
+    assert got.content == plaintext
+
+
+def test_file_sync_loopback_upload_rejects_bad_path_and_size(tmp_path: Path):
+    client, _ = _make_client(tmp_path, ("127.0.0.1", 50000))
+    for bad_path in ["../secret.bin", "/abs/file", "a/../../b", "", "."]:
+        resp = _upload_plain(client, "onyx", b"payload", bad_path, 7)
+        assert resp.status_code == 400, bad_path
+
+    for bad_size in ["", "abc", "-1", "not-a-number"]:
+        resp = _upload_plain(client, "onyx", b"payload", "a.bin", bad_size)
+        assert resp.status_code == 400, bad_size
+
+    assert client.get("/api/documents/attachment-list", params={"rid": "onyx"}).json()["items"] == []
+
+
+def test_file_sync_remote_plaintext_upload_rejected(tmp_path: Path):
+    client, _ = _make_client(tmp_path, ("192.168.1.50", 40000))
+    resp = _upload_plain(client, "onyx", b"payload", "a/b.md", 7)
+    assert resp.status_code == 400
+    assert client.get("/api/documents/attachment-list", params={"rid": "onyx"}).json()["items"] == []
+
+
+def test_file_sync_remote_get_without_epk_rejected(tmp_path: Path):
+    loopback, _ = _make_client(tmp_path, ("127.0.0.1", 50000))
+    plaintext = b"loopback-only"
+    r = _upload_plain(loopback, "onyx", plaintext, "a.bin", len(plaintext))
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    remote, _ = _make_client(tmp_path, ("192.168.1.50", 40000))
+    got = remote.get("/api/documents/attachment-get", params={"rid": "onyx", "id": item_id})
+    assert got.status_code == 400
+    assert got.content != plaintext

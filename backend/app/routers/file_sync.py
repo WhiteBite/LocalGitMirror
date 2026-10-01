@@ -1,13 +1,20 @@
 """
-Repo-scoped encrypted file postbox — protocol v3 relay only.
+Repo-scoped encrypted file postbox — protocol v3 relay plus a loopback
+plaintext path for the home-host SPA.
 
-Uploads arrive relay-sealed to the server's long-term X25519 key: the "k" form
-field carries the client's ephemeral public key, "meta" the relay-sealed
-routing metadata {"path", "plain_size"}, and the attachment body is a
-relay-sealed blob. The server terminates the crypto: it decrypts on write,
-stores the plaintext re-sealed at rest under the independent relay key
+Remote uploads arrive relay-sealed to the server's long-term X25519 key: the
+"k" form field carries the client's ephemeral public key, "meta" the
+relay-sealed routing metadata {"path", "plain_size"}, and the attachment body
+is a relay-sealed blob. The server terminates the crypto: it decrypts on
+write, stores the plaintext re-sealed at rest under the independent relay key
 (0x04 || nonce || AES-GCM), and re-seals on read for the ephemeral key sent
 in the "X-LGM-Epk" request header.
+
+Loopback clients (the SPA served on the HOME host, a fully trusted machine)
+may omit "k"/"meta" and send the legacy-shaped "path" + "plain_size" fields
+with a plaintext attachment; it is sealed at rest the same way and served
+back as plaintext on reads without "X-LGM-Epk". Non-loopback clients without
+the v3 fields fail closed.
 """
 import base64
 import hashlib
@@ -18,11 +25,12 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from starlette.concurrency import run_in_threadpool
 
 from app.core import hybrid_crypto
+from app.core.mirror_dataplane import _is_loopback
 from app.routers._rid import resolve_repo_identifier
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
@@ -182,18 +190,49 @@ def _open_sealed_meta(k: str, meta_b64: str) -> tuple[str, int]:
     return path, size
 
 
+def _open_plaintext_meta(path: str, plain_size: str) -> tuple[str, int]:
+    """Validate loopback plaintext upload fields; 400 on any bad value."""
+    try:
+        size = int((plain_size or "").strip())
+    except ValueError:
+        raise HTTPException(400, "Invalid plain_size")
+    if size < 0 or size > _MAX_FILE_SIZE:
+        raise HTTPException(400, "Invalid file size")
+    return _validate_rel_path(path), size
+
+
+def _serve_plaintext(path: Path) -> Response:
+    """Loopback read: return the stored plaintext without the v3 re-seal."""
+    blob = path.read_bytes()
+    if blob[:1] == bytes([hybrid_crypto.RELAY_AT_REST_VERSION]):
+        if relay_key is None:
+            raise HTTPException(503, "relay key not initialised")
+        try:
+            blob = hybrid_crypto.relay_decrypt_at_rest(relay_key, blob, hybrid_crypto.RELAY_AAD_POSTBOX)
+        except Exception:
+            raise HTTPException(400, "Stored blob failed to decrypt: not a v3 at-rest blob, corrupted, or sealed under a different AAD")
+    return Response(blob, media_type="application/octet-stream")
+
+
 @router.post("/attachment-upload")
 async def docs_attachment_upload(
+    request: Request,
     rid: str = Form(""),
     k: str = Form(""),
     meta: str = Form(""),
+    path: str = Form(""),
+    plain_size: str = Form(""),
     attachment: UploadFile = File(...),
     x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
     repo = _resolve_repo(rid, x_doc_ref)
-    if not k or not meta:
+    v3 = bool(k and meta)
+    if v3:
+        rel_path, size_meta = _open_sealed_meta(k, meta)
+    elif _is_loopback(request.client.host if request.client else ""):
+        rel_path, size_meta = _open_plaintext_meta(path, plain_size)
+    else:
         raise HTTPException(400, "v3 upload requires form fields 'k' and 'meta'")
-    rel_path, plain_size = _open_sealed_meta(k, meta)
 
     payload = await attachment.read()
     if not payload:
@@ -202,7 +241,13 @@ async def docs_attachment_upload(
         raise HTTPException(413, "File too large")
 
     def _store() -> str:
-        at_rest = _decrypt_incoming(payload, k, hybrid_crypto.RELAY_AAD_POSTBOX)
+        if v3:
+            at_rest = _decrypt_incoming(payload, k, hybrid_crypto.RELAY_AAD_POSTBOX)
+        elif relay_key is not None:
+            at_rest = hybrid_crypto.relay_encrypt_at_rest(
+                relay_key, payload, hybrid_crypto.RELAY_AAD_POSTBOX)
+        else:
+            at_rest = payload
 
         directory = _repo_dir(repo)
         _cleanup_stale(directory)
@@ -214,7 +259,7 @@ async def docs_attachment_upload(
             tmp.write_bytes(at_rest)
             tmp.replace(target)
             _meta_path(repo, item_id).write_text(
-                json.dumps({"path": rel_path, "plain_size": plain_size}, ensure_ascii=False),
+                json.dumps({"path": rel_path, "plain_size": size_meta}, ensure_ascii=False),
                 encoding="utf-8",
             )
         except OSError as exc:
@@ -241,6 +286,7 @@ def docs_attachment_list(
 
 @router.get("/attachment-get")
 def docs_attachment_get(
+    request: Request,
     rid: Optional[str] = Query(None),
     id: str = Query(...),
     x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
@@ -252,7 +298,11 @@ def docs_attachment_get(
     meta = _meta_path(repo, item_id)
     if not blob.exists() or not meta.exists():
         raise HTTPException(404, "File not found")
-    return _serve_blob(blob, hybrid_crypto.RELAY_AAD_POSTBOX, x_lgm_epk)
+    if x_lgm_epk:
+        return _serve_blob(blob, hybrid_crypto.RELAY_AAD_POSTBOX, x_lgm_epk)
+    if not _is_loopback(request.client.host if request.client else ""):
+        raise HTTPException(400, "X-LGM-Epk header is required (v3-only postbox)")
+    return _serve_plaintext(blob)
 
 
 @router.delete("/attachment-ack")

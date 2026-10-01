@@ -154,7 +154,7 @@
   },
   "exchange": {
     "title": "Exchange",
-    "subtitle": "Unified cross-machine feed: clipboard entries and repo postbox files. Everything is encrypted in the browser with the sync password — the server only stores ciphertext.",
+    "subtitle": "Unified cross-machine feed: clipboard entries and repo postbox files. Clipboard entries are encrypted in the browser; postbox files travel as plaintext over the trusted home-host loopback and are sealed at rest by the server.",
     "filter_placeholder": "Filter by name...",
     "empty": "Drop files here or press Ctrl+V",
     "encrypted": "(encrypted)",

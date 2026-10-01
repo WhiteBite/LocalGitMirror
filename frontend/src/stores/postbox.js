@@ -1,21 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import axios from 'axios'
-import { encryptFileBytes, decryptFileBytes, encryptText, decryptText } from '@/lib/bundleCrypto'
-import { buildPathMeta, parseMeta } from '@/lib/exchangeMeta'
-import { useBufferStore } from '@/stores/buffer'
 
-// The server terminates postbox crypto and re-seals per reader; this store speaks the legacy password mode.
+// Loopback-plaintext postbox: the SPA is a trusted HOME-host client.
 export const usePostboxStore = defineStore('postbox', () => {
   const items = ref([])
   const loading = ref(false)
   const error = ref(null)
-
-  async function syncPassword() {
-    const password = await useBufferStore().ensurePassword()
-    if (!password) throw new Error('Sync password not configured')
-    return password
-  }
 
   async function fetchItems(rid) {
     loading.value = true
@@ -33,38 +24,23 @@ export const usePostboxStore = defineStore('postbox', () => {
   }
 
   async function fetchPlainBytes(rid, id) {
-    const password = await syncPassword()
     const res = await axios.get('/api/documents/attachment-get', {
       params: { rid, id },
       responseType: 'arraybuffer'
     })
-    return decryptFileBytes(new Uint8Array(res.data), password)
+    return new Uint8Array(res.data)
   }
 
-  /**
-   * Resolve {side, text} of an item: decrypt `path_enc` and parse the
-   * side-metadata JSON {"s":...,"n":<real name>}; legacy entries (plaintext
-   * path, bare-string metadata, decrypt failure) come back with side ''.
-   * Never throws.
-   */
   async function revealName(item) {
-    if (!item.path_enc) return { side: '', text: item.path || '' }
-    try {
-      return parseMeta(await decryptText(item.path_enc, await syncPassword()), 'n')
-    } catch {
-      return { side: '', text: item.path || '' }
-    }
+    return { side: '', text: item.path || '' }
   }
 
   async function uploadFile(rid, name, plainBytes) {
-    const password = await syncPassword()
-    const encrypted = await encryptFileBytes(plainBytes, password)
     const form = new FormData()
     form.append('rid', rid)
-    form.append('path', `x/${randomToken()}`)
-    form.append('plain_size', '0')
-    form.append('path_enc', await encryptText(buildPathMeta(name), password))
-    form.append('attachment', new Blob([encrypted]), 'data.bin')
+    form.append('path', name)
+    form.append('plain_size', String(plainBytes.length))
+    form.append('attachment', new Blob([plainBytes]), 'data.bin')
     const res = await axios.post('/api/documents/attachment-upload', form)
     await fetchItems(rid)
     return res.data
@@ -73,12 +49,6 @@ export const usePostboxStore = defineStore('postbox', () => {
   async function deleteItem(rid, id) {
     await axios.delete('/api/documents/attachment-ack', { params: { rid, id } })
     items.value = items.value.filter(it => it.id !== id)
-  }
-
-  function randomToken() {
-    return Array.from(crypto.getRandomValues(new Uint8Array(4)))
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join('')
   }
 
   return {
