@@ -35,7 +35,7 @@ python run.py dev        # разработка: backend :8000 + Vite :5173
 | `GIT_PORT` | **8444** | внутренний dulwich-демон, пользовательскому workflow не нужен |
 | `REDIRECT_HTTP_PORT` | не задан | HTTP→HTTPS редирект выключен по умолчанию |
 
-Другие ключи (`BASE_URL`, `API_KEY`, `SYNC_PASSWORD`, `STORAGE_PATH`, GitLab-трио) описаны в разделе Operational constants в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Другие ключи (`BASE_URL`, `API_KEY`, `SYNC_PASSWORD`, `STORAGE_PATH`, GitLab-трио) описаны в разделе Operational constants в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). `API_KEY` обязателен: без него все защищённые маршруты сервера отвечают 503 (fail-closed). `SYNC_PASSWORD` больше не нужен для MR-цикла и файлового почтового ящика — они ходят только по v3 relay-крипто к закреплённому ключу сервера.
 
 ## Архитектура
 
