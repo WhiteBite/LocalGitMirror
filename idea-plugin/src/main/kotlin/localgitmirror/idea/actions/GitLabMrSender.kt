@@ -8,8 +8,10 @@ import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.gitlab.GitLabApi
 import localgitmirror.idea.gitlab.GitLabConfig
 import localgitmirror.idea.gitlab.MrNotesWriter
+import localgitmirror.idea.gitlab.MrSendPlanner
 import localgitmirror.idea.gitlab.MrUploadResult
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -64,6 +66,12 @@ object GitLabMrSender {
       return
     }
 
+    val plan = planMrSend(project, projectDir, settings, syncFacade, remote, listOf(branch))
+    if (branch in plan.skipped) {
+      notify(project, LocalGitMirrorBundle.message("gitlab.notify.alreadyOnCache", branch), NotificationType.INFORMATION)
+      return
+    }
+
     val repoInfo = syncFacade.describeRepoTarget(projectDir, settings)
     notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
 
@@ -109,14 +117,21 @@ object GitLabMrSender {
       return
     }
 
+    val plan = planMrSend(project, projectDir, settings, syncFacade, remote, branches)
+
     val repoInfo = syncFacade.describeRepoTarget(projectDir, settings)
     notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
 
     val originalBranch = GitLocal.currentBranch(project, projectDir)
     var sent = 0
+    var skipped = 0
     val failures = mutableListOf<String>()
     try {
       for ((branch, iid) in targets) {
+        if (branch in plan.skipped) {
+          skipped++
+          continue
+        }
         val co = GitLocal.checkout(project, projectDir, branch)
         if (!co.ok()) {
           notify(
@@ -140,19 +155,62 @@ object GitLabMrSender {
       restoreBranch(project, projectDir, originalBranch)
     }
 
-    if (failures.isEmpty()) {
-      notify(
-        project,
-        LocalGitMirrorBundle.message("gitlab.notify.batchOk", sent, targets.size),
-        NotificationType.INFORMATION
-      )
-    } else {
-      notify(
-        project,
-        LocalGitMirrorBundle.message("gitlab.notify.batchPartial", sent, targets.size, failures.joinToString("\n")),
-        NotificationType.WARNING
-      )
+    val summary = when {
+      failures.isEmpty() && skipped == 0 ->
+        LocalGitMirrorBundle.message("gitlab.notify.batchOk", sent, targets.size)
+      failures.isEmpty() ->
+        LocalGitMirrorBundle.message("gitlab.notify.batchOkSkipped", sent, targets.size, skipped)
+      skipped == 0 ->
+        LocalGitMirrorBundle.message("gitlab.notify.batchPartial", sent, targets.size, failures.joinToString("\n"))
+      else ->
+        LocalGitMirrorBundle.message("gitlab.notify.batchPartialSkipped", sent, targets.size, skipped, failures.joinToString("\n"))
     }
+    notify(project, summary, if (failures.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING)
+  }
+
+  private fun planMrSend(
+    project: Project,
+    projectDir: File,
+    settings: MirrorSettingsService.State,
+    syncFacade: SyncFacadeService,
+    remote: String,
+    branches: List<String>,
+  ): MrSendPlanner.Plan {
+    val repo = runCatching { syncFacade.resolveRepo(projectDir, settings).sanitized }.getOrDefault("")
+    if (repo.isBlank()) return MrSendPlanner.Plan(branches, emptyList(), emptyList())
+    val refsResult = runCatching {
+      MirrorApi.getRefs(settings.baseUrl, SecretsStore.mirrorApiKey, repo, SecretsStore.syncPassword, settings.mirrorInsecureTls)
+    }.getOrNull()
+    val localTips = mutableMapOf<String, String>()
+    for (branch in branches) {
+      val tip = GitLocal.branchHash(project, projectDir, branch)
+        ?: remoteTip(project, projectDir, remote, branch)
+      if (tip != null) localTips[branch] = tip
+    }
+    return decideMrSend(mirrorRefsFrom(refsResult), localTips, branches)
+  }
+
+  internal fun decideMrSend(
+    mirrorRefs: Map<String, String>,
+    localTips: Map<String, String>,
+    branches: List<String>,
+  ): MrSendPlanner.Plan {
+    val resolvable = branches.filter { it in localTips }
+    val unresolvable = branches.filter { it !in localTips }
+    val plan = MrSendPlanner.planSend(mirrorRefs, localTips, emptySet(), resolvable, Int.MAX_VALUE)
+    return if (unresolvable.isEmpty()) plan else plan.copy(sent = plan.sent + unresolvable)
+  }
+
+  internal fun mirrorRefsFrom(res: MirrorApi.RefsResult?): Map<String, String> {
+    if (res == null || res.code !in 200..299) return emptyMap()
+    return res.refs?.mapValues { it.value.sha } ?: emptyMap()
+  }
+
+  private fun remoteTip(project: Project, projectDir: File, remote: String, branch: String): String? {
+    val res = GitLocal.run(project, projectDir, 30, "rev-parse", "--verify", "refs/remotes/$remote/$branch")
+    if (!res.ok()) return null
+    val h = res.stdout.trim()
+    return if (h.length >= 7) h else null
   }
 
   private fun reportSyncOutcome(
