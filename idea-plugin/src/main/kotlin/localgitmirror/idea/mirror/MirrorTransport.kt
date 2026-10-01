@@ -6,10 +6,13 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import localgitmirror.idea.net.HttpClient
 
 data class HttpResult(val code: Int, val body: String, val bytes: ByteArray? = null)
@@ -34,14 +37,23 @@ internal object MirrorTransport {
   }
 
   fun parseDepsList(body: String): List<MirrorDepsApi.DepsItem> {
-    val items = mutableListOf<MirrorDepsApi.DepsItem>()
-    val itemRe = Regex(
-      """\{\s*"id"\s*:\s*"([^"]+)"\s*,\s*"size"\s*:\s*(\d+)\s*,\s*"mtime"\s*:\s*(\d+)\s*\}"""
-    )
-    for (m in itemRe.findAll(body)) {
-      items.add(MirrorDepsApi.DepsItem(m.groupValues[1], m.groupValues[2].toLong(), m.groupValues[3].toLong()))
+    return try {
+      val el = Json.parseToJsonElement(body)
+      val arr = when (el) {
+        is JsonArray -> el
+        is JsonObject -> el["items"] as? JsonArray ?: return emptyList()
+        else -> return emptyList()
+      }
+      arr.mapNotNull { item ->
+        val o = item as? JsonObject ?: return@mapNotNull null
+        val id = o["id"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+        val size = o["size"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+        val mtime = o["mtime"]?.jsonPrimitive?.longOrNull ?: return@mapNotNull null
+        MirrorDepsApi.DepsItem(id, size, mtime)
+      }
+    } catch (_: Throwable) {
+      emptyList()
     }
-    return items
   }
 
   fun multipartUpload(

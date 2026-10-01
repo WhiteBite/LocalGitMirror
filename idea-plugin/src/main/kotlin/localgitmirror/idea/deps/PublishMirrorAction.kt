@@ -40,7 +40,7 @@ class PublishMirrorAction : AnAction() {
     val project = e.project
     if (project == null) { e.presentation.isEnabled = false; return }
     val settings = service<MirrorSettingsService>().state
-    val configured = settings.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+    val configured = settings.baseUrl.isNotBlank() && SecretsStore.cached.syncPassword.isNotBlank()
     e.presentation.isEnabled = configured
   }
 

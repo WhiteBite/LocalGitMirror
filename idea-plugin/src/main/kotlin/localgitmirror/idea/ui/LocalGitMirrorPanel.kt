@@ -49,8 +49,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   internal var setupUrl: String = service<MirrorSettingsService>().state.baseUrl.let {
     if (it.isNotBlank() && it != "https://localhost") it else ""
   }
-  internal var setupApiKey: String = SecretsStore.mirrorApiKey
-  internal var setupSyncPassword: String = SecretsStore.syncPassword
+  internal var setupApiKey: String = SecretsStore.cached.mirrorApiKey
+  internal var setupSyncPassword: String = SecretsStore.cached.syncPassword
   internal var setupFormPanel: com.intellij.openapi.ui.DialogPanel? = null
 
   internal val status = JBLabel("")
@@ -71,6 +71,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
 
   internal val historyService = service<OperationsHistoryService>()
   internal val syncFacade = project.getService(SyncFacadeService::class.java)
+  internal var historyListener: (() -> Unit)? = null
 
   private companion object {
     const val THUMB_CACHE_MAX = 64
@@ -104,7 +105,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       LocalGitMirrorBundle.message("panel.branch.empty.refresh"),
       SimpleTextAttributes.LINK_ATTRIBUTES
     ) { refreshBranchCombo(userInitiated = true, withMirror = true) }
-    toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Cache"
+    toolTipText = LocalGitMirrorBundle.message("panel.branch.list.tooltip")
   }
 
   internal val depsListModel = DefaultListModel<String>()
@@ -292,15 +293,36 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     val listener: () -> Unit = {
       com.intellij.util.ui.UIUtil.invokeLaterIfNeeded { refreshHistoryLog() }
     }
+    historyListener = listener
     historyService.addChangeListener(listener)
 
     val s = service<MirrorSettingsService>().state
-    if (s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()) {
+    if (isMirrorConfigured(s)) {
       buildMainUi()
     } else {
       buildSetupUi()
+      // a cold secret cache must not lock the user into the setup UI — re-check after the background warm
+      SecretsStore.warmCacheAsync {
+        com.intellij.util.ui.UIUtil.invokeLaterIfNeeded {
+          if (project.isDisposed) return@invokeLaterIfNeeded
+          if (isMirrorConfigured(service<MirrorSettingsService>().state)) {
+            removeAll()
+            buildMainUi()
+            revalidate()
+            repaint()
+          } else {
+            setupApiKey = SecretsStore.cached.mirrorApiKey
+            setupSyncPassword = SecretsStore.cached.syncPassword
+            setupFormPanel?.reset()
+          }
+        }
+      }
     }
   }
+
+  private fun isMirrorConfigured(s: MirrorSettingsService.State): Boolean =
+    s.baseUrl.isNotBlank() &&
+      (SecretsStore.cached.syncPassword.isNotBlank() || localgitmirror.idea.mirror.MirrorCrypto.isV3Pinned())
 
   /** Build the full main UI (toolbar + tabs + progress). Called on init and after successful setup. */
   internal fun buildMainUi() {
@@ -391,6 +413,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   }
 
   override fun dispose() {
+    historyListener?.let { historyService.removeChangeListener(it) }
+    historyListener = null
     exchangePollAlarm.cancelAllRequests()
   }
 }

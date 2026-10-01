@@ -12,6 +12,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
@@ -55,7 +56,7 @@ class PullFromMirrorAction(
     }
 
     if (!operationInProgress.compareAndSet(false, true)) {
-      notify(project, "Операция синхронизации уже выполняется. Дождитесь её завершения.", NotificationType.WARNING)
+      notify(project, LocalGitMirrorBundle.message("pull.notify.alreadyRunning"), NotificationType.WARNING)
       return
     }
 
@@ -70,13 +71,13 @@ class PullFromMirrorAction(
     }
 
     // ── Step 1: fetch refs in background ──
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Получаем ветки…", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("pull.task.fetchRefs"), true) {
       private var refsResult: MirrorSyncApi.RefsResult? = null
 
       override fun run(indicator: ProgressIndicator) {
         onIndicator?.invoke(indicator)
         indicator.isIndeterminate = true
-        indicator.text = "Получаем список веток с сервера…"
+        indicator.text = LocalGitMirrorBundle.message("pull.progress.fetchRefs")
         indicator.checkCanceled()
         refsResult = MirrorSyncApi.getRefs(
           baseUrl = settings.baseUrl,
@@ -91,16 +92,14 @@ class PullFromMirrorAction(
         val result = refsResult ?: run { operationInProgress.set(false); return }
 
         if (result.code !in 200..299 || result.refs == null) {
-          notify(project, "Не удалось получить ветки: HTTP ${result.code}: ${result.message}", NotificationType.ERROR)
+          notify(project, LocalGitMirrorBundle.message("pull.notify.refsFailed", result.code, result.message), NotificationType.ERROR)
           operationInProgress.set(false)
           return
         }
 
         val remoteRefs = result.refs ?: emptyMap()
         if (remoteRefs.isEmpty()) {
-          notify(project, "На Cache нет веток. Если ветку пушили с другой машины, " +
-            "проверьте, что имя репозитория (см. строку статуса в панели) совпадает на обеих машинах.",
-            NotificationType.WARNING)
+          notify(project, LocalGitMirrorBundle.message("pull.notify.noRefs"), NotificationType.WARNING)
           operationInProgress.set(false)
           return
         }
@@ -122,7 +121,7 @@ class PullFromMirrorAction(
 
           // Mark branches that don't exist locally with a ★ so user knows it's a new branch
           val displayItems = remoteBranches.map { b ->
-            if (localBranches.contains(b)) b else "★ $b  (новая)"
+            if (localBranches.contains(b)) b else LocalGitMirrorBundle.message("pull.branch.newMark", b)
           }.toTypedArray()
 
           val preselect = if (currentBranch != null && remoteBranches.contains(currentBranch))
@@ -131,7 +130,7 @@ class PullFromMirrorAction(
             displayItems.first()
 
           val chosenDisplay = Messages.showEditableChooseDialog(
-            "Выберите ветку для подтягивания с Cache:\n(★ = ветки которых нет локально — будут созданы)",
+            LocalGitMirrorBundle.message("pull.dialog.selectBranch"),
             "DocCache: Fetch from Cache",
             null,
             displayItems,
@@ -149,7 +148,7 @@ class PullFromMirrorAction(
                          else chosenDisplay.removePrefix("★ ").substringBefore("  (")
 
           if (!remoteRefs.containsKey(resolved)) {
-            notify(project, "Ветка «$resolved» не найдена на Cache.", NotificationType.WARNING)
+            notify(project, LocalGitMirrorBundle.message("pull.notify.branchNotFound", resolved), NotificationType.WARNING)
             operationInProgress.set(false)
             return
           }
@@ -161,7 +160,7 @@ class PullFromMirrorAction(
       }
 
       override fun onThrowable(error: Throwable) {
-        notify(project, "Ошибка получения веток: ${error.message}", NotificationType.ERROR)
+        notify(project, LocalGitMirrorBundle.message("pull.notify.refsError", error.message ?: ""), NotificationType.ERROR)
         operationInProgress.set(false)
       }
 
@@ -185,18 +184,18 @@ class PullFromMirrorAction(
     val alreadyHave = git(dir, null, "cat-file", "-e", targetHash).exitCode == 0 &&
       git(dir, null, "rev-parse", targetBranch).stdout.trim() == targetHash
     if (alreadyHave) {
-      notify(project, "Ветка «$targetBranch» уже актуальна (${targetHash.take(7)}).", NotificationType.INFORMATION)
+      notify(project, LocalGitMirrorBundle.message("pull.notify.upToDate", targetBranch, targetHash.take(7)), NotificationType.INFORMATION)
       operationInProgress.set(false)
       return
     }
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Превью изменений…", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("pull.task.preview"), true) {
       private var preview: MirrorSyncApi.PreviewPullDetailsResult? = null
 
       override fun run(indicator: ProgressIndicator) {
         onIndicator?.invoke(indicator)
         indicator.isIndeterminate = true
-        indicator.text = "Запрашиваем список изменений…"
+        indicator.text = LocalGitMirrorBundle.message("pull.progress.preview")
         indicator.checkCanceled()
         // since = local tip of this branch if it exists, else null (full history)
         val localTip = git(dir, indicator, "rev-parse", "--verify", targetBranch).let {
@@ -217,14 +216,14 @@ class PullFromMirrorAction(
         val p = preview
         val summary = when {
           p == null || p.code !in 200..299 ->
-            "Не удалось получить превью (продолжить вслепую?)."
+            LocalGitMirrorBundle.message("pull.preview.failed")
           p.commits.isEmpty() ->
-            "Новых коммитов нет, но ветка обновится до ${targetHash.take(7)}."
+            LocalGitMirrorBundle.message("pull.preview.noCommits", targetHash.take(7))
           else -> buildString {
-            appendLine("Прилетит ${p.commits.size} коммит(ов) в «$targetBranch»:")
+            appendLine(LocalGitMirrorBundle.message("pull.preview.commitsHeader", p.commits.size, targetBranch))
             appendLine()
             p.commits.take(10).forEach { appendLine("  • ${it.hash.take(7)} ${it.message}") }
-            if (p.commits.size > 10) appendLine("  … и ещё ${p.commits.size - 10}")
+            if (p.commits.size > 10) appendLine(LocalGitMirrorBundle.message("pull.preview.more", p.commits.size - 10))
             if (p.diffstat.isNotBlank()) {
               appendLine()
               appendLine(p.diffstat.lines().lastOrNull { it.isNotBlank() }?.trim() ?: "")
@@ -233,8 +232,8 @@ class PullFromMirrorAction(
         }
 
         val confirmed = Messages.showYesNoDialog(
-          project, summary, "DocCache: Подтвердите Pull",
-          "Подтянуть", "Отмена", null
+          project, summary, LocalGitMirrorBundle.message("pull.confirm.title"),
+          LocalGitMirrorBundle.message("pull.confirm.yes"), LocalGitMirrorBundle.message("pull.confirm.no"), null
         )
         if (confirmed == Messages.YES) {
           doPull(project, dir, settings, repoName, targetBranch, remoteRefs)
@@ -244,7 +243,7 @@ class PullFromMirrorAction(
       }
 
       override fun onThrowable(error: Throwable) {
-        notify(project, "Ошибка превью: ${error.message}", NotificationType.ERROR)
+        notify(project, LocalGitMirrorBundle.message("pull.notify.previewError", error.message ?: ""), NotificationType.ERROR)
         operationInProgress.set(false)
       }
 
@@ -262,7 +261,7 @@ class PullFromMirrorAction(
     targetBranch: String,
     remoteRefs: Map<String, String>
   ) {
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Pull «$targetBranch»", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("pull.task.pull", targetBranch), true) {
       override fun run(indicator: ProgressIndicator) {
         onIndicator?.invoke(indicator)
         val traceId = UUID.randomUUID().toString().take(8)
@@ -273,12 +272,12 @@ class PullFromMirrorAction(
 
         try {
           val targetHash = remoteRefs[targetBranch] ?: run {
-            notify(project, "[trace=$traceId] Ветка не найдена в refs", NotificationType.ERROR)
+            notify(project, "[trace=$traceId] ${LocalGitMirrorBundle.message("pull.notify.branchMissingRefs")}", NotificationType.ERROR)
             return
           }
 
           // ── Check if objects exist locally ──
-          indicator.text = "Проверяем локальные объекты…"
+          indicator.text = LocalGitMirrorBundle.message("pull.progress.checkObjects")
           indicator.checkCanceled()
           val hasObjects = git(dir, indicator, "cat-file", "-e", targetHash).exitCode == 0
 
@@ -287,7 +286,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
           val gitDir = if (File(rawGd).isAbsolute) File(rawGd) else File(dir, rawGd)
 
           if (!hasObjects) {
-            indicator.text = "Скачивание объектов…"
+            indicator.text = LocalGitMirrorBundle.message("pull.progress.downloadObjects")
             indicator.isIndeterminate = true
             indicator.checkCanceled()
 
@@ -315,10 +314,10 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
                   indicator.fraction = (read.toDouble() / total).coerceIn(0.0, 0.95)
                   val readMb = "%.1f".format(read / 1_048_576.0)
                   val totalMb = "%.1f".format(total / 1_048_576.0)
-                  indicator.text = "Скачивание… $readMb / $totalMb МБ"
+                  indicator.text = LocalGitMirrorBundle.message("pull.progress.downloading", readMb, totalMb)
                 } else {
                   indicator.isIndeterminate = true
-                  indicator.text = "Скачивание объектов…"
+                  indicator.text = LocalGitMirrorBundle.message("pull.progress.downloadObjects")
                 }
               }
             )
@@ -328,7 +327,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
                 // Server has nothing newer than `since` — but we know target hash is missing
                 // locally. This means sinceHash was wrong or server state is inconsistent.
                 // Retry without `since` to get a full bundle.
-                indicator.text = "Запрашиваем полный бандл…"
+                indicator.text = LocalGitMirrorBundle.message("pull.progress.fullBundle")
                 indicator.isIndeterminate = true
                 val dlFull = MirrorSyncApi.exportDump(
                   baseUrl = settings.baseUrl,
@@ -341,19 +340,19 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
                   branch = targetBranch
                 )
                 if (dlFull.code == 204 || dlFull.code !in 200..299 || dlFull.file == null) {
-                  notify(project, "[trace=$traceId] Сервер не может отдать нужные объекты (${dlFull.code})", NotificationType.ERROR)
+                  notify(project, "[trace=$traceId] ${LocalGitMirrorBundle.message("pull.notify.serverNoObjects", dlFull.code)}", NotificationType.ERROR)
                   historyService.add("Pull from Cache", false, "trace=$traceId 204 on full export")
                   return
                 }
                 if (!doFetch(dir, dlFull.file, traceId, project, historyService, targetBranch, indicator)) return
               }
               dl.code !in 200..299 || dl.file == null -> {
-                notify(project, "[trace=$traceId] Ошибка скачивания HTTP ${dl.code}: ${dl.message}", NotificationType.ERROR)
+                notify(project, "[trace=$traceId] ${LocalGitMirrorBundle.message("pull.notify.downloadFailed", dl.code, dl.message)}", NotificationType.ERROR)
                 historyService.add("Pull from Cache", false, "trace=$traceId branch=$targetBranch HTTP ${dl.code}")
                 return
               }
               else -> {
-                indicator.text = "Распаковываем объекты…"
+                indicator.text = LocalGitMirrorBundle.message("pull.progress.unpack")
                 indicator.isIndeterminate = true
                 if (!doFetch(dir, dl.file, traceId, project, historyService, targetBranch, indicator)) return
               }
@@ -362,14 +361,14 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
             // Verify objects are now available after fetch
             val hasNow = git(dir, indicator, "cat-file", "-e", targetHash).exitCode == 0
             if (!hasNow) {
-              notify(project, "[trace=$traceId] Объекты ветки «$targetBranch» недоступны после загрузки. Попробуйте ещё раз.", NotificationType.ERROR)
+              notify(project, "[trace=$traceId] ${LocalGitMirrorBundle.message("pull.notify.objectsMissing", targetBranch)}", NotificationType.ERROR)
               historyService.add("Pull from Cache", false, "trace=$traceId objects missing after fetch")
               return
             }
           }
 
           // ── Apply the branch ref ──
-          indicator.text = "Обновляем ветку «$targetBranch»…"
+          indicator.text = LocalGitMirrorBundle.message("pull.progress.updateBranch", targetBranch)
           indicator.isIndeterminate = false
           indicator.fraction = 0.9
           indicator.checkCanceled()
@@ -386,16 +385,21 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
           // ── Reset working tree if already on this branch ──
           val currentBranch = GitLocal.currentBranch(project, dir)
           if (currentBranch == targetBranch) {
-            git(dir, indicator, "reset", "--hard", "HEAD")
+            // the tree was only verified clean at action start; edits made during the long pull must survive
+            if (GitLocal.isCleanWorkTree(project, dir)) {
+              git(dir, indicator, "reset", "--hard", "HEAD")
+            } else {
+              notify(project, LocalGitMirrorBundle.message("pull.notify.dirtyDuringPull"), NotificationType.WARNING)
+            }
           }
 
           indicator.fraction = 1.0
 
           // ── Notify user — hint to checkout if branch was new ──
           val checkoutHint = if (isNewBranch)
-            "\nЧтобы переключиться: git checkout $targetBranch"
+            LocalGitMirrorBundle.message("pull.notify.checkoutHint", targetBranch)
           else ""
-          val msg = "[trace=$traceId] Pull завершён: $result$checkoutHint"
+          val msg = "[trace=$traceId] ${LocalGitMirrorBundle.message("pull.notify.done", result)}$checkoutHint"
           notify(project, msg, NotificationType.INFORMATION)
           historyService.add("Pull from Cache", true, "trace=$traceId branch=$targetBranch $result")
 
@@ -408,7 +412,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
           if (branchBackupHash != null) {
             git(dir, indicator, "update-ref", "refs/heads/$targetBranch", branchBackupHash)
           }
-          val msg = "[trace=$traceId] Pull не удался: ${humanizeGitError(t.message)}"
+          val msg = "[trace=$traceId] ${LocalGitMirrorBundle.message("pull.notify.failed", humanizeGitError(t.message))}"
           notify(project, msg, NotificationType.ERROR)
           historyService.add("Pull from Cache", false, "trace=$traceId ${t.message}")
         } finally {
@@ -428,19 +432,19 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
 
   /** Map common raw git/network errors to human-friendly hints. */
   private fun humanizeGitError(raw: String?): String {
-    if (raw.isNullOrBlank()) return "неизвестная ошибка"
+    if (raw.isNullOrBlank()) return LocalGitMirrorBundle.message("pull.err.unknown")
     val low = raw.lowercase()
     return when {
       "prerequisite" in low ->
-        "бандл требует коммиты, которых нет локально. Попробуйте полный pull (ветка скачается целиком)."
+        LocalGitMirrorBundle.message("pull.err.prerequisite")
       "could not read" in low || "bad object" in low ->
-        "повреждённые или неполные объекты. Повторите pull."
+        LocalGitMirrorBundle.message("pull.err.badObject")
       "timed out" in low || "timeout" in low ->
-        "превышено время ожидания. Проверьте сеть/нагрузку сервера."
+        LocalGitMirrorBundle.message("pull.err.timeout")
       "connection" in low || "connect" in low ->
-        "не удалось подключиться к серверу. Проверьте URL/порт."
+        LocalGitMirrorBundle.message("pull.err.connection")
       "would clobber" in low || "non-fast-forward" in low ->
-        "локальная ветка расходится с Cache. Сохраните изменения и повторите."
+        LocalGitMirrorBundle.message("pull.err.diverged")
       else -> raw.take(300)
     }
   }
@@ -452,9 +456,12 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
    * for the send path, so push and pull behave consistently.
    */
   private fun quickHandshake(settings: MirrorSettingsService.State): String? {
-    if (settings.baseUrl.isBlank()) return "Не настроен URL сервера."
+    if (settings.baseUrl.isBlank()) return LocalGitMirrorBundle.message("pull.notify.urlMissing")
     val syncPassword = SecretsStore.syncPassword
-    if (syncPassword.isBlank()) return "Не задан Sync Password (Settings → DocCache)."
+    if (syncPassword.isBlank()) {
+      return if (MirrorCrypto.isV3Pinned()) null
+      else LocalGitMirrorBundle.message("pull.notify.passwordMissing")
+    }
 
     val probe = HandshakeCache.passwordProbe(
       baseUrl = settings.baseUrl,
@@ -463,15 +470,14 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
       insecureTls = settings.mirrorInsecureTls
     )
     if (probe.code !in 200..299 || probe.bytes == null) {
-      return "Сервер недоступен: HTTP ${probe.code}: ${probe.message.take(200)}"
+      return LocalGitMirrorBundle.message("pull.notify.serverUnreachable", probe.code, probe.message.take(200))
     }
     return try {
       val plain = String(BundleCrypto.decryptDumpBytes(probe.bytes, syncPassword)).trim()
       if (plain == "LGM-PROBE" || plain == "SYNC-PROBE") null
-      else "Sync Password не совпадает с сервером (probe вернул неожиданный payload)."
+      else LocalGitMirrorBundle.message("pull.notify.passwordMismatchPayload")
     } catch (_: Throwable) {
-      "Sync Password не совпадает с сервером. " +
-        "Откройте Settings → DocCache и введите тот же пароль, что в .env (SYNC_PASSWORD) на сервере."
+      LocalGitMirrorBundle.message("pull.notify.passwordMismatch")
     }
   }
 
@@ -482,11 +488,10 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
     return when {
       // AES-GCM tag mismatch = wrong password (or corrupted bundle)
       cls.contains("BadTag") || cls.contains("BadPadding") || raw?.contains("Tag mismatch", true) == true ->
-        "Ошибка расшифровки: Sync Password не совпадает с сервером. " +
-          "Сверьте пароль в Settings → DocCache с .env SYNC_PASSWORD на сервере."
+        LocalGitMirrorBundle.message("pull.decryptErr.badTag")
       cls.contains("IllegalArgument") ->
-        "Ошибка расшифровки: повреждённый или неподдерживаемый формат пакета. ${raw ?: ""}".trim()
-      else -> "Ошибка расшифровки: ${raw ?: cls}"
+        LocalGitMirrorBundle.message("pull.decryptErr.illegalArg", raw ?: "")
+      else -> LocalGitMirrorBundle.message("pull.decryptErr.generic", raw ?: cls)
     }
   }
 
@@ -593,10 +598,11 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
       tmpBundle.writeBytes(decryptedBytes)
       val res = git(dir, indicator, "fetch", tmpBundle.absolutePath, "+refs/heads/*:refs/fetched/mirror/*")
       if (res.exitCode != 0) {
-        onError("Ошибка распаковки бандла: ${res.stderr.ifBlank { res.stdout }.take(500)}")
+        onError(LocalGitMirrorBundle.message("pull.notify.bundleUnpackFailed",
+          res.stderr.ifBlank { res.stdout }.take(500)))
       }
     } catch (t: Throwable) {
-      onError("Ошибка распаковки бандла: ${t.message ?: t::class.simpleName}")
+      onError(LocalGitMirrorBundle.message("pull.notify.bundleUnpackFailed", t.message ?: t::class.simpleName ?: ""))
     } finally {
       try { tmpBundle.delete() } catch (_: Exception) {}
     }

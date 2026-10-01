@@ -220,7 +220,7 @@ class BufferPinRequest(BaseModel):
 
 
 @router.post("", response_model=BufferPutResponse)
-async def buffer_put(req: BufferPutRequest):
+def buffer_put(req: BufferPutRequest):
     """Append a new entry. Oldest non-pinned entries fall off at the cap."""
     try:
         ciphertext = base64.b64decode(req.ciphertext_b64, validate=True)
@@ -276,7 +276,7 @@ async def buffer_list():
 
 
 @router.get("/{item_id}")
-async def buffer_get(item_id: str, x_lgm_epk: Optional[str] = Header(None, alias="X-LGM-Epk")):
+def buffer_get(item_id: str, x_lgm_epk: Optional[str] = Header(None, alias="X-LGM-Epk")):
     """Return the entry body re-sealed for the requesting reader."""
     with _lock:
         _load_locked()

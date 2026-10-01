@@ -102,7 +102,9 @@ internal fun LocalGitMirrorPanel.buildDepsTab(): JComponent {
 internal fun LocalGitMirrorPanel.refreshDepsInBackground() {
   if (project.isDisposed || ApplicationManager.getApplication().isDisposeInProgress) return
   val s = service<MirrorSettingsService>().state
-  if (s.baseUrl.isBlank() || SecretsStore.syncPassword.isBlank()) return
+  if (s.baseUrl.isBlank() ||
+    (SecretsStore.cached.syncPassword.isBlank() && !localgitmirror.idea.mirror.MirrorCrypto.isV3Pinned())
+  ) return
   ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: deps", true) {
     override fun run(indicator: ProgressIndicator) {
       val dir = baseDir() ?: return

@@ -1,6 +1,6 @@
 import os
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.core.logger import get_logger
 
@@ -15,7 +15,7 @@ def _validate_ws_token(websocket: WebSocket) -> bool:
     """Validate API key from query param before accepting WS connection."""
     expected = os.getenv("API_KEY", "")
     if not expected:
-        return True  # No auth configured — allow all
+        return False
     token = websocket.query_params.get("key", "")
     return token == expected
 
@@ -100,41 +100,3 @@ async def websocket_logs(websocket: WebSocket):
                 active_connections.remove(websocket)
         except Exception:
             pass
-
-
-@router.get("/api/logs")
-async def get_logs(limit: int = Query(100, ge=1, le=1000)):
-    """Get recent logs (HTTP endpoint)"""
-    logger = get_logger()
-    logs = logger.get_recent_logs(limit=limit)
-
-    return {"success": True, "logs": logs, "count": len(logs)}
-
-
-@router.delete("/api/logs")
-async def clear_logs():
-    """Clear all logs"""
-    logger = get_logger()
-    success = logger.clear_logs()
-
-    return {
-        "success": success,
-        "message": "Logs cleared successfully" if success else "Failed to clear logs",
-    }
-
-
-@router.get("/api/logs/stats")
-async def get_log_stats():
-    """Get log statistics"""
-    logger = get_logger()
-    logs = logger.get_recent_logs(limit=1000)
-
-    stats = {
-        "total": len(logs),
-        "info": sum(1 for log in logs if log.get("level") == "INFO"),
-        "warning": sum(1 for log in logs if log.get("level") == "WARNING"),
-        "error": sum(1 for log in logs if log.get("level") == "ERROR"),
-        "active_connections": len(active_connections),
-    }
-
-    return {"success": True, "stats": stats}

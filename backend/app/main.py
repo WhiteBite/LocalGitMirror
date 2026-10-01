@@ -319,16 +319,23 @@ async def lifespan(app: FastAPI):
     if sync_pass and len(sync_pass) < 12:
         console.print(f"[bold yellow][!] WARNING: SYNC_PASSWORD is weak ({len(sync_pass)} chars). Use 16+ chars for security.[/bold yellow]")
 
+    api_key = os.getenv("API_KEY", "")
+    if not api_key:
+        console.print("[bold red][!] API_KEY is not set: every protected API route will reject requests (503). Set API_KEY in .env.[/bold red]")
+
     # Print connection info for IDEA plugin setup
     from app.core.system_monitor import SystemMonitor
     local_ip = SystemMonitor.get_local_ip()
-    api_key = os.getenv("API_KEY", "")
     masked_key = f"{api_key[:4]}****" if len(api_key) >= 4 else "****"
+    masked_pass = (
+        f"{sync_pass[:4]}****" if len(sync_pass) >= 4
+        else ("****" if sync_pass else "(не задан в .env!)")
+    )
     console.print("")
     console.print("[bold cyan]─── Plugin Connection Info ───[/bold cyan]")
     console.print(f"[cyan]Mirror URL:[/cyan]      {protocol}://{local_ip}:{CONFIG['web_port']}")
     console.print(f"[cyan]API Key:[/cyan]         {masked_key}")
-    console.print(f"[cyan]Sync Password:[/cyan]   {sync_pass if sync_pass else '(не задан в .env!)'}")
+    console.print(f"[cyan]Sync Password:[/cyan]   {masked_pass}")
     # v3 hybrid public-key fingerprint (for out-of-band pinning verification)
     try:
         if sync_envelope.get_server_private_key() is not None:
@@ -367,9 +374,9 @@ async def get_api_key(
     auth_header: str = Security(auth_bearer_header),
 ):
     expected_key = os.getenv("API_KEY")
-    # Allow requests without API key (for development/local use)
     if not expected_key:
-        return legacy_key or auth_header
+        # fail closed: no configured key means nothing to verify credentials against
+        raise HTTPException(status_code=503, detail="API_KEY not configured")
     # Check Authorization: Bearer <key>
     if auth_header:
         token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else auth_header

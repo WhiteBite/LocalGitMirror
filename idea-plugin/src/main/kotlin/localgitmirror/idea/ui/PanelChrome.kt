@@ -296,7 +296,8 @@ internal fun LocalGitMirrorPanel.refreshStatus() {
     return
   }
   val s = service<MirrorSettingsService>().state
-  val connected = s.baseUrl.isNotBlank() && SecretsStore.syncPassword.isNotBlank()
+  val connected = s.baseUrl.isNotBlank() &&
+    (SecretsStore.cached.syncPassword.isNotBlank() || localgitmirror.idea.mirror.MirrorCrypto.isV3Pinned())
   val machineRole = localgitmirror.idea.deps.RoleDetector.detect(s)
   val divergedCount = countDivergedBranches()
 

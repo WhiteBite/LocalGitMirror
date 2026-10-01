@@ -9,10 +9,13 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.ui.dsl.builder.*
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.net.LanDiscovery
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.HandshakeCache
+import localgitmirror.idea.workkit.BundleCrypto
 import java.awt.BorderLayout
 import java.awt.Font
 import java.io.File
@@ -26,18 +29,18 @@ internal fun LocalGitMirrorPanel.buildSetupUi() {
     }
 
     row {
-      label("URL сервера")
+      label(LocalGitMirrorBundle.message("setup.label.url"))
     }
     row {
       textField()
         .bindText(::setupUrl)
         .resizableColumn()
-      button("🔍 Найти") { onDiscoverSetup() }
+      button(LocalGitMirrorBundle.message("setup.label.discover")) { onDiscoverSetup() }
         .gap(RightGap.SMALL)
     }
 
     row {
-      label("API Key")
+      label(LocalGitMirrorBundle.message("setup.label.apiKey"))
     }
     row {
       passwordField()
@@ -46,7 +49,7 @@ internal fun LocalGitMirrorPanel.buildSetupUi() {
     }
 
     row {
-      label("Sync Password")
+      label(LocalGitMirrorBundle.message("setup.label.syncPassword"))
     }
     row {
       passwordField()
@@ -55,7 +58,7 @@ internal fun LocalGitMirrorPanel.buildSetupUi() {
     }
 
     row {
-      button("Подключиться") { onConnectSetup() }
+      button(LocalGitMirrorBundle.message("setup.label.connect")) { onConnectSetup() }
         .applyToComponent {
           putClientProperty("JButton.buttonType", "default")
           font = font.deriveFont(Font.BOLD)
@@ -78,8 +81,8 @@ internal fun LocalGitMirrorPanel.onDiscoverSetup() {
       when {
         servers.isEmpty() -> {
           Messages.showInfoMessage(
-            "Серверы не найдены в локальной сети.\nПроверьте, что сервер запущен и доступен.",
-            "Поиск сервера"
+            LocalGitMirrorBundle.message("settings.discover.none"),
+            LocalGitMirrorBundle.message("settings.discover.title")
           )
         }
         servers.size == 1 -> {
@@ -89,8 +92,8 @@ internal fun LocalGitMirrorPanel.onDiscoverSetup() {
         else -> {
           val options = servers.map { "${it.toUrl()} (${it.ip})" }.toTypedArray()
           val chosen = Messages.showEditableChooseDialog(
-            "Найдено несколько серверов. Выберите:",
-            "Поиск сервера",
+            LocalGitMirrorBundle.message("settings.discover.multiple"),
+            LocalGitMirrorBundle.message("settings.discover.title"),
             null, options, options.first(), null
           )
           if (chosen != null) {
@@ -112,41 +115,54 @@ internal fun LocalGitMirrorPanel.onConnectSetup() {
     if (it.startsWith("http://") || it.startsWith("https://")) it.trimEnd('/')
     else "https://${it.trimEnd('/')}"
   }
-  if (setupSyncPassword.isBlank()) {
-    notify("Введите пароль синхронизации.", NotificationType.WARNING)
+  val v3Pinned = MirrorCrypto.isV3Pinned()
+  if (setupSyncPassword.isBlank() && !v3Pinned) {
+    notify(LocalGitMirrorBundle.message("setup.notify.passwordMissing"), NotificationType.WARNING)
     return
   }
 
   val s = service<MirrorSettingsService>().state
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Проверка подключения", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("setup.task.check"), true) {
     override fun run(indicator: ProgressIndicator) {
       currentIndicator = indicator
       try {
-        indicator.text = "Проверяем подключение к серверу…"
-        val probe = HandshakeCache.passwordProbe(
-          baseUrl = url,
-          apiKey = setupApiKey,
-          syncPassword = setupSyncPassword,
-          insecureTls = s.mirrorInsecureTls
-        )
-        if (probe.code !in 200..299) {
-          val msg = if (probe.code == 0)
-            "Сервер недоступен: ${probe.message}"
-          else
-            "Ошибка подключения (HTTP ${probe.code}): ${probe.message.take(200)}"
-          notify(msg, NotificationType.ERROR)
-          return
+        indicator.text = LocalGitMirrorBundle.message("setup.progress.checking")
+        if (setupSyncPassword.isBlank()) {
+          // v3 pinned: no shared password to verify — reachability only
+          val caps = HandshakeCache.capabilities(url, setupApiKey, "", s.mirrorInsecureTls)
+          if (caps.code !in 200..299) {
+            notify(connectErrorMessage(caps.code, caps.body), NotificationType.ERROR)
+            return
+          }
+        } else {
+          val probe = HandshakeCache.passwordProbe(
+            baseUrl = url,
+            apiKey = setupApiKey,
+            syncPassword = setupSyncPassword,
+            insecureTls = s.mirrorInsecureTls
+          )
+          if (probe.code !in 200..299 || probe.bytes == null) {
+            notify(connectErrorMessage(probe.code, probe.message), NotificationType.ERROR)
+            return
+          }
+          val plain = try {
+            String(BundleCrypto.decryptDumpBytes(probe.bytes, setupSyncPassword)).trim()
+          } catch (_: Throwable) {
+            null
+          }
+          if (plain != "LGM-PROBE" && plain != "SYNC-PROBE") {
+            notify(LocalGitMirrorBundle.message("setup.notify.passwordMismatch"), NotificationType.ERROR)
+            return
+          }
         }
 
-        // Save settings
         s.baseUrl = url
         SecretsStore.mirrorApiKey = setupApiKey
         SecretsStore.syncPassword = setupSyncPassword
 
-        notify("Подключение к серверу установлено.", NotificationType.INFORMATION)
+        notify(LocalGitMirrorBundle.message("setup.notify.ok"), NotificationType.INFORMATION)
 
-        // Switch to main UI
         UIUtil.invokeLaterIfNeeded {
           removeAll()
           buildMainUi()
@@ -167,6 +183,12 @@ internal fun LocalGitMirrorPanel.onConnectSetup() {
     }
   })
 }
+
+private fun connectErrorMessage(code: Int, message: String): String =
+  if (code == 0)
+    LocalGitMirrorBundle.message("setup.notify.unreachable", message)
+  else
+    LocalGitMirrorBundle.message("setup.notify.httpError", code, message.take(200))
 
 internal fun LocalGitMirrorPanel.baseDir(): File? {
   val basePath = project.basePath ?: return null

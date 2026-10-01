@@ -3,6 +3,7 @@ package localgitmirror.idea.deps
 import com.intellij.openapi.components.service
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.mirror.MirrorDepsApi
 import localgitmirror.idea.settings.MirrorSettingsService
@@ -90,7 +91,7 @@ object DepsRequester {
     if (ecosystems.isEmpty()) {
       return Result(
         success = false,
-        message = "Не найден ни gradle, ни npm проект в ${projectDir.name}.",
+        message = LocalGitMirrorBundle.message("deps.request.noEcosystem", projectDir.name),
         missingCount = 0,
         requestId = null,
         ecosystem = ""
@@ -119,7 +120,7 @@ object DepsRequester {
     if (missing.isEmpty()) {
       return Result(
         success = true,
-        message = "Всё резолвится локально — запрашивать нечего.",
+        message = LocalGitMirrorBundle.message("deps.request.nothingMissing"),
         missingCount = 0,
         requestId = null,
         ecosystem = ecosystems.joinToString(",") { it.id }
@@ -149,7 +150,7 @@ object DepsRequester {
     if (res.code !in 200..299 || res.id == null) {
       return Result(
         success = false,
-        message = "Запрос не отправлен (${res.code}): ${res.message}",
+        message = LocalGitMirrorBundle.message("deps.request.sendFailed", res.code, res.message),
         missingCount = missing.size,
         requestId = null,
         ecosystem = manifest.ecosystem
@@ -158,8 +159,7 @@ object DepsRequester {
 
     return Result(
       success = true,
-      message = "Запрошено ${missing.size} недостающих зависимостей (${manifest.ecosystem}).\n" +
-        "На рабочей машине нажми «Выдать запрошенные зависимости».",
+      message = LocalGitMirrorBundle.message("deps.request.sent", missing.size, manifest.ecosystem),
       missingCount = missing.size,
       requestId = res.id,
       ecosystem = manifest.ecosystem
@@ -213,7 +213,7 @@ object DepsResponder {
     } catch (t: Throwable) {
       return Result(
         success = false,
-        message = "Ошибка расшифровки запроса: ${t.message ?: t::class.simpleName}",
+        message = LocalGitMirrorBundle.message("deps.respond.decryptFailed", t.message ?: t::class.simpleName ?: ""),
         sentCount = 0, notFoundCount = 0, bytes = 0
       )
     }
@@ -221,29 +221,32 @@ object DepsResponder {
     if (manifest.version < 3 || manifest.missing.isEmpty()) {
       val detail = "v=${manifest.version} missing=${manifest.missing.size} eco='${manifest.ecosystem}'"
       val hint = if (manifest.version < 3)
-        "Обнови плагин на домашней машине и повтори «Запросить»."
+        LocalGitMirrorBundle.message("deps.respond.legacyHint")
       else
-        "Домашняя машина решила что ничего не нужно. Открой Help → Show Log, найди '[deps] request:' — там будет причина."
+        LocalGitMirrorBundle.message("deps.respond.emptyHint")
       return Result(
         success = false,
-        message = "Запрос пуст или в старом формате ($detail). $hint",
+        message = LocalGitMirrorBundle.message("deps.respond.emptyOrLegacy", detail, hint),
         sentCount = 0, notFoundCount = 0, bytes = 0
       )
     }
 
-    indicator?.text = "Ищем ${manifest.missing.size} координат в локальном кеше…"
+    indicator?.text = LocalGitMirrorBundle.message("deps.progress.searchCache", manifest.missing.size)
     val workProjectDir = project.basePath?.let { File(it) }
     GradleEcosystem.collectProjectDir = workProjectDir
     val presentIndex = manifest.presentIndex()
     val byEco = manifest.missing.groupBy { it.ecosystem }
     val entries = mutableListOf<DepFileEntry>()
     val notFound = mutableListOf<DepCoordinate>()
-    for ((ecoId, coords) in byEco) {
-      val eco = DepsEcosystems.byId(ecoId)
-      if (eco == null) { notFound.addAll(coords); continue }
-      entries.addAll(eco.collect(coords, presentIndex) { notFound.add(it) })
+    try {
+      for ((ecoId, coords) in byEco) {
+        val eco = DepsEcosystems.byId(ecoId)
+        if (eco == null) { notFound.addAll(coords); continue }
+        entries.addAll(eco.collect(coords, presentIndex) { notFound.add(it) })
+      }
+    } finally {
+      GradleEcosystem.collectProjectDir = null
     }
-    GradleEcosystem.collectProjectDir = null
 
     val nexusBaseUrl = settings.nexusBaseUrl
     var nexusRecovered = 0
@@ -263,12 +266,15 @@ object DepsResponder {
       if (pkgMgrGradle > 0 || pkgMgrNpm > 0) {
         val reNotFound = mutableListOf<DepCoordinate>()
         GradleEcosystem.collectProjectDir = workProjectDir
-        for ((ecoId, coords) in notFound.groupBy { it.ecosystem }) {
-          val eco = DepsEcosystems.byId(ecoId)
-          if (eco == null) { reNotFound.addAll(coords); continue }
-          entries.addAll(eco.collect(coords, presentIndex) { reNotFound.add(it) })
+        try {
+          for ((ecoId, coords) in notFound.groupBy { it.ecosystem }) {
+            val eco = DepsEcosystems.byId(ecoId)
+            if (eco == null) { reNotFound.addAll(coords); continue }
+            entries.addAll(eco.collect(coords, presentIndex) { reNotFound.add(it) })
+          }
+        } finally {
+          GradleEcosystem.collectProjectDir = null
         }
-        GradleEcosystem.collectProjectDir = null
         notFound.clear()
         notFound.addAll(reNotFound)
       }
@@ -279,7 +285,7 @@ object DepsResponder {
       val nonGradle = notFound.filter { it.ecosystem != "gradle" }
       if (nexusBaseUrl.isNotBlank() && gradleMissing.isNotEmpty()) {
         val cap = minOf(50, gradleMissing.size)
-        indicator?.text = "Пробуем Nexus для $cap отсутствующих артефактов…"
+        indicator?.text = LocalGitMirrorBundle.message("deps.progress.nexus", cap)
         val stillMissing = mutableListOf<DepCoordinate>()
         for (coord in gradleMissing.take(cap)) {
           val ok = runCatching { fetchCoordFromNexus(coord, nexusBaseUrl, entries, tempFiles) }
@@ -303,11 +309,11 @@ object DepsResponder {
         DepsDiagnostics.detail("Requested (not found)") { manifest.missing.map { "${it.ecosystem}  ${it.label}" } }
 
         val hint = if (nexusBaseUrl.isBlank() && notFound.isNotEmpty())
-          "\nЗадайте Nexus URL в настройках DocCache, чтобы доставать отсутствующие в кэше артефакты напрямую."
+          LocalGitMirrorBundle.message("deps.respond.nexusHint")
         else ""
         return Result(
           success = false,
-          message = "Ни одна из ${manifest.missing.size} зависимостей не найдена в кеше.$hint",
+          message = LocalGitMirrorBundle.message("deps.respond.zeroFound", manifest.missing.size) + hint,
           sentCount = 0,
           notFoundCount = manifest.missing.size,
           bytes = 0
@@ -331,11 +337,11 @@ object DepsResponder {
         }
       }
       val diffSize = prefixed.sumOf { it.size }
-      indicator?.text = "Упаковываем ${prefixed.size} файлов (${humanBytes(diffSize)})…"
+      indicator?.text = LocalGitMirrorBundle.message("deps.progress.packing", prefixed.size, humanBytes(diffSize))
       val zipBytes = DepsBundler.packEntries(prefixed)
       val sealed = MirrorCrypto.sealDepsPayload(zipBytes, syncPwd, HybridCrypto.RELAY_AAD_DEPS_RESP)
 
-      indicator?.text = "Отправляем (${humanBytes(sealed.bytes.size.toLong())})…"
+      indicator?.text = LocalGitMirrorBundle.message("deps.progress.sending", humanBytes(sealed.bytes.size.toLong()))
       val res = MirrorDepsApi.depsRespond(
         baseUrl = settings.baseUrl,
         apiKey = SecretsStore.mirrorApiKey,
@@ -348,7 +354,7 @@ object DepsResponder {
       if (res.code !in 200..299 || res.id == null) {
         return Result(
           success = false,
-          message = "Не отправлено (${res.code}): ${res.message}",
+          message = LocalGitMirrorBundle.message("deps.respond.sendFailed", res.code, res.message),
           sentCount = 0, notFoundCount = 0, bytes = 0
         )
       }
@@ -367,15 +373,16 @@ object DepsResponder {
         }
       }
 
-      val warn = if (notFoundUnique.isNotEmpty()) " (не найдено ${notFoundUnique.size})" else ""
-      val pkgMgrInfo = if (pkgMgrGradle + pkgMgrNpm > 0) ", докачано пакетными менеджерами: ${pkgMgrGradle + pkgMgrNpm}" else ""
-      val nexusInfo = if (nexusRecovered > 0) ", восстановлено через Nexus: $nexusRecovered" else ""
+      val warn = if (notFoundUnique.isNotEmpty()) LocalGitMirrorBundle.message("deps.respond.notFoundSuffix", notFoundUnique.size) else ""
+      val pkgMgrInfo = if (pkgMgrGradle + pkgMgrNpm > 0) LocalGitMirrorBundle.message("deps.respond.pkgMgrSuffix", pkgMgrGradle + pkgMgrNpm) else ""
+      val nexusInfo = if (nexusRecovered > 0) LocalGitMirrorBundle.message("deps.respond.nexusSuffix", nexusRecovered) else ""
       val hint = if (nexusBaseUrl.isBlank() && notFoundUnique.isNotEmpty())
-        "\nЗадайте Nexus URL в настройках DocCache, чтобы доставать отсутствующие в кэше артефакты напрямую."
+        LocalGitMirrorBundle.message("deps.respond.nexusHint")
       else ""
       return Result(
         success = true,
-        message = "Отправлено ${humanBytes(diffSize)} — ${foundCoords.size} зависимостей$warn$pkgMgrInfo$nexusInfo.$hint",
+        message = LocalGitMirrorBundle.message("deps.respond.sent", humanBytes(diffSize), foundCoords.size) +
+          warn + pkgMgrInfo + nexusInfo + "." + hint,
         sentCount = foundCoords.size,
         notFoundCount = notFoundUnique.size,
         bytes = diffSize
@@ -453,7 +460,7 @@ object DepsApplier {
     responsePlaintext: Boolean = false
   ): Result {
     indicator?.isIndeterminate = true
-    indicator?.text = "Расшифровка и распаковка…"
+    indicator?.text = LocalGitMirrorBundle.message("deps.progress.applyDecrypt")
 
     val unpackResult = try {
       val decrypted = if (responsePlaintext) responseBlob else BundleCrypto.decryptDumpBytes(responseBlob, syncPwd)
@@ -470,7 +477,7 @@ object DepsApplier {
     } catch (t: Throwable) {
       return Result(
         success = false,
-        message = "Ошибка применения: ${t.message ?: t::class.simpleName}",
+        message = LocalGitMirrorBundle.message("deps.apply.failed", t.message ?: t::class.simpleName ?: ""),
         installed = 0, skipped = 0, invalid = 0, bytes = 0
       )
     }
@@ -512,7 +519,7 @@ object DepsApplier {
       val ymir = NpmEcosystem.yarnOfflineMirror()
       val cnt = runCatching { NpmEcosystem.buildYarnMirror(NpmEcosystem.cacheRoot(), ymir) }.getOrDefault(0)
       runCatching { NpmEcosystem.setGlobalYarnMirror(ymir) }
-      lockMsg = "yarn: offline-mirror ($cnt пакет(ов)) в глобальном ~/.yarnrc; yarn.lock не тронут."
+      lockMsg = LocalGitMirrorBundle.message("deps.apply.yarnMirror", cnt)
       suggestYarn = true
     } else if (lockBytes != null && applyProj != null && File(applyProj, "package.json").isFile) {
       val nrw = runCatching {
@@ -521,10 +528,10 @@ object DepsApplier {
         n
       }.getOrNull()
       if (nrw != null) {
-        lockMsg = "package-lock.json применён ($nrw ссылок → npmjs)."
+        lockMsg = LocalGitMirrorBundle.message("deps.apply.lockApplied", nrw)
         suggestNpm = true
       } else {
-        lockMsg = "package-lock.json получен, но записать не удалось."
+        lockMsg = LocalGitMirrorBundle.message("deps.apply.lockWriteFailed")
       }
     }
 
@@ -537,15 +544,15 @@ object DepsApplier {
     }
 
     val msg = buildString {
-      append("Применено: ${unpackResult.installed} установлено, ${unpackResult.skipped} уже было")
-      if (unpackResult.invalid > 0) append(", ${unpackResult.invalid} отклонено")
-      append(" (${humanBytes(unpackResult.totalBytes)}).")
+      append(LocalGitMirrorBundle.message("deps.apply.applied", unpackResult.installed, unpackResult.skipped))
+      if (unpackResult.invalid > 0) append(LocalGitMirrorBundle.message("deps.apply.invalidSuffix", unpackResult.invalid))
+      append(LocalGitMirrorBundle.message("deps.apply.sizeSuffix", humanBytes(unpackResult.totalBytes)))
       if (npmInstalled) {
         appendLine(); appendLine()
         if (postStatus.isNotEmpty()) {
-          append("npm: $postStatus")
+          append(LocalGitMirrorBundle.message("deps.apply.npmStatus", postStatus))
         } else {
-          append("npm-тарболы: ${npmMirror.absolutePath}\nставь из этой папки (npm install --offline).")
+          append(LocalGitMirrorBundle.message("deps.apply.npmTarballs", npmMirror.absolutePath))
         }
       }
       if (lockMsg.isNotEmpty()) {

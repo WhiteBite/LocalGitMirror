@@ -7,8 +7,10 @@ the dashboard plugin card and the IDE self-update flow.
 from fastapi.testclient import TestClient
 
 # Import BEFORE monkeypatching: app.main loads .env at import time, so
-# API_KEY must be removed after the import (per-test) to keep auth open.
+# API_KEY must be set after the import (per-test) to a known value.
 from app.main import app
+
+AUTH = {"X-Session-ID": "plugin-info-test-key"}
 
 
 def test_plugin_info_returns_metadata_and_sha256(tmp_path, monkeypatch):
@@ -17,10 +19,10 @@ def test_plugin_info_returns_metadata_and_sha256(tmp_path, monkeypatch):
     zip_path = tmp_path / "localgitmirror-idea-plugin-0.999.0.zip"
     zip_path.write_bytes(b"fake-zip-content")
     monkeypatch.setenv("LGM_PLUGIN_DIST", str(tmp_path))
-    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("API_KEY", "plugin-info-test-key")
 
     client = TestClient(app)  # no context manager: skips lifespan/ports
-    r = client.get("/api/plugin/info")
+    r = client.get("/api/plugin/info", headers=AUTH)
 
     assert r.status_code == 200, r.text
     data = r.json()
@@ -36,10 +38,10 @@ def test_plugin_latest_streams_the_archive(tmp_path, monkeypatch):
     payload = b"fake-zip-content-2"
     zip_path.write_bytes(payload)
     monkeypatch.setenv("LGM_PLUGIN_DIST", str(tmp_path))
-    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("API_KEY", "plugin-info-test-key")
 
     client = TestClient(app)
-    r = client.get("/api/plugin/latest")
+    r = client.get("/api/plugin/latest", headers=AUTH)
 
     assert r.status_code == 200
     assert r.content == payload
@@ -50,12 +52,12 @@ def _enc_env(monkeypatch, tmp_path, payload: bytes):
     zip_path.write_bytes(payload)
     monkeypatch.setenv("LGM_PLUGIN_DIST", str(tmp_path))
     monkeypatch.setenv("SYNC_PASSWORD", "pw")
-    monkeypatch.delenv("API_KEY", raising=False)
+    monkeypatch.setenv("API_KEY", "plugin-info-test-key")
 
 
 def test_plugin_info_enc_hides_metadata(tmp_path, monkeypatch):
     _enc_env(monkeypatch, tmp_path, b"fake-zip-content")
-    r = TestClient(app).get("/api/plugin/info", params={"enc": "1"})
+    r = TestClient(app).get("/api/plugin/info", params={"enc": "1"}, headers=AUTH)
     assert r.status_code == 200, r.text
     data = r.json()
     assert set(data) == {"e"}  # no filename/version leaks in the JSON
@@ -70,7 +72,7 @@ def test_plugin_info_enc_hides_metadata(tmp_path, monkeypatch):
 def test_plugin_latest_enc_ships_ciphertext(tmp_path, monkeypatch):
     payload = b"PK\x03\x04" + b"\x00" * 64
     _enc_env(monkeypatch, tmp_path, payload)
-    r = TestClient(app).get("/api/plugin/latest", params={"enc": "1"})
+    r = TestClient(app).get("/api/plugin/latest", params={"enc": "1"}, headers=AUTH)
     assert r.status_code == 200
     assert r.content[:2] != b"PK"  # bundle v2 noise, not a zip
     assert r.content[0] == 0x01
@@ -84,6 +86,6 @@ def test_plugin_enc_requires_password(tmp_path, monkeypatch):
     zip_path.write_bytes(b"x")
     monkeypatch.setenv("LGM_PLUGIN_DIST", str(tmp_path))
     monkeypatch.delenv("SYNC_PASSWORD", raising=False)
-    monkeypatch.delenv("API_KEY", raising=False)
-    r = TestClient(app).get("/api/plugin/latest", params={"enc": "1"})
+    monkeypatch.setenv("API_KEY", "plugin-info-test-key")
+    r = TestClient(app).get("/api/plugin/latest", params={"enc": "1"}, headers=AUTH)
     assert r.status_code == 503

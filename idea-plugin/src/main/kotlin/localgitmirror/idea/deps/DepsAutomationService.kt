@@ -77,51 +77,33 @@ class DepsAutomationService(private val project: Project) : Disposable {
     scheduler.recordLocalEvent()
   }
 
-  /**
-   * Called from [DepsAutomationStartupActivity]. Idempotent: safe to call
-   * multiple times. Resolves the role and repo name, then starts the poller
-   * and (for HOME) the debounced initial missing-check.
-   */
+  /** Idempotent; each poller pass re-reads role and settings, so later toggles apply without a restart. */
   fun start() {
     if (started) return
     started = true
 
-    val s = settings
-    if (!depsTransferAllowed(s.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) return
+    DepsDiagnostics.event("automation: started")
 
-    val baseDir = project.basePath ?: return
+    registerGradleSyncHook()
+
+    startPoller()
+
+    scheduleInitialMissingCheck(20_000L)
+
+    scheduleVaultCacheSync(40_000L)
+  }
+
+  /** Repo name resolved lazily: settings may be incomplete when [start] runs. */
+  private fun ensureRepoName(): String {
+    if (repoName.isNotBlank()) return repoName
+    val baseDir = project.basePath ?: return ""
     val dir = File(baseDir)
-    if (!dir.exists()) return
-
+    if (!dir.exists()) return ""
     repoName = localgitmirror.idea.sync.v2.RepoResolver
       .resolve(project, dir, "")
       .sanitized
       .ifBlank { project.name }
-    if (repoName.isBlank()) return
-
-    DepsDiagnostics.event("automation: started")
-
-    // Register Gradle sync failure hook (HOME only, for auto-request)
-    if (role == MachineRole.HOME && s.autoRequestDeps) {
-      registerGradleSyncHook()
-    }
-
-    // WORK with auto-respond off: no background network activity.
-    // Manual actions (Respond/Apply/Request) don't depend on the poller.
-    if (role == MachineRole.WORK && !s.autoRespondDeps) return
-
-    // Start the poller
-    startPoller()
-
-    // HOME: debounced initial missing-check (20s after start)
-    if (role == MachineRole.HOME && s.autoRequestDeps) {
-      scheduleInitialMissingCheck(20_000L)
-    }
-
-    // HOME: vault cache self-healing (40s after start, after the missing-check)
-    if (role == MachineRole.HOME) {
-      scheduleVaultCacheSync(40_000L)
-    }
+    return repoName
   }
 
   // ── Poller ──
@@ -132,6 +114,8 @@ class DepsAutomationService(private val project: Project) : Disposable {
         try {
           Thread.sleep(scheduler.nextSleepMs())
           if (disposed) break
+          val s = settings
+          if (!depsTransferAllowed(s.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) continue
           when (role) {
             MachineRole.HOME -> pollHome()
             MachineRole.WORK -> pollWork()
@@ -152,6 +136,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
   private fun pollHome() {
     val s = settings
     if (!depsTransferAllowed(s.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) return
+    if (ensureRepoName().isBlank()) return
 
     // Check for available responses
     val responses = runCatching {
@@ -280,6 +265,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
         return@Thread
       }
       if (disposed) return@Thread
+      if (role != MachineRole.HOME) return@Thread
       runCatching { VaultCacheSync.syncInBackground(project, "auto") }
         .onFailure { DepsDiagnostics.event("automation: vault-sync scheduling failed") }
     }, "doccache-vault-init").apply { isDaemon = true }
@@ -288,8 +274,10 @@ class DepsAutomationService(private val project: Project) : Disposable {
 
   private fun doMissingCheck() {
     val s = settings
+    if (role != MachineRole.HOME) return
+    if (!s.autoRequestDeps) return
     if (!depsTransferAllowed(s.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) return
-    if (repoName.isBlank()) return
+    if (ensureRepoName().isBlank()) return
 
     // Check if a request is already pending — skip if so
     val pending = runCatching {
@@ -330,6 +318,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
     val s = settings
     if (!depsTransferAllowed(s.baseUrl, syncPwd, MirrorCrypto.isV3Pinned())) return
     if (!s.autoRespondDeps) return
+    if (ensureRepoName().isBlank()) return
 
     val pending = runCatching {
       MirrorDepsApi.depsPending(

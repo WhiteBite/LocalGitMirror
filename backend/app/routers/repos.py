@@ -54,7 +54,7 @@ def _init_git_workspace():
 
 
 @router.post("/git/start")
-async def start_git():
+def start_git():
     if not git_handler:
         raise HTTPException(500, "Git handler не инициализирован")
     success = git_handler.start()
@@ -67,7 +67,7 @@ async def start_git():
 
 
 @router.post("/git/stop")
-async def stop_git():
+def stop_git():
     if not git_handler:
         raise HTTPException(500, "Git handler не инициализирован")
     git_handler.stop()
@@ -87,7 +87,7 @@ async def get_repos():
 
 
 @router.post("/documents/collection")
-async def create_collection(request: CollectionCreateRequest, raw_request: Request):
+def create_collection(request: CollectionCreateRequest, raw_request: Request):
     """Create a new repository.
 
     Accepts either ``rid`` (obfuscated repo identifier) or ``name`` (plain
@@ -126,7 +126,7 @@ async def select_repo(request: RepoSelectRequest):
 
 
 @router.post("/repos/delete")
-async def delete_repo(request: RepoSelectRequest):
+def delete_repo(request: RepoSelectRequest):
     """Delete a repository"""
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
@@ -147,7 +147,7 @@ async def delete_repo(request: RepoSelectRequest):
 
 
 @router.post("/config/storage")
-async def set_storage_path(request: StoragePathRequest):
+def set_storage_path(request: StoragePathRequest):
     """Change storage directory"""
     global git_handler, repo_manager, git_workspace
 
@@ -183,7 +183,7 @@ async def set_storage_path(request: StoragePathRequest):
 
 
 @router.post("/config/browse")
-async def browse_folder():
+def browse_folder():
     """Open folder browser dialog (Windows)"""
     try:
         ps_script = """

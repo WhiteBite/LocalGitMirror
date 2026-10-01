@@ -1,6 +1,7 @@
 package localgitmirror.idea.deps
 
 import localgitmirror.idea.startup.shouldNotifyPending
+import localgitmirror.idea.startup.shouldNotifyPullAvailable
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -156,5 +157,34 @@ class DepsActionsVisibilityTest {
         val cooldown = 100L
         val now = 599L   // 99 ms elapsed — not yet expired
         assertFalse(shouldNotifyPending(count = 2, lastNotified = lastNotified, nowMillis = now, cooldownMs = cooldown))
+    }
+
+    // ── shouldNotifyPullAvailable ────────────────────────────────────────────
+
+    @Test
+    fun `no pull notification when tips are equal`() {
+        assertFalse(shouldNotifyPullAvailable("abc", "abc", remoteIsAncestorOfLocal = false))
+        assertFalse(shouldNotifyPullAvailable("ABC", "abc", remoteIsAncestorOfLocal = false))
+    }
+
+    @Test
+    fun `no pull notification when local is strictly ahead (remote tip is an ancestor)`() {
+        assertFalse(shouldNotifyPullAvailable("oldtip", "newtip", remoteIsAncestorOfLocal = true))
+    }
+
+    @Test
+    fun `pull notification when local is behind (remote tip is not an ancestor)`() {
+        assertTrue(shouldNotifyPullAvailable("newtip", "oldtip", remoteIsAncestorOfLocal = false))
+    }
+
+    @Test
+    fun `pull notification when tips differ and ancestry is unknown`() {
+        // unknown remote commit: git fails the ancestry check → false → notify
+        assertTrue(shouldNotifyPullAvailable("unknown", "local", remoteIsAncestorOfLocal = false))
+    }
+
+    @Test
+    fun `diverged branches still notify (remote tip not an ancestor)`() {
+        assertTrue(shouldNotifyPullAvailable("divergedA", "divergedB", remoteIsAncestorOfLocal = false))
     }
 }

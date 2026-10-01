@@ -45,14 +45,14 @@ def _init_git_workspace():
 
 
 @router.get("/files")
-async def get_files(repo: Optional[str] = None):
+def get_files(repo: Optional[str] = None):
     if not repo_manager:
         return {"files": []}
     return {"files": repo_manager.get_file_tree(repo)}
 
 
 @router.post("/editor/open")
-async def open_file(file: str = Query(..., description="Relative file path")):
+def open_file(file: str = Query(..., description="Relative file path")):
     """Open specific file in Cursor/VS Code (Alias for frontend compatibility)"""
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
@@ -94,24 +94,24 @@ async def open_file(file: str = Query(..., description="Relative file path")):
 
 
 @router.get("/open")
-async def open_file_legacy(file: str = Query(..., description="Relative file path")):
+def open_file_legacy(file: str = Query(..., description="Relative file path")):
     """Legacy open file endpoint"""
-    return await open_file(file)
+    return open_file(file)
 
 
 @router.get("/file/view")
-async def view_file(file: str = Query(..., description="Relative file path")):
+def view_file(file: str = Query(..., description="Relative file path")):
     """Get file content for viewing in browser"""
-    return await _get_file_content(file)
+    return _get_file_content(file)
 
 
 @router.get("/files/content")
-async def get_file_content(path: str = Query(..., description="Relative file path")):
+def get_file_content(path: str = Query(..., description="Relative file path")):
     """Get file content (alias for frontend compatibility)"""
-    return await _get_file_content(path)
+    return _get_file_content(path)
 
 
-async def _get_file_content(file: str):
+def _get_file_content(file: str):
     """Internal function to get file content"""
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
@@ -229,7 +229,7 @@ async def _get_file_content(file: str):
 
 
 @router.get("/file/pdf")
-async def view_pdf(file: str = Query(..., description="Relative file path")):
+def view_pdf(file: str = Query(..., description="Relative file path")):
     """Get PDF file as base64 for viewing in browser"""
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
@@ -257,14 +257,14 @@ async def view_pdf(file: str = Query(..., description="Relative file path")):
 
 
 @router.get("/commits")
-async def get_commits(repo: Optional[str] = None):
+def get_commits(repo: Optional[str] = None):
     if not repo_manager:
         return {"commits": []}
     return {"commits": repo_manager.get_recent_commits(repo)}
 
 
 @router.get("/search")
-async def search_repo(
+def search_repo(
     q: str = Query(..., description="Query string to search for"),
     repo: Optional[str] = Query(None, description="Repository name"),
     limit: int = Query(100, description="Max results"),
@@ -352,7 +352,7 @@ async def search_repo(
 
 
 @router.get("/git/changes")
-async def get_changes():
+def get_changes():
     """Get list of uncommitted changes"""
     global git_workspace
 
@@ -366,7 +366,7 @@ async def get_changes():
 
 
 @router.get("/git/diff")
-async def get_diff(file: Optional[str] = None):
+def get_diff(file: Optional[str] = None):
     """Get git diff for specific file"""
     global git_workspace
 
@@ -380,7 +380,7 @@ async def get_diff(file: Optional[str] = None):
 
 
 @router.get("/git/commit/{commit_hash}")
-async def get_commit_details(commit_hash: str):
+def get_commit_details(commit_hash: str):
     """Get specific commit details"""
     global git_workspace
 
@@ -394,7 +394,7 @@ async def get_commit_details(commit_hash: str):
 
 
 @router.post("/git/save-and-sync")
-async def save_and_sync(message: Optional[str] = Query("Sync from Home")):
+def save_and_sync(message: Optional[str] = Query("Sync from Home")):
     """Commit all workspace changes.
 
     Used by the in-browser code editor (CodeEditor.vue) to auto-commit a file
@@ -448,7 +448,7 @@ async def open_explorer():
 
 
 @router.post("/file/save")
-async def save_file(request: FileSaveRequest):
+def save_file(request: FileSaveRequest):
     """Save file content to disk"""
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")

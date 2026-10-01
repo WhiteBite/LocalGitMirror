@@ -12,6 +12,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app.core import hybrid_crypto
 from app.core.bundle_crypto import encrypt_bundle_to_dump
@@ -145,7 +146,7 @@ def sync_has_commits(request: EnvelopeRequest):
 
 
 @router.post("/documents/link")
-async def sync_apply_known(request: EnvelopeRequest):
+def sync_apply_known(request: EnvelopeRequest):
     password = _sync_password()
     params = _decrypt_params(request.e, password, request.epk)
 
@@ -303,17 +304,20 @@ async def sync_upload_and_apply(
         dump_path = tmp_dir / Path(safe_name).name
 
         payload = await attachment.read()
-        dump_path.write_bytes(payload)
 
-        result = _apply_dump_to_repo_and_sync_bare(
-            dump_path=dump_path, repo_name=repo_name, dump_filename=dump_path.name
-        )
+        def _apply() -> dict:
+            dump_path.write_bytes(payload)
+            return _apply_dump_to_repo_and_sync_bare(
+                dump_path=dump_path, repo_name=repo_name, dump_filename=dump_path.name
+            )
+
+        result = await run_in_threadpool(_apply)
 
         return {"e": encrypt_envelope(result, password)}
 
 
 @router.post("/documents/list")
-async def sync_refs(request: EnvelopeRequest):
+def sync_refs(request: EnvelopeRequest):
     """
     Get all branch tips visible to the server.
 
@@ -395,7 +399,7 @@ async def sync_refs(request: EnvelopeRequest):
 
 
 @router.post("/documents/delete-ref")
-async def delete_ref(request: EnvelopeRequest):
+def delete_ref(request: EnvelopeRequest):
     """
     Delete a branch from the Mirror bare repo (and workspace if present).
 
@@ -465,7 +469,7 @@ async def delete_ref(request: EnvelopeRequest):
 
 
 @router.post("/documents/prune-branches")
-async def prune_branches(request: EnvelopeRequest):
+def prune_branches(request: EnvelopeRequest):
     """
     List (dry-run) or delete merged/stale branches from the Mirror bare repo.
 
@@ -738,7 +742,7 @@ def sync_export_dump(e: str = Form(...), k: Optional[str] = Form(None)):
 
 
 @router.post("/documents/preview")
-async def sync_preview_pull(request: EnvelopeRequest):
+def sync_preview_pull(request: EnvelopeRequest):
     """Lightweight preview: are there incoming commits to pull?"""
     password = _sync_password()
     params = _decrypt_params(request.e, password, request.epk)
@@ -788,7 +792,7 @@ async def sync_preview_pull(request: EnvelopeRequest):
 
 
 @router.post("/documents/preview-details")
-async def sync_preview_pull_details(request: EnvelopeRequest):
+def sync_preview_pull_details(request: EnvelopeRequest):
     """Get commit list and diffstat for incoming changes.
 
     Picks the source repo (bare or workspace) that actually has the requested
@@ -854,7 +858,7 @@ async def sync_preview_pull_details(request: EnvelopeRequest):
 
 
 @router.post("/documents/process")
-async def sync_workspace():
+def sync_workspace():
     """Sync workspace from bare repo (after push from work)"""
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
@@ -867,7 +871,7 @@ async def sync_workspace():
 
 
 @router.get("/session/state")
-async def get_sync_state():
+def get_sync_state():
     """Get sync state for dashboard"""
     if not shared_manager:
         raise HTTPException(500, "Shared manager не инициализирован")

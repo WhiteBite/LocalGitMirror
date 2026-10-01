@@ -31,6 +31,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 
 from app.core import hybrid_crypto
 from app.core.bundle_crypto import decrypt_dump_bytes, encrypt_bundle_bytes
@@ -258,21 +259,23 @@ async def deps_submit(
     if len(payload) > 10 * 1024 * 1024:  # 10 MB hard cap on manifest
         raise HTTPException(413, "Manifest too large")
 
-    at_rest = _decrypt_incoming(payload, k, hybrid_crypto.RELAY_AAD_DEPS_REQ)
+    def _store() -> str:
+        at_rest = _decrypt_incoming(payload, k, hybrid_crypto.RELAY_AAD_DEPS_REQ)
 
-    # D1: lazy cleanup before storing new request
-    req_dir = _requests_dir(repo)
-    n = _cleanup_stale(req_dir)
-    if n > 0 and system_logger:
-        system_logger.info("deps TTL cleanup", {"dir": str(req_dir), "deleted": n})
+        # D1: lazy cleanup before storing new request
+        req_dir = _requests_dir(repo)
+        n = _cleanup_stale(req_dir)
+        if n > 0 and system_logger:
+            system_logger.info("deps TTL cleanup", {"dir": str(req_dir), "deleted": n})
 
-    item_id = uuid.uuid4().hex
-    target = req_dir / f"{item_id}.bin"
-    target.write_bytes(at_rest)
+        item_id = uuid.uuid4().hex
+        (req_dir / f"{item_id}.bin").write_bytes(at_rest)
 
-    if system_logger:
-        system_logger.info("deps request stored", {"repo": repo, "id": item_id, "bytes": len(payload)})
+        if system_logger:
+            system_logger.info("deps request stored", {"repo": repo, "id": item_id, "bytes": len(payload)})
+        return item_id
 
+    item_id = await run_in_threadpool(_store)
     return {"success": True, "repo": repo, "id": item_id, "size": len(payload)}
 
 
@@ -328,23 +331,25 @@ async def deps_fulfill(
     if len(payload) > 2 * 1024 * 1024 * 1024:  # 2 GB safety cap
         raise HTTPException(413, "Archive too large")
 
-    at_rest = _decrypt_incoming(payload, k, hybrid_crypto.RELAY_AAD_DEPS_RESP)
+    def _store() -> str:
+        at_rest = _decrypt_incoming(payload, k, hybrid_crypto.RELAY_AAD_DEPS_RESP)
 
-    response_id = uuid.uuid4().hex
-    target = _responses_dir(repo) / f"{response_id}.bin"
-    target.write_bytes(at_rest)
+        response_id = uuid.uuid4().hex
+        _responses_dir(repo).joinpath(f"{response_id}.bin").write_bytes(at_rest)
 
-    # Remove the matching request — it's been answered.
-    req_path = _requests_dir(repo) / f"{request_id}.bin"
-    if req_path.exists():
-        try:
-            req_path.unlink()
-        except OSError:
-            pass
+        # Remove the matching request — it's been answered.
+        req_path = _requests_dir(repo) / f"{request_id}.bin"
+        if req_path.exists():
+            try:
+                req_path.unlink()
+            except OSError:
+                pass
 
-    if system_logger:
-        system_logger.info("deps response stored", {"repo": repo, "id": response_id, "bytes": len(payload)})
+        if system_logger:
+            system_logger.info("deps response stored", {"repo": repo, "id": response_id, "bytes": len(payload)})
+        return response_id
 
+    response_id = await run_in_threadpool(_store)
     return {"success": True, "repo": repo, "id": response_id, "size": len(payload)}
 
 

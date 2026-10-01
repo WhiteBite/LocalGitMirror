@@ -20,6 +20,7 @@ from typing import Optional
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 
 from app.core import hybrid_crypto
 from app.routers._rid import resolve_repo_identifier
@@ -200,25 +201,29 @@ async def docs_attachment_upload(
     if len(payload) > _MAX_FILE_SIZE:
         raise HTTPException(413, "File too large")
 
-    at_rest = _decrypt_incoming(payload, k, hybrid_crypto.RELAY_AAD_POSTBOX)
+    def _store() -> str:
+        at_rest = _decrypt_incoming(payload, k, hybrid_crypto.RELAY_AAD_POSTBOX)
 
-    directory = _repo_dir(repo)
-    _cleanup_stale(directory)
-    item_id = uuid.uuid4().hex
-    target = directory / f"{item_id}.bin"
-    tmp = directory / f"{item_id}.tmp"
+        directory = _repo_dir(repo)
+        _cleanup_stale(directory)
+        item_id = uuid.uuid4().hex
+        target = directory / f"{item_id}.bin"
+        tmp = directory / f"{item_id}.tmp"
 
-    try:
-        tmp.write_bytes(at_rest)
-        tmp.replace(target)
-        _meta_path(repo, item_id).write_text(
-            json.dumps({"path": rel_path, "plain_size": plain_size}, ensure_ascii=False),
-            encoding="utf-8",
-        )
-    except OSError as exc:
-        tmp.unlink(missing_ok=True)
-        target.unlink(missing_ok=True)
-        raise HTTPException(500, f"Failed to store file: {exc}")
+        try:
+            tmp.write_bytes(at_rest)
+            tmp.replace(target)
+            _meta_path(repo, item_id).write_text(
+                json.dumps({"path": rel_path, "plain_size": plain_size}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            tmp.unlink(missing_ok=True)
+            target.unlink(missing_ok=True)
+            raise HTTPException(500, f"Failed to store file: {exc}")
+        return item_id
+
+    item_id = await run_in_threadpool(_store)
 
     if system_logger:
         system_logger.info("file-sync item stored", {"repo": repo, "id": item_id, "bytes": len(payload)})
