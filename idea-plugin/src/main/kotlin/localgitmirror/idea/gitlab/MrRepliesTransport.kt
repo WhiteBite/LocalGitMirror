@@ -10,49 +10,75 @@ import localgitmirror.idea.workkit.ExchangeCrypto
 import localgitmirror.idea.workkit.RepoFileSyncCrypto
 import java.io.File
 
+/** code = 0 marks a local failure (no HTTP round trip happened). */
+sealed interface MrUploadResult {
+  val ok: Boolean get() = this is Ok
+
+  data object Ok : MrUploadResult
+  data class Failed(val code: Int, val reason: String) : MrUploadResult
+}
+
 /** Postbox transport for agent review artifacts, shared by the upload action, the review dialog and status reports. */
 object MrRepliesTransport {
 
   fun uploadMarkdown(project: Project, iid: Int, markdown: String): Boolean =
-    upload(project, "mr-replies/mr-!$iid.md", markdown)
+    uploadMarkdownResult(project, iid, markdown).ok
 
   fun uploadStatus(project: Project, iid: Int, markdown: String): Boolean =
-    upload(project, "mr-replies-status/mr-!$iid.md", markdown)
+    uploadStatusResult(project, iid, markdown).ok
 
-  fun upload(project: Project, displayPath: String, markdown: String): Boolean {
-    val plain = File.createTempFile("lgm-upload-", ".md")
+  fun upload(project: Project, displayPath: String, markdown: String): Boolean =
+    uploadResult(project, displayPath, markdown).ok
+
+  /** Encrypt an arbitrary file (plugin zip, artifacts) and put it into the repo postbox under [displayPath]. */
+  fun uploadFile(project: Project, displayPath: String, file: File): Boolean =
+    uploadFileResult(project, displayPath, file).ok
+
+  fun uploadMarkdownResult(project: Project, iid: Int, markdown: String): MrUploadResult =
+    uploadResult(project, "mr-replies/mr-!$iid.md", markdown)
+
+  fun uploadStatusResult(project: Project, iid: Int, markdown: String): MrUploadResult =
+    uploadResult(project, "mr-replies-status/mr-!$iid.md", markdown)
+
+  fun uploadResult(project: Project, displayPath: String, markdown: String): MrUploadResult {
     return try {
-      plain.writeText(markdown, Charsets.UTF_8)
-      uploadFile(project, displayPath, plain)
-    } catch (_: Throwable) {
-      false
-    } finally {
-      runCatching { plain.delete() }
+      val plain = File.createTempFile("lgm-upload-", ".md")
+      try {
+        plain.writeText(markdown, Charsets.UTF_8)
+        uploadFileResult(project, displayPath, plain)
+      } finally {
+        runCatching { plain.delete() }
+      }
+    } catch (e: Throwable) {
+      MrUploadResult.Failed(0, "upload: ${e.message ?: "error"}")
     }
   }
 
-  /** Encrypt an arbitrary file (plugin zip, artifacts) and put it into the repo postbox under [displayPath]. */
-  fun uploadFile(project: Project, displayPath: String, file: File): Boolean {
+  fun uploadFileResult(project: Project, displayPath: String, file: File): MrUploadResult {
     val settings = service<MirrorSettingsService>().state
-    val base = project.basePath ?: return false
+    val base = project.basePath ?: return MrUploadResult.Failed(0, "project base directory missing")
     val repo = runCatching {
       project.getService(SyncFacadeService::class.java).resolveRepo(File(base), settings).sanitized
     }.getOrDefault("")
-    if (repo.isBlank() || !file.isFile) return false
+    if (repo.isBlank()) return MrUploadResult.Failed(0, "repo not resolved")
+    if (!file.isFile) return MrUploadResult.Failed(0, "not a file: ${file.path}")
 
-    val encrypted = File.createTempFile("lgm-upload-", ".bin")
-    try {
-      RepoFileSyncCrypto.encryptFile(file, encrypted, SecretsStore.syncPassword, null)
-      val pathEnc = ExchangeCrypto.encryptHint(displayPath, SecretsStore.syncPassword)
-      val up = MirrorApi.fileSyncUpload(
-        settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
-        "x/${java.util.UUID.randomUUID().toString().take(8)}", file.length(), encrypted, pathEnc, null,
-      )
-      return up.code in 200..299
-    } catch (_: Throwable) {
-      return false
-    } finally {
-      runCatching { encrypted.delete() }
+    return try {
+      val encrypted = File.createTempFile("lgm-upload-", ".bin")
+      try {
+        RepoFileSyncCrypto.encryptFile(file, encrypted, SecretsStore.syncPassword, null)
+        val pathEnc = ExchangeCrypto.encryptHint(displayPath, SecretsStore.syncPassword)
+        val up = MirrorApi.fileSyncUpload(
+          settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
+          "x/${java.util.UUID.randomUUID().toString().take(8)}", file.length(), encrypted, pathEnc, null,
+        )
+        if (up.code in 200..299) MrUploadResult.Ok
+        else MrUploadResult.Failed(up.code, "HTTP ${up.code}: ${up.message}")
+      } finally {
+        runCatching { encrypted.delete() }
+      }
+    } catch (e: Throwable) {
+      MrUploadResult.Failed(0, "upload: ${e.message ?: "error"}")
     }
   }
 }

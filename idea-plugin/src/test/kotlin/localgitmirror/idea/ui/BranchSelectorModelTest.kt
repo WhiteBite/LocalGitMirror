@@ -21,7 +21,7 @@ class BranchSelectorModelTest {
       ),
       choices
     )
-    assertEquals("★ mcp_front (Mirror)", choices[2].toString())
+    assertEquals("★ mcp_front (Cache)", choices[2].toString())
   }
 
   @Test

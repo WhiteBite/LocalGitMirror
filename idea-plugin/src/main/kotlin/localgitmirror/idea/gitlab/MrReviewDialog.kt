@@ -332,15 +332,19 @@ class MrReviewDialog private constructor(
       } else {
         val alreadySent = replies().filter { sentMarkers.contains(replyKey(it)) }
         val md = MrReplies.render(row.iid, row.sourceBranch, alreadySent + selected)
-        val ok = MrRepliesTransport.uploadMarkdown(project, row.iid, md)
+        val outcome = MrRepliesTransport.uploadMarkdownResult(project, row.iid, md)
         ApplicationManager.getApplication().invokeLater {
           if (project.isDisposed) return@invokeLater
-          notify(
-            if (ok) LocalGitMirrorBundle.message("mrview.sent", selected.size)
-            else LocalGitMirrorBundle.message("mrreview.sent.fail"),
-            if (ok) NotificationType.INFORMATION else NotificationType.ERROR,
-          )
-          if (ok) markSent(selected, true)
+          when (outcome) {
+            is MrUploadResult.Ok -> {
+              notify(LocalGitMirrorBundle.message("mrview.sent", selected.size), NotificationType.INFORMATION)
+              markSent(selected, true)
+            }
+            is MrUploadResult.Failed -> notify(
+              LocalGitMirrorBundle.message("mrreview.sent.fail", outcome.reason),
+              NotificationType.ERROR,
+            )
+          }
         }
       }
     }
@@ -375,7 +379,14 @@ class MrReviewDialog private constructor(
       row = rows.firstOrNull { it.iid == row.iid } ?: row
       ApplicationManager.getApplication().executeOnPooledThread {
         if (isWork) {
-          pending = MrReplyPushService(project).fetchPendingReplies().firstOrNull { it.parsed.iid == row.iid }
+          when (val fetched = MrReplyPushService(project).fetchPendingReplies()) {
+            is MrReplyPushService.PendingRepliesResult.Available ->
+              pending = fetched.items.firstOrNull { it.parsed.iid == row.iid }
+            is MrReplyPushService.PendingRepliesResult.Unavailable -> {
+              pending = null
+              notify(LocalGitMirrorBundle.message("mrreplies.list.fail", fetched.reason), NotificationType.WARNING)
+            }
+          }
         } else {
           localReplies = readLocalReplies(row.iid)
         }
@@ -420,9 +431,20 @@ class MrReviewDialog private constructor(
         return
       }
       ApplicationManager.getApplication().executeOnPooledThread {
-        val pending = MrReplyPushService(project).fetchPendingReplies().firstOrNull { it.parsed.iid == row.iid }
+        val fetched = MrReplyPushService(project).fetchPendingReplies()
+        val pending = (fetched as? MrReplyPushService.PendingRepliesResult.Available)
+          ?.items?.firstOrNull { it.parsed.iid == row.iid }
         ApplicationManager.getApplication().invokeLater {
           if (project.isDisposed) return@invokeLater
+          if (fetched is MrReplyPushService.PendingRepliesResult.Unavailable) {
+            NotificationGroupManager.getInstance()
+              .getNotificationGroup("DocCache")
+              .createNotification(
+                LocalGitMirrorBundle.message("mrreplies.list.fail", fetched.reason),
+                NotificationType.WARNING,
+              )
+              .notify(project)
+          }
           MrReviewDialog(project, row, pending, null).show()
         }
       }

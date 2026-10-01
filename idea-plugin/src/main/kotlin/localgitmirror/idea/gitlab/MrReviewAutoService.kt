@@ -74,21 +74,32 @@ class MrReviewAutoService(private val project: Project) : Disposable {
       }
       return
     }
-    val pending = runCatching { service.countPending() }.getOrDefault(0)
-    if (pending == 0) {
-      lastPendingSignature = ""
-      return
+    val pending = runCatching { service.countPending() }
+      .getOrElse { MrReplyPushService.PendingCount.Unavailable(it.message ?: "error") }
+    when (pending) {
+      is MrReplyPushService.PendingCount.Available -> {
+        if (pending.count == 0) {
+          lastPendingSignature = ""
+          return
+        }
+        if (pending.count.toString() == lastPendingSignature) return
+        lastPendingSignature = pending.count.toString()
+        notify(LocalGitMirrorBundle.message("mrreview.pending", pending.count), NotificationType.INFORMATION)
+      }
+      is MrReplyPushService.PendingCount.Unavailable -> {
+        if (pending.reason == lastPendingSignature) return
+        lastPendingSignature = pending.reason
+        notify(LocalGitMirrorBundle.message("mrreplies.list.fail", pending.reason), NotificationType.WARNING)
+      }
     }
-    if (pending.toString() == lastPendingSignature) return
-    lastPendingSignature = pending.toString()
+  }
+
+  private fun notify(content: String, type: NotificationType) {
     UIUtil.invokeLaterIfNeeded {
       if (!project.isDisposed) {
         NotificationGroupManager.getInstance()
           .getNotificationGroup("DocCache")
-          .createNotification(
-            LocalGitMirrorBundle.message("mrreview.pending", pending),
-            NotificationType.INFORMATION,
-          )
+          .createNotification(content, type)
           .notify(project)
       }
     }
@@ -113,14 +124,18 @@ class MrReviewAutoService(private val project: Project) : Disposable {
       if (!handledRequestIds.add(item.id)) continue
       if (handledRequestIds.size > 200) handledRequestIds.clear()
       val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
-      val ok = runCatching { localgitmirror.idea.actions.GitLabMrSender.sendNotesOnRequest(project, iid) }
-        .getOrDefault(false)
-      if (ok) {
-        runCatching {
+      val outcome = runCatching { localgitmirror.idea.actions.GitLabMrSender.sendNotesOnRequest(project, iid) }
+        .getOrElse { MrUploadResult.Failed(0, it.message ?: "error") }
+      when (outcome) {
+        is MrUploadResult.Ok -> runCatching {
           localgitmirror.idea.mirror.MirrorApi.fileSyncAck(
             settings.baseUrl, localgitmirror.idea.settings.SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id
           )
         }
+        is MrUploadResult.Failed -> notify(
+          LocalGitMirrorBundle.message("mrreview.notesRequest.fail", iid, outcome.reason),
+          NotificationType.WARNING,
+        )
       }
     }
   }

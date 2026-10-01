@@ -1,479 +1,165 @@
-# 🏗️ Архитектура LocalGitMirror v3.2
+# Architecture & deployment topology
 
-## Общая схема
+Current-state reference for LocalGitMirror. Every claim here is traceable to a source file; read the file, not this doc, when precision matters. If this doc and the code disagree, the code wins and this doc is a bug.
 
-```mermaid
-graph TB
-    subgraph "Рабочий ПК"
-        W[Разработчик]
-        WG[Git клиент]
-    end
-    
-    subgraph "Домашний ПК - LocalGitMirror"
-        subgraph "Backend (FastAPI)"
-            API[API сервер]
-            GS[Git сервер]
-            RM[Менеджер репозиториев]
-            WS[WebSocket]
-            SM[Менеджер настроек]
-            LOG[Логгер]
-        end
-        
-        subgraph "Frontend (Vue.js)"
-            APP[App.vue]
-            DASH[Панель управления]
-            FB[Браузер файлов]
-            SET[Настройки]
-            
-            subgraph "Компоненты"
-                FT[FileTree]
-                FV[FileViewer]
-                MD[MarkdownRenderer]
-                CV[CodeViewer]
-                PDF[PDFViewer]
-                SL[Системный лог]
-            end
-            
-            subgraph "Хранилища (Pinia)"
-                FS[Хранилище файлов]
-                RS[Хранилище репозиториев]
-                SS[Системное хранилище]
-            end
-        end
-        
-        subgraph "Хранилище"
-            BARE[Пустые репозитории]
-            WORK[Рабочие копии]
-            CONF[Настройки]
-            LOGS[Файлы логов]
-        end
-    end
-    
-    W -->|git push| WG
-    WG -->|git://| GS
-    GS -->|trigger| RM
-    RM -->|sync| WORK
-    RM -->|read| BARE
-    
-    APP --> DASH
-    APP --> FB
-    APP --> SET
-    
-    FB --> FT
-    FB --> FV
-    FV --> MD
-    FV --> CV
-    FV --> PDF
-    
-    DASH --> SL
-    FB --> SL
-    
-    FT --> FS
-    FV --> FS
-    DASH --> RS
-    DASH --> SS
-    
-    API --> RM
-    API --> SM
-    API --> LOG
-    WS --> LOG
-    WS --> SL
-    
-    RM --> WORK
-    RM --> BARE
-    SM --> CONF
-    LOG --> LOGS
-    
-    style W fill:#3b82f6
-    style API fill:#10b981
-    style APP fill:#8b5cf6
-    style WORK fill:#f59e0b
-```
+Personal cross-machine tool bridging a restricted corporate work environment and a free home environment through one self-hosted encrypted mirror. No cloud, no third-party services. Python backend + Kotlin IntelliJ plugin + Vue SPA + Python CLI/MCP.
 
-## Структура проекта
+## Deployment (as run by the owner)
+
+> на домашнем компе запущен сервер и плагин и мсп. на рабочем будет плагин и мб мсп (мб и не будет)
+
+| Component | HOME PC | WORK PC |
+| --- | --- | --- |
+| Mirror server (`run.py` → FastAPI backend + built Vue SPA) | runs | never |
+| IntelliJ plugin (`idea-plugin/`, display name **DocCache**) | installed | installed, primary day-to-day surface |
+| MCP server (`lgm_mcp.py`) | runs (for home-side AI agents) | optional, may be absent |
+| CLI (`lgm.py`) | used (primary scriptable surface) | not used — agents use MCP instead |
+
+The server exists only on HOME. WORK reaches it over HTTPS/LAN as an API client. On HOME the plugin, MCP, and CLI all talk to the locally-running server (`baseUrl` = localhost or the home LAN IP). The CLI (`lgm.py`) is exercised on HOME only; on WORK the plugin and (if present) the MCP server talk to the home server's LAN address.
+
+## The four user-facing surfaces
+
+Not interchangeable; each covers a different slice:
+
+| Surface | Entry point | What it can do | Where it runs |
+| --- | --- | --- | --- |
+| IntelliJ plugin | `idea-plugin/`, tool window "DocCache" (right anchor), menus Tools / VCS / Project view | Full daily flow: send/pull branches, GitLab MR transfer, MR review replies, deps request/respond/apply/publish, file postbox, cross-machine clipboard buffer, branch prune, preflight/vault/dry-run diagnostics | HOME and WORK |
+| Web SPA | served by the backend from `frontend/dist` at `/` | Server-side management only: dashboard, file browser, global search, exchange/buffer, commit history, settings. No send/pull of bundles, no GitLab, no deps actions | HOME (it *is* part of the server) |
+| CLI | `python lgm.py <command>` | Scriptable subset: everything in `lgm_core/ops.py REGISTRY` (24 ops) rendered to text/JSON | HOME only (owner runs it there; WORK uses MCP) |
+| MCP | `python lgm_mcp.py` (stdio JSON-RPC) | Same 24 ops as the CLI, exposed as agent tools generated from the same REGISTRY; `serverInfo.name = "doccache-tools"` | HOME (mainly); optionally WORK |
+
+CLI and MCP are functionally identical because both are generated from `lgm_core/ops.py REGISTRY`; the plugin implements its own richer flows in Kotlin (`lgm_core` does not cover the plugin's file-postbox, buffer, or full review UI).
+
+## Machine roles
+
+`MirrorSettingsService.State.machineRole` = `auto` | `home` | `work`. `auto` (default) resolves via `idea/deps/RoleDetector.kt`: host parsed from `baseUrl` is loopback or literally matches a local interface address → HOME; anything else or any failure → WORK (safe default). Result cached per settings change.
+
+What each role enables (defaults from `MirrorSettingsService.State`):
+
+| Setting (default) | HOME | WORK |
+| --- | --- | --- |
+| `autoRequestDeps` (true) | detect unresolvable corporate deps, post manifest | off by role logic |
+| `autoApplyDeps` (true) | unpack received dep responses into local caches | n/a |
+| `autoRespondDeps` (false) | n/a | poll pending requests, ship artifacts from local cache |
+| `autoMrReview` (true) | auto-write incoming `mr-notes/mr-!N.md` into `.mr-notes/` | push reply files from postbox to GitLab |
+| `autoPushReplies` (false) | n/a | post approved replies without opening the dialog |
+| `depsPollSec` (300) | shared poll interval (+/-30% jitter, 15-min fast window, backoff to 4x) | same |
+
+Startup activities (`plugin.xml`): `PullCheckStartupActivity`, `DepsAutomationStartupActivity`, `MrReviewAutoStartupActivity`, `LgmToolWindowPlacementActivity`. Role gating lives in `DepsAutomationService` and `MrReviewAutoService`.
+
+Topology note: HOME is where the server runs, so HOME's plugin detects role `home` naturally (loopback baseUrl). WORK's baseUrl points at the home machine's LAN IP → role `work`.
+
+## Data flows (directional)
+
+All three ride the same encrypted HTTP transport (`/api/documents/*`); the server stores opaque blobs and never decrypts them.
+
+### 1. Branch bundles (send / pull)
 
 ```
-LocalGitMirror/
-├── backend/
-│   ├── core/
-│   │   ├── git_handler.py       # Git сервер
-│   │   ├── repo_manager.py      # Управление репозиториями
-│   │   ├── git_utils.py         # Git утилиты
-│   │   ├── system_monitor.py    # Мониторинг системы
-│   │   ├── logger.py            # НОВОЕ: Логирование
-│   │   ├── settings_manager.py  # НОВОЕ: Настройки
-│   │   └── cache_manager.py     # НОВОЕ: Кэширование
-│   │
-│   ├── routers/
-│   │   ├── api.py               # REST API
-│   │   ├── web.py               # Web страницы
-│   │   ├── websocket.py         # НОВОЕ: WebSocket
-│   │   └── settings.py          # НОВОЕ: API настроек
-│   │
-│   ├── main.py                  # Точка входа
-│   └── requirements.txt
-│
-├── frontend/                    # НОВОЕ: Vue.js проект
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── FileTree.vue
-│   │   │   ├── FileViewer.vue
-│   │   │   ├── MarkdownRenderer.vue
-│   │   │   ├── CodeViewer.vue
-│   │   │   ├── PDFViewer.vue
-│   │   │   ├── Breadcrumbs.vue
-│   │   │   ├── Toolbar.vue
-│   │   │   ├── SystemLog.vue
-│   │   │   ├── StatusBar.vue
-│   │   │   ├── WorkflowBanner.vue
-│   │   │   ├── ActionButtons.vue
-│   │   │   ├── GitTerminal.vue
-│   │   │   ├── QuickStats.vue
-│   │   │   ├── GitStatus.vue
-│   │   │   ├── DiffViewer.vue
-│   │   │   ├── CommitHistory.vue
-│   │   │   ├── BranchSelector.vue
-│   │   │   ├── SearchBar.vue
-│   │   │   └── QuickOpen.vue
-│   │   │
-│   │   ├── views/
-│   │   │   ├── Dashboard.vue
-│   │   │   ├── FileBrowser.vue
-│   │   │   └── Settings.vue
-│   │   │
-│   │   ├── stores/
-│   │   │   ├── files.js
-│   │   │   ├── repos.js
-│   │   │   └── system.js
-│   │   │
-│   │   ├── router/
-│   │   │   └── index.js
-│   │   │
-│   │   ├── App.vue
-│   │   └── main.js
-│   │
-│   ├── package.json
-│   ├── vite.config.js
-│   └── tailwind.config.js
-│
-├── storage/
-│   ├── *.git/                   # Пустые репозитории
-│   ├── workspaces/              # Рабочие копии
-│   ├── settings.json            # НОВОЕ: Настройки
-│   └── logs/                    # НОВОЕ: Логи
-│
-├── .env
-├── TODO.md
-├── TASKS_FOR_AGENTS.md
-├── SUMMARY.md
-└── README.md
+WORK ──plugin "Send current"/"Send branch…"──▶ POST /api/documents/upload (encrypted git bundle) ──▶ mirror bare repo + workspace checkout
+HOME ──plugin "Sync pull…"/lgm pull──▶ POST /api/documents/check (which tips mirror has) ──▶ incremental bundle download ──▶ git fetch locally
+HOME ──edits, builds──▶ sends back the same way; WORK pulls via "Pull back…"
 ```
 
-## Поток данных
+Negotiation: `check` reports known commits; `link` applies pointer-only updates when the target commit already exists (`apply-known` semantics in `backend/app/routers/sync.py`). Incremental bundles use mirror tips as `^` prerequisites (`send_branches` in `lgm_core/ops.py`).
 
-### 1. Git Push (Работа → Домой)
-
-```mermaid
-sequenceDiagram
-    participant W as Рабочий ПК
-    participant G as Git сервер
-    participant R as Менеджер репозиториев
-    participant WS as Рабочая копия
-    participant L as Логгер
-    participant UI as Frontend
-    
-    W->>G: git push
-    G->>L: Log: Push получен
-    G->>R: Триггер синхронизации
-    R->>WS: Checkout файлов
-    R->>L: Log: Синхронизация завершена
-    L->>UI: WebSocket: Обновление лога
-    UI->>UI: Обновление списка файлов
-```
-
-### 2. Просмотр файла (Домой)
-
-```mermaid
-sequenceDiagram
-    participant U as Пользователь
-    participant FT as FileTree
-    participant API as Backend API
-    participant FS as Хранилище файлов
-    participant FV as FileViewer
-    
-    U->>FT: Клик на файл
-    FT->>FS: Обновление выбранного файла
-    FS->>API: GET /api/file/view
-    API->>API: Чтение файла
-    API->>FS: Возврат содержимого
-    FS->>FV: Обновление содержимого
-    FV->>U: Отображение файла
-```
-
-### 3. Редактирование и синхронизация (Домой → Работа)
-
-```mermaid
-sequenceDiagram
-    participant U as Пользователь
-    participant UI as Frontend
-    participant API as Backend API
-    participant R as Менеджер репозиториев
-    participant G as Git сервер
-    participant W as Рабочий ПК
-    
-    U->>UI: Клик "Открыть в редакторе"
-    UI->>API: POST /api/open
-    API->>API: Открытие Cursor/VS Code
-    U->>U: Редактирование файлов
-    U->>UI: Клик "Сохранить и синхронизировать"
-    UI->>API: POST /api/git/save-and-sync
-    API->>R: Фиксация изменений
-    R->>G: Push в пустой репозиторий
-    W->>G: git pull
-    G->>W: Получение изменений
-```
-
-## Компонентная архитектура (Vue.js)
-
-### Представление панели управления
+### 2. GitLab MR review loop
 
 ```
-Dashboard.vue
-├── StatusBar.vue
-├── WorkflowBanner.vue
-├── ActionButtons.vue
-│   ├── Button: Открыть Cursor
-│   ├── Button: Браузер файлов
-│   └── Button: Сохранить и синхронизировать
-├── GitTerminal.vue
-├── QuickStats.vue
-│   ├── Количество файлов
-│   ├── Количество изменений
-│   └── Последний коммит
-└── SystemLog.vue (опционально)
+WORK ──"Send MR branch to Cache…"──▶ git fetch origin <MR source branch> ──one deduplicated bundle──▶ mirror
+WORK ──(same action)──▶ GitLab discussions markdown ──▶ postbox mr-notes/mr-!N.md
+HOME ──agent reads .mr-notes/ (auto-written when autoMrReview)──edits replies──▶ .mr-notes/replies-!N.md
+HOME ──"Send review replies to work…"──▶ postbox mr-replies/mr-!N.md
+WORK ──"Push MR replies to GitLab…"──▶ pulls mr-replies/* from postbox, posts to GitLab, uploads report mr-replies-status/mr-!N.md
+HOME ──sees status──▶ (if notes missing) mr_notes_request → postbox mr-notes-request/mr-!N.md → WORK transfers threads
 ```
 
-### Представление браузера файлов
+Home has no GitLab access; `mr_list` falls back to inventorying transferred `mr-notes/` blobs (`_mr_list_from_postbox`, `lgm_core/ops.py`).
+
+### 3. Corporate dependencies (gradle/npm)
 
 ```
-FileBrowser.vue
-├── Breadcrumbs.vue
-├── Toolbar.vue
-│   ├── Button: Открыть в редакторе
-│   ├── Button: Обновить
-│   ├── Button: Копировать
-│   └── Button: Скачать
-├── Layout (flex)
-│   ├── FileTree.vue (боковая панель)
-│   │   ├── Элементы папок
-│   │   ├── Элементы файлов
-│   │   └── SearchBar.vue
-│   └── FileViewer.vue (основной)
-│       ├── MarkdownRenderer.vue
-│       ├── CodeViewer.vue
-│       └── PDFViewer.vue
-└── SystemLog.vue (сворачиваемый)
+HOME ──request──▶ manifest v3 (missing/present coords) encrypted ──▶ POST /api/documents/submit
+WORK ──respond──▶ GET queue / queue-item ──scan local gradle+m2+npm caches──▶ ZIP publication ──▶ POST fulfill
+HOME ──apply──▶ GET ready / ready-item ──unpack into ~/.gradle/caches/modules-2/files-2.1 etc.──▶ DELETE ack
+HOME ──publish (vault)──▶ scan protected artifacts (LGM_PROTECTED_MAVEN_GROUPS) ──▶ POST /api/cache/publish (loopback-guarded data plane)
 ```
 
-### Представление настроек
+Server storage: `storage/.lgm/deps/<sha256(repo)[:16]>/requests/*.bin` and `.../responses/*.bin` (`backend/app/routers/deps.py`). Vault: `storage/.lgm/vault` (override `LGM_VAULT_PATH`). File postbox: `storage/.lgm/files/<repo>/<id>.{json,bin}` (`file_sync.py`), 7-day stale cleanup.
 
-```
-Settings.vue
-├── Секция: Общие
-│   ├── Репозиторий по умолчанию
-│   ├── Папка по умолчанию
-│   └── Автосинхронизация
-├── Секция: Git
-│   ├── Порт Git
-│   └── Автозапуск
-├── Секция: Редактор
-│   ├── Тип редактора
-│   └── Пользовательский путь
-├── Секция: UI
-│   ├── Тема
-│   └── Размер шрифта
-└── Секция: Ollama
-    ├── URL
-    └── Модель
-```
+## Repository layout
 
-## Управление состоянием (Pinia)
+| Path | Purpose |
+| --- | --- |
+| `run.py` | canonical launcher (`prod` default / `dev`); bootstraps `backend/venv`, ensures `cert.pem`/`key.pem`, optional in-process HTTP→HTTPS redirect thread |
+| `start.bat` / `start.sh` | thin wrappers around `run.py` |
+| `cli.py`, `dev.py`, `bridge_manager.py` | legacy launchers, superseded (see Divergence) |
+| `backend/app/main.py` | FastAPI app: auth (`X-Session-ID` / `Authorization: Bearer`), router mounts, dulwich git daemon on `GIT_PORT`, static SPA mount |
+| `backend/app/routers/` | `sync` (bundle upload/export/check/link), `deps` (manifest submit/queue/fulfill/ready/ack), `file_sync` + `documents` prefix (postbox), `mirror` (vault cache data plane, loopback-guarded), `buffer`, `plugin` (dist info/latest), `system`, `repos`, `files`, `shared`, `settings`, `web`, `websocket` (`/ws/logs`, `/ws/files`), `git_http` (unmounted) |
+| `backend/app/core/` | `repo_manager`, `git_handler` (dulwich TCP), `bundle_crypto`, `envelope_crypto`, `hybrid_crypto` (ECIES v3), `artifact_store`, `npm_cache`, `vault_backup`, `lan_beacon`, `logger`, `settings_manager`, `shared_manager`, `system_monitor`, `watcher` |
+| `frontend/` | Vue 3 SPA; routes `/` Dashboard, `/files`, `/search`, `/buffer` (alias `/exchange`), `/history`, `/settings`; built to `frontend/dist`, served by backend |
+| `idea-plugin/` | Kotlin IntelliJ plugin ("DocCache"); tool window tabs: Branches, Review, Dependencies, Exchange; secrets in PasswordSafe (`mirror.apiKey`, `mirror.syncPassword`, `gitlabToken`); state file `doccache.xml` |
+| `lgm_core/` | shared engine: `config.py` (.env resolution), `client.py` (HTTP), `crypto.py`, `ops.py` (REGISTRY), `render.py` |
+| `lgm.py` | CLI wrapper over REGISTRY |
+| `lgm_mcp.py` | MCP stdio server over REGISTRY |
+| `storage/` | server data root (gitignored): bare repos, `workspaces/`, `.lgm/{deps,files,vault}`, logs |
+| `tests/` | pytest suite (`pytest.ini`, `integration` marker needs live server) |
 
-### Хранилище файлов
+## Operational constants
 
-```javascript
-{
-  state: {
-    files: [],           // Список всех файлов
-    currentFile: null,   // Текущий открытый файл
-    currentFolder: '',   // Текущая папка
-    fileContent: null,   // Содержимое файла
-    loading: false       // Загрузка
-  },
-  actions: {
-    loadFiles(),
-    selectFile(),
-    loadFileContent(),
-    refreshFiles()
-  }
-}
-```
+Ports (verified defaults):
 
-### Хранилище репозиториев
+| Constant | Value | Source |
+| --- | --- | --- |
+| `WEB_PORT` (prod HTTPS) | **443** | `run.py _web_port()`, `backend/app/main.py CONFIG`, `.env` |
+| `GIT_PORT` (dulwich daemon) | **8444** | `main.py CONFIG`, `run.py` fallback |
+| `cli.py PROD_PORT` | 8443 (sets `WEB_PORT=8443`, `GIT_PORT=8444` env before delegating to `run.py`) | `cli.py` |
+| dev backend (`run.py dev`, `cli.py dev`, `dev.py`) | 8000 | `run.py`, `cli.py DEV_BACKEND_PORT`, `dev.py` |
+| Vite dev frontend | 5173; proxy targets `https://localhost:443` | `cli.py`, `frontend/vite.config.js` |
+| `REDIRECT_HTTP_PORT` | unset by default (redirect disabled) | `run.py` |
 
-```javascript
-{
-  state: {
-    repos: [],           // Список репозиториев
-    currentRepo: 'default',
-    branches: [],        // Ветки
-    currentBranch: 'main'
-  },
-  actions: {
-    loadRepos(),
-    selectRepo(),
-    loadBranches(),
-    checkoutBranch()
-  }
-}
-```
+Env vars:
 
-### Системное хранилище
+| Key | Meaning | Read by |
+| --- | --- | --- |
+| `BASE_URL` | mirror base URL for CLI/MCP (fallback `https://localhost:443`) | `lgm_core/config.py` |
+| `API_KEY` | shared secret header (`X-Session-ID` and/or `Authorization: Bearer`) | `backend/app/main.py`, `lgm_core` |
+| `SYNC_PASSWORD` | AES-GCM envelope password for dumps/blobs/postbox | backend, `lgm_core`, plugin SecretsStore |
+| `STORAGE_PATH` | server data root (`.env` currently points at `D:\Sources\kryptonit`) | `main.py CONFIG` |
+| `GITLAB_URL` / `GITLAB_TOKEN` / `GITLAB_PROJECT` | GitLab MR trio for CLI/MCP (`client.py`); plugin uses Settings + PasswordSafe instead | `lgm_core/client.py` |
+| `LGM_PROTECTED_MAVEN_GROUPS` | protected group prefixes, default `ru.kryptonite` | `ops.py op_publish`, `mirror.py`, `artifact_store.py` |
+| `LGM_USE_ENV_<KEY>=1` | flip precedence so process env beats project `.env` for that key | `lgm_core/config.py cfg()` |
+| `GRADLE_USER_HOME`, `JAVA_HOME` | scanning hints for deps ops | `ops.py` via `cfg()` |
+| `LGM_VAULT_PATH`, `LGM_BUFFER_DIR/_MAX_ITEMS/_MAX_SIZE/_TTL_SECONDS`, `SILENT_GIT`, `BACKUP_PASSWORD`, `OLLAMA_URL/_MODEL` | server-side tuning | `mirror.py`, `buffer.py`, `core/` |
 
-```javascript
-{
-  state: {
-    gitRunning: false,   // Статус Git сервера
-    status: 'idle',      // idle/processing/ready
-    logs: [],            // Системные логи
-    settings: {}         // Настройки
-  },
-  actions: {
-    startGit(),
-    stopGit(),
-    loadSettings(),
-    saveSettings(),
-    connectWebSocket()
-  }
-}
-```
+Config precedence for CLI/MCP: project `.env` beats process env by default (the workstation may carry unrelated `API_KEY`s); explicit flags win over both; `LGM_USE_ENV_<KEY>` flips one key.
 
-## API endpoints
+Postbox path prefixes (inside the encrypted file store): `mr-notes/`, `mr-replies/`, `mr-replies-status/`, `mr-notes-request/`. Local review directory on HOME: `<project>/.mr-notes/` (`MrNotesWriter.kt`). Plugin per-project sync state: `<project>/.localgitmirror/state/`.
 
-### Существующие
+Crypto: protocol v3 hybrid ECIES. The plugin pins the home server's long-term X25519 pubkey (`GET /api/auth/pubkey`, fingerprint check), ephemeral-key sealing per upload; empty pin falls back to the legacy `SYNC_PASSWORD` envelope (`MirrorSettingsService.serverPubKeyB64`, `backend/app/core/hybrid_crypto.py`).
 
-```
-GET  /                          # Панель управления
-GET  /files                     # Браузер файлов
-GET  /api/status                # Статус системы
-GET  /api/files                 # Список файлов
-GET  /api/file/view             # Просмотр файла
-GET  /api/file/pdf              # Просмотр PDF
-GET  /api/repos                 # Список репозиториев
-POST /api/repos/select          # Выбор репозитория
-POST /api/git/start             # Запуск Git сервера
-POST /api/git/stop              # Остановка Git сервера
-POST /api/git/save-and-sync     # Сохранение и синхронизация
-GET  /api/git/changes           # Список изменений
-POST /api/system/open-editor    # Открытие редактора
-POST /api/chat                  # AI чат
-```
+## Known divergence / dead code
 
-### Новые (планируются)
+Docs contradict code in these places. Code is authoritative.
 
-```
-# Настройки
-GET  /api/settings              # Получение настроек
-POST /api/settings              # Обновление настроек (частичное)
-PUT  /api/settings              # Замена всех настроек
-GET  /api/settings/defaults     # Значения по умолчанию
+- Four server launchers exist; only `run.py` is canonical (`start.bat` wraps it). `cli.py` (prod port 8443, aggressive `taskkill /F /IM uvicorn.exe` in `stop_all`), `dev.py` (hardcoded 8000/5173, ignores `.env`), `bridge_manager.py` (hardcoded `PORT = 8443`) are legacy/old paths.
+- `README.md` is wrong throughout: claims web port 8000 and a native git-daemon on 8081 (`git remote add home git://…:8081`). Actual prod default is HTTPS 443; raw git smart HTTP is explicitly disabled (`main.py` comment "GIT SMART HTTP DISABLED"; `backend/app/routers/git_http.py` is not mounted). A dulwich TCP `GitHandler` on `GIT_PORT` 8444 is still started by `main.py` lifespan, but nothing in the README workflow uses it and no launcher starts a `git daemon` binary.
+- `DEPS_PLAN.md` documents manifest **v1** and `/api/deps/*` endpoints. Code emits manifest **v3** (`{"version": 3, ..., "missing", "present"}`, `ops.py op_request`) over `/api/documents/submit|queue|queue-item|fulfill|ready|ready-item|ack` (`backend/app/routers/deps.py`).
+- Dead i18n strings: `settings.v3.*` (14 keys) in `idea-plugin/src/main/resources/messages/LocalGitMirrorBundle*.properties` have zero references in Kotlin sources.
+- Frontend i18n gaps: ~146 `t('…')` keys used in `frontend/src/**/*.vue` are absent from `frontend/src/locales/en.json` (e.g. `codeEditor.*`, `commits.*`, `commandPalette.*`, many `fileBrowser.*`); en/ru themselves have equal key counts (154), so the gap is locales-vs-usage, not en-vs-ru.
+- `idea-plugin/README.md` describes the old MVP: tool window "bottom" (actual: right, id "DocCache"), tab list without Review/Deps/Exchange, mentions `../IDEA_PLUGIN_MVP.md` (that file actually lives at `docs/IDEA_PLUGIN_MVP.md`).
+- `AGENTS.md` command block (`npm test`) has no root `package.json`; the Python suite runs via `pytest` per `pytest.ini`.
+- `docs/INDEX.md` links several nonexistent files (`FILETREE_SUMMARY.md`, `PROJECT_SUMMARY.md`, `SUMMARY.md`, `TODO.md`, `CLEANUP_REPORT.md`).
+- Naming drift: user-visible product name is **DocCache** (`plugin.xml` id/name/toolWindow/notificationGroup, MCP `serverInfo.name = "doccache-tools"`, FastAPI title "Document Cache Server") while repo/remote identity is LocalGitMirror. Both names refer to the same system.
+- `.env` values checked into nothing (gitignored) but present in working tree contain live secrets (`API_KEY`, `SYNC_PASSWORD`); never copy them into docs, commits, or issues.
 
-# Логи
-GET  /api/logs                  # История логов
-DELETE /api/logs                # Очистка логов
-WS   /ws/logs                   # WebSocket для логов
+## Verification pointers
 
-# Git расширенный
-GET  /api/git/status            # Статус всех файлов
-GET  /api/git/diff              # Diff файла
-GET  /api/git/history           # История коммитов
-GET  /api/git/blame             # Blame файла
-GET  /api/git/branches          # Список веток
-POST /api/git/checkout          # Переключение ветки
-
-# Поиск
-GET  /api/search/files          # Поиск файлов
-GET  /api/search/content        # Поиск по содержимому
-POST /api/search/index          # Переиндексация
-```
-
-## Технологии
-
-### Backend
-- **FastAPI** - веб-фреймворк
-- **Uvicorn** - ASGI сервер
-- **WebSocket** - real-time коммуникация
-- **Git** - система контроля версий
-- **Python 3.10+**
-
-### Frontend
-- **Vue.js 3** - UI фреймворк
-- **Vite** - сборщик
-- **Vue Router** - маршрутизация
-- **Pinia** - управление состоянием
-- **TailwindCSS** - стили
-- **TypeScript** - типизация (опционально)
-
-### Библиотеки
-- **Marked.js** - Markdown парсер
-- **Mermaid.js** - диаграммы
-- **Highlight.js** - подсветка кода
-- **PDF.js** - PDF рендеринг
-- **Fuse.js** - нечёткий поиск
-- **@vscode/codicons** - иконки
-
-## Безопасность
-
-```mermaid
-graph LR
-    A[Клиент] -->|HTTPS| B[Веб-сервер]
-    A -->|Git протокол| C[Git сервер]
-    B -->|Локально| D[Файловая система]
-    C -->|Локально| D
-    B -->|WebSocket| E[Логгер]
-    
-    style A fill:#3b82f6
-    style B fill:#10b981
-    style C fill:#10b981
-    style D fill:#f59e0b
-    style E fill:#8b5cf6
-```
-
-### Меры безопасности
-- Только локальная сеть (LAN)
-- Нет внешнего доступа
-- Изолированная файловая система
-- Git протокол без аутентификации (локально)
-- WebSocket только для логов (только чтение)
-
-## Производительность
-
-### Оптимизации
-- **Кэширование** - списки файлов, содержимое
-- **Виртуальный скроллинг** - для больших списков
-- **Lazy loading** - компоненты и роуты
-- **Дебаунс** - для поиска и фильтров
-- **Мемоизация** - вычисляемые свойства
-- **Сжатие** - gzip для API ответов
-
-### Метрики
-- Загрузка страницы: < 1 сек
-- Рендеринг списка: < 100ms
-- Открытие файла: < 200ms
-- WebSocket задержка: < 50ms
-
----
-
-**Версия**: 3.2.0  
-**Дата**: 2026-01-28  
-**Статус**: Проектирование
+- Surfaces/actions/groups: `idea-plugin/src/main/resources/META-INF/plugin.xml`
+- Tool window tabs: `LocalGitMirrorPanel.kt` (~line 1071, `tab.branches/review/deps/exchange`)
+- Settings fields: `idea-plugin/.../settings/MirrorSettingsService.kt`
+- Role detection: `idea-plugin/.../deps/RoleDetector.kt`
+- Ops list: `lgm_core/ops.py` `REGISTRY` (lines ~2082-2305)
+- MCP schema generation: `lgm_mcp.py _build_tool_schema / _list_tools`
+- Router mounts and auth: `backend/app/main.py` (~lines 342-432)
+- Deps transport contract: `backend/app/routers/deps.py` module docstring

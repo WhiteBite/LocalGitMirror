@@ -44,6 +44,8 @@
     "no_sync_hint": "файлы еще не подготавливались для передачи",
     "panic_tooltip": "Мгновенная остановка сервера и разрыв всех соединений",
     "panic": "ПАНИКА",
+    "panic_confirm": "Остановить сервер и разорвать все соединения?",
+    "server_stopped": "Сервер остановлен",
     "plugin_download": {
       "title": "Плагин IDEA",
       "desc": "Скачайте плагин LocalGitMirror и установите его в IDE (Settings → Plugins → Install from Disk).",
@@ -184,5 +186,172 @@
     "retry": "повторить",
     "expand": "развернуть",
     "collapse": "свернуть"
+  },
+  "app": {
+    "cloud_access_active": "Облачный доступ активен",
+    "copy_ip_tooltip": "Нажмите, чтобы скопировать IP",
+    "volume": "Том",
+    "volume_not_selected": "не выбран",
+    "create_volume_title": "Создать том",
+    "volume_name_placeholder": "Название тома",
+    "delete_volume_title": "Удалить том",
+    "delete_volume_confirm": "Удалить том '{name}'?",
+    "delete_volume_irreversible": "Это действие нельзя отменить."
+  },
+  "codeEditor": {
+    "unsaved_changes": "Есть несохранённые изменения",
+    "saving": "Сохранение...",
+    "save_and_commit": "Сохранить и закоммитить",
+    "placeholder": "Начните вводить текст...",
+    "unknown_file": "Неизвестный файл",
+    "saved_and_committed": "Файл '{name}' сохранён и закоммичен",
+    "save_failed": "Не удалось сохранить файл"
+  },
+  "codeViewer": {
+    "copy": "Копировать",
+    "copied": "Скопировано!"
+  },
+  "commandPalette": {
+    "type_command_or_search": "Введите команду или начните поиск...",
+    "no_matching_commands": "Нет подходящих команд",
+    "go_to_dashboard": "Перейти к панели управления",
+    "navigate_to_dashboard": "Открыть панель управления",
+    "go_to_files": "Перейти к файлам",
+    "browse_files_current_volume": "Просмотр файлов текущего тома",
+    "go_to_settings": "Перейти к настройкам",
+    "configure_application_settings": "Настроить параметры приложения",
+    "create_new_volume": "Создать новый том",
+    "initialize_new_data_volume": "Создать новый том данных",
+    "switch_to": "Переключиться на {repo}",
+    "switch_context_to": "Сменить контекст на {repo}",
+    "switched_to": "Переключено на {repo}",
+    "failed_to_switch": "Не удалось переключиться на {repo}"
+  },
+  "commits": {
+    "title": "Коммиты",
+    "loading_commits": "Загрузка коммитов...",
+    "no_commits_found": "Коммиты не найдены",
+    "loading_details": "Загрузка деталей...",
+    "author": "Автор",
+    "date": "Дата",
+    "changed_files": "Изменённые файлы",
+    "select_commit": "Выберите коммит для просмотра деталей"
+  },
+  "fileBrowser": {
+    "search_files": "Поиск файлов...",
+    "refresh": "Обновить",
+    "data_volumes": "Тома данных",
+    "shared_folders": "Общие папки",
+    "loading": "Загрузка...",
+    "volume_empty": "Том пуст",
+    "show_changes": "Показать изменения",
+    "show_file": "Показать файл",
+    "show_diff": "Показать Diff",
+    "open_in_explorer": "Открыть в проводнике",
+    "loading_changes": "Загрузка изменений...",
+    "select_file_to_view": "Выберите файл для просмотра",
+    "drop_hint_shared": "Загрузка файлов доступна в режиме общих папок",
+    "open_shared_mode": "Открыть общие папки",
+    "volume": "Том",
+    "shared": "Общие"
+  },
+  "fileViewer": {
+    "edit_file": "Редактировать файл",
+    "viewer": "Просмотр",
+    "edit": "Правка",
+    "open_in_editor": "Открыть в IDE",
+    "ide": "IDE",
+    "copy_content": "Копировать содержимое",
+    "copied": "Скопировано!",
+    "copy": "Копировать",
+    "download": "Скачать",
+    "loading": "Загрузка...",
+    "try_again": "Повторить",
+    "image_preview_unavailable": "Предпросмотр изображения недоступен",
+    "binary_preview_unavailable": "Предпросмотр бинарного файла недоступен",
+    "markdown": "Markdown",
+    "code": "Код",
+    "pdf": "PDF",
+    "image": "Изображение",
+    "text": "Текст",
+    "unknown": "Неизвестный",
+    "binary": "Бинарный"
+  },
+  "modals": {
+    "createFolder": {
+      "title": "Создать папку",
+      "folder_name": "Название папки",
+      "enter_folder_name": "Введите название папки",
+      "tags_optional": "Теги (необязательно)",
+      "enter_tags": "Введите теги",
+      "tags_example": "Пример: документы, работа",
+      "cancel": "Отмена",
+      "creating": "Создание...",
+      "create": "Создать",
+      "failed_to_create": "Не удалось создать папку"
+    },
+    "createSubfolder": {
+      "title": "Создать подпапку",
+      "subfolder_name": "Название подпапки",
+      "enter_subfolder_name": "Введите название подпапки",
+      "cancel": "Отмена",
+      "creating": "Создание...",
+      "create": "Создать",
+      "failed_to_create": "Не удалось создать подпапку"
+    },
+    "history": {
+      "title": "История файла",
+      "file": "Файл: {name}",
+      "loading_history": "Загрузка истории...",
+      "no_history_available": "История недоступна",
+      "size": "Размер: {size}",
+      "close": "Закрыть",
+      "failed_to_load": "Не удалось загрузить историю"
+    },
+    "tags": {
+      "title": "Теги файла",
+      "file": "Файл: {name}",
+      "tags": "Теги",
+      "add_new_tag": "Добавить новый тег",
+      "add": "Добавить",
+      "cancel": "Отмена",
+      "saving": "Сохранение...",
+      "save": "Сохранить",
+      "failed_to_update": "Не удалось обновить теги"
+    }
+  },
+  "pdfViewer": {
+    "previous": "Назад",
+    "next": "Вперёд",
+    "loading_pdf": "Загрузка PDF..."
+  },
+  "sharedContextMenu": {
+    "view": "Просмотр",
+    "open": "Открыть",
+    "rename": "Переименовать",
+    "tags": "Теги",
+    "history": "История",
+    "stats": "Статистика",
+    "download": "Скачать",
+    "download_zip": "Скачать ZIP",
+    "copy_path": "Копировать путь",
+    "delete": "Удалить",
+    "delete_multiple": "Удалить ({count})"
+  },
+  "sharedFolders": {
+    "title": "Общие папки",
+    "create_folder": "Создать папку",
+    "loading": "Загрузка...",
+    "no_folders": "Папок пока нет",
+    "create": "Создать",
+    "files": "файлов",
+    "upload_files": "Загрузить файлы",
+    "delete": "Удалить",
+    "search": "Поиск...",
+    "refresh": "Обновить",
+    "drop_files": "Перетащите файлы сюда",
+    "select_files": "Выберите файлы",
+    "confirm_delete": "Удалить выбранные файлы ({count})?",
+    "confirm_delete_item": "Удалить '{name}'?"
   }
 }

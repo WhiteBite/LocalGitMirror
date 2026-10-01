@@ -1,6 +1,8 @@
 package localgitmirror.idea.sync
 
 import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.sync.v2.DefaultMirrorPort
+import localgitmirror.idea.sync.v2.MirrorPort
 import java.security.MessageDigest
 
 internal object HandshakeCache {
@@ -25,14 +27,15 @@ internal object HandshakeCache {
     }
 
     fun capabilities(
-        baseUrl: String, apiKey: String, syncPassword: String, insecureTls: Boolean
+        baseUrl: String, apiKey: String, syncPassword: String, insecureTls: Boolean,
+        port: MirrorPort = DefaultMirrorPort
     ): MirrorApi.CapabilitiesResult {
         val k = key(baseUrl, syncPassword)
         synchronized(lock) {
             val e = capsCache[k]
             if (e != null && e.expiresAt > System.currentTimeMillis()) return e.value
         }
-        val r = MirrorApi.capabilities(baseUrl, apiKey, insecureTls)
+        val r = port.capabilities(baseUrl, apiKey, insecureTls)
         if (r.code in 200..299) {
             synchronized(lock) { capsCache[k] = Entry(r, System.currentTimeMillis() + TTL_MS) }
         }
@@ -40,14 +43,15 @@ internal object HandshakeCache {
     }
 
     fun passwordProbe(
-        baseUrl: String, apiKey: String, syncPassword: String, insecureTls: Boolean
+        baseUrl: String, apiKey: String, syncPassword: String, insecureTls: Boolean,
+        port: MirrorPort = DefaultMirrorPort
     ): MirrorApi.ProbeResult {
         val k = key(baseUrl, syncPassword)
         synchronized(lock) {
             val e = probeCache[k]
             if (e != null && e.expiresAt > System.currentTimeMillis()) return e.value
         }
-        val r = MirrorApi.passwordProbe(baseUrl, apiKey, insecureTls)
+        val r = port.passwordProbe(baseUrl, apiKey, insecureTls)
         if (r.code in 200..299 && r.bytes != null) {
             synchronized(lock) { probeCache[k] = Entry(r, System.currentTimeMillis() + TTL_MS) }
         }

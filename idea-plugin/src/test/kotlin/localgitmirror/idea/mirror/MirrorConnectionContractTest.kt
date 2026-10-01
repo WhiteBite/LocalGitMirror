@@ -17,7 +17,7 @@ class MirrorConnectionContractTest {
   @Test
   fun `connection check requires the API key before making an authenticated request`() {
     assertEquals(
-      "Укажите API key из консоли Mirror-сервера.",
+      "Укажите API key из консоли сервера.",
       MirrorConnectionContract.missingConfigurationMessage("https://mirror.example", "")
     )
     assertNull(MirrorConnectionContract.missingConfigurationMessage("https://mirror.example", "key"))

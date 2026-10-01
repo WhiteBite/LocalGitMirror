@@ -44,6 +44,8 @@
     "no_sync_hint": "no files prepared for transfer yet",
     "panic_tooltip": "Immediately stop the server and drop all connections",
     "panic": "PANIC",
+    "panic_confirm": "Stop the server and drop all connections?",
+    "server_stopped": "Server stopped",
     "plugin_download": {
       "title": "IDEA Plugin",
       "desc": "Download the LocalGitMirror plugin and install it in your IDE (Settings → Plugins → Install from Disk).",
@@ -184,5 +186,172 @@
     "retry": "retry",
     "expand": "expand",
     "collapse": "collapse"
+  },
+  "app": {
+    "cloud_access_active": "Cloud access active",
+    "copy_ip_tooltip": "Click to copy IP",
+    "volume": "Volume",
+    "volume_not_selected": "not selected",
+    "create_volume_title": "Create volume",
+    "volume_name_placeholder": "Volume name",
+    "delete_volume_title": "Delete volume",
+    "delete_volume_confirm": "Delete volume '{name}'?",
+    "delete_volume_irreversible": "This action cannot be undone."
+  },
+  "codeEditor": {
+    "unsaved_changes": "Unsaved changes",
+    "saving": "Saving...",
+    "save_and_commit": "Save & Commit",
+    "placeholder": "Start typing...",
+    "unknown_file": "Unknown file",
+    "saved_and_committed": "File '{name}' saved and committed",
+    "save_failed": "Failed to save file"
+  },
+  "codeViewer": {
+    "copy": "Copy",
+    "copied": "Copied!"
+  },
+  "commandPalette": {
+    "type_command_or_search": "Type a command or search...",
+    "no_matching_commands": "No matching commands",
+    "go_to_dashboard": "Go to Dashboard",
+    "navigate_to_dashboard": "Navigate to the dashboard",
+    "go_to_files": "Go to Files",
+    "browse_files_current_volume": "Browse files in the current volume",
+    "go_to_settings": "Go to Settings",
+    "configure_application_settings": "Configure application settings",
+    "create_new_volume": "Create New Volume",
+    "initialize_new_data_volume": "Initialize a new data volume",
+    "switch_to": "Switch to {repo}",
+    "switch_context_to": "Switch context to {repo}",
+    "switched_to": "Switched to {repo}",
+    "failed_to_switch": "Failed to switch to {repo}"
+  },
+  "commits": {
+    "title": "Commits",
+    "loading_commits": "Loading commits...",
+    "no_commits_found": "No commits found",
+    "loading_details": "Loading details...",
+    "author": "Author",
+    "date": "Date",
+    "changed_files": "Changed files",
+    "select_commit": "Select a commit to view details"
+  },
+  "fileBrowser": {
+    "search_files": "Search files...",
+    "refresh": "Refresh",
+    "data_volumes": "Data volumes",
+    "shared_folders": "Shared folders",
+    "loading": "Loading...",
+    "volume_empty": "Volume is empty",
+    "show_changes": "Show changes",
+    "show_file": "Show file",
+    "show_diff": "Show Diff",
+    "open_in_explorer": "Open in explorer",
+    "loading_changes": "Loading changes...",
+    "select_file_to_view": "Select a file to view",
+    "drop_hint_shared": "File upload is available in Shared Folders mode",
+    "open_shared_mode": "Open Shared Folders",
+    "volume": "Volume",
+    "shared": "Shared"
+  },
+  "fileViewer": {
+    "edit_file": "Edit file",
+    "viewer": "Viewer",
+    "edit": "Edit",
+    "open_in_editor": "Open in IDE",
+    "ide": "IDE",
+    "copy_content": "Copy content",
+    "copied": "Copied!",
+    "copy": "Copy",
+    "download": "Download",
+    "loading": "Loading...",
+    "try_again": "Try again",
+    "image_preview_unavailable": "Image preview unavailable",
+    "binary_preview_unavailable": "Binary file preview unavailable",
+    "markdown": "Markdown",
+    "code": "Code",
+    "pdf": "PDF",
+    "image": "Image",
+    "text": "Text",
+    "unknown": "Unknown",
+    "binary": "Binary"
+  },
+  "modals": {
+    "createFolder": {
+      "title": "Create Folder",
+      "folder_name": "Folder name",
+      "enter_folder_name": "Enter folder name",
+      "tags_optional": "Tags (optional)",
+      "enter_tags": "Enter tags",
+      "tags_example": "Example: documents, work",
+      "cancel": "Cancel",
+      "creating": "Creating...",
+      "create": "Create",
+      "failed_to_create": "Failed to create folder"
+    },
+    "createSubfolder": {
+      "title": "Create Subfolder",
+      "subfolder_name": "Subfolder name",
+      "enter_subfolder_name": "Enter subfolder name",
+      "cancel": "Cancel",
+      "creating": "Creating...",
+      "create": "Create",
+      "failed_to_create": "Failed to create subfolder"
+    },
+    "history": {
+      "title": "File History",
+      "file": "File: {name}",
+      "loading_history": "Loading history...",
+      "no_history_available": "No history available",
+      "size": "Size: {size}",
+      "close": "Close",
+      "failed_to_load": "Failed to load history"
+    },
+    "tags": {
+      "title": "File Tags",
+      "file": "File: {name}",
+      "tags": "Tags",
+      "add_new_tag": "Add new tag",
+      "add": "Add",
+      "cancel": "Cancel",
+      "saving": "Saving...",
+      "save": "Save",
+      "failed_to_update": "Failed to update tags"
+    }
+  },
+  "pdfViewer": {
+    "previous": "Previous",
+    "next": "Next",
+    "loading_pdf": "Loading PDF..."
+  },
+  "sharedContextMenu": {
+    "view": "View",
+    "open": "Open",
+    "rename": "Rename",
+    "tags": "Tags",
+    "history": "History",
+    "stats": "Stats",
+    "download": "Download",
+    "download_zip": "Download as ZIP",
+    "copy_path": "Copy path",
+    "delete": "Delete",
+    "delete_multiple": "Delete ({count})"
+  },
+  "sharedFolders": {
+    "title": "Shared Folders",
+    "create_folder": "Create folder",
+    "loading": "Loading...",
+    "no_folders": "No folders yet",
+    "create": "Create",
+    "files": "files",
+    "upload_files": "Upload files",
+    "delete": "Delete",
+    "search": "Search...",
+    "refresh": "Refresh",
+    "drop_files": "Drop files here",
+    "select_files": "Select files",
+    "confirm_delete": "Delete {count} selected files?",
+    "confirm_delete_item": "Delete '{name}'?"
   }
 }
