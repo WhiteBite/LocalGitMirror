@@ -117,3 +117,10 @@ test-output.txt
 # Local scratch probes created during investigation
 /_*.py
 /yarn_home_install.py
+
+# Agent tooling state
+/.opencode/
+
+# Foreign scratch scripts (kryptonit-specific, not this project)
+/scripts/set-local-gradle.ps1
+/scripts/diag-work-deps.ps1
