@@ -323,6 +323,28 @@ def _free_port(port: int | None) -> None:
             continue
 
 
+def _prod_server_kwargs(web_port: int, cert: Path, key: Path, have_ssl: bool) -> dict:
+    kwargs = dict(
+        host="0.0.0.0",
+        port=web_port,
+        log_level="info",
+        # loopback-проверки должны видеть реального пира, а не X-Forwarded-For
+        proxy_headers=False,
+        # Cap graceful shutdown: a single Ctrl+C must not hang waiting for the
+        # long-lived log WebSocket to close. uvicorn's own (Windows-aware) signal
+        # handling then exits within ~2s; press Ctrl+C twice for instant.
+        timeout_graceful_shutdown=2,
+        # Keep-alive must NOT be 0: uvicorn would close the TCP connection right
+        # after the response and race slow client reads during large pulls.
+        timeout_keep_alive=30,
+        log_config=_LOG_CONFIG,
+    )
+    if have_ssl and cert.exists() and key.exists():
+        kwargs["ssl_certfile"] = str(cert)
+        kwargs["ssl_keyfile"] = str(key)
+    return kwargs
+
+
 def run_prod() -> None:
     os.chdir(ROOT)  # cert.pem / storage / frontend dist resolve relative to repo root
     _load_env()
@@ -349,22 +371,7 @@ def run_prod() -> None:
         except Exception as exc:
             print(f"[warn] redirect not started: {exc}")
 
-    kwargs = dict(
-        host="0.0.0.0",
-        port=web_port,
-        log_level="info",
-        # Cap graceful shutdown: a single Ctrl+C must not hang waiting for the
-        # long-lived log WebSocket to close. uvicorn's own (Windows-aware) signal
-        # handling then exits within ~2s; press Ctrl+C twice for instant.
-        timeout_graceful_shutdown=2,
-        # Keep-alive must NOT be 0: uvicorn would close the TCP connection right
-        # after the response and race slow client reads during large pulls.
-        timeout_keep_alive=30,
-        log_config=_LOG_CONFIG,
-    )
-    if have_ssl and cert.exists() and key.exists():
-        kwargs["ssl_certfile"] = str(cert)
-        kwargs["ssl_keyfile"] = str(key)
+    kwargs = _prod_server_kwargs(web_port, cert, key, have_ssl)
 
     scheme = "https" if "ssl_certfile" in kwargs else "http"
     print(f"[info] LocalGitMirror (production) -> {scheme}://localhost:{web_port}")
@@ -444,6 +451,7 @@ def run_dev() -> None:
     backend_cmd = [
         sys.executable, "-m", "uvicorn", "app.main:app", "--reload",
         "--app-dir", str(BACKEND), "--host", "0.0.0.0", "--port", str(web_port),
+        "--no-proxy-headers",
     ]
     if cert.exists() and key.exists():
         backend_cmd += ["--ssl-certfile", str(cert), "--ssl-keyfile", str(key)]

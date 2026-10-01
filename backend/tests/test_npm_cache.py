@@ -10,6 +10,7 @@ import io
 import json
 import os
 import tarfile
+import threading
 import zipfile
 from pathlib import Path
 
@@ -27,7 +28,9 @@ from app.core.bundle_crypto import encrypt_bundle_bytes
 from app.core.npm_cache import (
     DEFAULT_PROTECTED_NPM_SCOPES,
     NpmArtifact,
+    add_to_npm_index,
     is_protected_npm_package,
+    load_npm_index,
     scan_npm_cache,
     scan_npm_offline_mirror,
 )
@@ -187,6 +190,34 @@ class TestScanYarnMirror:
         mirror_root.mkdir()
         artifacts = scan_npm_offline_mirror(mirror_root, DEFAULT_PROTECTED_NPM_SCOPES)
         assert artifacts == []
+
+
+def test_concurrent_add_to_npm_index_persists_all_packages(tmp_path):
+    """Импорт публикации вызывает add_to_npm_index из разных потоков/инстансов:
+    load→mutate→save должен быть сериализован по пути индекса."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    n = 8
+    start = threading.Barrier(n)
+
+    def worker(i: int) -> None:
+        artifact = NpmArtifact(
+            name=f"@krypto-ui/pkg{i}",
+            version="1.0.0",
+            tarball_path="unused",
+            integrity="sha512-unused",
+            shasum="0" * 40,
+        )
+        start.wait()
+        add_to_npm_index(vault, artifact, f"{i:064x}")
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(load_npm_index(vault)) == n
 
 
 # ─────────────────────────────────────────────────────────────────────────────

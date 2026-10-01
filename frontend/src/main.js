@@ -8,8 +8,7 @@ import i18n from './i18n'
 import 'tippy.js/dist/tippy.css'
 import { plugin as VueTippy } from 'vue-tippy'
 
-// Set axios headers for Session ID (from .env only, no fallback)
-const sessionId = import.meta.env.VITE_API_KEY
+const sessionId = window.__LGM_API_KEY__
 if (sessionId) {
   axios.defaults.headers.common['X-Session-ID'] = sessionId
 }

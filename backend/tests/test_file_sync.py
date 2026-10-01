@@ -153,6 +153,22 @@ def test_file_sync_upload_requires_k_and_meta(tmp_path: Path):
     assert client.get("/api/documents/attachment-list", params={"rid": "onyx"}).json()["items"] == []
 
 
+def test_file_sync_v3_upload_without_server_key_returns_503(tmp_path: Path):
+    client, _ = _make_client(tmp_path)
+    file_sync_router_mod.server_private_key = None
+    resp = _upload(client, "onyx", b"payload", "irrelevant-epk", "x" * 32)
+    assert resp.status_code == 503
+
+
+def test_file_sync_v3_upload_rejects_oversized_meta(tmp_path: Path):
+    client, _ = _make_client(tmp_path)
+    session = _ClientSession(_server_pub())
+    sealed = session.seal(b"payload", hc.RELAY_AAD_POSTBOX)
+    resp = _upload(client, "onyx", sealed, session.epk_b64(), "A" * (64 * 1024 + 1))
+    assert resp.status_code == 400
+    assert client.get("/api/documents/attachment-list", params={"rid": "onyx"}).json()["items"] == []
+
+
 def test_file_sync_rejects_bad_repo_path_and_id(tmp_path: Path):
     client, _ = _make_client(tmp_path)
     for bad_repo in ["../etc", "foo/bar", "x\\y", "", "."]:

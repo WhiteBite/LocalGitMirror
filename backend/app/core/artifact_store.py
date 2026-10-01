@@ -280,6 +280,21 @@ _INDEX_CACHE_LOCK = threading.Lock()
 _INDEX_CACHE: Dict[str, Tuple[Optional[Tuple[int, int]], dict]] = {}
 _INDEX_CACHE_MAX_PATHS = 16
 
+# лок по пути файла, а не по экземпляру: инстанс создаётся на каждый запрос
+_RMW_LOCKS: Dict[str, threading.RLock] = {}
+_RMW_LOCKS_GUARD = threading.Lock()
+
+
+def rmw_lock(path: Path) -> threading.RLock:
+    """Процесс-широкий лок для load→mutate→save циклов над одним файлом."""
+    key = str(path)
+    with _RMW_LOCKS_GUARD:
+        lock = _RMW_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _RMW_LOCKS[key] = lock
+        return lock
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Хранилище
@@ -313,7 +328,6 @@ class ArtifactStore:
         self.conflicts_path = self.root / "conflicts.json"
         self.wanted_path = self.root / "wanted.json"
         self.projection_dir = self.root / "projections" / "maven2"
-        self._lock = threading.RLock()
         self._ensure_dirs()
 
     def _ensure_dirs(self) -> None:
@@ -366,11 +380,10 @@ class ArtifactStore:
 
     def load_index(self) -> dict:
         """Копия индекса: вызывающий код может мутировать её без риска для кеша."""
-        with self._lock:
-            data = self._cached_index()
-            out = dict(data)
-            out["entries"] = dict(data["entries"])
-            return out
+        data = self._cached_index()
+        out = dict(data)
+        out["entries"] = dict(data["entries"])
+        return out
 
     def _save_index(self, index: dict) -> None:
         index["schema"] = self.INDEX_SCHEMA
@@ -390,7 +403,7 @@ class ArtifactStore:
         digest, sha1 = _sha_digests(data)
         maven_path = coord.maven_path
 
-        with self._lock:
+        with rmw_lock(self.index_path):
             index = self.load_index()
             entries = index["entries"]
             existing = entries.get(maven_path)
@@ -531,7 +544,7 @@ class ArtifactStore:
         """Зафиксировать промах. Отсюда рабочая машина узнаёт, что достать —
         без отдельного запроса с домашней стороны."""
         maven_path = normalize_maven_path(maven_path) or maven_path
-        with self._lock:
+        with rmw_lock(self.wanted_path):
             data = self._load_wanted()
             entries = data.setdefault("entries", [])
             now = int(time.time())
@@ -564,7 +577,7 @@ class ArtifactStore:
                 f"Недопустимое состояние: {state!r}. "
                 f"Допустимые: {', '.join(sorted(VALID_WANTED_STATES))}"
             )
-        with self._lock:
+        with rmw_lock(self.wanted_path):
             data = self._load_wanted()
             for e in data.get("entries", []):
                 if e.get("maven_path") == maven_path:
@@ -586,7 +599,7 @@ class ArtifactStore:
         wanted_set = {normalize_maven_path(p) or p for p in maven_paths}
         if not wanted_set:
             return 0
-        with self._lock:
+        with rmw_lock(self.wanted_path):
             data = self._load_wanted()
             n = 0
             for e in data.get("entries", []):
@@ -648,7 +661,7 @@ class ArtifactStore:
         if not self.projection_dir.is_dir():
             return {"restored": 0}
         restored = 0
-        with self._lock:
+        with rmw_lock(self.index_path):
             index = self.load_index()
             entries = index["entries"]
             for path in self.projection_dir.rglob("*"):

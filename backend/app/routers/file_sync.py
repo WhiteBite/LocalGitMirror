@@ -44,6 +44,7 @@ _SAFE_REPO = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*$")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9-]+$")
 _MAX_REL_PATH = 512
 _MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2 GB safety cap
+_MAX_META_B64 = 64 * 1024
 
 
 def _validate_repo(repo: str) -> str:
@@ -173,8 +174,10 @@ def _serve_blob(path: Path, aad: bytes, epk: Optional[str]) -> Response:
 
 def _open_sealed_meta(k: str, meta_b64: str) -> tuple[str, int]:
     """Open the v3-sealed upload metadata {"path", "plain_size"}; 400 on any tamper."""
+    if len(meta_b64) > _MAX_META_B64:
+        raise HTTPException(400, "Sealed metadata too large")
     if server_private_key is None:
-        raise HTTPException(400, "Sealed metadata requires the v3 server key")
+        raise HTTPException(503, "Server hybrid key not initialised")
     try:
         ctx = hybrid_crypto.HybridServerContext(server_private_key, hybrid_crypto.decode_epk(k))
         blob = base64.b64decode(meta_b64, validate=True)

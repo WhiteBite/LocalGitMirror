@@ -4,6 +4,7 @@ Marked as integration — skipped if the server is unreachable.
 Run with: pytest tests/test_lgm_smoke.py -m integration
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _LGM = _REPO_ROOT / "lgm.py"
 _BASE_URL = "https://127.0.0.1:443"
-_API_KEY = "stealth-bridge-token-2026"
+_API_KEY = os.environ.get("LGM_API_KEY") or os.environ.get("API_KEY", "")
 
 pytestmark = pytest.mark.integration
 
