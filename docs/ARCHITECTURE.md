@@ -51,7 +51,7 @@ Topology note: HOME is where the server runs, so HOME's plugin detects role `hom
 
 ## Data flows (directional)
 
-All three ride the same encrypted HTTP transport (`/api/documents/*`); the server stores opaque blobs and never decrypts them.
+All three ride the same encrypted HTTP transport (`/api/documents/*`). Branch bundles stay opaque to the server (envelope + bundle crypto, sealed to the pinned server key). Relay flows (deps, file postbox, buffer, MR notes/replies, vault publish) carry v3 ECIES sealed to the home server's pinned X25519 pubkey; the server terminates that crypto on write and stores plaintext re-encrypted at rest under an independent `relay.key` (see Crypto). The clipboard buffer rides `/api/buffer/*` with the same relay scheme.
 
 ### 1. Branch bundles (send / pull)
 
@@ -76,6 +76,8 @@ HOME ──sees status──▶ (if notes missing) mr_notes_request → postbox 
 
 Home has no GitLab access; `mr_list` falls back to inventorying transferred `mr-notes/` blobs (`_mr_list_from_postbox`, `lgm_core/ops.py`).
 
+Notes and replies travel through the file postbox as v3 relay payloads (AAD `lgm/v3/relay/postbox`): uploads carry the ephemeral pubkey in form field `k`, reads carry header `X-LGM-Epk`; the server opens, stores re-sealed under `relay.key`, and re-seals per reader. On a v3-pinned WORK machine none of this needs `SYNC_PASSWORD` (`sealPostboxPayload` / `fileSyncDownload` in `MirrorApi.kt`).
+
 ### 3. Corporate dependencies (gradle/npm)
 
 ```
@@ -87,6 +89,8 @@ HOME ──publish (vault)──▶ scan protected artifacts (LGM_PROTECTED_MAVE
 
 Server storage: `storage/.lgm/deps/<sha256(repo)[:16]>/requests/*.bin` and `.../responses/*.bin` (`backend/app/routers/deps.py`). Vault: `storage/.lgm/vault` (override `LGM_VAULT_PATH`). File postbox: `storage/.lgm/files/<repo>/<id>.{json,bin}` (`file_sync.py`), 7-day stale cleanup.
 
+All relay blobs are stored as `0x04 || nonce[12] || AES-256-GCM(plaintext, relay_key, aad=PURPOSE_AAD)` — the server opens the client seal on write and re-seals for each reader; see Crypto. Deps uploads carry the ephemeral pubkey in form field `k` (manifest under AAD `deps/req`, response ZIP under `deps/resp`); downloads carry header `X-LGM-Epk`. V3 postbox uploads seal their routing metadata (`path`, `plain_size`) into form field `meta`, so the cleartext fields stay neutral. Vault publish (`POST /api/cache/publish`, `publish-npm`) is sealed to the server key with AAD `lgm/v3/relay/vault`; the server decrypts it here by design — gradle reads the vault unpacked from disk.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -94,15 +98,15 @@ Server storage: `storage/.lgm/deps/<sha256(repo)[:16]>/requests/*.bin` and `.../
 | `run.py` | canonical launcher (`prod` default / `dev`); bootstraps `backend/venv`, ensures `cert.pem`/`key.pem`, optional in-process HTTP→HTTPS redirect thread |
 | `start.bat` / `start.sh` | thin wrappers around `run.py` |
 | `cli.py`, `dev.py`, `bridge_manager.py` | legacy launchers, superseded (see Divergence) |
-| `backend/app/main.py` | FastAPI app: auth (`X-Session-ID` / `Authorization: Bearer`), router mounts, dulwich git daemon on `GIT_PORT`, static SPA mount |
+| `backend/app/main.py` | FastAPI app: auth (`X-Session-ID` / `Authorization: Bearer`), router mounts, v3 key injection into routers (lifespan), dulwich git daemon on `GIT_PORT`, static SPA mount |
 | `backend/app/routers/` | `sync` (bundle upload/export/check/link), `deps` (manifest submit/queue/fulfill/ready/ack), `file_sync` + `documents` prefix (postbox), `mirror` (vault cache data plane, loopback-guarded), `buffer`, `plugin` (dist info/latest), `system`, `repos`, `files`, `shared`, `settings`, `web`, `websocket` (`/ws/logs`, `/ws/files`), `git_http` (unmounted) |
 | `backend/app/core/` | `repo_manager`, `git_handler` (dulwich TCP), `bundle_crypto`, `envelope_crypto`, `hybrid_crypto` (ECIES v3), `artifact_store`, `npm_cache`, `vault_backup`, `lan_beacon`, `logger`, `settings_manager`, `shared_manager`, `system_monitor`, `watcher` |
 | `frontend/` | Vue 3 SPA; routes `/` Dashboard, `/files`, `/search`, `/buffer` (alias `/exchange`), `/history`, `/settings`; built to `frontend/dist`, served by backend |
-| `idea-plugin/` | Kotlin IntelliJ plugin ("DocCache"); tool window tabs: Branches, Review, Dependencies, Exchange; secrets in PasswordSafe (`mirror.apiKey`, `mirror.syncPassword`, `gitlabToken`); state file `doccache.xml` |
+| `idea-plugin/` | Kotlin IntelliJ plugin ("DocCache"); tool window tabs: Branches, Review, Dependencies, Exchange; secrets in PasswordSafe (`mirror.apiKey`, `mirror.syncPassword`, `gitlabToken`); pinned server pubkey in plain settings (`serverPubKeyB64` — not a secret); state file `doccache.xml` |
 | `lgm_core/` | shared engine: `config.py` (.env resolution), `client.py` (HTTP), `crypto.py`, `ops.py` (REGISTRY), `render.py` |
 | `lgm.py` | CLI wrapper over REGISTRY |
 | `lgm_mcp.py` | MCP stdio server over REGISTRY |
-| `storage/` | server data root (gitignored): bare repos, `workspaces/`, `.lgm/{deps,files,vault}`, logs |
+| `storage/` | server data root (gitignored): bare repos, `workspaces/`, `.lgm/{deps,files,vault,buffer}`, key files `server_x25519.key` / `relay.key`, logs |
 | `tests/` | pytest suite (`pytest.ini`, `integration` marker needs live server) |
 
 ## Operational constants
@@ -124,19 +128,26 @@ Env vars:
 | --- | --- | --- |
 | `BASE_URL` | mirror base URL for CLI/MCP (fallback `https://localhost:443`) | `lgm_core/config.py` |
 | `API_KEY` | shared secret header (`X-Session-ID` and/or `Authorization: Bearer`) | `backend/app/main.py`, `lgm_core` |
-| `SYNC_PASSWORD` | AES-GCM envelope password for dumps/blobs/postbox | backend, `lgm_core`, plugin SecretsStore |
+| `SYNC_PASSWORD` | legacy AES-GCM envelope password (dumps/blobs/postbox); relay flows no longer need it on WORK — the server keeps it only to read/pre-serve legacy `0x01`/`L` blobs and for the legacy CLI/MCP | backend, `lgm_core`, plugin SecretsStore |
 | `STORAGE_PATH` | server data root (`.env` currently points at `D:\Sources\kryptonit`) | `main.py CONFIG` |
 | `GITLAB_URL` / `GITLAB_TOKEN` / `GITLAB_PROJECT` | GitLab MR trio for CLI/MCP (`client.py`); plugin uses Settings + PasswordSafe instead | `lgm_core/client.py` |
 | `LGM_PROTECTED_MAVEN_GROUPS` | protected group prefixes, default `ru.kryptonite` | `ops.py op_publish`, `mirror.py`, `artifact_store.py` |
 | `LGM_USE_ENV_<KEY>=1` | flip precedence so process env beats project `.env` for that key | `lgm_core/config.py cfg()` |
 | `GRADLE_USER_HOME`, `JAVA_HOME` | scanning hints for deps ops | `ops.py` via `cfg()` |
-| `LGM_VAULT_PATH`, `LGM_BUFFER_DIR/_MAX_ITEMS/_MAX_SIZE/_TTL_SECONDS`, `SILENT_GIT`, `BACKUP_PASSWORD`, `OLLAMA_URL/_MODEL` | server-side tuning | `mirror.py`, `buffer.py`, `core/` |
+| `LGM_VAULT_PATH`, `LGM_BUFFER_DIR/_MAX_ITEMS/_MAX_SIZE/_TTL_SECONDS`, `SILENT_GIT`, `OLLAMA_URL/_MODEL` | server-side tuning | `mirror.py`, `buffer.py`, `core/` |
+| `LGM_M2_ALLOW_REMOTE` | open the loopback-guarded Maven data plane to non-loopback clients | `mirror.py _guard_data_plane()` |
 
 Config precedence for CLI/MCP: project `.env` beats process env by default (the workstation may carry unrelated `API_KEY`s); explicit flags win over both; `LGM_USE_ENV_<KEY>` flips one key.
 
 Postbox path prefixes (inside the encrypted file store): `mr-notes/`, `mr-replies/`, `mr-replies-status/`, `mr-notes-request/`. Local review directory on HOME: `<project>/.mr-notes/` (`MrNotesWriter.kt`). Plugin per-project sync state: `<project>/.localgitmirror/state/`.
 
-Crypto: protocol v3 hybrid ECIES. The plugin pins the home server's long-term X25519 pubkey (`GET /api/auth/pubkey`, fingerprint check), ephemeral-key sealing per upload; empty pin falls back to the legacy `SYNC_PASSWORD` envelope (`MirrorSettingsService.serverPubKeyB64`, `backend/app/core/hybrid_crypto.py`).
+Crypto: protocol v3 hybrid ECIES (X25519 + HKDF-SHA256 + AES-256-GCM). The plugin pins the home server's long-term X25519 pubkey (`GET /api/auth/pubkey`, fingerprint check, TOFU in `ensureServerKeyPinned`); every call seals to that key with a fresh ephemeral. Empty pin falls back to the legacy `SYNC_PASSWORD` envelope (`MirrorSettingsService.serverPubKeyB64`, `backend/app/core/hybrid_crypto.py`).
+
+Relay flows (deps, file postbox, buffer, MR notes/replies, vault publish) — Option A: the server terminates the wire crypto. Write carries form field `k` (ephemeral pubkey, url-safe b64; JSON body field for buffer); the server opens via `HybridServerContext.open_relay` (HKDF label `lgm/v3/relay/req`) and stores plaintext re-encrypted at rest under an independent random key file `storage/.lgm/relay.key`: `0x04 || nonce[12] || AES-256-GCM(plaintext, relay_key, aad=PURPOSE_AAD)`. Read carries header `X-LGM-Epk`; the server decrypts at rest and re-seals to that ephemeral (`seal_relay`, label `lgm/v3/relay/resp`). Legacy `0x01`/`L` blobs are opened with `SYNC_PASSWORD` and re-sealed; 409 when the server has no password. Per-purpose AAD binds the GCM tag so a blob sealed for one purpose cannot replay as another: `lgm/v3/relay/deps/req`, `.../deps/resp`, `.../postbox`, `.../buffer`, `.../vault`. Branch bundles keep the envelope/bundle labels (`lgm/v3/env/*`, `lgm/v3/bundle/*`; upload attachment uses its own ephemeral in form field `kb`).
+
+A WORK machine needs no `SYNC_PASSWORD` for deps respond, MR notes/replies, buffer, vault publish, or delete-ref/prune (envelope-only calls work with an empty password once the key is pinned). HOME keeps it only to read/pre-serve legacy blobs and for the legacy CLI/MCP (`lgm_core` speaks the password path exclusively).
+
+Cross-language byte-compat (Python ↔ Kotlin) is gated by the KAT vector `backend/tests/vectors/v3_relay.json`, consumed by `backend/tests/test_hybrid_relay_kat.py` and the plugin's `HybridCryptoTest`. Server keys are created on first startup in the lifespan (`backend/app/main.py`): `storage/.lgm/server_x25519.key` (long-term X25519) and `storage/.lgm/relay.key` (at-rest, deliberately not derived from the wire key).
 
 ## Known divergence / dead code
 
@@ -162,4 +173,7 @@ Docs contradict code in these places. Code is authoritative.
 - Ops list: `lgm_core/ops.py` `REGISTRY` (lines ~2082-2305)
 - MCP schema generation: `lgm_mcp.py _build_tool_schema / _list_tools`
 - Router mounts and auth: `backend/app/main.py` (~lines 342-432)
+- Relay crypto (server side): `backend/app/core/hybrid_crypto.py`, `_decrypt_incoming`/`_serve_blob` in `backend/app/routers/{deps,file_sync,buffer}.py`
+- Relay crypto (client side): `idea-plugin/.../workkit/HybridCrypto.kt`, seal/download helpers in `idea-plugin/.../mirror/MirrorApi.kt`
+- Cross-language KAT: `backend/tests/vectors/v3_relay.json` ↔ `backend/tests/test_hybrid_relay_kat.py` ↔ `HybridCryptoTest.kt`
 - Deps transport contract: `backend/app/routers/deps.py` module docstring
