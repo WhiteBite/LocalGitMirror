@@ -8,6 +8,7 @@ import java.util.Base64 as JavaBase64
 import java.util.UUID
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -491,6 +492,14 @@ object MirrorSyncApi {
     val message: String
   )
 
+  internal fun parsePreviewCommits(inner: JsonObject): List<CommitInfo> =
+    (inner["commits"] as? JsonArray)?.mapNotNull { el ->
+      val o = el as? JsonObject ?: return@mapNotNull null
+      val hash = o["hash"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+      val message = o["message"]?.jsonPrimitive?.contentOrNull ?: ""
+      CommitInfo(hash, message)
+    } ?: emptyList()
+
   fun previewPullDetails(
     baseUrl: String,
     apiKey: String,
@@ -534,15 +543,10 @@ object MirrorSyncApi {
       val eField = outer["e"]?.jsonPrimitive?.contentOrNull
         ?: return PreviewPullDetailsResult(code, emptyList(), "", "Missing envelope")
 
-      // Parse the commits array via regex from the decrypted JSON string.
       val decryptedBody = codec.openEnvelopeStr(eField)
-      val commits = mutableListOf<CommitInfo>()
-      val commitRegex = Regex(""""hash"\s*:\s*"([^"]+)"\s*,\s*"message"\s*:\s*"([^"]*)"""")
-      commitRegex.findAll(decryptedBody).forEach {
-        commits.add(CommitInfo(it.groupValues[1], it.groupValues[2]))
-      }
-
       val inner = Json.parseToJsonElement(decryptedBody).jsonObject
+      val commits = parsePreviewCommits(inner)
+
       val diffstat = inner["diffstat"]?.jsonPrimitive?.contentOrNull ?: ""
 
       PreviewPullDetailsResult(code, commits, diffstat, "OK")

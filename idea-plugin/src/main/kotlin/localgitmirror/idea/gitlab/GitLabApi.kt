@@ -27,6 +27,10 @@ import java.net.URLEncoder
  */
 object GitLabApi {
 
+  internal fun parseProjectName(body: String): String? = runCatching {
+    Json.parseToJsonElement(body).jsonObject["name"]?.jsonPrimitive?.contentOrNull
+  }.getOrNull()
+
   data class MrInfo(
     val iid: Int,
     val title: String,
@@ -72,8 +76,7 @@ object GitLabApi {
       val stream = if (code in 200..299) conn.inputStream else conn.errorStream
       val body = stream?.bufferedReader()?.use { it.readText() } ?: ""
       if (code in 200..299) {
-        val name = Regex("\"name\"\\s*:\\s*\"([^\"]*)\"").find(body)?.groupValues?.getOrNull(1)
-        VerifyResult(code, name, "")
+        VerifyResult(code, parseProjectName(body), "")
       } else {
         VerifyResult(code, null, body.take(200))
       }

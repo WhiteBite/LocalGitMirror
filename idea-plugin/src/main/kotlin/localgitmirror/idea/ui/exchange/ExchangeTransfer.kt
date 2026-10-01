@@ -94,6 +94,7 @@ internal fun LocalGitMirrorPanel.submitTextEcho(
     }
     override fun onSuccess() = finishEcho(localId, result.first, result.second)
     override fun onThrowable(t: Throwable) = finishEcho(localId, false, null)
+    override fun onCancel() = finishEcho(localId, false, null)
   })
 }
 
@@ -177,6 +178,8 @@ internal fun LocalGitMirrorPanel.submitLogTailEcho(localId: String, s: MirrorSet
     }
 
     override fun onThrowable(t: Throwable) = finishEcho(localId, false, null)
+
+    override fun onCancel() = finishEcho(localId, false, null)
   })
 }
 
@@ -225,6 +228,7 @@ internal fun LocalGitMirrorPanel.sendImageToPostbox(image: Image) {
 
     override fun onSuccess() = finishEcho(localId, newId != null, newId, tmpPath)
     override fun onThrowable(t: Throwable) = finishEcho(localId, false, null, tmpPath)
+    override fun onCancel() = finishEcho(localId, false, null, tmpPath)
   })
 }
 
@@ -273,6 +277,7 @@ internal fun LocalGitMirrorPanel.uploadFilesToPostbox(files: List<File>) {
 
     override fun onSuccess() = applyUploadResults(pending, results)
     override fun onThrowable(t: Throwable) = applyUploadResults(pending, results)
+    override fun onCancel() = applyUploadResults(pending, results)
   })
 }
 
@@ -306,6 +311,9 @@ internal fun LocalGitMirrorPanel.submitFileEcho(
       finishEcho(localId, newId != null, newId, if (isTemp) file.absolutePath else null)
 
     override fun onThrowable(t: Throwable) =
+      finishEcho(localId, false, null, if (isTemp) file.absolutePath else null)
+
+    override fun onCancel() =
       finishEcho(localId, false, null, if (isTemp) file.absolutePath else null)
   })
 }

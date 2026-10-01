@@ -13,22 +13,41 @@ import javax.swing.ImageIcon
 private const val THUMB_MAX_WIDTH = 240
 private const val THUMB_MAX_HEIGHT = 320
 
-/** Persistent home for received exchange files: <project>/.doccache/exchange, gitignored. */
+/** Persistent home for received exchange files: <project>/.doccache/exchange, excluded via .git/info/exclude. */
 internal fun LocalGitMirrorPanel.exchangeDir(): File? {
   val base = project.basePath ?: return null
   val dir = File(base, ".doccache/exchange")
   if (!dir.exists() && !dir.mkdirs()) return null
-  val gitignore = File(base, ".gitignore")
   val entry = ".doccache/"
   try {
-    if (!gitignore.isFile) {
-      gitignore.writeText("$entry\n", Charsets.UTF_8)
-    } else if (gitignore.readText(Charsets.UTF_8).lines().none { it.trim() == entry }) {
-      gitignore.appendText("$entry\n")
+    val exclude = gitInfoExclude(base)
+    if (exclude != null) {
+      if (!exclude.isFile) {
+        exclude.parentFile?.mkdirs()
+        exclude.writeText("$entry\n", Charsets.UTF_8)
+      } else if (exclude.readText(Charsets.UTF_8).lines().none { it.trim() == entry }) {
+        exclude.appendText("$entry\n")
+      }
     }
   } catch (_: Throwable) {
   }
   return dir
+}
+
+/** Common-dir .git/info/exclude path, or null outside a git repo; never touches the tracked .gitignore. */
+private fun gitInfoExclude(base: String): File? {
+  val dotGit = File(base, ".git")
+  val gitDir = when {
+    dotGit.isDirectory -> dotGit
+    dotGit.isFile -> runCatching {
+      val content = dotGit.readText(Charsets.UTF_8).trim()
+      if (content.startsWith("gitdir:")) File(content.removePrefix("gitdir:").trim()) else null
+    }.getOrNull()
+    else -> null
+  } ?: return null
+  // linked worktrees read info/exclude from the common dir, two levels above .git/worktrees/<name>
+  val commonDir = gitDir.parentFile?.takeIf { it.name == "worktrees" }?.parentFile ?: gitDir
+  return File(commonDir, "info/exclude")
 }
 
 internal fun LocalGitMirrorPanel.safeExchangeName(item: ExchangeItem): String {

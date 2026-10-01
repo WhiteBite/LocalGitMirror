@@ -8,7 +8,7 @@ import kotlinx.serialization.json.put
 
 /**
  * Side-marker convention for exchange metadata. The plaintext that gets
- * encrypted into hint_enc / path_enc is a JSON object {"s":<side>, "h"|"n":<text>};
+ * encrypted into hint_enc is a JSON object {"s":<side>, "h"|"n":<text>};
  * "w" marks the IDEA plugin (work side), "h" the web client (home side).
  * Anything that is not parseable JSON with the required keys is legacy:
  * the whole decrypted string is the text and the side is unknown.

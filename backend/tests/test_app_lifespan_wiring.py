@@ -21,6 +21,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+WIRING_KEY = "wiring-test-key"
+AUTH = {"X-Session-ID": WIRING_KEY}
+
 
 @pytest.fixture
 def real_app(tmp_path: Path, monkeypatch):
@@ -37,7 +40,7 @@ def real_app(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("STORAGE_PATH", str(storage))
     monkeypatch.setenv("WEB_PORT", "0")           # not actually bound
     monkeypatch.setenv("GIT_PORT", "0")
-    monkeypatch.setenv("API_KEY", "")             # disable auth — we test wiring only
+    monkeypatch.setenv("API_KEY", WIRING_KEY)
     monkeypatch.setenv("SYNC_PASSWORD", "test-pwd")
 
     # Force a fresh import so CONFIG and globals re-read env
@@ -61,7 +64,7 @@ def real_app(tmp_path: Path, monkeypatch):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def test_api_repos_router_is_wired(real_app: TestClient):
-    resp = real_app.get("/api/repos")
+    resp = real_app.get("/api/repos", headers=AUTH)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     detail = (body.get("detail") or "").lower()
@@ -76,7 +79,7 @@ def test_deps_pending_router_is_wired(real_app: TestClient):
     The deps router globals must be assigned in the lifespan handler, not at
     module import time (when they were still None).
     """
-    resp = real_app.get("/api/documents/queue", params={"rid": "any-name"})
+    resp = real_app.get("/api/documents/queue", params={"rid": "any-name"}, headers=AUTH)
     assert resp.status_code == 200, (
         f"deps.repo_manager not wired (got {resp.status_code}): {resp.text}\n"
         f"This is the bug where the deps router was wired before the lifespan "
@@ -94,6 +97,7 @@ def test_deps_request_router_is_wired(real_app: TestClient):
     resp = real_app.post(
         "/api/documents/submit",
         data={"rid": "any-name"},
+        headers=AUTH,
         files={"attachment": ("m.bin", encrypt_bundle_bytes(b"\x00" * 64, "test-pwd"), "application/octet-stream")},
     )
     # Should accept the upload and return success — NOT 500 'not initialised'.
@@ -103,7 +107,7 @@ def test_deps_request_router_is_wired(real_app: TestClient):
 
 
 def test_settings_router_is_wired(real_app: TestClient):
-    resp = real_app.get("/api/settings")
+    resp = real_app.get("/api/settings", headers=AUTH)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     detail = (body.get("detail") or "").lower()
@@ -130,7 +134,7 @@ def test_mirror_hybrid_key_is_wired(real_app: TestClient):
 
 def test_health_endpoint(real_app: TestClient):
     """API health must work too — sanity check the app is fully alive."""
-    resp = real_app.get("/api/health")
+    resp = real_app.get("/api/health", headers=AUTH)
     assert resp.status_code == 200
     body = resp.json()
     # The app reports its capabilities here; "apiVersion" should be present
@@ -162,13 +166,14 @@ def test_full_deps_roundtrip_against_real_app(real_app: TestClient):
     r = real_app.post(
         "/api/documents/submit",
         data={"rid": repo},
+        headers=AUTH,
         files={"attachment": ("m.bin", encrypt_bundle_bytes(manifest_plain, password), "application/octet-stream")},
     )
     assert r.status_code == 200, r.text
     request_id = r.json()["id"]
 
     # 2. Pending
-    p = real_app.get("/api/documents/queue", params={"rid": repo}).json()
+    p = real_app.get("/api/documents/queue", params={"rid": repo}, headers=AUTH).json()
     assert any(item["id"] == request_id for item in p["items"])
 
     # 3. Respond
@@ -176,22 +181,23 @@ def test_full_deps_roundtrip_against_real_app(real_app: TestClient):
     rr = real_app.post(
         "/api/documents/fulfill",
         data={"rid": repo, "request_id": request_id},
+        headers=AUTH,
         files={"attachment": ("a.bin", encrypt_bundle_bytes(archive_plain, password), "application/octet-stream")},
     )
     assert rr.status_code == 200, rr.text
     response_id = rr.json()["id"]
 
     # 4. Responses list (dome side)
-    listing = real_app.get("/api/documents/ready", params={"rid": repo}).json()
+    listing = real_app.get("/api/documents/ready", params={"rid": repo}, headers=AUTH).json()
     assert any(item["id"] == response_id for item in listing["items"])
 
     # 5. Fetch — the plaintext round-trips (the server re-seals on read)
-    fetched = real_app.get("/api/documents/ready-item", params={"rid": repo, "id": response_id})
+    fetched = real_app.get("/api/documents/ready-item", params={"rid": repo, "id": response_id}, headers=AUTH)
     assert fetched.status_code == 200
     assert decrypt_dump_bytes(fetched.content, password) == archive_plain
 
     # 6. Ack — server deletes the blob
-    ack = real_app.delete("/api/documents/ack", params={"rid": repo, "id": response_id})
+    ack = real_app.delete("/api/documents/ack", params={"rid": repo, "id": response_id}, headers=AUTH)
     assert ack.status_code == 200
-    final = real_app.get("/api/documents/ready", params={"rid": repo}).json()
+    final = real_app.get("/api/documents/ready", params={"rid": repo}, headers=AUTH).json()
     assert not any(item["id"] == response_id for item in final["items"])

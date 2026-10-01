@@ -3,6 +3,7 @@ package localgitmirror.idea.sync.v2
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
@@ -55,7 +56,7 @@ class SyncFacadeService(private val project: Project) {
     if (settings.baseUrl.isBlank()) {
       diags += Diagnostic(Severity.ERROR, "BASE_URL_MISSING", "Server URL is not configured")
     }
-    if (SecretsStore.syncPassword.isBlank()) {
+    if (SecretsStore.syncPassword.isBlank() && !MirrorCrypto.isV3Pinned()) {
       diags += Diagnostic(Severity.ERROR, "PASSWORD_MISSING", "Sync Password is not configured")
     }
 

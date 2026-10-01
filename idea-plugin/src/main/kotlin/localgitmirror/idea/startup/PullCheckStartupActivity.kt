@@ -13,6 +13,8 @@ import localgitmirror.idea.deps.MachineRole
 import localgitmirror.idea.deps.RespondDepsAction
 import localgitmirror.idea.deps.RoleDetector
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.mirror.MirrorDepsApi
 import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
@@ -36,6 +38,13 @@ fun shouldNotifyPending(count: Int, lastNotified: Long, nowMillis: Long, cooldow
   return (nowMillis - lastNotified) >= cooldownMs
 }
 
+/**
+ * Pure function: true when Cache has something pullable — tips differ and the
+ * local branch is not strictly ahead of the remote tip.
+ */
+fun shouldNotifyPullAvailable(remoteHash: String, localHash: String, remoteIsAncestorOfLocal: Boolean): Boolean =
+  !remoteHash.equals(localHash, ignoreCase = true) && !remoteIsAncestorOfLocal
+
 /** Daemon-threaded runner so background network work never blocks IDE shutdown. */
 private fun runDaemon(name: String, block: () -> Unit) {
   Thread(block, name).apply { isDaemon = true }.start()
@@ -58,6 +67,7 @@ class PullCheckStartupActivity : ProjectActivity {
    * register the window-focus listener synchronously before returning.
    */
   override suspend fun execute(project: Project) {
+    SecretsStore.warmCacheAsync()
     val settings = service<MirrorSettingsService>().state
     if (!settings.autoCheckPullOnStartup) return
     if (settings.baseUrl.isBlank()) return
@@ -155,18 +165,19 @@ class PullCheckStartupActivity : ProjectActivity {
     val remoteHash = remoteRefs[currentBranch]?.sha ?: return
     val localHash = GitLocal.headHash(project, dir) ?: return
 
-    if (remoteHash.equals(localHash, ignoreCase = true)) return
+    if (!shouldNotifyPullAvailable(remoteHash, localHash, GitLocal.isAncestor(project, dir, remoteHash, localHash))) return
 
     SyncLogger.log(dir, "[FOCUS-CHECK] remote update available")
 
     val notification = NotificationGroupManager.getInstance()
       .getNotificationGroup("DocCache")
       .createNotification(
-        "Обновление доступно в DocCache",
-        "Доступна новая версия для загрузки.",
+        LocalGitMirrorBundle.message("startup.notify.updateAvailable.title"),
+        LocalGitMirrorBundle.message("startup.notify.updateAvailable.text"),
         NotificationType.INFORMATION
       )
-      .addAction(NotificationAction.createSimpleExpiring("Загрузить") {
+      .addAction(NotificationAction.createSimpleExpiring(
+        LocalGitMirrorBundle.message("startup.notify.updateAvailable.pull")) {
         localgitmirror.idea.actions.PullFromMirrorAction().actionPerformed(
           com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
             "SyncFocusCheck",
@@ -191,7 +202,7 @@ class PullCheckStartupActivity : ProjectActivity {
     settings: MirrorSettingsService.State,
     repoName: String
   ) {
-    if (SecretsStore.syncPassword.isBlank()) return
+    if (SecretsStore.syncPassword.isBlank() && !MirrorCrypto.isV3Pinned()) return
     checkForDepsWithCooldown(project, dir, settings, repoName,
       lastPendingMs = 0L, lastResponsesMs = 0L,
       nowMs = System.currentTimeMillis(), cooldownMs = 0L)
@@ -212,7 +223,7 @@ class PullCheckStartupActivity : ProjectActivity {
     nowMs: Long,
     cooldownMs: Long
   ): Pair<Long, Long> {
-    if (SecretsStore.syncPassword.isBlank()) return Pair(0L, 0L)
+    if (SecretsStore.syncPassword.isBlank() && !MirrorCrypto.isV3Pinned()) return Pair(0L, 0L)
 
     val role = RoleDetector.detect(settings)
     var notifiedPendingMs = 0L
@@ -237,10 +248,11 @@ class PullCheckStartupActivity : ProjectActivity {
           val notification = NotificationGroupManager.getInstance()
             .getNotificationGroup("DocCache")
             .createNotification(
-              "В DocCache ждёт $count запрос(ов). Нажми «Выдать».",
+              LocalGitMirrorBundle.message("startup.notify.depsPending", count),
               NotificationType.INFORMATION
             )
-            .addAction(NotificationAction.createSimpleExpiring("Выдать") {
+            .addAction(NotificationAction.createSimpleExpiring(
+              LocalGitMirrorBundle.message("startup.notify.depsPending.provide")) {
               RespondDepsAction().actionPerformed(
                 com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
                   "DepsStartupCheck", null,
@@ -275,10 +287,11 @@ class PullCheckStartupActivity : ProjectActivity {
           val notification = NotificationGroupManager.getInstance()
             .getNotificationGroup("DocCache")
             .createNotification(
-              "Готов ответ ($count). Нажми «Применить».",
+              LocalGitMirrorBundle.message("startup.notify.depsResponse", count),
               NotificationType.INFORMATION
             )
-            .addAction(NotificationAction.createSimpleExpiring("Применить") {
+            .addAction(NotificationAction.createSimpleExpiring(
+              LocalGitMirrorBundle.message("startup.notify.depsResponse.apply")) {
               ApplyDepsAction().actionPerformed(
                 com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
                   "DepsStartupCheck", null,

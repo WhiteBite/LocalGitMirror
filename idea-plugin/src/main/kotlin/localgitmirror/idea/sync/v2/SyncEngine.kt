@@ -2,11 +2,16 @@ package localgitmirror.idea.sync.v2
 
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.mirror.HttpResult
+import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.git.RepoMaintenance
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import java.io.File
+
+/** Blank sync password is acceptable when a v3 server key is pinned (relay crypto replaces it). */
+fun syncPasswordConfigured(syncPassword: String, v3Pinned: Boolean): Boolean =
+  syncPassword.isNotBlank() || v3Pinned
 
 class SyncEngine(
   internal val mirror: MirrorPort = DefaultMirrorPort,
@@ -44,7 +49,7 @@ class SyncEngine(
     if (settings.baseUrl.isBlank()) {
       return StepResult(false, "Configure server URL in settings")
     }
-    if (settings.syncPassword.isBlank()) {
+    if (!syncPasswordConfigured(settings.syncPassword, MirrorCrypto.isV3Pinned())) {
       return StepResult(false, "Configure Sync Password in settings")
     }
     return StepResult(true, "OK")

@@ -17,6 +17,7 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import java.io.File
+import java.util.concurrent.TimeUnit
 private fun notify(project: Project, msg: String, type: NotificationType) {
   NotificationGroupManager.getInstance()
     .getNotificationGroup("DocCache")
@@ -64,7 +65,7 @@ class RequestDepsAction : AnAction() {
       return
     }
     val settings = service<MirrorSettingsService>().state
-    val configured = depsTransferAllowed(settings.baseUrl, SecretsStore.syncPassword, MirrorCrypto.isV3Pinned())
+    val configured = depsTransferAllowed(settings.baseUrl, SecretsStore.cached.syncPassword, MirrorCrypto.isV3Pinned())
     val dir = project.basePath?.let { java.io.File(it) } ?: java.io.File(".")
     val hasEcosystem = configured && DepsEcosystems.detect(dir).isNotEmpty()
     e.presentation.isEnabled = hasEcosystem
@@ -82,7 +83,7 @@ class RequestDepsAction : AnAction() {
     val history = service<OperationsHistoryService>()
     runCatching { service<DepsAutomationService>().recordLocalEvent() }
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Запрос недостающих зависимостей", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("deps.task.request"), true) {
       override fun run(indicator: ProgressIndicator) {
         val result = DepsRequester.request(project, settings, syncPwd, repo, indicator)
         if (result.success) {
@@ -120,7 +121,7 @@ class RespondDepsAction : AnAction() {
     val project = e.project
     if (project == null) { e.presentation.isEnabled = false; return }
     val settings = service<MirrorSettingsService>().state
-    val configured = depsTransferAllowed(settings.baseUrl, SecretsStore.syncPassword, MirrorCrypto.isV3Pinned())
+    val configured = depsTransferAllowed(settings.baseUrl, SecretsStore.cached.syncPassword, MirrorCrypto.isV3Pinned())
     e.presentation.isEnabled = computeRespondEnabled(configured, lastKnownPendingCount.get())
   }
 
@@ -136,10 +137,10 @@ class RespondDepsAction : AnAction() {
     val history = service<OperationsHistoryService>()
     runCatching { service<DepsAutomationService>().recordLocalEvent() }
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Выдать запрошенные зависимости", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("deps.task.respond"), true) {
       override fun run(indicator: ProgressIndicator) {
         indicator.isIndeterminate = true
-        indicator.text = "Проверяем запросы для repo='$repo'…"
+        indicator.text = LocalGitMirrorBundle.message("deps.progress.respondCheck", repo)
         val pending = MirrorDepsApi.depsPending(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
@@ -147,21 +148,18 @@ class RespondDepsAction : AnAction() {
           insecureTls = settings.mirrorInsecureTls
         )
         if (pending.code !in 200..299) {
-          notify(project, "Не удалось получить список запросов: ${pending.message}", NotificationType.ERROR)
+          notify(project, LocalGitMirrorBundle.message("deps.notify.respondListFailed", pending.message), NotificationType.ERROR)
           return
         }
         lastKnownPendingCount.set(pending.items.size)
         if (pending.items.isEmpty()) {
-          notify(project,
-            "Нет запросов для repo='$repo'.\n" +
-              "Проверь, что имя репозитория в настройках совпадает на обеих машинах.",
-            NotificationType.WARNING)
+          notify(project, LocalGitMirrorBundle.message("deps.notify.noPending", repo), NotificationType.WARNING)
           history.add("Deps respond", false, "no pending for repo='$repo'")
           return
         }
 
         val req = pending.items.first()
-        indicator.text = "Скачиваем запрос ${req.id.take(8)}…"
+        indicator.text = LocalGitMirrorBundle.message("deps.progress.downloadRequest", req.id.take(8))
         val tmpManifest = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
         try {
           val dl = MirrorDepsApi.depsDownload(
@@ -174,7 +172,7 @@ class RespondDepsAction : AnAction() {
             outFile = tmpManifest
           )
           if (dl.code !in 200..299 || dl.file == null) {
-            notify(project, "Не удалось скачать запрос: ${dl.message}", NotificationType.ERROR)
+            notify(project, LocalGitMirrorBundle.message("deps.notify.requestDownloadFailed", dl.message), NotificationType.ERROR)
             return
           }
 
@@ -198,13 +196,14 @@ class RespondDepsAction : AnAction() {
               } ?: "(не определён)"
 
               history.add("Deps respond", false,
-                "0 из ${result.notFoundCount} найдено. GRADLE_USER_HOME=$gradleEnv | gradle сообщил=$gradleReported")
+                LocalGitMirrorBundle.message("deps.history.zeroFound", result.notFoundCount, gradleEnv, gradleReported))
               history.add("Deps: кеши", false,
-                "Просканировано ${scanned.size} кеш-путей (см. ниже)")
+                LocalGitMirrorBundle.message("deps.history.scanned", scanned.size))
               scanned.forEach { root ->
                 val exists = root.isDirectory
                 val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
-                val mark = if (exists) "OK, групп=$groups" else "НЕТ такой папки"
+                val mark = if (exists) LocalGitMirrorBundle.message("deps.history.cacheOk", groups)
+                           else LocalGitMirrorBundle.message("deps.history.cacheMissing")
                 history.add("Deps: кеш-путь", exists, "$mark — ${root.absolutePath}")
               }
 
@@ -212,17 +211,13 @@ class RespondDepsAction : AnAction() {
               val scanReport = scanned.joinToString("\n") { root ->
                 val exists = root.isDirectory
                 val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
-                "  • ${root.absolutePath} — ${if (exists) "есть ($groups групп)" else "НЕТ"}"
+                "  • ${root.absolutePath} — " +
+                  (if (exists) LocalGitMirrorBundle.message("deps.history.cacheReportOk", groups)
+                   else LocalGitMirrorBundle.message("deps.history.cacheReportMissing"))
               }
-              val msg = buildString {
-                appendLine("Ни одна из ${result.notFoundCount} зависимостей не найдена в кеше.")
-                appendLine("Подробности записаны в Историю (панель плагина).")
-                appendLine()
-                appendLine("Искал в:")
-                appendLine(scanReport)
-                appendLine()
-                append("GRADLE_USER_HOME = $gradleEnv")
-              }
+              val msg = LocalGitMirrorBundle.message(
+                "deps.notify.zeroFound",
+                result.notFoundCount, scanReport, gradleEnv)
               notify(project, msg, NotificationType.WARNING)
             } else {
               notify(project, result.message, NotificationType.ERROR)
@@ -259,7 +254,7 @@ class ApplyDepsAction : AnAction() {
     val project = e.project
     if (project == null) { e.presentation.isEnabled = false; return }
     val settings = service<MirrorSettingsService>().state
-    val configured = depsTransferAllowed(settings.baseUrl, SecretsStore.syncPassword, MirrorCrypto.isV3Pinned())
+    val configured = depsTransferAllowed(settings.baseUrl, SecretsStore.cached.syncPassword, MirrorCrypto.isV3Pinned())
     e.presentation.isEnabled = computeApplyEnabled(configured, lastKnownResponseCount.get())
   }
 
@@ -275,9 +270,9 @@ class ApplyDepsAction : AnAction() {
     val history = service<OperationsHistoryService>()
     runCatching { service<DepsAutomationService>().recordLocalEvent() }
 
-    ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Применить полученные deps", true) {
+    ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("deps.task.apply"), true) {
       override fun run(indicator: ProgressIndicator) {
-        indicator.text = "Проверяем готовые ответы…"
+        indicator.text = LocalGitMirrorBundle.message("deps.progress.applyCheck")
         val list = MirrorDepsApi.depsResponses(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
@@ -285,7 +280,7 @@ class ApplyDepsAction : AnAction() {
           insecureTls = settings.mirrorInsecureTls
         )
         if (list.code !in 200..299) {
-          notify(project, "Не удалось получить список: ${list.message}", NotificationType.ERROR)
+          notify(project, LocalGitMirrorBundle.message("deps.notify.responsesListFailed", list.message), NotificationType.ERROR)
           return
         }
         lastKnownResponseCount.set(list.items.size)
@@ -298,16 +293,16 @@ class ApplyDepsAction : AnAction() {
         val confirmed = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
           Messages.showYesNoDialog(
             project,
-            "Готов ответ ${resp.id.take(8)} (${humanBytes(resp.size)}). Применить?",
-            "DocCache: Применить deps",
-            "Применить", "Отмена", null
+            LocalGitMirrorBundle.message("deps.dialog.applyConfirm", resp.id.take(8), humanBytes(resp.size)),
+            LocalGitMirrorBundle.message("deps.dialog.applyTitle"),
+            LocalGitMirrorBundle.message("deps.dialog.applyYes"), LocalGitMirrorBundle.message("deps.dialog.cancel"), null
           )
         }
         if (confirmed != Messages.YES) return
 
         val tmpResp = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
         try {
-          indicator.text = "Скачивание (${humanBytes(resp.size)})…"
+          indicator.text = LocalGitMirrorBundle.message("deps.progress.downloading", humanBytes(resp.size))
           indicator.isIndeterminate = false
           val dl = MirrorDepsApi.depsDownload(
             baseUrl = settings.baseUrl,
@@ -320,12 +315,12 @@ class ApplyDepsAction : AnAction() {
             onProgress = { read, total ->
               if (total > 0) {
                 indicator.fraction = (read.toDouble() / total).coerceIn(0.0, 0.99)
-                indicator.text = "Скачивание ${humanBytes(read)} / ${humanBytes(total)}"
+                indicator.text = LocalGitMirrorBundle.message("deps.progress.downloadProgress", humanBytes(read), humanBytes(total))
               }
             }
           )
           if (dl.code !in 200..299 || dl.file == null) {
-            notify(project, "Не скачалось: ${dl.message}", NotificationType.ERROR)
+            notify(project, LocalGitMirrorBundle.message("deps.notify.responseDownloadFailed", dl.message), NotificationType.ERROR)
             return
           }
 
@@ -339,14 +334,19 @@ class ApplyDepsAction : AnAction() {
             return
           }
 
-          // Ack the response on the server (one-shot: server deletes it).
-          MirrorDepsApi.depsAck(
+          // a failed ack leaves the item on the server but must not mask the successful local apply
+          val ack = MirrorDepsApi.depsAck(
             baseUrl = settings.baseUrl,
             apiKey = SecretsStore.mirrorApiKey,
             repo = repo,
             insecureTls = settings.mirrorInsecureTls,
             id = resp.id
           )
+          if (ack.code !in 200..299) {
+            history.add("Deps apply", true,
+              "ack failed (HTTP ${ack.code}): response ${resp.id} left on server")
+            notify(project, LocalGitMirrorBundle.message("deps.notify.ackFailed", ack.code), NotificationType.WARNING)
+          }
 
           // Offer to run npm/yarn install if the core suggests it (action only;
           // the automation service skips this dialog).
@@ -355,49 +355,46 @@ class ApplyDepsAction : AnAction() {
             val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
               Messages.showYesNoDialog(
                 project,
-                "${result.lockMsg}\nЗапустить yarn install --offline сейчас? (публичное из кеша yarn, защищённое из кеша)",
-                "DocCache: yarn install", "Запустить", "Позже", null
+                LocalGitMirrorBundle.message("deps.dialog.yarnMessage", result.lockMsg),
+                LocalGitMirrorBundle.message("deps.dialog.yarnTitle"),
+                LocalGitMirrorBundle.message("deps.dialog.run"), LocalGitMirrorBundle.message("deps.dialog.later"), null
               )
             }
             if (runIt == Messages.YES) {
-              indicator.text = "yarn install --offline…"
+              indicator.text = LocalGitMirrorBundle.message("deps.progress.yarnInstall")
               val code = runCatching {
                 val isWin = System.getProperty("os.name").lowercase().contains("win")
                 val cmd = (if (isWin) listOf("cmd", "/c", "yarn") else listOf("yarn")) +
                   listOf("install", "--offline", "--pure-lockfile", "--non-interactive")
-                val applyProj = project.basePath?.let { File(it) }
-                val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
-                proc.inputStream.bufferedReader().forEachLine { /* drain */ }
-                proc.waitFor()
+                runPackageManager(cmd, project.basePath?.let { File(it) }, indicator)
               }.getOrElse { -1 }
-              finalMsg += if (code == 0) " yarn install: OK."
-                          else " yarn install: код $code (если не хватает публичного — один онлайн yarn install, дальше офлайн)."
+              finalMsg += if (code == 0) " " + LocalGitMirrorBundle.message("deps.yarnInstall.ok")
+                          else " " + LocalGitMirrorBundle.message("deps.yarnInstall.code", code)
             } else {
-              finalMsg += " Запусти: yarn install --offline --pure-lockfile"
+              finalMsg += " " + LocalGitMirrorBundle.message("deps.yarnInstall.hint")
             }
           } else if (result.suggestNpmInstall) {
             val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
               Messages.showYesNoDialog(
                 project,
-                "${result.lockMsg}\nЗапустить npm install сейчас? (публичное с npmjs, защищённое из кеша)",
-                "DocCache: npm install", "Запустить", "Позже", null
+                LocalGitMirrorBundle.message("deps.dialog.npmMessage", result.lockMsg),
+                LocalGitMirrorBundle.message("deps.dialog.npmTitle"),
+                LocalGitMirrorBundle.message("deps.dialog.run"), LocalGitMirrorBundle.message("deps.dialog.later"), null
               )
             }
             if (runIt == Messages.YES) {
-              indicator.text = "npm install…"
+              indicator.text = LocalGitMirrorBundle.message("deps.progress.npmInstall")
               val code = runCatching {
                 val isWin = System.getProperty("os.name").lowercase().contains("win")
                 val cmd = (if (isWin) listOf("cmd", "/c", "npm") else listOf("npm")) +
                   listOf("install", "--prefer-offline", "--registry",
                          "https://registry.npmjs.org", "--no-audit", "--no-fund")
-                val applyProj = project.basePath?.let { File(it) }
-                val proc = ProcessBuilder(cmd).directory(applyProj).redirectErrorStream(true).start()
-                proc.inputStream.bufferedReader().forEachLine { /* drain */ }
-                proc.waitFor()
+                runPackageManager(cmd, project.basePath?.let { File(it) }, indicator)
               }.getOrElse { -1 }
-              finalMsg += if (code == 0) " npm install: OK." else " npm install: код $code (повтори вручную)."
+              finalMsg += if (code == 0) " " + LocalGitMirrorBundle.message("deps.npmInstall.ok")
+                          else " " + LocalGitMirrorBundle.message("deps.npmInstall.code", code)
             } else {
-              finalMsg += " Запусти: npm install --prefer-offline --registry https://registry.npmjs.org"
+              finalMsg += " " + LocalGitMirrorBundle.message("deps.npmInstall.hint")
             }
           }
 
@@ -410,4 +407,29 @@ class ApplyDepsAction : AnAction() {
       }
     })
   }
+}
+
+private const val PKG_MGR_TIMEOUT_MS = 10 * 60_000L
+
+/** Run yarn/npm with output drained off-thread; kills the process on cancel or after the timeout. */
+private fun runPackageManager(cmd: List<String>, workDir: File?, indicator: ProgressIndicator): Int {
+  val proc = try {
+    ProcessBuilder(cmd).directory(workDir).redirectErrorStream(true).start()
+  } catch (_: Throwable) {
+    return -1
+  }
+  Thread { runCatching { proc.inputStream.bufferedReader().forEachLine { } } }
+    .apply { isDaemon = true }.start()
+  val deadline = System.currentTimeMillis() + PKG_MGR_TIMEOUT_MS
+  while (!proc.waitFor(200, TimeUnit.MILLISECONDS)) {
+    if (indicator.isCanceled) {
+      proc.destroyForcibly()
+      return 130
+    }
+    if (System.currentTimeMillis() > deadline) {
+      proc.destroyForcibly()
+      return 124
+    }
+  }
+  return proc.exitValue()
 }

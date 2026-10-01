@@ -327,6 +327,56 @@ class TestNpmServeEndpoints:
         resp = client.get("/api/cache/npm/@krypto-ui/missing/1.0.0")
         assert resp.status_code == 404
 
+    def test_serves_exact_requested_version(self, client, vault):
+        tar_123 = _make_tarball(Path("/tmp"), "@krypto-ui/components", "1.2.3")
+        tar_200 = _make_tarball(Path("/tmp"), "@krypto-ui/components", "2.0.0")
+        pub = _make_npm_publication({
+            "@krypto-ui/components@1.2.3": tar_123,
+            "@krypto-ui/components@2.0.0": tar_200,
+        })
+        encrypted = encrypt_bundle_bytes(pub, PASSWORD)
+        client.post(
+            "/api/cache/publish-npm",
+            files={"attachment": ("pub.enc", encrypted, "application/octet-stream")},
+        )
+
+        resp_old = client.get("/api/cache/npm/@krypto-ui/components/-/@krypto-ui%2fcomponents-1.2.3.tgz")
+        assert resp_old.status_code == 200, resp_old.text
+        assert resp_old.content == tar_123
+
+        resp_new = client.get("/api/cache/npm/@krypto-ui/components/-/@krypto-ui%2fcomponents-2.0.0.tgz")
+        assert resp_new.status_code == 200, resp_new.text
+        assert resp_new.content == tar_200
+
+    def test_unknown_version_returns_404(self, client, vault):
+        tar = _make_tarball(Path("/tmp"), "@krypto-ui/components", "1.2.3")
+        pub = _make_npm_publication({"@krypto-ui/components@1.2.3": tar})
+        encrypted = encrypt_bundle_bytes(pub, PASSWORD)
+        client.post(
+            "/api/cache/publish-npm",
+            files={"attachment": ("pub.enc", encrypted, "application/octet-stream")},
+        )
+
+        resp = client.get("/api/cache/npm/@krypto-ui/components/-/@krypto-ui%2fcomponents-9.9.9.tgz")
+        assert resp.status_code == 404
+
+    def test_bare_name_serves_semver_latest(self, client, vault):
+        tar_1_9 = _make_tarball(Path("/tmp"), "@krypto-ui/components", "1.9.0")
+        tar_1_10 = _make_tarball(Path("/tmp"), "@krypto-ui/components", "1.10.0")
+        pub = _make_npm_publication({
+            "@krypto-ui/components@1.9.0": tar_1_9,
+            "@krypto-ui/components@1.10.0": tar_1_10,
+        })
+        encrypted = encrypt_bundle_bytes(pub, PASSWORD)
+        client.post(
+            "/api/cache/publish-npm",
+            files={"attachment": ("pub.enc", encrypted, "application/octet-stream")},
+        )
+
+        resp = client.get("/api/cache/npm/@krypto-ui/components")
+        assert resp.status_code == 200, resp.text
+        assert resp.content == tar_1_10
+
 
 @pytest.fixture()
 def server_key(vault):

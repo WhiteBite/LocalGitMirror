@@ -44,7 +44,7 @@ async def capabilities():
 
 
 @router.get("/auth/verify")
-async def sync_password_probe():
+def sync_password_probe():
     """Password-based probe. Returns 503 with a JSON hint when the server runs
     in v3-only mode (no SYNC_PASSWORD). Clients that see capabilities.v3=True
     and have the server key pinned should skip this endpoint entirely.

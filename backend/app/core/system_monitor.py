@@ -10,7 +10,7 @@ class SystemMonitor:
         """Get current system metrics"""
         import os
 
-        cpu = psutil.cpu_percent(interval=0.1)
+        cpu = psutil.cpu_percent(interval=None)
         memory = psutil.virtual_memory()
 
         # Safe disk usage check

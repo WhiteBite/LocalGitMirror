@@ -2,8 +2,9 @@
 
 import os
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
+from app.core.mirror_dataplane import _is_loopback
 from app.routers.state import state
 
 router = APIRouter(prefix="/api", tags=["system"])
@@ -18,7 +19,7 @@ system_logger = None
 
 
 @router.get("/status")
-async def get_status():
+def get_status():
     """Get server status"""
     from app.core.system_monitor import SystemMonitor
 
@@ -74,8 +75,13 @@ async def get_config():
 
 
 @router.get("/connection-info")
-async def get_connection_info():
-    """Return connection info for IDEA plugin setup."""
+async def get_connection_info(request: Request):
+    """Return connection info for IDEA plugin setup.
+
+    Secret values (API key, sync password) are served only to loopback
+    clients; any other peer gets ``api_key_set`` / ``sync_password_set``
+    booleans and a config template without the secret values.
+    """
     from app.core.system_monitor import SystemMonitor
     from pathlib import Path as _Path
 
@@ -89,6 +95,8 @@ async def get_connection_info():
     sync_password = os.getenv("SYNC_PASSWORD", "")
     default_repo = repo_manager.current_repo if repo_manager else "default"
 
+    loopback = _is_loopback(request.client.host if request.client else "")
+
     config_line = (
         f"baseUrl={mirror_url}\n"
         f"repo={default_repo}\n"
@@ -100,26 +108,31 @@ async def get_connection_info():
         f"gitLabInsecureTls=false\n"
         f"gitRemoteName=origin\n"
         f"pullBackDefaultMode=new-branch\n"
-        f"mirrorApiKey={api_key}\n"
-        f"syncPassword={sync_password}\n"
+        f"mirrorApiKey={api_key if loopback else ''}\n"
+        f"syncPassword={sync_password if loopback else ''}\n"
         f"gitLabToken=\n"
         f"workMode=auto"
     )
 
-    return {
+    result = {
         "mirror_url": mirror_url,
-        "api_key": api_key,
-        "sync_password": sync_password,
         "default_repo": default_repo,
         "protocol": protocol,
         "local_ip": local_ip,
         "web_port": web_port,
         "config_line": config_line,
     }
+    if loopback:
+        result["api_key"] = api_key
+        result["sync_password"] = sync_password
+    else:
+        result["api_key_set"] = bool(api_key)
+        result["sync_password_set"] = bool(sync_password)
+    return result
 
 
 @router.get("/workflow/status")
-async def get_workflow_status():
+def get_workflow_status():
     """Get workflow status for legend"""
     has_changes = False
     change_count = 0
@@ -141,7 +154,7 @@ async def get_workflow_status():
 
 
 @router.get("/metrics")
-async def get_metrics():
+def get_metrics():
     from app.core.system_monitor import SystemMonitor
 
     storage_path = config.get("storage_path", "storage")
@@ -149,10 +162,38 @@ async def get_metrics():
 
 
 @router.get("/logs")
-async def get_logs(limit: int = 50):
+def get_logs(limit: int = 50):
     if system_logger:
         return {"logs": system_logger.get_recent_logs(limit)}
     return {"logs": []}
+
+
+@router.delete("/logs")
+def clear_logs():
+    """Clear all logs"""
+    if not system_logger:
+        return {"success": False, "message": "Failed to clear logs"}
+    success = system_logger.clear_logs()
+    return {
+        "success": success,
+        "message": "Logs cleared successfully" if success else "Failed to clear logs",
+    }
+
+
+@router.get("/logs/stats")
+def get_log_stats():
+    """Get log statistics"""
+    from app.routers import websocket as _ws
+
+    logs = system_logger.get_recent_logs(limit=1000) if system_logger else []
+    stats = {
+        "total": len(logs),
+        "info": sum(1 for log in logs if log.get("level") == "INFO"),
+        "warning": sum(1 for log in logs if log.get("level") == "WARNING"),
+        "error": sum(1 for log in logs if log.get("level") == "ERROR"),
+        "active_connections": len(_ws.active_connections),
+    }
+    return {"success": True, "stats": stats}
 
 
 @router.get("/context/status")

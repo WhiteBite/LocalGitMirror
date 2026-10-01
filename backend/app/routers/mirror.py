@@ -24,16 +24,19 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import zipfile
 from pathlib import Path
 from typing import Optional
+from urllib.parse import unquote
 
 from dataclasses import asdict
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
+from starlette.concurrency import run_in_threadpool
 
 from app.core import hybrid_crypto
 from app.core.artifact_publication import (
@@ -142,7 +145,7 @@ def mirror_wanted(state: Optional[str] = Query(None)):
 
 
 @router.post("/api/cache/wanted/{maven_path:path}/state")
-async def mirror_wanted_set_state(maven_path: str, body: dict):
+def mirror_wanted_set_state(maven_path: str, body: dict):
     """Перевести wanted-позицию в новое состояние.
 
     Тело: ``{"state": "FOUND"}``.
@@ -203,56 +206,59 @@ async def mirror_publish(
     if len(payload) > MAX_PUBLICATION_ENCRYPTED:
         raise HTTPException(413, "Publication too large")
 
-    if k and server_private_key is not None:
+    def _import() -> dict:
+        if k and server_private_key is not None:
+            try:
+                ctx = hybrid_crypto.HybridServerContext(
+                    server_private_key, hybrid_crypto.decode_epk(k)
+                )
+                zip_bytes = ctx.open_relay(payload, hybrid_crypto.RELAY_AAD_VAULT)
+            except Exception:
+                raise HTTPException(
+                    400,
+                    "Не удалось расшифровать публикацию (v3): неверный ключ сервера, "
+                    "повреждённый блоб или чужая AAD.",
+                )
+        else:
+            try:
+                zip_bytes = decrypt_dump_bytes(payload, password)
+            except Exception as e:
+                raise HTTPException(
+                    400,
+                    f"Не удалось расшифровать публикацию ({type(e).__name__}). "
+                    "Проверь, что SYNC_PASSWORD совпадает на обеих машинах.",
+                )
+
+        if not zipfile.is_zipfile(io.BytesIO(zip_bytes)):
+            raise HTTPException(400, "Расшифрованная публикация не является ZIP-архивом")
+
+        store = get_store()
         try:
-            ctx = hybrid_crypto.HybridServerContext(
-                server_private_key, hybrid_crypto.decode_epk(k)
-            )
-            zip_bytes = ctx.open_relay(payload, hybrid_crypto.RELAY_AAD_VAULT)
-        except Exception:
-            raise HTTPException(
-                400,
-                "Не удалось расшифровать публикацию (v3): неверный ключ сервера, "
-                "повреждённый блоб или чужая AAD.",
-            )
-    else:
-        try:
-            zip_bytes = decrypt_dump_bytes(payload, password)
-        except Exception as e:
-            raise HTTPException(
-                400,
-                f"Не удалось расшифровать публикацию ({type(e).__name__}). "
-                "Проверь, что SYNC_PASSWORD совпадает на обеих машинах.",
-            )
+            report = import_publication(store, zip_bytes, protected_groups())
+        except zipfile.BadZipFile:
+            raise HTTPException(400, "Повреждённый ZIP в публикации")
 
-    if not zipfile.is_zipfile(io.BytesIO(zip_bytes)):
-        raise HTTPException(400, "Расшифрованная публикация не является ZIP-архивом")
+        projection = store.rebuild_projection()
+        resolved = store.mark_wanted_resolved(store.inventory().keys())
 
-    store = get_store()
-    try:
-        report = import_publication(store, zip_bytes, protected_groups())
-    except zipfile.BadZipFile:
-        raise HTTPException(400, "Повреждённый ZIP в публикации")
+        _log("mirror publication imported", {
+            "repo": repo,
+            "added": report.added,
+            "existed": report.existed,
+            "conflicts": len(report.conflicts),
+            "rejected": len(report.rejected),
+            "bytes": report.bytes_added,
+        })
 
-    projection = store.rebuild_projection()
-    resolved = store.mark_wanted_resolved(store.inventory().keys())
+        return {
+            "success": True,
+            **report.as_dict(),
+            "wantedResolved": resolved,
+            "projection": projection,
+            "stats": store.stats(),
+        }
 
-    _log("mirror publication imported", {
-        "repo": repo,
-        "added": report.added,
-        "existed": report.existed,
-        "conflicts": len(report.conflicts),
-        "rejected": len(report.rejected),
-        "bytes": report.bytes_added,
-    })
-
-    return {
-        "success": True,
-        **report.as_dict(),
-        "wantedResolved": resolved,
-        "projection": projection,
-        "stats": store.stats(),
-    }
+    return await run_in_threadpool(_import)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -398,16 +404,21 @@ async def mirror_tools_install(
     tarball: UploadFile = File(...),
 ):
     """Install a corporate tool from tarball."""
-    tmp = Path(tempfile.mkdtemp())
-    try:
-        tarball_path = tmp / "tool.tgz"
-        tarball_path.write_bytes(await tarball.read())
-        success = install_tool(name, version, tarball_path)
-        if not success:
-            raise HTTPException(400, "Failed to install tool")
-        return {"success": True, "name": name, "version": version}
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    payload = await tarball.read()
+
+    def _install() -> dict:
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            tarball_path = tmp / "tool.tgz"
+            tarball_path.write_bytes(payload)
+            success = install_tool(name, version, tarball_path)
+            if not success:
+                raise HTTPException(400, "Failed to install tool")
+            return {"success": True, "name": name, "version": version}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    return await run_in_threadpool(_install)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -437,54 +448,56 @@ async def mirror_publish_npm(
     if len(payload) > MAX_PUBLICATION_NPM:
         raise HTTPException(413, "Publication too large")
 
-    if k and server_private_key is not None:
+    def _import() -> dict:
+        if k and server_private_key is not None:
+            try:
+                ctx = hybrid_crypto.HybridServerContext(
+                    server_private_key, hybrid_crypto.decode_epk(k)
+                )
+                zip_bytes = ctx.open_relay(payload, hybrid_crypto.RELAY_AAD_VAULT)
+            except Exception:
+                raise HTTPException(
+                    400,
+                    "Failed to decrypt v3 publication (wrong server key, "
+                    "corrupted blob or foreign AAD).",
+                )
+        else:
+            try:
+                zip_bytes = decrypt_dump_bytes(payload, password)
+            except Exception as e:
+                raise HTTPException(
+                    400,
+                    f"Failed to decrypt publication ({type(e).__name__}). "
+                    "Check that SYNC_PASSWORD matches on both machines.",
+                )
+
+        if not zipfile.is_zipfile(io.BytesIO(zip_bytes)):
+            raise HTTPException(400, "Decrypted publication is not a ZIP archive")
+
+        store = get_store()
         try:
-            ctx = hybrid_crypto.HybridServerContext(
-                server_private_key, hybrid_crypto.decode_epk(k)
-            )
-            zip_bytes = ctx.open_relay(payload, hybrid_crypto.RELAY_AAD_VAULT)
-        except Exception:
-            raise HTTPException(
-                400,
-                "Failed to decrypt v3 publication (wrong server key, "
-                "corrupted blob or foreign AAD).",
-            )
-    else:
-        try:
-            zip_bytes = decrypt_dump_bytes(payload, password)
-        except Exception as e:
-            raise HTTPException(
-                400,
-                f"Failed to decrypt publication ({type(e).__name__}). "
-                "Check that SYNC_PASSWORD matches on both machines.",
-            )
+            report = import_npm_publication(store, zip_bytes, protected_npm_scopes())
+        except zipfile.BadZipFile:
+            raise HTTPException(400, "Corrupt ZIP in publication")
 
-    if not zipfile.is_zipfile(io.BytesIO(zip_bytes)):
-        raise HTTPException(400, "Decrypted publication is not a ZIP archive")
+        _log("npm publication imported", {
+            "added": report.added,
+            "existed": report.existed,
+            "rejected": len(report.rejected),
+            "bytes": report.bytes_added,
+        })
 
-    store = get_store()
-    try:
-        report = import_npm_publication(store, zip_bytes, protected_npm_scopes())
-    except zipfile.BadZipFile:
-        raise HTTPException(400, "Corrupt ZIP in publication")
+        yarn_dir = Path.home() / ".lgm-yarn-offline"
+        yarn_count = build_yarn_projection(vault_root(), yarn_dir, load_npm_index(vault_root()))
+        _log("yarn projection rebuilt", {"count": yarn_count})
 
-    _log("npm publication imported", {
-        "added": report.added,
-        "existed": report.existed,
-        "rejected": len(report.rejected),
-        "bytes": report.bytes_added,
-    })
+        return {
+            "success": True,
+            **report.as_dict(),
+            "yarnProjection": yarn_count,
+        }
 
-    # Rebuild yarn projection
-    yarn_dir = Path.home() / ".lgm-yarn-offline"
-    yarn_count = build_yarn_projection(vault_root(), yarn_dir, load_npm_index(vault_root()))
-    _log("yarn projection rebuilt", {"count": yarn_count})
-
-    return {
-        "success": True,
-        **report.as_dict(),
-        "yarnProjection": yarn_count,
-    }
+    return await run_in_threadpool(_import)
 
 
 @router.get("/api/cache/npm/{package_name:path}/packument")
@@ -502,39 +515,72 @@ def npm_get_packument(package_name: str, request: Request):
     return packument
 
 
+_SEMVER_RE = re.compile(
+    r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.\-+]+))?$"
+)
+
+
+def _semver_key(version: str) -> tuple:
+    """Sort key with numeric major/minor/patch and release > prerelease."""
+    m = _SEMVER_RE.match(version.strip())
+    if m is None:
+        return (0, 0, 0, 0, "")
+    major, minor, patch = (int(g or 0) for g in m.group(1, 2, 3))
+    pre = m.group(4) or ""
+    return (major, minor, patch, 0 if pre else 1, pre)
+
+
+def _match_tgz_version(tgz_file: str, pkg_name: str, versions: dict) -> Optional[str]:
+    """Resolve the version encoded in a tarball filename against the index.
+
+    Accepts the filename spellings the mirror itself emits: ``<name>-<v>.tgz``
+    with the scope kept (``@scope/name``), dashed (``@scope-name``), or fully
+    flattened (``scope-name``).
+    """
+    if not tgz_file.endswith(".tgz"):
+        return None
+    variants = (
+        pkg_name,
+        pkg_name.replace("/", "-"),
+        pkg_name.replace("/", "-").replace("@", ""),
+    )
+    for version in versions:
+        for variant in variants:
+            if tgz_file == f"{variant}-{version}.tgz":
+                return version
+    return None
+
+
 @router.get("/api/cache/npm/{package_name:path}")
 def npm_get_package(package_name: str, request: Request):
     """Serve npm tarball from CAS.
 
     Loopback only. Used by npm/yarn when configured to use localhost registry.
-    Returns tarball bytes with correct Content-Type.
+    A ``<name>/-/<file>.tgz`` path serves exactly the version encoded in the
+    filename; a bare package name serves the semver-greatest known version.
     """
     _guard_data_plane(request)
 
-    # Parse "<name>/-/<name>-<version>.tgz" or just "<name>@<version>"
-    package_name = package_name.strip("/")
+    package_name = unquote(package_name.strip("/"))
+    index = load_npm_index(vault_root())
 
-    # npm registry URL format: /<package>/-/<file>.tgz
     if "/-/" in package_name:
         pkg_name, _, tgz_file = package_name.rpartition("/-/")
-        # Extract version from filename: <pkg>-<version>.tgz
-        # For scoped: @scope/pkg-1.0.0.tgz — version starts after the last "-" before ".tgz"
-        if tgz_file.endswith(".tgz"):
-            stem = tgz_file[:-4]
-            # For scoped packages: @scope-name-1.0.0.tgz -> name is @scope/name, version is 1.0.0
-            # Simple approach: read from index by scanning
-            pkg_name = pkg_name.strip("/")
+        pkg_name = pkg_name.strip("/")
+        versions = index.get(pkg_name)
+        if not versions:
+            raise HTTPException(404, "Package not found")
+        version = _match_tgz_version(tgz_file, pkg_name, versions)
+        if version is None:
+            raise HTTPException(404, "Version not found")
     else:
         pkg_name = package_name
+        versions = index.get(pkg_name)
+        if not versions:
+            raise HTTPException(404, "Package not found")
+        version = max(versions, key=_semver_key)
 
-    index = load_npm_index(vault_root())
-    versions = index.get(pkg_name)
-    if not versions:
-        raise HTTPException(404, "Package not found")
-
-    # Find the latest version
-    latest = sorted(versions.keys())[-1]
-    info = versions[latest]
+    info = versions[version]
     sha256 = info.get("tarball_sha256", "")
     if not sha256:
         raise HTTPException(404, "Tarball not found")
@@ -547,6 +593,6 @@ def npm_get_package(package_name: str, request: Request):
     return FileResponse(
         tarball_path,
         media_type="application/octet-stream",
-        filename=f"{pkg_name.replace('/', '-')}-{latest}.tgz",
+        filename=f"{pkg_name.replace('/', '-')}-{version}.tgz",
         headers={"X-Checksum-Sha1": info.get("shasum", "")},
     )

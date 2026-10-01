@@ -11,6 +11,7 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -37,7 +38,7 @@ class SyncCurrentBranchToMirrorAction : AnAction() {
       notify(project, LocalGitMirrorBundle.message("action.syncBranch.urlMissing"), NotificationType.WARNING)
       return
     }
-    if (SecretsStore.syncPassword.isBlank()) {
+    if (SecretsStore.syncPassword.isBlank() && !MirrorCrypto.isV3Pinned()) {
       notify(project, LocalGitMirrorBundle.message("action.syncBranch.syncPasswordMissing"), NotificationType.WARNING)
       return
     }
