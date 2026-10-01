@@ -29,7 +29,11 @@ class MirrorProjectSettingsService : PersistentStateComponent<MirrorProjectSetti
     // Markers of MR review replies already posted to GitLab (exactly-once ledger).
     var mrReplyLedger: MutableList<String> = mutableListOf(),
     // Reply keys already shipped to the work postbox (home role).
-    var mrHomeSent: MutableList<String> = mutableListOf()
+    var mrHomeSent: MutableList<String> = mutableListOf(),
+    // mr-notes content hash per MR iid — MrNotesSync re-uploads only on change.
+    var mrNotesHash: MutableMap<String, String> = mutableMapOf(),
+    // "yyyy-MM-dd HH:mm" of the last mr-notes upload per MR iid.
+    var mrNotesSentAt: MutableMap<String, String> = mutableMapOf()
   )
 
   private var state = State()

@@ -8,11 +8,14 @@ import com.intellij.openapi.project.Project
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorPostboxApi
+import localgitmirror.idea.settings.MirrorProjectSettingsService
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
-import localgitmirror.idea.workkit.RepoFileSyncCrypto
 import java.io.File
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 class MrReviewService(private val project: Project) {
 
@@ -31,6 +34,7 @@ class MrReviewService(private val project: Project) {
     val replyState: String = "",
     val replyPosted: Int = 0,
     val replyFailed: Int = 0,
+    val notesSentAt: String? = null,
   )
 
   data class StatusReport(val posted: Int, val failed: Int)
@@ -40,11 +44,15 @@ class MrReviewService(private val project: Project) {
     val status: Map<Int, StatusReport>,
     val pendingIids: Set<Int>,
     val localIids: Set<Int>,
-    val processingIids: Set<Int> = emptySet(),
+    val errorIids: Set<Int> = emptySet(),
+    val error: String? = null,
   )
 
   @Volatile
   private var cache: List<MrRowItem> = emptyList()
+
+  @Volatile
+  private var cacheError: String? = null
 
   @Volatile
   var onCacheUpdated: ((List<MrRowItem>) -> Unit)? = null
@@ -52,10 +60,10 @@ class MrReviewService(private val project: Project) {
   // postbox item id -> mtime of the last downloaded+parsed copy; unchanged items are not re-downloaded
   private val downloadedMtime = java.util.concurrent.ConcurrentHashMap<String, Long>()
   private val parsedCache = java.util.concurrent.ConcurrentHashMap<String, Any>()
-  @Volatile
-  private var lastPendingIids: Set<Int> = emptySet()
 
   fun cachedRows(): List<MrRowItem> = cache
+
+  fun cachedError(): String? = cacheError
 
   fun rowsBySourceBranch(): Map<String, MrRowItem> = cache.associateBy { it.sourceBranch }
 
@@ -83,7 +91,9 @@ class MrReviewService(private val project: Project) {
 
   private fun fetchRows(): List<MrRowItem> {
     val conf = GitLabConfig.resolve(project)
-    val cache = runCatching { fetchCacheData() }.getOrDefault(CacheData(emptyList(), emptyMap(), emptySet(), emptySet()))
+    val cache = runCatching { fetchCacheData() }
+      .getOrElse { CacheData(emptyList(), emptyMap(), emptySet(), emptySet(), error = it.message ?: "cache error") }
+    cacheError = cache.error
     if (!GitLabConfig.hasApi(conf)) {
       return decorate(cache.rows, cache)
     }
@@ -97,13 +107,17 @@ class MrReviewService(private val project: Project) {
     return gitlab + cache.filter { it.iid !in known }
   }
 
-  internal fun decorate(rows: List<MrRowItem>, cache: CacheData): List<MrRowItem> = rows.map { row ->
-    val st = cache.status[row.iid]
-    row.copy(
-      replyState = stateFor(row.iid, cache),
-      replyPosted = st?.posted ?: 0,
-      replyFailed = st?.failed ?: 0,
-    )
+  internal fun decorate(rows: List<MrRowItem>, cache: CacheData): List<MrRowItem> {
+    val notesSentAt = project.service<MirrorProjectSettingsService>().state.mrNotesSentAt
+    return rows.map { row ->
+      val st = cache.status[row.iid]
+      row.copy(
+        replyState = stateFor(row.iid, cache),
+        replyPosted = st?.posted ?: 0,
+        replyFailed = st?.failed ?: 0,
+        notesSentAt = row.notesSentAt ?: notesSentAt[row.iid.toString()],
+      )
+    }
   }
 
   /** Raw state key for the reply pipeline; the UI localizes and colors it. */
@@ -112,8 +126,8 @@ class MrReviewService(private val project: Project) {
     return when {
       st != null && st.failed > 0 -> "failed"
       st != null && st.posted > 0 -> "posted"
+      iid in cache.errorIids -> "error"
       iid in cache.pendingIids -> "pending"
-      iid in cache.processingIids -> "processing"
       iid in cache.localIids -> "local"
       else -> ""
     }
@@ -148,14 +162,15 @@ class MrReviewService(private val project: Project) {
 
     val statusCandidates = mutableListOf<Triple<Int, MirrorPostboxApi.FileSyncItem, String>>()
     val pendingIids = mutableSetOf<Int>()
+    val errorIids = mutableSetOf<Int>()
     val noteItems = mutableListOf<Pair<MirrorPostboxApi.FileSyncItem, String>>()
     for (item in listResult.items) {
-      val path = displayPath(item)
+      val path = item.path
       val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
       when {
         path.startsWith("mr-replies-status/") -> {
-          val md = cachedPlain(item, settings, repo) ?: continue
-          statusCandidates.add(Triple(iid, item, md))
+          val md = cachedPlain(item, settings, repo)
+          if (md == null) errorIids.add(iid) else statusCandidates.add(Triple(iid, item, md))
         }
         path.startsWith("mr-replies/") -> pendingIids.add(iid)
         path.startsWith("mr-notes/") -> noteItems.add(item to path)
@@ -171,12 +186,11 @@ class MrReviewService(private val project: Project) {
         }
       }
     }
+    val itemErrors = mutableListOf<String>()
     val rows = newestPerIid(noteItems).mapNotNull { (item, path) ->
-      cachedRow(item, path, settings, repo)
+      cachedRow(item, path, settings, repo, itemErrors)?.copy(notesSentAt = formatTs(item.mtime))
     }
-    val processedIids = lastPendingIids - pendingIids - status.keys
-    lastPendingIids = pendingIids
-    return CacheData(rows, status, pendingIids, localReplyIids(baseDir), processedIids)
+    return CacheData(rows, status, pendingIids, localReplyIids(baseDir), errorIids, itemErrors.joinToString("; ").take(300).ifBlank { null })
   }
 
   private fun cachedPlain(item: MirrorPostboxApi.FileSyncItem, settings: MirrorSettingsService.State, repo: String): String? {
@@ -195,12 +209,18 @@ class MrReviewService(private val project: Project) {
     path: String,
     settings: MirrorSettingsService.State,
     repo: String,
+    errors: MutableList<String>,
   ): MrRowItem? {
     val known = downloadedMtime[item.id]
     if (known != null && known == item.mtime) {
       (parsedCache[item.id] as? MrRowItem)?.let { return it }
     }
-    val row = parseCachedMr(item, path, settings, repo) ?: return null
+    val row = try {
+      parseCachedMr(item, path, settings, repo)
+    } catch (t: Throwable) {
+      errors.add("$path: ${t.message ?: t::class.simpleName ?: "error"}")
+      return null
+    }
     downloadedMtime[item.id] = item.mtime
     parsedCache[item.id] = row
     return row
@@ -215,24 +235,20 @@ class MrReviewService(private val project: Project) {
 
   private fun downloadPlain(item: MirrorPostboxApi.FileSyncItem, settings: MirrorSettingsService.State, repo: String): String? {
     val tmpEnc = File.createTempFile("mr-status-", ".bin")
-    val tmpPlain = File.createTempFile("mr-status-", ".md")
     return try {
       val dl = MirrorPostboxApi.fileSyncDownload(
         settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id, tmpEnc,
       )
       if (dl.code !in 200..299 || dl.file == null) return null
-      if (dl.decrypted) return tmpEnc.readText(Charsets.UTF_8)
-      RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
-      return tmpPlain.readText(Charsets.UTF_8)
+      tmpEnc.readText(Charsets.UTF_8)
     } catch (_: Throwable) {
       null
     } finally {
       runCatching { tmpEnc.delete() }
-      runCatching { tmpPlain.delete() }
     }
   }
 
-  private fun fetchFromGitLab(conf: GitLabConfig.GitLabConf): List<MrRowItem> {
+  internal fun fetchFromGitLab(conf: GitLabConfig.GitLabConf): List<MrRowItem> {
     val mrsResult = GitLabApi.listOpenMrs(conf)
     if (mrsResult.code !in 200..299) {
       throw RuntimeException(mrsResult.message.ifBlank { "GitLab API error ${mrsResult.code}" })
@@ -268,44 +284,30 @@ class MrReviewService(private val project: Project) {
       .values
       .map { group -> group.maxByOrNull { it.first.mtime } ?: group.first() }
 
-  /** Real path of a postbox item: decrypted path_enc when present, plaintext path for old entries. */
-  private fun displayPath(item: MirrorPostboxApi.FileSyncItem): String {
-    if (item.pathEnc.isBlank()) return item.path
-    val plain = runCatching {
-      localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(item.pathEnc, SecretsStore.syncPassword)
-    }.getOrDefault(item.path)
-    return localgitmirror.idea.workkit.ExchangeMeta.parseName(plain).text.ifBlank { item.path }
-  }
+  private fun formatTs(epochSec: Long): String =
+    DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").format(Instant.ofEpochSecond(epochSec).atZone(ZoneId.systemDefault()))
 
   private fun parseCachedMr(
     item: MirrorPostboxApi.FileSyncItem,
     path: String,
     settings: MirrorSettingsService.State,
     repo: String,
-  ): MrRowItem? {
+  ): MrRowItem {
     val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull()
-      ?: return null
+      ?: error("no MR iid in path: $path")
 
     val tmpEnc = File.createTempFile("mr-review-", ".bin")
-    val tmpPlain = File.createTempFile("mr-review-", ".md")
     try {
       val dl = MirrorPostboxApi.fileSyncDownload(
         settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
         item.id, tmpEnc,
       )
-      if (dl.code !in 200..299 || dl.file == null) return null
-
-      val markdown = if (dl.decrypted) tmpEnc.readText(Charsets.UTF_8)
-      else {
-        RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
-        tmpPlain.readText(Charsets.UTF_8)
+      if (dl.code !in 200..299 || dl.file == null) {
+        throw RuntimeException("HTTP ${dl.code} ${dl.message}")
       }
-      return parseMrMarkdown(iid, markdown)
-    } catch (_: Throwable) {
-      return null
+      return parseMrMarkdown(iid, tmpEnc.readText(Charsets.UTF_8))
     } finally {
       runCatching { tmpEnc.delete() }
-      runCatching { tmpPlain.delete() }
     }
   }
 

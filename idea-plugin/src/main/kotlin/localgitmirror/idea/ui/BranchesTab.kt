@@ -317,11 +317,7 @@ internal fun LocalGitMirrorPanel.showBranchContextMenu(e: MouseEvent) {
       addActionListener { saveMrForBranch(sel) }
     })
     popup.add(JMenuItem(LocalGitMirrorBundle.message("review.sendNotes")).apply {
-      addActionListener {
-        val row = project.getService(MrReviewService::class.java)
-          .cachedRows().firstOrNull { it.iid == iid } ?: return@addActionListener
-        sendMrNotesToCache(row)
-      }
+      addActionListener { syncMrNotes(setOf(iid)) }
     })
   } else {
     popup.add(JMenuItem(LocalGitMirrorBundle.message("ctx.mr.none")).apply {

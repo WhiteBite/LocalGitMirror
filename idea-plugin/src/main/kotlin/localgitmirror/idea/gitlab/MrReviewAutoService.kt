@@ -16,8 +16,7 @@ import java.util.concurrent.ThreadLocalRandom
 
 /**
  * Background driver of the MR review loop, gated by `autoMrReview`:
- *  - WORK (plugin-only machine): pushes the agent's reply files from the
- *    postbox to GitLab as soon as they arrive — no human click involved;
+ *  - WORK: pushes reply files to GitLab, re-uploads changed mr-notes ([MrNotesSync]);
  *  - HOME: writes incoming `mr-notes/mr-!N.md` into `.mr-notes/` so agents on
  *    this machine see fresh review notes without opening the IDE panel.
  *
@@ -34,6 +33,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   private var lastWrittenSignature = ""
   private var lastPushSignature = ""
   private var lastPendingSignature = ""
+  private var lastNotesSignature = ""
 
   fun start() {
     if (started) return
@@ -62,7 +62,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   private fun pollWork() {
     val conf = GitLabConfig.resolve(project)
     if (!GitLabConfig.hasApi(conf)) return
-    pollNotesRequests()
+    pollNotesSync()
     val service = MrReplyPushService(project)
     if (settings.autoPushReplies) {
       val reports = service.pushOnce()
@@ -106,49 +106,21 @@ class MrReviewAutoService(private val project: Project) : Disposable {
     }
   }
 
-  private val handledRequestIds = mutableSetOf<String>()
-
-  private fun pollNotesRequests() {
-    val base = project.basePath ?: return
-    val repo = runCatching {
-      project.getService(localgitmirror.idea.sync.v2.SyncFacadeService::class.java)
-        .resolveRepo(File(base), settings).sanitized
-    }.getOrDefault("")
-    if (repo.isBlank()) return
-    val list = localgitmirror.idea.mirror.MirrorPostboxApi.fileSyncList(
-      settings.baseUrl, localgitmirror.idea.settings.SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls
-    )
-    if (list.code !in 200..299) return
-    for (item in list.items) {
-      val path = displayPath(item)
-      if (!path.startsWith("mr-notes-request/")) continue
-      if (!handledRequestIds.add(item.id)) continue
-      if (handledRequestIds.size > 200) handledRequestIds.clear()
-      val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
-      val outcome = runCatching { localgitmirror.idea.actions.GitLabMrSender.sendNotesOnRequest(project, iid) }
-        .getOrElse { MrUploadResult.Failed(0, it.message ?: "error") }
-      when (outcome) {
-        is MrUploadResult.Ok -> runCatching {
-          localgitmirror.idea.mirror.MirrorPostboxApi.fileSyncAck(
-            settings.baseUrl, localgitmirror.idea.settings.SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id
-          )
-        }
-        is MrUploadResult.Failed -> notify(
-          LocalGitMirrorBundle.message("mrreview.notesRequest.fail", iid, outcome.reason),
-          NotificationType.WARNING,
-        )
-      }
+  private fun pollNotesSync() {
+    val report = runCatching { MrNotesSync.sync(project) }
+      .getOrElse { MrNotesSync.Report(emptyList(), 0, listOf(it.message ?: "error")) }
+    val signature = "${report.uploaded}|${report.failures}"
+    if (signature == lastNotesSignature) return
+    lastNotesSignature = signature
+    if (report.uploaded.isNotEmpty()) {
+      notify(LocalGitMirrorBundle.message("mrnotes.sync.auto", report.uploaded.size), NotificationType.INFORMATION)
     }
-  }
-
-  private fun displayPath(item: localgitmirror.idea.mirror.MirrorPostboxApi.FileSyncItem): String {
-    if (item.pathEnc.isBlank()) return item.path
-    val plain = runCatching {
-      localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(
-        item.pathEnc, localgitmirror.idea.settings.SecretsStore.syncPassword
+    if (report.failures.isNotEmpty()) {
+      notify(
+        LocalGitMirrorBundle.message("mrnotes.sync.fail", report.failures.joinToString("; ").take(300)),
+        NotificationType.WARNING,
       )
-    }.getOrDefault(item.path)
-    return localgitmirror.idea.workkit.ExchangeMeta.parseName(plain).text.ifBlank { item.path }
+    }
   }
 
   private fun pollHome() {

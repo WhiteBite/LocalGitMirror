@@ -21,7 +21,6 @@ import localgitmirror.idea.ui.notify
 import localgitmirror.idea.workkit.BundleCrypto
 import localgitmirror.idea.workkit.ExchangeCrypto
 import localgitmirror.idea.workkit.ExchangeMeta
-import localgitmirror.idea.workkit.RepoFileSyncCrypto
 import java.awt.Image
 import java.awt.image.BufferedImage
 import java.io.File
@@ -321,12 +320,11 @@ private fun LocalGitMirrorPanel.uploadFileToPostboxSync(
   val enc = File.createTempFile("lgm-up-", ".bin")
   return try {
     val displayPath = ExchangeMeta.nameJson(realName, localMetaSide())
-    val sealed = MirrorCrypto.sealPostboxPayload(file.readBytes(), SecretsStore.syncPassword, displayPath, file.length())
+    val sealed = MirrorCrypto.sealPostboxPayload(file.readBytes(), displayPath, file.length())
     enc.writeBytes(sealed.bytes)
-    val (relPath, pathEnc) = MirrorCrypto.postboxRoute(displayPath, SecretsStore.syncPassword)
     val res = MirrorPostboxApi.fileSyncUpload(
       s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls,
-      relPath, file.length(), enc, pathEnc, sealed.epkB64, sealed.meta, null
+      sealed.epkB64, sealed.meta, enc
     )
     if (res.code !in 200..299 || res.id.isNullOrBlank()) {
       historyService.add(
@@ -396,14 +394,7 @@ internal fun LocalGitMirrorPanel.downloadDecrypted(item: ExchangeItem, s: Mirror
       s.baseUrl, SecretsStore.mirrorApiKey, item.repo, s.mirrorInsecureTls, item.id, enc
     )
     if (dl.code !in 200..299) return null
-    if (dl.decrypted) return enc.readBytes()
-    val out = File.createTempFile("lgm-thumb-", ".tmp")
-    return try {
-      RepoFileSyncCrypto.decryptFile(enc, out, SecretsStore.syncPassword, null)
-      out.readBytes()
-    } finally {
-      runCatching { out.delete() }
-    }
+    return enc.readBytes()
   } catch (_: Throwable) {
     return null
   } finally {
@@ -414,14 +405,6 @@ internal fun LocalGitMirrorPanel.downloadDecrypted(item: ExchangeItem, s: Mirror
 /** Side marker stamped into exchange meta: the machine's detected role, not the client type. */
 private fun LocalGitMirrorPanel.localMetaSide(): String =
   ExchangeMeta.sideOfRole(localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) == localgitmirror.idea.deps.MachineRole.WORK)
-
-private fun LocalGitMirrorPanel.displayPathOf(item: MirrorPostboxApi.FileSyncItem): String {
-  if (item.pathEnc.isBlank()) return item.path
-  val plain = runCatching {
-    localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(item.pathEnc, SecretsStore.syncPassword)
-  }.getOrDefault(item.path)
-  return localgitmirror.idea.workkit.ExchangeMeta.parseName(plain).text.ifBlank { item.path }
-}
 
 /** Download + decrypt a postbox entry off the EDT; [consume] runs on the EDT and receives a persistent file in .doccache/exchange (or a temp file when the project dir is unavailable). */
 internal fun LocalGitMirrorPanel.withDecryptedFile(item: ExchangeItem, consume: (File) -> Unit) {
@@ -449,11 +432,7 @@ internal fun LocalGitMirrorPanel.withDecryptedFile(item: ExchangeItem, consume: 
           return
         }
         val out = File.createTempFile("lgm-plain-", ".tmp")
-        if (dl.decrypted) {
-          Files.copy(enc.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        } else {
-          RepoFileSyncCrypto.decryptFile(enc, out, SecretsStore.syncPassword, null)
-        }
+        Files.copy(enc.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
         val target = exchangeDir()?.let { dir -> File(dir, safeExchangeName(item)) }
         val copied = target?.let { t ->
           runCatching { Files.copy(out.toPath(), t.toPath(), StandardCopyOption.REPLACE_EXISTING) }.isSuccess
@@ -524,7 +503,7 @@ internal fun LocalGitMirrorPanel.installPluginFromCache() {
       val list = MirrorPostboxApi.fileSyncList(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls)
       if (list.code !in 200..299) return
       val items = list.items.mapNotNull { item ->
-        displayPathOf(item).takeIf { it.startsWith("plugin/") && it.endsWith(".zip") }?.let { item to it }
+        item.path.takeIf { it.startsWith("plugin/") && it.endsWith(".zip") }?.let { item to it }
       }
       if (items.isEmpty()) return
       val picked = if (items.size == 1) items[0] else {
@@ -546,11 +525,7 @@ internal fun LocalGitMirrorPanel.installPluginFromCache() {
         if (dl.code !in 200..299 || dl.file == null) return
         val dir = File(com.intellij.openapi.application.PathManager.getSystemPath(), "doccache-plugin").apply { mkdirs() }
         val out = File(dir, picked.second.substringAfterLast('/'))
-        if (dl.decrypted) {
-          Files.copy(enc.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
-        } else {
-          RepoFileSyncCrypto.decryptFile(enc, out, SecretsStore.syncPassword, null)
-        }
+        Files.copy(enc.toPath(), out.toPath(), StandardCopyOption.REPLACE_EXISTING)
         target = out
       } catch (_: Throwable) {
       } finally {

@@ -74,8 +74,7 @@ internal fun LocalGitMirrorPanel.refreshExchangeInBackground() {
       }
       if (files != null && files.code in 200..299) {
         for (f in files.items) {
-          val plain = if (f.pathEnc.isNotBlank()) decryptExchangeHint(f.pathEnc, pwd, f.path) else f.path
-          val meta = ExchangeMeta.parseName(plain)
+          val meta = ExchangeMeta.parseName(f.path)
           val display = meta.text.ifBlank { f.path }
           items.add(
             ExchangeItem(

@@ -13,19 +13,21 @@ whether to retry.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
 import ssl
 import subprocess
 import urllib.parse
-import uuid
 import urllib.request
 import urllib.error
+import uuid
 from pathlib import Path
 from typing import Optional
 
 from .crypto import encrypt_envelope, decrypt_envelope, encrypt_bundle
+from .relay_crypto import RelaySession, RELAY_AAD_POSTBOX, decode_pub_b64
 from .config import cfg
 
 
@@ -96,6 +98,7 @@ class MirrorClient:
         self.insecure_tls = insecure_tls
         self.timeout = timeout
         self.sync_password = sync_password
+        self._server_pub: Optional[bytes] = None
 
     # ── low-level helpers ────────────────────────────────────────────────
 
@@ -207,9 +210,10 @@ class MirrorClient:
         except Exception:
             return False
 
-    def _download_bytes(self, path: str) -> bytes:
+    def _download_bytes(self, path: str, headers: Optional[dict] = None) -> bytes:
         url = self._url(path)
-        req = urllib.request.Request(url, headers=_auth_headers(self.api_key))
+        req = urllib.request.Request(
+            url, headers={**_auth_headers(self.api_key), **(headers or {})})
         try:
             with urllib.request.urlopen(
                 req, context=_ssl_ctx(self.insecure_tls), timeout=120,
@@ -319,7 +323,6 @@ class MirrorClient:
         if "e" in resp:
             result = decrypt_envelope(resp["e"], self.sync_password)
         if "d" in resp:
-            import base64
             result["dump"] = base64.b64decode(resp["d"])
         return result
 
@@ -523,17 +526,33 @@ class MirrorClient:
         self._delete_json(f"/api/buffer/{item_id}")
 
     # ── file sync (repo-scoped encrypted file postbox) — /api/documents/* ─
+    # v3 relay only: body and metadata are sealed to the pinned server key.
+
+    def server_pubkey(self) -> dict:
+        """GET /api/auth/pubkey — the server's long-term X25519 public key {alg, pub, fp}."""
+        return self._get_json("/api/auth/pubkey")
+
+    def _relay_session(self) -> RelaySession:
+        """Fresh ephemeral against the pinned server key (fetched once, then cached)."""
+        if self._server_pub is None:
+            self._server_pub = decode_pub_b64(self.server_pubkey()["pub"])
+        return RelaySession(self._server_pub)
 
     def file_sync_send(self, repo: str, path: str, plain_size: int,
-                       data: bytes, path_enc: str = "") -> dict:
-        """POST /api/documents/attachment-upload — upload an encrypted file container."""
-        fields = {"rid": repo_to_rid(repo), "path": path, "plain_size": str(plain_size)}
-        if path_enc:
-            fields["path_enc"] = path_enc
+                       data: bytes) -> dict:
+        """POST /api/documents/attachment-upload — v3 relay-sealed file container.
+
+        The body and the {"path", "plain_size"} metadata are sealed to the
+        pinned server key; the form carries only "rid", "k" and base64 "meta".
+        """
+        session = self._relay_session()
+        meta_plain = json.dumps({"path": path, "plain_size": plain_size},
+                                separators=(",", ":")).encode("utf-8")
+        meta = base64.b64encode(session.seal(meta_plain, RELAY_AAD_POSTBOX)).decode("ascii")
         return self._post_multipart(
             "/api/documents/attachment-upload",
-            fields=fields,
-            files={"attachment": ("file.bin", data)},
+            fields={"rid": repo_to_rid(repo), "k": session.epk_b64(), "meta": meta},
+            files={"attachment": ("file.bin", session.seal(data, RELAY_AAD_POSTBOX))},
         )
 
     def file_sync_list(self, repo: str) -> dict:
@@ -541,8 +560,13 @@ class MirrorClient:
         return self._get_json(f"/api/documents/attachment-list?rid={repo_to_rid(repo)}")
 
     def file_sync_fetch(self, repo: str, item_id: str) -> bytes:
-        """GET /api/documents/attachment-get — download a file blob."""
-        return self._download_bytes(f"/api/documents/attachment-get?rid={repo_to_rid(repo)}&id={item_id}")
+        """GET /api/documents/attachment-get — relay-sealed blob, opened via X-LGM-Epk."""
+        session = self._relay_session()
+        blob = self._download_bytes(
+            f"/api/documents/attachment-get?rid={repo_to_rid(repo)}&id={item_id}",
+            headers={"X-LGM-Epk": session.epk_b64()},
+        )
+        return session.open(blob, RELAY_AAD_POSTBOX)
 
     def file_sync_ack(self, repo: str, item_id: str) -> dict:
         """DELETE /api/documents/attachment-ack — confirm applied, server deletes."""

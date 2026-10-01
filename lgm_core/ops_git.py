@@ -294,7 +294,6 @@ CORPORATE DEPS (gradle/npm):
 MR REVIEW REPLIES (home agent -> work PC -> GitLab):
   0. mr_list [repo=<name>]                — open MRs; without GitLab config lists MRs from transferred notes.
   1. mr_notes repo=<name> [iid=<N>]       — read reviewer threads transferred from work.
-     Empty? mr_notes_request repo=<name> iid=<N> asks the work PC to transfer them; poll mr_notes after.
   2. Write answers, then EITHER:
      mr_replies_send repo=<name> iid=<N> file=<path to replies-!N.md>
      mr_replies_send repo=<name> iid=<N> text=<inline markdown>
@@ -308,7 +307,8 @@ MR REVIEW REPLIES (home agent -> work PC -> GitLab):
 DIAGNOSTICS: status, repos, debug.
 
 Rules: never hardcode URLs/keys (config comes from .env next to lgm.py);
-check `branches` before `pull`; all payloads are encrypted with the sync password.
+check `branches` before `pull`; git bundles are sealed with the sync password,
+the file postbox is v3 relay-sealed to the server key.
 """
 
 

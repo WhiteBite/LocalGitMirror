@@ -65,8 +65,7 @@ from .ops_mr import (
     _MRN_TITLE, _MRN_BRANCH, _parse_mr_notes_head, _mr_list_from_postbox,
     op_mr_list, _resolve_mr_targets, _fetch_mr_branches, _local_tip,
     _mirror_refs_safe, _existing_shas, _new_commit_count, op_mr_send,
-    _postbox_display_path, op_mr_notes, op_mr_replies_send,
-    op_mr_replies_status, op_mr_notes_request,
+    op_mr_notes, op_mr_replies_send, op_mr_replies_status,
 )
 
 
@@ -286,15 +285,6 @@ REGISTRY: list[Op] = [
             Param("iid", "int", 0, "Only this MR iid (0 = all)"),
         ],
         run=op_mr_replies_status,
-    ),
-    Op(
-        name="mr_notes_request",
-        summary="Ask the work PC to transfer GitLab discussion threads for an MR into the mirror postbox.",
-        params=[
-            Param("repo", "str", "", "Mirror repository name", required=True),
-            Param("iid", "int", 0, "GitLab MR iid", required=True),
-        ],
-        run=op_mr_notes_request,
     ),
     Op(
         name="guide",
