@@ -16,6 +16,10 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
 
     var mirrorInsecureTls: Boolean = true,
 
+    // empty serverCertSha256 = TOFU: first pinned connect stores the observed hash
+    var tlsPinEnabled: Boolean = false,
+    var serverCertSha256: String = "",
+
     var pullBackDefaultMode: String = "new-branch",
 
     // If true, "Send" operations only generate encrypted dump locally.

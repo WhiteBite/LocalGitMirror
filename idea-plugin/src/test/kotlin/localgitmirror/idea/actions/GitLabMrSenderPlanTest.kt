@@ -1,6 +1,6 @@
 package localgitmirror.idea.actions
 
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorSyncApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -53,19 +53,19 @@ class GitLabMrSenderPlanTest {
   @Test
   fun `mirror refs failure degrades to send-everything`() {
     assertEquals(emptyMap<String, String>(), GitLabMrSender.mirrorRefsFrom(null))
-    assertEquals(emptyMap<String, String>(), GitLabMrSender.mirrorRefsFrom(MirrorApi.RefsResult(500, "err", null, null)))
-    assertEquals(emptyMap<String, String>(), GitLabMrSender.mirrorRefsFrom(MirrorApi.RefsResult(200, "OK", null, null)))
+    assertEquals(emptyMap<String, String>(), GitLabMrSender.mirrorRefsFrom(MirrorSyncApi.RefsResult(500, "err", null, null)))
+    assertEquals(emptyMap<String, String>(), GitLabMrSender.mirrorRefsFrom(MirrorSyncApi.RefsResult(200, "OK", null, null)))
   }
 
   @Test
   fun `mirror refs result maps branch to sha`() {
     val refs = mapOf(
-      "feat" to MirrorApi.RefInfo("aaaa1111", "", false),
-      "old" to MirrorApi.RefInfo("", "", false),
+      "feat" to MirrorSyncApi.RefInfo("aaaa1111", "", false),
+      "old" to MirrorSyncApi.RefInfo("", "", false),
     )
     assertEquals(
       mapOf("feat" to "aaaa1111", "old" to ""),
-      GitLabMrSender.mirrorRefsFrom(MirrorApi.RefsResult(200, "OK", null, refs))
+      GitLabMrSender.mirrorRefsFrom(MirrorSyncApi.RefsResult(200, "OK", null, refs))
     )
   }
 }

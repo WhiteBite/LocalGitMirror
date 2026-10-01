@@ -2,7 +2,9 @@ package localgitmirror.idea.ui.exchange
 
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorBufferApi
+import localgitmirror.idea.mirror.MirrorCrypto
+import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.ui.LocalGitMirrorPanel
@@ -91,15 +93,21 @@ internal class ExchangeTransferable(
   }
 }
 
+internal fun bufferExportAllowed(baseUrl: String, pwd: String, v3Pinned: Boolean): Boolean =
+  baseUrl.isNotBlank() && (pwd.isNotBlank() || v3Pinned)
+
+internal fun bufferExportBytes(raw: ByteArray, pwd: String, decrypted: Boolean): ByteArray =
+  if (decrypted) raw else BundleCrypto.decryptDumpBytes(raw, pwd)
+
 private fun LocalGitMirrorPanel.fetchExportData(item: ExchangeItem): Any? {
   val s = service<MirrorSettingsService>().state
   val pwd = SecretsStore.syncPassword
-  if (s.baseUrl.isBlank() || pwd.isBlank()) return null
+  if (!bufferExportAllowed(s.baseUrl, pwd, MirrorCrypto.isV3Pinned())) return null
   if (item.kind == ExchangeItem.Kind.BUFFER) {
-    val res = MirrorApi.bufferGet(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, item.effectiveId)
+    val res = MirrorBufferApi.bufferGet(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, item.effectiveId)
     if (res.code !in 200..299 || res.file == null) return null
     return try {
-      String(BundleCrypto.decryptDumpBytes(res.file.readBytes(), pwd), Charsets.UTF_8)
+      String(bufferExportBytes(res.file.readBytes(), pwd, res.decrypted), Charsets.UTF_8)
     } catch (_: Throwable) {
       null
     } finally {
@@ -109,11 +117,15 @@ private fun LocalGitMirrorPanel.fetchExportData(item: ExchangeItem): Any? {
   val enc = File.createTempFile("lgm-export-", ".bin")
   try {
     val repo = item.repo.ifBlank { resolveExchangeRepo(s) ?: return null }
-    val dl = MirrorApi.fileSyncDownload(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls, item.effectiveId, enc)
+    val dl = MirrorPostboxApi.fileSyncDownload(s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls, item.effectiveId, enc)
     if (dl.code !in 200..299) return null
     val dir = Files.createTempDirectory("lgm-export-").toFile()
     val out = File(dir, item.title.replace(Regex("[^A-Za-z0-9._\\-]"), "_").ifBlank { "file" })
-    RepoFileSyncCrypto.decryptFile(enc, out, pwd, null)
+    if (dl.decrypted) {
+      Files.copy(enc.toPath(), out.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+    } else {
+      RepoFileSyncCrypto.decryptFile(enc, out, pwd, null)
+    }
     return listOf(out)
   } catch (_: Throwable) {
     return null

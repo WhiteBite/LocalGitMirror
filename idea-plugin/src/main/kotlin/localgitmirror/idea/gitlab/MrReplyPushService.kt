@@ -7,7 +7,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorProjectSettingsService
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
@@ -71,7 +71,7 @@ class MrReplyPushService(private val project: Project) {
     .getOrElse { listOf(FileReport("(service)", 0, 0, 0, 1, listOf(it.message ?: "error"))) }
 
   data class PendingReplies(
-    val item: MirrorApi.FileSyncItem,
+    val item: MirrorPostboxApi.FileSyncItem,
     val path: String,
     val parsed: MrReplies.RepliesFile,
   )
@@ -80,7 +80,7 @@ class MrReplyPushService(private val project: Project) {
   internal fun fetchPendingReplies(): PendingRepliesResult {
     val settings = service<MirrorSettingsService>().state
     val repo = resolveRepo(settings) ?: return PendingRepliesResult.Unavailable("repo not resolved")
-    val listResult = MirrorApi.fileSyncList(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls)
+    val listResult = MirrorPostboxApi.fileSyncList(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls)
     if (listResult.code !in 200..299) {
       return PendingRepliesResult.Unavailable("HTTP ${listResult.code} ${listResult.message}")
     }
@@ -106,7 +106,7 @@ class MrReplyPushService(private val project: Project) {
   internal fun countPending(): PendingCount {
     val settings = service<MirrorSettingsService>().state
     val repo = resolveRepo(settings) ?: return PendingCount.Unavailable("repo not resolved")
-    val listResult = MirrorApi.fileSyncList(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls)
+    val listResult = MirrorPostboxApi.fileSyncList(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls)
     if (listResult.code !in 200..299) {
       return PendingCount.Unavailable("HTTP ${listResult.code} ${listResult.message}")
     }
@@ -141,7 +141,7 @@ class MrReplyPushService(private val project: Project) {
   }
 
   private fun downloadAndParse(
-    item: MirrorApi.FileSyncItem,
+    item: MirrorPostboxApi.FileSyncItem,
     settings: MirrorSettingsService.State,
     repo: String,
   ): Downloaded {
@@ -150,15 +150,19 @@ class MrReplyPushService(private val project: Project) {
     return try {
       tmpEnc = File.createTempFile("mr-replies-", ".bin")
       tmpPlain = File.createTempFile("mr-replies-", ".md")
-      val dl = MirrorApi.fileSyncDownload(
+      val dl = MirrorPostboxApi.fileSyncDownload(
         settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
         item.id, tmpEnc,
       )
       if (dl.code !in 200..299 || dl.file == null) {
         return Downloaded.Skipped("download: HTTP ${dl.code} ${dl.message}")
       }
-      RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
-      val parsed = MrReplies.parse(tmpPlain.readText(Charsets.UTF_8))
+      val markdown = if (dl.decrypted) tmpEnc.readText(Charsets.UTF_8)
+      else {
+        RepoFileSyncCrypto.decryptFile(tmpEnc, tmpPlain, SecretsStore.syncPassword, null)
+        tmpPlain.readText(Charsets.UTF_8)
+      }
+      val parsed = MrReplies.parse(markdown)
       if (parsed.iid == 0) Downloaded.Skipped("no '# MR !N' header")
       else Downloaded.Parsed(parsed)
     } catch (e: Throwable) {
@@ -193,7 +197,7 @@ class MrReplyPushService(private val project: Project) {
   }
 
   private fun pushParsed(
-    item: MirrorApi.FileSyncItem,
+    item: MirrorPostboxApi.FileSyncItem,
     path: String,
     parsed: MrReplies.RepliesFile,
     conf: GitLabConfig.GitLabConf,
@@ -276,7 +280,7 @@ class MrReplyPushService(private val project: Project) {
 
     val report = FileReport(path, posted, dupSkipped, skipped, failed, details, parsed.errors.size)
     if (report.clean) {
-      MirrorApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id)
+      MirrorPostboxApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, item.id)
     }
     if (posted > 0 || failed > 0) {
       val status = MrRepliesTransport.uploadStatusResult(project, iid, renderStatus(iid, report))
@@ -301,7 +305,7 @@ class MrReplyPushService(private val project: Project) {
     }
   }
 
-  private fun displayPath(item: MirrorApi.FileSyncItem): String {
+  private fun displayPath(item: MirrorPostboxApi.FileSyncItem): String {
     if (item.pathEnc.isBlank()) return item.path
     val plain = runCatching {
       localgitmirror.idea.workkit.ExchangeCrypto.decryptHint(item.pathEnc, SecretsStore.syncPassword)

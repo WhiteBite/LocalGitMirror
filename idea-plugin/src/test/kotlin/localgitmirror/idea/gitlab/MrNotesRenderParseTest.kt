@@ -123,9 +123,9 @@ class MrNotesRenderParseTest {
   @Test
   fun `newest postbox entry wins per MR iid`() {
     val svc = MrReviewService(project)
-    val old = localgitmirror.idea.mirror.MirrorApi.FileSyncItem("old", "mr-notes/mr-!46.md", 1, 1, 1000)
-    val fresh = localgitmirror.idea.mirror.MirrorApi.FileSyncItem("fresh", "mr-notes/mr-!46.md", 1, 1, 2000)
-    val other = localgitmirror.idea.mirror.MirrorApi.FileSyncItem("other", "mr-notes/mr-!7.md", 1, 1, 1500)
+    val old = localgitmirror.idea.mirror.MirrorPostboxApi.FileSyncItem("old", "mr-notes/mr-!46.md", 1, 1, 1000)
+    val fresh = localgitmirror.idea.mirror.MirrorPostboxApi.FileSyncItem("fresh", "mr-notes/mr-!46.md", 1, 1, 2000)
+    val other = localgitmirror.idea.mirror.MirrorPostboxApi.FileSyncItem("other", "mr-notes/mr-!7.md", 1, 1, 1500)
     val picked = svc.newestPerIid(
       listOf(old to "mr-notes/mr-!46.md", fresh to "mr-notes/mr-!46.md", other to "mr-notes/mr-!7.md")
     )

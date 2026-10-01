@@ -17,11 +17,11 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorCrypto
+import localgitmirror.idea.mirror.MirrorVaultApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
-import localgitmirror.idea.workkit.BundleCrypto
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
@@ -60,7 +60,7 @@ class PublishMirrorAction : AnAction() {
 
         // 1. Fetch current inventory from vault
         indicator.text = "Запрашиваем инвентарь сервера…"
-        val indexRes = MirrorApi.mirrorIndex(
+        val indexRes = MirrorVaultApi.mirrorIndex(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           insecureTls = settings.mirrorInsecureTls
@@ -187,15 +187,16 @@ class PublishMirrorAction : AnAction() {
 
         // 10. Encrypt
         indicator.text = "Шифруем (${humanBytes(zipSize)})…"
-        val encrypted = BundleCrypto.encryptBundleBytes(zipBytes, syncPwd)
+        val sealed = MirrorCrypto.sealVaultPublication(zipBytes, syncPwd)
 
         // 11. Upload to vault
-        indicator.text = "Отправляем (${humanBytes(encrypted.size.toLong())})…"
-        val res = MirrorApi.mirrorPublish(
+        indicator.text = "Отправляем (${humanBytes(sealed.bytes.size.toLong())})…"
+        val res = MirrorVaultApi.mirrorPublish(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           insecureTls = settings.mirrorInsecureTls,
-          encryptedPublication = encrypted
+          encryptedPublication = sealed.bytes,
+          epkB64 = sealed.epkB64
         )
 
         if (res.code !in 200..299) {
@@ -219,7 +220,7 @@ class PublishMirrorAction : AnAction() {
           if (nexusMissed > 0) append(", $nexusMissed не найдено")
           if (res.conflicts > 0) append(", ${res.conflicts} конфликтов")
           if (res.rejected > 0) append(", ${res.rejected} отклонено")
-          append(" (${humanBytes(encrypted.size.toLong())})")
+          append(" (${humanBytes(sealed.bytes.size.toLong())})")
         }
         notify(project, msg, NotificationType.INFORMATION)
         history.add("Cache publish", true, "added=${res.added} cacheNew=$cacheNewCount nexusNew=$nexusNewCount existed=$totalExisted nexusMissed=$nexusMissed conflicts=${res.conflicts} rejected=${res.rejected}")

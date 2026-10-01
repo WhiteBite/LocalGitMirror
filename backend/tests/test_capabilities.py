@@ -8,12 +8,14 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from app.routers import auth as auth_router
 from app.routers import sync as api_router
 
 
 def test_capabilities_endpoint_shape():
     app = FastAPI()
     app.include_router(api_router.router)
+    app.include_router(auth_router.router)
     client = TestClient(app)
 
     res = client.get("/api/health")

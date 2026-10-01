@@ -1,12 +1,17 @@
 package localgitmirror.idea.net
 
+import com.intellij.ide.plugins.PluginManagerCore
+import com.intellij.openapi.components.service
+import com.intellij.openapi.extensions.PluginId
 import com.intellij.util.net.HttpConfigurable
+import localgitmirror.idea.settings.MirrorSettingsService
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.net.URL
+import java.security.cert.CertificateException
 import javax.net.ssl.SSLException
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.HttpsURLConnection
@@ -32,7 +37,59 @@ object HttpClient {
     return ctx.socketFactory
   }
 
+  private fun pinnedSslSocketFactory(storedHex: String): SSLSocketFactory {
+    val pinChecking = arrayOf<TrustManager>(
+      object : X509TrustManager {
+        override fun getAcceptedIssuers() = arrayOf<java.security.cert.X509Certificate>()
+        override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {}
+        override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {
+          val leaf = chain.firstOrNull() ?: throw CertificateException("Server presented no certificate")
+          when (val verdict = TlsPinPolicy.evaluate(leaf.encoded, storedHex)) {
+            is TlsPinPolicy.Verdict.TrustOnFirstUse -> storeServerPin(verdict.sha256Hex)
+            TlsPinPolicy.Verdict.Match -> {}
+            is TlsPinPolicy.Verdict.Mismatch -> throw TlsPinMismatchException(verdict.expectedHex, verdict.actualHex)
+          }
+        }
+      }
+    )
+    val ctx = SSLContext.getInstance("TLS")
+    ctx.init(null, pinChecking, java.security.SecureRandom())
+    return ctx.socketFactory
+  }
+
+  private fun storeServerPin(hex: String) {
+    runCatching { service<MirrorSettingsService>().state.serverCertSha256 = hex }
+  }
+
+  private fun pinnedServerHex(url: URL): String? {
+    if (url.protocol != "https") return null
+    val state = try {
+      service<MirrorSettingsService>().state
+    } catch (_: Throwable) {
+      return null
+    }
+    if (!state.tlsPinEnabled) return null
+    val base = try {
+      URL(state.baseUrl.trim())
+    } catch (_: Throwable) {
+      return null
+    }
+    if (url.host != base.host || effectivePort(url) != effectivePort(base)) return null
+    return state.serverCertSha256
+  }
+
+  private fun effectivePort(url: URL): Int = if (url.port != -1) url.port else url.defaultPort
+
   private val trustAllHostnameVerifier = HostnameVerifier { _, _ -> true }
+
+  private val userAgent: String by lazy {
+    val version = try {
+      PluginManagerCore.getPlugin(PluginId.getId("localgitmirror.idea.orchestrator"))?.version
+    } catch (_: Throwable) {
+      null
+    }
+    "DocCache/${version ?: "0.0.0"}"
+  }
 
   private fun openWithIdeProxy(url: URL): HttpURLConnection {
     return try {
@@ -47,10 +104,16 @@ object HttpClient {
 
   fun open(url: URL, insecureTls: Boolean): HttpURLConnection {
     val conn = openWithIdeProxy(url)
-    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-    if (insecureTls && conn is HttpsURLConnection) {
-      conn.sslSocketFactory = trustAllSslSocketFactory()
-      conn.hostnameVerifier = trustAllHostnameVerifier
+    conn.setRequestProperty("User-Agent", userAgent)
+    if (conn is HttpsURLConnection) {
+      val pinnedHex = pinnedServerHex(url)
+      if (pinnedHex != null) {
+        conn.sslSocketFactory = pinnedSslSocketFactory(pinnedHex)
+        conn.hostnameVerifier = trustAllHostnameVerifier
+      } else if (insecureTls) {
+        conn.sslSocketFactory = trustAllSslSocketFactory()
+        conn.hostnameVerifier = trustAllHostnameVerifier
+      }
     }
     return conn
   }
@@ -107,6 +170,7 @@ object HttpClient {
   }
 
   fun classifyError(t: Throwable): ErrorInfo {
+    findPinMismatch(t)?.let { return ErrorInfo("tls-pin", it.message ?: "TLS certificate pin mismatch") }
     return when (t) {
       is ConnectException -> ErrorInfo("connect", "Cannot connect to server. Check URL/port and that server is running.")
       is UnknownHostException -> ErrorInfo("dns", "Host not found. Check server address.")
@@ -115,4 +179,18 @@ object HttpClient {
       else -> ErrorInfo("network", t.message ?: "Network error")
     }
   }
+
+  private fun findPinMismatch(t: Throwable): TlsPinMismatchException? {
+    var current: Throwable? = t
+    while (current != null) {
+      if (current is TlsPinMismatchException) return current
+      current = current.cause?.takeIf { it !== current }
+    }
+    return null
+  }
 }
+
+class TlsPinMismatchException(val expectedHex: String, val actualHex: String) : CertificateException(
+  "Server TLS certificate does not match the pinned fingerprint (expected $expectedHex, got $actualHex). " +
+    "If the server certificate was renewed intentionally, clear the pin in DocCache settings."
+)

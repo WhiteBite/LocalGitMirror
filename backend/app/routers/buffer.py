@@ -2,10 +2,15 @@
 Cross-machine clipboard buffer.
 
 A lightweight pastebin for short snippets the user wants to ship between
-machines without juggling Telegram. The server only stores opaque ciphertext
-(encrypted client-side with the same SYNC_PASSWORD used by everything else);
-``hint_enc`` is an equally opaque client-encrypted preview blob — the server
-never sees a single plaintext byte of content.
+machines without juggling Telegram. The server never stores a plaintext
+body: uploads arrive sealed either with the v3 relay (JSON field "k" carries
+the client's ephemeral X25519 public key) or with the legacy shared password.
+The server terminates the crypto: it decrypts on write, stores the plaintext
+re-sealed at rest under an independent relay key (0x04 || nonce || AES-GCM),
+and re-seals on read for whichever mode the reader speaks — the "X-LGM-Epk"
+request header selects the v3 relay, its absence falls back to the legacy
+password bundle. ``hint_enc`` is a client-encrypted preview blob and ``hint``
+a short plaintext preview label; neither carries the clipboard body.
 
 Design choices:
   * Disk-backed store (<storage>/.lgm/buffer/, overridable via LGM_BUFFER_DIR):
@@ -26,9 +31,12 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
+
+from app.core import hybrid_crypto
+from app.core.bundle_crypto import decrypt_dump_bytes, encrypt_bundle_bytes
 
 router = APIRouter(prefix="/api/buffer", tags=["buffer"])
 
@@ -42,6 +50,9 @@ _loaded = False
 
 # Wired from main.py lifespan; falls back to LGM_BUFFER_DIR or ./storage.
 storage_dir: Optional[Path] = None
+# v3 relay: X25519 wire key + independent at-rest key; None => password-only.
+server_private_key = None
+relay_key = None
 
 
 def _dir() -> Path:
@@ -127,12 +138,68 @@ def _find(item_id: str) -> Optional[dict]:
     return _items.get(item_id)
 
 
+def _sync_password() -> str:
+    return os.getenv("SYNC_PASSWORD", "")
+
+
+def _decrypt_incoming(payload: bytes, k: str, aad: bytes) -> bytes:
+    """Open an uploaded blob and return the bytes to store at rest."""
+    password = _sync_password()
+    if k and server_private_key is not None:
+        if relay_key is None:
+            raise HTTPException(503, "relay key not initialised")
+        try:
+            ctx = hybrid_crypto.HybridServerContext(server_private_key, hybrid_crypto.decode_epk(k))
+            plaintext = ctx.open_relay(payload, aad)
+        except Exception:
+            raise HTTPException(400, "Failed to decrypt blob (v3): wrong server key or corrupted data")
+        return hybrid_crypto.relay_encrypt_at_rest(relay_key, plaintext, aad)
+    if password:
+        try:
+            plaintext = decrypt_dump_bytes(payload, password)
+        except Exception:
+            raise HTTPException(400, "Failed to decrypt blob: check that SYNC_PASSWORD matches")
+        if relay_key is None:
+            return payload
+        return hybrid_crypto.relay_encrypt_at_rest(relay_key, plaintext, aad)
+    raise HTTPException(400, "Blob is not v3-sealed and SYNC_PASSWORD is not set — nothing to decrypt with")
+
+
+def _serve_blob(path: Path, aad: bytes, epk: Optional[str]) -> Response:
+    """Read a stored blob and re-seal it for the requesting reader."""
+    blob = path.read_bytes()
+    password = _sync_password()
+    if blob[:1] == b"\x04":
+        try:
+            plaintext = hybrid_crypto.relay_decrypt_at_rest(relay_key, blob, aad)
+        except Exception:
+            raise HTTPException(400, "Stored blob failed to decrypt: corrupted or sealed under a different AAD")
+    elif blob[:1] in (b"\x01", b"L") and password:
+        try:
+            plaintext = decrypt_dump_bytes(blob, password)
+        except Exception:
+            raise HTTPException(400, "Stored legacy blob failed to decrypt: wrong SYNC_PASSWORD")
+    else:
+        raise HTTPException(409, "Stored blob is in a legacy format the reader cannot decrypt (no password on server)")
+    if epk and server_private_key is not None:
+        try:
+            ctx = hybrid_crypto.HybridServerContext(server_private_key, hybrid_crypto.decode_epk(epk))
+        except Exception:
+            raise HTTPException(400, "Invalid ephemeral key (X-LGM-Epk)")
+        return Response(ctx.seal_relay(plaintext, aad), media_type="application/octet-stream")
+    if password:
+        return Response(encrypt_bundle_bytes(plaintext, password), media_type="application/octet-stream")
+    raise HTTPException(400, "Reader sent no X-LGM-Epk and SYNC_PASSWORD is not set — nothing to seal with")
+
+
 # ── Pydantic ─────────────────────────────────────────────────────────────
 
 
 class BufferPutRequest(BaseModel):
     # Ciphertext base64-encoded for transport; the server treats it as opaque.
     ciphertext_b64: str
+    # v3 relay: the client's ephemeral X25519 public key (base64).
+    k: Optional[str] = None
     # Legacy plaintext preview (old clients). Ignored when hint_enc is present.
     hint: Optional[str] = None
     # Client-encrypted preview blob (bundle-format, base64) — opaque to us.
@@ -168,6 +235,8 @@ async def buffer_put(req: BufferPutRequest):
             detail=f"Too large: {len(ciphertext)} > {MAX_SIZE}",
         )
 
+    at_rest = _decrypt_incoming(ciphertext, req.k or "", hybrid_crypto.RELAY_AAD_BUFFER)
+
     hint_enc = (req.hint_enc or "")[:2048]
     item = {
         "id": uuid.uuid4().hex[:12],
@@ -180,7 +249,7 @@ async def buffer_put(req: BufferPutRequest):
     }
     with _lock:
         _load_locked()
-        _write_item(item, ciphertext)
+        _write_item(item, at_rest)
         _items[item["id"]] = item
         _prune_locked()
 
@@ -207,8 +276,8 @@ async def buffer_list():
 
 
 @router.get("/{item_id}")
-async def buffer_get(item_id: str):
-    """Return raw ciphertext bytes for a single entry."""
+async def buffer_get(item_id: str, x_lgm_epk: Optional[str] = Header(None, alias="X-LGM-Epk")):
+    """Return the entry body re-sealed for the requesting reader."""
     with _lock:
         _load_locked()
         _prune_locked()
@@ -218,7 +287,7 @@ async def buffer_get(item_id: str):
     blob = _blob_path(item_id)
     if not blob.exists():
         raise HTTPException(status_code=404, detail="Not Found")
-    return Response(content=blob.read_bytes(), media_type="application/octet-stream")
+    return _serve_blob(blob, hybrid_crypto.RELAY_AAD_BUFFER, x_lgm_epk)
 
 
 @router.post("/{item_id}/pin")

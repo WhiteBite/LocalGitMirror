@@ -13,7 +13,8 @@ import localgitmirror.idea.deps.MachineRole
 import localgitmirror.idea.deps.RespondDepsAction
 import localgitmirror.idea.deps.RoleDetector
 import localgitmirror.idea.git.GitLocal
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorDepsApi
+import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.SyncLogger
@@ -138,7 +139,7 @@ class PullCheckStartupActivity : ProjectActivity {
     settings: MirrorSettingsService.State,
     repoName: String
   ) {
-    val refsResult = MirrorApi.getRefs(
+    val refsResult = MirrorSyncApi.getRefs(
       baseUrl = settings.baseUrl,
       apiKey = SecretsStore.mirrorApiKey,
       repo = repoName,
@@ -220,7 +221,7 @@ class PullCheckStartupActivity : ProjectActivity {
     // Check pending requests (work laptop role)
     if (role != MachineRole.HOME) {
       val pending = try {
-        MirrorApi.depsPending(
+        MirrorDepsApi.depsPending(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           repo = repoName,
@@ -258,7 +259,7 @@ class PullCheckStartupActivity : ProjectActivity {
     // Check available responses (home PC role)
     if (role != MachineRole.WORK) {
       val responses = try {
-        MirrorApi.depsResponses(
+        MirrorDepsApi.depsResponses(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           repo = repoName,

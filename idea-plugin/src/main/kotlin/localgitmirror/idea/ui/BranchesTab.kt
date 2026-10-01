@@ -13,7 +13,7 @@ import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.gitlab.MrReviewService
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import java.awt.BorderLayout
@@ -157,7 +157,7 @@ private fun LocalGitMirrorPanel.refreshMirrorBranches(
   val selectedName = selectedBranchChoice()?.name
   setBranchRefreshInProgress(true)
   ApplicationManager.getApplication().executeOnPooledThread {
-    val result = MirrorApi.getRefs(
+    val result = MirrorSyncApi.getRefs(
       baseUrl = settings.baseUrl,
       apiKey = SecretsStore.mirrorApiKey,
       repo = repo,

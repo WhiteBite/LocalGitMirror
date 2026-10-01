@@ -202,6 +202,7 @@ async def lifespan(app: FastAPI):
     mirror.repo_manager = repo_manager
     mirror.system_logger = system_logger
 
+    from app.core import git_bundle, sync_envelope
     from app.routers import system as system_router_mod
     from app.routers import repos as repos_router_mod
     from app.routers import sync as sync_router_mod
@@ -228,16 +229,33 @@ async def lifespan(app: FastAPI):
     sync_router_mod.shared_manager = shared_manager
     sync_router_mod.system_logger = system_logger
     sync_router_mod.config = CONFIG
+    git_bundle.repo_manager = repo_manager
+    git_bundle.system_logger = system_logger
 
     # sync: load/create the server's long-term X25519 key for protocol v3
     # (hybrid ECIES). Stored under the storage tree, raw 32 bytes, 0600.
+    # The mirror (vault publish) and deps routers use the same key object.
     try:
         from app.core import hybrid_crypto
         _hybrid_key_path = actual_storage_path / ".lgm" / "server_x25519.key"
-        sync_router_mod.server_private_key = hybrid_crypto.load_or_create_server_key(_hybrid_key_path)
+        sync_envelope.server_private_key = hybrid_crypto.load_or_create_server_key(_hybrid_key_path)
+        mirror.server_private_key = sync_envelope.server_private_key
+        deps.server_private_key = sync_envelope.server_private_key
+        deps.relay_key = hybrid_crypto.load_or_create_relay_key(actual_storage_path / ".lgm" / "relay.key")
+        file_sync.server_private_key = sync_envelope.server_private_key
+        file_sync.relay_key = deps.relay_key
+        buffer.server_private_key = sync_envelope.server_private_key
+        buffer.relay_key = deps.relay_key
     except Exception as e:
         console.print(f"[yellow][!] Failed to init hybrid (v3) key: {e}. Falling back to password-only.[/yellow]")
-        sync_router_mod.server_private_key = None
+        sync_envelope.server_private_key = None
+        mirror.server_private_key = None
+        deps.server_private_key = None
+        deps.relay_key = None
+        file_sync.server_private_key = None
+        file_sync.relay_key = None
+        buffer.server_private_key = None
+        buffer.relay_key = None
 
     # files
     files_router_mod.repo_manager = repo_manager
@@ -313,9 +331,9 @@ async def lifespan(app: FastAPI):
     console.print(f"[cyan]Sync Password:[/cyan]   {sync_pass if sync_pass else '(не задан в .env!)'}")
     # v3 hybrid public-key fingerprint (for out-of-band pinning verification)
     try:
-        if getattr(sync_router_mod, "server_private_key", None) is not None:
+        if sync_envelope.get_server_private_key() is not None:
             from app.core import hybrid_crypto
-            _fp = hybrid_crypto.fingerprint(hybrid_crypto.public_bytes(sync_router_mod.server_private_key))
+            _fp = hybrid_crypto.fingerprint(hybrid_crypto.public_bytes(sync_envelope.server_private_key))
             console.print(f"[cyan]Server Key (v3):[/cyan] {_fp}")
     except Exception:
         pass
@@ -400,7 +418,7 @@ async def public_capabilities():
 
 # Include routers
 from app.routers import (
-    deps_router, settings_router, web_router, websocket_router,
+    auth_router, deps_router, settings_router, web_router, websocket_router,
     system_router, repos_router, sync_router, files_router, shared_router,
     plugin_router, buffer_router, file_sync_router, mirror_router,
 )
@@ -411,6 +429,7 @@ from app.routers import (
 app.include_router(system_router, dependencies=[Depends(get_api_key)])
 app.include_router(repos_router, dependencies=[Depends(get_api_key)])
 app.include_router(sync_router, dependencies=[Depends(get_api_key)])
+app.include_router(auth_router, dependencies=[Depends(get_api_key)])
 app.include_router(files_router, dependencies=[Depends(get_api_key)])
 app.include_router(shared_router, dependencies=[Depends(get_api_key)])
 app.include_router(deps_router, dependencies=[Depends(get_api_key)])

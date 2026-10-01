@@ -9,7 +9,6 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService

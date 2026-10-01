@@ -12,7 +12,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -54,7 +54,7 @@ class ManageMirrorBranchesAction : AnAction() {
           indicator.isIndeterminate = true
 
           // 1. Fetch ref list
-          val result = MirrorApi.getRefs(settings.baseUrl, apiKey, repo, SecretsStore.syncPassword, insecure)
+          val result = MirrorSyncApi.getRefs(settings.baseUrl, apiKey, repo, SecretsStore.syncPassword, insecure)
           if (result.code !in 200..299) {
             notify(project, "Не удалось загрузить ветки (${result.code}): ${result.message}", NotificationType.ERROR)
             return
@@ -66,7 +66,7 @@ class ManageMirrorBranchesAction : AnAction() {
           }
 
           // 2. Build display list — sorted: HEAD first, then alpha
-          data class BEntry(val name: String, val info: MirrorApi.RefInfo) {
+          data class BEntry(val name: String, val info: MirrorSyncApi.RefInfo) {
             val label: String get() {
               val h = if (info.isHead) " ★ HEAD" else ""
               val d = if (info.updated.length >= 10) " [${info.updated.take(10)}]" else ""
@@ -132,7 +132,7 @@ class ManageMirrorBranchesAction : AnAction() {
           val failed  = mutableListOf<String>()
           for (branch in toDelete) {
             indicator.text = "Удаляем $branch…"
-            val r = MirrorApi.deleteRef(settings.baseUrl, apiKey, repo, branch, SecretsStore.syncPassword, insecure)
+            val r = MirrorSyncApi.deleteRef(settings.baseUrl, apiKey, repo, branch, SecretsStore.syncPassword, insecure)
             if (r.code in 200..299) deleted.add(branch)
             else failed.add("$branch (HTTP ${r.code}: ${r.body.take(120)})")
           }

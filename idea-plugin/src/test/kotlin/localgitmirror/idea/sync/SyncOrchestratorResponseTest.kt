@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import localgitmirror.idea.sync.v2.SyncEngine
+import localgitmirror.idea.sync.v2.parseJsonSuccess
 
 class SyncOrchestratorResponseTest {
   private val engine = SyncEngine()

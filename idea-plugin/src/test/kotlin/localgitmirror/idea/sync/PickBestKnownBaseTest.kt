@@ -1,6 +1,7 @@
 package localgitmirror.idea.sync
 
 import localgitmirror.idea.sync.v2.SyncEngine
+import localgitmirror.idea.sync.v2.pickBestKnownBase
 import org.junit.Assert.*
 import org.junit.Test
 

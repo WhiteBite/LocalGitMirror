@@ -1,6 +1,6 @@
 package localgitmirror.idea.deps
 
-import localgitmirror.idea.deps.NpmEcosystem.PublicAvailability
+import localgitmirror.idea.deps.NpmRegistryProbe.PublicAvailability
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse

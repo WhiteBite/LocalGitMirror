@@ -89,10 +89,12 @@ def test_deps_pending_router_is_wired(real_app: TestClient):
 
 def test_deps_request_router_is_wired(real_app: TestClient):
     """The POST endpoint also needs the wiring — different code path than GET."""
+    from app.core.bundle_crypto import encrypt_bundle_bytes
+
     resp = real_app.post(
         "/api/documents/submit",
         data={"rid": "any-name"},
-        files={"attachment": ("m.bin", b"\x00" * 64, "application/octet-stream")},
+        files={"attachment": ("m.bin", encrypt_bundle_bytes(b"\x00" * 64, "test-pwd"), "application/octet-stream")},
     )
     # Should accept the upload and return success — NOT 500 'not initialised'.
     assert resp.status_code == 200, (
@@ -106,6 +108,24 @@ def test_settings_router_is_wired(real_app: TestClient):
     body = resp.json()
     detail = (body.get("detail") or "").lower()
     assert "not initialised" not in detail and "не инициализирован" not in detail
+
+
+def test_mirror_hybrid_key_is_wired(real_app: TestClient):
+    """Vault publish (v3) uses the SAME server key object as the sync envelope module."""
+    from app.core import sync_envelope
+    from app.routers import buffer as buffer_mod
+    from app.routers import deps as deps_mod
+    from app.routers import file_sync as file_sync_mod
+    from app.routers import mirror as mirror_mod
+
+    assert mirror_mod.server_private_key is not None
+    assert mirror_mod.server_private_key is sync_envelope.server_private_key
+    assert deps_mod.server_private_key is sync_envelope.server_private_key
+    assert deps_mod.relay_key is not None and len(deps_mod.relay_key) == 32
+    assert file_sync_mod.server_private_key is sync_envelope.server_private_key
+    assert file_sync_mod.relay_key is deps_mod.relay_key
+    assert buffer_mod.server_private_key is sync_envelope.server_private_key
+    assert buffer_mod.relay_key is deps_mod.relay_key
 
 
 def test_health_endpoint(real_app: TestClient):
@@ -132,14 +152,17 @@ def test_full_deps_roundtrip_against_real_app(real_app: TestClient):
       6. Dome ACKs — server cleans up
     If anything regressed in lifespan wiring, this test breaks first.
     """
+    from app.core.bundle_crypto import decrypt_dump_bytes, encrypt_bundle_bytes
+
     repo = "onyx-platform"
+    password = "test-pwd"
 
     # 1. Request
-    fake_manifest = b"ENCRYPTED_MANIFEST" * 100
+    manifest_plain = b"ENCRYPTED_MANIFEST" * 100
     r = real_app.post(
         "/api/documents/submit",
         data={"rid": repo},
-        files={"attachment": ("m.bin", fake_manifest, "application/octet-stream")},
+        files={"attachment": ("m.bin", encrypt_bundle_bytes(manifest_plain, password), "application/octet-stream")},
     )
     assert r.status_code == 200, r.text
     request_id = r.json()["id"]
@@ -149,11 +172,11 @@ def test_full_deps_roundtrip_against_real_app(real_app: TestClient):
     assert any(item["id"] == request_id for item in p["items"])
 
     # 3. Respond
-    fake_archive = b"ENCRYPTED_ARCHIVE_PAYLOAD" * 1000
+    archive_plain = b"ENCRYPTED_ARCHIVE_PAYLOAD" * 1000
     rr = real_app.post(
         "/api/documents/fulfill",
         data={"rid": repo, "request_id": request_id},
-        files={"attachment": ("a.bin", fake_archive, "application/octet-stream")},
+        files={"attachment": ("a.bin", encrypt_bundle_bytes(archive_plain, password), "application/octet-stream")},
     )
     assert rr.status_code == 200, rr.text
     response_id = rr.json()["id"]
@@ -162,10 +185,10 @@ def test_full_deps_roundtrip_against_real_app(real_app: TestClient):
     listing = real_app.get("/api/documents/ready", params={"rid": repo}).json()
     assert any(item["id"] == response_id for item in listing["items"])
 
-    # 5. Fetch — bytes round-trip exactly
+    # 5. Fetch — the plaintext round-trips (the server re-seals on read)
     fetched = real_app.get("/api/documents/ready-item", params={"rid": repo, "id": response_id})
     assert fetched.status_code == 200
-    assert fetched.content == fake_archive
+    assert decrypt_dump_bytes(fetched.content, password) == archive_plain
 
     # 6. Ack — server deletes the blob
     ack = real_app.delete("/api/documents/ack", params={"rid": repo, "id": response_id})

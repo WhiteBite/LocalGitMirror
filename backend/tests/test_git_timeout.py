@@ -10,7 +10,7 @@ These tests verify:
 import inspect
 from pathlib import Path
 
-from app.routers.sync import _git
+from app.core.git_bundle import _git
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1.  _git() timeout → returncode 124

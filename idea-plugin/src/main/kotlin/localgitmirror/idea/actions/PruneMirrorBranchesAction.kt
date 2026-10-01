@@ -12,7 +12,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -22,11 +22,11 @@ import localgitmirror.idea.ui.PruneBranchPickerDialog
  * «Prune merged branches on Mirror…» — smart cleanup of stale branches.
  *
  * Flow (server contract usage is intentionally minimal):
- *  1. Dry-run [MirrorApi.pruneBranches] (apply=false) asks the server which
+ *  1. Dry-run [MirrorSyncApi.pruneBranches] (apply=false) asks the server which
  *     branches are already merged into the base branches — the candidates.
  *  2. The user reviews them in a multi-select picker (all pre-selected) and
  *     may deselect branches to keep.
- *  3. Deletion itself reuses the existing [MirrorApi.deleteRef] loop — the
+ *  3. Deletion itself reuses the existing [MirrorSyncApi.deleteRef] loop — the
  *     exact same path as [ManageMirrorBranchesAction] — so exactly the user's
  *     final selection is deleted, nothing more.
  *
@@ -61,7 +61,7 @@ class PruneMirrorBranchesAction : AnAction() {
           indicator.isIndeterminate = true
 
           // 1. Dry-run: ask the server for merged-branch candidates
-          val dry = MirrorApi.pruneBranches(
+          val dry = MirrorSyncApi.pruneBranches(
             settings.baseUrl, apiKey, repo,
             bases = BASES, olderDays = 0, keep = emptyList(), apply = false,
             insecureTls = insecure, syncPassword = SecretsStore.syncPassword
@@ -106,7 +106,7 @@ class PruneMirrorBranchesAction : AnAction() {
           val failed = mutableListOf<String>()
           for (branch in toDelete) {
             indicator.text = LocalGitMirrorBundle.message("prune.progress.deleting", branch)
-            val r = MirrorApi.deleteRef(settings.baseUrl, apiKey, repo, branch, SecretsStore.syncPassword, insecure)
+            val r = MirrorSyncApi.deleteRef(settings.baseUrl, apiKey, repo, branch, SecretsStore.syncPassword, insecure)
             if (r.code in 200..299) deleted.add(branch)
             else failed.add("$branch (HTTP ${r.code}: ${r.body.take(120)})")
           }

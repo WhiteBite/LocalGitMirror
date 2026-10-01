@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "backend"))
 
+from app.core import git_bundle
 from app.core.envelope_crypto import encrypt_envelope  # noqa: E402
 from app.routers import sync  # noqa: E402
 
@@ -35,21 +36,21 @@ def repo(tmp_path, monkeypatch):
 
 def test_existing_branch_bundle_unchanged(repo, tmp_path):
     bundle = tmp_path / "out.bundle"
-    proc = sync._build_export_bundle(repo, bundle, None, "main", None)
+    proc = git_bundle._build_export_bundle(repo, bundle, None, "main", None)
     assert proc.returncode == 0
     assert bundle.exists()
 
 
 def test_missing_branch_raises_named_error(repo, tmp_path):
     bundle = tmp_path / "out.bundle"
-    with pytest.raises(sync.BranchNotFoundError) as exc:
-        sync._build_export_bundle(repo, bundle, None, "ghost", None)
+    with pytest.raises(git_bundle.BranchNotFoundError) as exc:
+        git_bundle._build_export_bundle(repo, bundle, None, "ghost", None)
     assert "branch 'ghost' not found on mirror" in str(exc.value)
 
 
 def test_no_branch_falls_back_to_all(repo, tmp_path):
     bundle = tmp_path / "out.bundle"
-    proc = sync._build_export_bundle(repo, bundle, None, None, None)
+    proc = git_bundle._build_export_bundle(repo, bundle, None, None, None)
     assert proc.returncode == 0
 
 
@@ -69,7 +70,7 @@ def test_retry_without_exclusions_logs_warning(repo, tmp_path, monkeypatch):
         def warning(self, msg, details=None):
             warnings.append((msg, details))
 
-    real_git = sync._git
+    real_git = git_bundle._git
     calls = {"bundle": 0}
 
     def flaky_git(cwd, *args, **kw):
@@ -81,9 +82,9 @@ def test_retry_without_exclusions_logs_warning(repo, tmp_path, monkeypatch):
                     stderr="fatal: some transient bundle failure\n")
         return real_git(cwd, *args, **kw)
 
-    monkeypatch.setattr(sync, "system_logger", _Logger())
-    monkeypatch.setattr(sync, "_git", flaky_git)
-    proc = sync._build_export_bundle(repo, bundle, None, "main", head)
+    monkeypatch.setattr(git_bundle, "system_logger", _Logger())
+    monkeypatch.setattr(git_bundle, "_git", flaky_git)
+    proc = git_bundle._build_export_bundle(repo, bundle, None, "main", head)
     assert proc.returncode == 0
     assert any("exclusions" in m for m, _ in warnings)
 

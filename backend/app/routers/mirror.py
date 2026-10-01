@@ -21,36 +21,30 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import io
-import ipaddress
 import json
 import os
 import shutil
-import tarfile
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from dataclasses import asdict
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 
-from app.core.artifact_store import (
-    ADDED,
-    CONFLICT,
-    DEFAULT_PROTECTED_MAVEN_GROUPS,
-    EXISTS,
-    ArtifactStore,
-    ImportReport,
-    is_protected_maven_path,
-    normalize_maven_path,
-    parse_maven_path,
-    sha256_bytes,
+from app.core import hybrid_crypto
+from app.core.artifact_publication import (
+    MAX_PUBLICATION_ENCRYPTED,
+    MAX_PUBLICATION_NPM,
+    import_npm_publication,
+    import_publication,
+    protected_groups,
+    protected_npm_scopes,
 )
+from app.core.artifact_store import ArtifactStore, normalize_maven_path
 from app.core.bundle_crypto import decrypt_dump_bytes
 from app.core import corporate_tools as ct_core
 from app.core.corporate_tools import (
@@ -59,16 +53,11 @@ from app.core.corporate_tools import (
     list_tools,
 )
 from app.core.gradle_init_script import SCRIPT_FILE_NAME, render_init_script
+from app.core.mirror_dataplane import _guard_data_plane, _record_miss
 from app.core.npm_cache import (
-    DEFAULT_PROTECTED_NPM_SCOPES,
-    NpmArtifact,
-    add_to_npm_index,
     build_packument,
     build_yarn_projection,
-    is_protected_npm_package,
     load_npm_index,
-    scan_npm_cache,
-    scan_npm_offline_mirror,
 )
 from app.core.vault_backup import (
     create_backup,
@@ -83,34 +72,13 @@ router = APIRouter(tags=["mirror"])
 # Инжектится из main.py в lifespan, как и в остальных роутерах.
 repo_manager = None
 system_logger = None
-
-#: Предохранитель от zip-бомбы: суммарный распакованный размер публикации.
-#: Реальный корпоративный payload — единицы мегабайт (весь ru/kryptonite это
-#: 0.3 МБ), так что запас тут кратный, а не притёртый.
-MAX_PUBLICATION_UNPACKED = 2 * 1024 * 1024 * 1024
-MAX_PUBLICATION_ENCRYPTED = 2 * 1024 * 1024 * 1024
-
-_PREFIX_MAVEN = "maven/"
-_MANIFEST_NAME = "manifest.json"
+# X25519-ключ сервера (v3), инжектится из main.py; None => только пароль.
+server_private_key = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Конфигурация
 # ─────────────────────────────────────────────────────────────────────────────
-
-def protected_groups() -> tuple:
-    """Защищённые maven-группы. Переопределяются ``LGM_PROTECTED_MAVEN_GROUPS``.
-
-    Список важен не для удобства, а для безопасности: по этим группам зеркало
-    работает fail-closed, то есть промах даёт 404 и НЕ проваливается в
-    Maven Central. Иначе кто угодно опубликовал бы туда одноимённый артефакт.
-    """
-    raw = os.getenv("LGM_PROTECTED_MAVEN_GROUPS", "").strip()
-    if not raw:
-        return DEFAULT_PROTECTED_MAVEN_GROUPS
-    groups = tuple(g.strip() for g in raw.split(",") if g.strip())
-    return groups or DEFAULT_PROTECTED_MAVEN_GROUPS
-
 
 def vault_root() -> Path:
     """Каталог хранилища. Переопределяется ``LGM_VAULT_PATH``.
@@ -134,39 +102,6 @@ def get_store() -> ArtifactStore:
 def _log(msg: str, extra: Optional[dict] = None) -> None:
     if system_logger:
         system_logger.info(msg, extra or {})
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Ограничение доступа к data plane
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _is_loopback(host: str) -> bool:
-    if not host:
-        return False
-    if host in ("localhost", "::1"):
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
-def _guard_data_plane(request: Request) -> None:
-    """Maven-репозиторий обслуживает только локальные сборки.
-
-    Он висит на том же 0.0.0.0:443, что и остальное API, поэтому без этой
-    проверки получился бы артефакт-сервер, доступный всей сети. API-ключ —
-    не оправдание: у data plane другой профиль использования (его URL попадает
-    в конфиги сборки и логи), и ограничить его по адресу дешевле, чем потом
-    объяснять утечку. Снять — ``LGM_M2_ALLOW_REMOTE=1``, осознанно.
-    """
-    if os.getenv("LGM_M2_ALLOW_REMOTE", "").strip() in ("1", "true", "yes"):
-        return
-    client = request.client.host if request.client else ""
-    if not _is_loopback(client):
-        # 404, а не 403 — тот же приём, что и в основной авторизации: не
-        # подтверждать существование сервиса тому, кто его сканирует.
-        raise HTTPException(404, "Not Found")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -246,86 +181,11 @@ def mirror_status():
 # Публикация
 # ─────────────────────────────────────────────────────────────────────────────
 
-def import_publication(store: ArtifactStore, zip_bytes: bytes,
-                       protected: tuple) -> ImportReport:
-    """Разобрать публикацию и залить её в CAS.
-
-    Путь внутри архива — источник истины для координаты: манифест может
-    рассинхронизироваться с содержимым, а путь не может. Манифест используется
-    только для сверки sha256, если он его сообщает.
-
-    Артефакты вне защищённых пространств имён отвергаются осознанно. Хранилище
-    существует для того, чего дом не может достать сам; всё остальное он берёт
-    с Maven Central. И если появилась новая корпоративная группа, её надо
-    внести в политику явно — потому что её тоже надо обслуживать fail-closed.
-    """
-    report = ImportReport()
-    manifest_hashes = {}
-
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        total_unpacked = sum(i.file_size for i in zf.infolist())
-        if total_unpacked > MAX_PUBLICATION_UNPACKED:
-            raise HTTPException(413, "Publication too large when unpacked")
-
-        if _MANIFEST_NAME in zf.namelist():
-            try:
-                manifest = json.loads(zf.read(_MANIFEST_NAME).decode("utf-8"))
-                for entry in manifest.get("maven", []):
-                    p = normalize_maven_path(entry.get("path", ""))
-                    if p and entry.get("sha256"):
-                        manifest_hashes[p] = entry["sha256"]
-            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
-                # Манифест необязателен: пути внутри архива самодостаточны.
-                report.rejected.append(f"{_MANIFEST_NAME}: unreadable")
-
-        for info in zf.infolist():
-            name = info.filename
-            if info.is_dir() or name == _MANIFEST_NAME:
-                continue
-            if not name.startswith(_PREFIX_MAVEN):
-                report.rejected.append(f"{name}: неизвестный префикс")
-                continue
-
-            rel = name[len(_PREFIX_MAVEN):]
-            coord = parse_maven_path(rel)
-            if coord is None:
-                report.rejected.append(f"{rel}: не разбирается как maven-путь")
-                continue
-            if not is_protected_maven_path(coord.maven_path, protected):
-                report.rejected.append(f"{coord.label}: вне защищённых групп")
-                continue
-
-            data = zf.read(name)
-            declared = manifest_hashes.get(coord.maven_path)
-            actual = sha256_bytes(data)
-            if declared and declared != actual:
-                # Манифест обещал одно, в архиве другое — молча принимать
-                # нельзя, это либо порча при передаче, либо подмена.
-                report.rejected.append(
-                    f"{coord.label}: sha256 не совпал с манифестом")
-                continue
-
-            result = store.put(data, coord)
-            if result.status == ADDED:
-                report.added += 1
-                report.bytes_added += len(data)
-            elif result.status == EXISTS:
-                report.existed += 1
-            elif result.status == CONFLICT:
-                report.conflicts.append({
-                    "artifact": result.coord.label,
-                    "path": result.coord.maven_path,
-                    "active_sha256": result.existing_sha256,
-                    "incoming_sha256": result.sha256,
-                })
-
-    return report
-
-
 @router.post("/api/cache/publish")
 async def mirror_publish(
     attachment: UploadFile = File(...),
     repo: str = Form(""),
+    k: str = Form(""),
 ):
     """Принять публикацию с рабочей машины.
 
@@ -334,7 +194,7 @@ async def mirror_publish(
     закрываем позиции ``wanted``.
     """
     password = os.getenv("SYNC_PASSWORD", "")
-    if not password:
+    if not k and not password:
         raise HTTPException(500, "SYNC_PASSWORD не задан — расшифровать публикацию нечем")
 
     payload = await attachment.read()
@@ -343,16 +203,27 @@ async def mirror_publish(
     if len(payload) > MAX_PUBLICATION_ENCRYPTED:
         raise HTTPException(413, "Publication too large")
 
-    try:
-        zip_bytes = decrypt_dump_bytes(payload, password)
-    except Exception as e:
-        # Почти всегда это расхождение SYNC_PASSWORD между машинами —
-        # называем причину, иначе диагностика превращается в гадание.
-        raise HTTPException(
-            400,
-            f"Не удалось расшифровать публикацию ({type(e).__name__}). "
-            "Проверь, что SYNC_PASSWORD совпадает на обеих машинах.",
-        )
+    if k and server_private_key is not None:
+        try:
+            ctx = hybrid_crypto.HybridServerContext(
+                server_private_key, hybrid_crypto.decode_epk(k)
+            )
+            zip_bytes = ctx.open_relay(payload, hybrid_crypto.RELAY_AAD_VAULT)
+        except Exception:
+            raise HTTPException(
+                400,
+                "Не удалось расшифровать публикацию (v3): неверный ключ сервера, "
+                "повреждённый блоб или чужая AAD.",
+            )
+    else:
+        try:
+            zip_bytes = decrypt_dump_bytes(payload, password)
+        except Exception as e:
+            raise HTTPException(
+                400,
+                f"Не удалось расшифровать публикацию ({type(e).__name__}). "
+                "Проверь, что SYNC_PASSWORD совпадает на обеих машинах.",
+            )
 
     if not zipfile.is_zipfile(io.BytesIO(zip_bytes)):
         raise HTTPException(400, "Расшифрованная публикация не является ZIP-архивом")
@@ -504,22 +375,6 @@ def backup_status():
     }
 
 
-def _record_miss(store: ArtifactStore, maven_path: str) -> None:
-    """Промах по защищённой группе — это заявка, а не просто 404.
-
-    Так очередь ``wanted`` наполняется сама, без отдельного действия дома:
-    следующая синхронизация с ноута увидит её в ``/mirror/index``.
-    Публичные промахи не пишем — их дом закроет сам через Maven Central.
-    """
-    if not is_protected_maven_path(maven_path, protected_groups()):
-        return
-    try:
-        store.add_wanted(maven_path, reason="build-miss")
-    except Exception:
-        # Диагностика не должна ломать выдачу 404.
-        pass
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Corporate tools
 # ─────────────────────────────────────────────────────────────────────────────
@@ -559,125 +414,10 @@ async def mirror_tools_install(
 # npm
 # ─────────────────────────────────────────────────────────────────────────────
 
-MAX_PUBLICATION_NPM = 500 * 1024 * 1024
-
-_PREFIX_NPM = "npm/"
-_NPM_TARBALLS = "tarballs/"
-_NPM_MANIFEST = "manifest.json"
-
-
-def protected_npm_scopes() -> tuple:
-    raw = os.getenv("LGM_PROTECTED_NPM_SCOPES", "").strip()
-    if not raw:
-        return DEFAULT_PROTECTED_NPM_SCOPES
-    scopes = tuple(s.strip() for s in raw.split(",") if s.strip())
-    return scopes or DEFAULT_PROTECTED_NPM_SCOPES
-
-
-def import_npm_publication(store: ArtifactStore, zip_bytes: bytes,
-                           protected: tuple) -> ImportReport:
-    """Разобрать npm-публикацию и залить tarballs в CAS."""
-    report = ImportReport()
-    vault = vault_root()
-
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-        total_unpacked = sum(i.file_size for i in zf.infolist())
-        if total_unpacked > MAX_PUBLICATION_NPM:
-            raise HTTPException(413, "Publication too large when unpacked")
-
-        manifest = {}
-        if _NPM_MANIFEST in zf.namelist():
-            try:
-                manifest = json.loads(zf.read(_NPM_MANIFEST).decode("utf-8"))
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                report.rejected.append(f"{_NPM_MANIFEST}: unreadable")
-
-        for info in zf.infolist():
-            name = info.filename
-            if info.is_dir() or name == _NPM_MANIFEST:
-                continue
-            if not name.startswith(_PREFIX_NPM):
-                report.rejected.append(f"{name}: unknown prefix")
-                continue
-
-            rel = name[len(_PREFIX_NPM):]
-            if not rel.startswith(_NPM_TARBALLS):
-                report.rejected.append(f"{name}: not in tarballs/")
-                continue
-
-            tarball_name = rel[len(_NPM_TARBALLS):]
-            if not tarball_name.endswith(".tgz"):
-                report.rejected.append(f"{name}: not a .tgz")
-                continue
-
-            data = zf.read(name)
-            pj = _read_package_json_from_tarball_bytes(data)
-            if pj is None:
-                report.rejected.append(f"{name}: cannot read package.json")
-                continue
-
-            pkg_name = pj.get("name", "")
-            version = pj.get("version", "")
-            if not pkg_name or not version:
-                report.rejected.append(f"{name}: missing name/version in package.json")
-                continue
-
-            if not is_protected_npm_package(pkg_name, protected):
-                report.rejected.append(f"{pkg_name}: outside protected scopes")
-                continue
-
-            digest = sha256_bytes(data)
-            tarball_path = store.cas_path(digest)
-
-            if tarball_path.exists():
-                report.existed += 1
-                continue
-
-            store._write_cas(data, digest)
-
-            integ, shasum = _compute_tarball_hashes(data)
-            artifact = NpmArtifact(
-                name=pkg_name,
-                version=version,
-                tarball_path=str(tarball_path),
-                integrity=integ,
-                shasum=shasum,
-                packument=pj,
-            )
-            add_to_npm_index(vault, artifact, digest)
-            report.added += 1
-            report.bytes_added += len(data)
-
-    return report
-
-
-def _read_package_json_from_tarball_bytes(data: bytes) -> Optional[dict]:
-    """Read package.json from .tgz bytes."""
-    try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-            for member in tf.getmembers():
-                parts = member.name.split("/")
-                if len(parts) == 2 and parts[0] == "package" and parts[1] == "package.json":
-                    if member.isdir():
-                        continue
-                    f = tf.extractfile(member)
-                    if f is None:
-                        return None
-                    return json.loads(f.read().decode("utf-8"))
-        return None
-    except (tarfile.TarError, OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-
-
-def _compute_tarball_hashes(data: bytes) -> tuple:
-    sha512 = hashlib.sha512(data).digest()
-    sha1 = hashlib.sha1(data).hexdigest()
-    return f"sha512-{base64.b64encode(sha512).decode('ascii')}", sha1
-
-
 @router.post("/api/cache/publish-npm")
 async def mirror_publish_npm(
     attachment: UploadFile = File(...),
+    k: str = Form(""),
 ):
     """Accept encrypted npm publication.
 
@@ -688,7 +428,7 @@ async def mirror_publish_npm(
     Import to CAS, update npm index.
     """
     password = os.getenv("SYNC_PASSWORD", "")
-    if not password:
+    if not k and not password:
         raise HTTPException(500, "SYNC_PASSWORD not set")
 
     payload = await attachment.read()
@@ -697,14 +437,27 @@ async def mirror_publish_npm(
     if len(payload) > MAX_PUBLICATION_NPM:
         raise HTTPException(413, "Publication too large")
 
-    try:
-        zip_bytes = decrypt_dump_bytes(payload, password)
-    except Exception as e:
-        raise HTTPException(
-            400,
-            f"Failed to decrypt publication ({type(e).__name__}). "
-            "Check that SYNC_PASSWORD matches on both machines.",
-        )
+    if k and server_private_key is not None:
+        try:
+            ctx = hybrid_crypto.HybridServerContext(
+                server_private_key, hybrid_crypto.decode_epk(k)
+            )
+            zip_bytes = ctx.open_relay(payload, hybrid_crypto.RELAY_AAD_VAULT)
+        except Exception:
+            raise HTTPException(
+                400,
+                "Failed to decrypt v3 publication (wrong server key, "
+                "corrupted blob or foreign AAD).",
+            )
+    else:
+        try:
+            zip_bytes = decrypt_dump_bytes(payload, password)
+        except Exception as e:
+            raise HTTPException(
+                400,
+                f"Failed to decrypt publication ({type(e).__name__}). "
+                "Check that SYNC_PASSWORD matches on both machines.",
+            )
 
     if not zipfile.is_zipfile(io.BytesIO(zip_bytes)):
         raise HTTPException(400, "Decrypted publication is not a ZIP archive")

@@ -2,7 +2,9 @@ package localgitmirror.idea.sync
 
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.git.GitLocal
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.HttpResult
+import localgitmirror.idea.mirror.MirrorAuthApi
+import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.sync.v2.GitPort
 import localgitmirror.idea.sync.v2.MirrorPort
 import localgitmirror.idea.sync.v2.RepoResolution
@@ -12,6 +14,7 @@ import localgitmirror.idea.sync.v2.SettingsSnapshot
 import localgitmirror.idea.sync.v2.SyncEngine
 import localgitmirror.idea.sync.v2.SyncStatePort
 import localgitmirror.idea.sync.v2.WorkKitPort
+import localgitmirror.idea.sync.v2.findLatestDump
 import localgitmirror.idea.workkit.WorkKit
 import localgitmirror.idea.workkit.BundleCrypto
 import java.io.File
@@ -52,7 +55,7 @@ class SyncEngineFlowTest {
   fun `pointer-only path skips dump and upload`() {
     val mirror = FakeMirrorPort(
       hasCommitsBody = """{"known":["abc1234"]}""",
-      applyKnownResult = MirrorApi.HttpResult(200, "ok")
+      applyKnownResult = HttpResult(200, "ok")
     )
     val git = FakeGitPort(head = "abc1234")
     val work = FakeWorkKitPort()
@@ -199,40 +202,40 @@ class SyncEngineFlowTest {
 
   private class FakeMirrorPort(
     private val hasCommitsBody: String = """{"known":[]}""",
-    private val applyKnownResult: MirrorApi.HttpResult = MirrorApi.HttpResult(404, "missing")
+    private val applyKnownResult: HttpResult = HttpResult(404, "missing")
   ) : MirrorPort {
     var applyKnownCalls: Int = 0
     var uploadCalls: Int = 0
 
-    override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File?): MirrorApi.HttpResult {
-      return MirrorApi.HttpResult(200, "ok")
+    override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File?): HttpResult {
+      return HttpResult(200, "ok")
     }
 
-    override fun capabilities(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorApi.CapabilitiesResult {
-      return MirrorApi.CapabilitiesResult(200, "ok", apiVersion = 1, protocolVersion = 1, preflight = true, dryRun = true, passwordProbe = true)
+    override fun capabilities(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorAuthApi.CapabilitiesResult {
+      return MirrorAuthApi.CapabilitiesResult(200, "ok", apiVersion = 1, protocolVersion = 1, preflight = true, dryRun = true, passwordProbe = true)
     }
 
-    override fun passwordProbe(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorApi.ProbeResult {
+    override fun passwordProbe(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorAuthApi.ProbeResult {
       val dump = BundleCrypto.encryptBundleBytes("LGM-PROBE\n".toByteArray(), password = "p")
-      return MirrorApi.ProbeResult(200, dump, "OK")
+      return MirrorAuthApi.ProbeResult(200, dump, "OK")
     }
 
-    override fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): MirrorApi.HttpResult {
-      return MirrorApi.HttpResult(200, hasCommitsBody)
+    override fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): HttpResult {
+      return HttpResult(200, hasCommitsBody)
     }
 
-    override fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, branches: Map<String, String>, syncPassword: String, insecureTls: Boolean, localBranches: List<String>): MirrorApi.HttpResult {
+    override fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, branches: Map<String, String>, syncPassword: String, insecureTls: Boolean, localBranches: List<String>): HttpResult {
       applyKnownCalls += 1
       return applyKnownResult
     }
 
-    override fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, syncPassword: String, insecureTls: Boolean, projectDir: File?, localBranches: List<String>): MirrorApi.HttpResult {
+    override fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, syncPassword: String, insecureTls: Boolean, projectDir: File?, localBranches: List<String>): HttpResult {
       uploadCalls += 1
-      return MirrorApi.HttpResult(200, """{"success":true}""")
+      return HttpResult(200, """{"success":true}""")
     }
 
-    override fun getRefs(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean): MirrorApi.RefsResult {
-      return MirrorApi.RefsResult(200, "ok", refs = emptyMap(), head = null)
+    override fun getRefs(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean): MirrorSyncApi.RefsResult {
+      return MirrorSyncApi.RefsResult(200, "ok", refs = emptyMap(), head = null)
     }
   }
 

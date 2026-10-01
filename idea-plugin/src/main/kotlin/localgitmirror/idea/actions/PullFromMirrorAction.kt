@@ -12,7 +12,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
@@ -71,14 +71,14 @@ class PullFromMirrorAction(
 
     // ── Step 1: fetch refs in background ──
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Получаем ветки…", true) {
-      private var refsResult: MirrorApi.RefsResult? = null
+      private var refsResult: MirrorSyncApi.RefsResult? = null
 
       override fun run(indicator: ProgressIndicator) {
         onIndicator?.invoke(indicator)
         indicator.isIndeterminate = true
         indicator.text = "Получаем список веток с сервера…"
         indicator.checkCanceled()
-        refsResult = MirrorApi.getRefs(
+        refsResult = MirrorSyncApi.getRefs(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           repo = repoName,
@@ -191,7 +191,7 @@ class PullFromMirrorAction(
     }
 
     ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Превью изменений…", true) {
-      private var preview: MirrorApi.PreviewPullDetailsResult? = null
+      private var preview: MirrorSyncApi.PreviewPullDetailsResult? = null
 
       override fun run(indicator: ProgressIndicator) {
         onIndicator?.invoke(indicator)
@@ -202,7 +202,7 @@ class PullFromMirrorAction(
         val localTip = git(dir, indicator, "rev-parse", "--verify", targetBranch).let {
           if (it.exitCode == 0) it.stdout.trim() else null
         }
-        preview = MirrorApi.previewPullDetails(
+        preview = MirrorSyncApi.previewPullDetails(
           baseUrl = settings.baseUrl,
           apiKey = SecretsStore.mirrorApiKey,
           repo = repoName,
@@ -299,7 +299,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
             val haves = collectHaves(dir, indicator)
             val sinceHash = findSinceHash(dir, remoteRefs)
 
-            val dl = MirrorApi.exportDump(
+            val dl = MirrorSyncApi.exportDump(
               baseUrl = settings.baseUrl,
               apiKey = SecretsStore.mirrorApiKey,
               repo = repoName,
@@ -330,7 +330,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
                 // Retry without `since` to get a full bundle.
                 indicator.text = "Запрашиваем полный бандл…"
                 indicator.isIndeterminate = true
-                val dlFull = MirrorApi.exportDump(
+                val dlFull = MirrorSyncApi.exportDump(
                   baseUrl = settings.baseUrl,
                   apiKey = SecretsStore.mirrorApiKey,
                   repo = repoName,

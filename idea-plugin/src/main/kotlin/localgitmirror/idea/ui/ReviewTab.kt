@@ -18,7 +18,8 @@ import localgitmirror.idea.gitlab.GitLabConfig
 import localgitmirror.idea.gitlab.MrNotesWriter
 import localgitmirror.idea.gitlab.MrReviewService
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
-import localgitmirror.idea.mirror.MirrorApi
+import localgitmirror.idea.mirror.MirrorCrypto
+import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import java.awt.BorderLayout
@@ -143,7 +144,7 @@ internal fun LocalGitMirrorPanel.sendMrNotesToCache(row: MrReviewService.MrRowIt
     return
   }
   val s = service<MirrorSettingsService>().state
-  if (s.baseUrl.isBlank() || SecretsStore.syncPassword.isBlank()) {
+  if (s.baseUrl.isBlank()) {
     notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
     return
   }
@@ -162,13 +163,13 @@ internal fun LocalGitMirrorPanel.sendMrNotesToCache(row: MrReviewService.MrRowIt
       val enc = File.createTempFile("tmp-mrnotes-enc-", ".bin")
       try {
         plain.writeText(markdown, Charsets.UTF_8)
-        localgitmirror.idea.workkit.RepoFileSyncCrypto.encryptFile(plain, enc, SecretsStore.syncPassword, null)
-        val pathEnc = localgitmirror.idea.workkit.ExchangeCrypto.encryptHint(
-          "mr-notes/mr-!${row.iid}.md", SecretsStore.syncPassword
-        )
-        val up = MirrorApi.fileSyncUpload(
+        val displayPath = "mr-notes/mr-!${row.iid}.md"
+        val sealed = MirrorCrypto.sealPostboxPayload(plain.readBytes(), SecretsStore.syncPassword, displayPath, 0L)
+        enc.writeBytes(sealed.bytes)
+        val (relPath, pathEnc) = MirrorCrypto.postboxRoute(displayPath, SecretsStore.syncPassword)
+        val up = MirrorPostboxApi.fileSyncUpload(
           s.baseUrl, SecretsStore.mirrorApiKey, repo, s.mirrorInsecureTls,
-          "x/${java.util.UUID.randomUUID().toString().take(8)}", 0L, enc, pathEnc, null
+          relPath, 0L, enc, pathEnc, sealed.epkB64, sealed.meta, null
         )
         if (up.code in 200..299) {
           notify(LocalGitMirrorBundle.message("review.sendNotes.ok", row.iid), NotificationType.INFORMATION)

@@ -76,6 +76,26 @@ class DepsActionsVisibilityTest {
         assertTrue(computeApplyEnabled(configured = true, lastKnownPending = -1))
     }
 
+    // ── depsTransferAllowed ─────────────────────────────────────────────────
+
+    @Test
+    fun `deps transfer allowed with password regardless of pinning`() {
+        assertTrue(depsTransferAllowed("https://mirror", "pw", v3Pinned = false))
+        assertTrue(depsTransferAllowed("https://mirror", "pw", v3Pinned = true))
+    }
+
+    @Test
+    fun `deps transfer allowed with blank password only when v3 pinned`() {
+        assertTrue(depsTransferAllowed("https://mirror", "", v3Pinned = true))
+        assertFalse(depsTransferAllowed("https://mirror", "", v3Pinned = false))
+    }
+
+    @Test
+    fun `deps transfer blocked without base url even when v3 pinned`() {
+        assertFalse(depsTransferAllowed("", "pw", v3Pinned = true))
+        assertFalse(depsTransferAllowed("", "", v3Pinned = true))
+    }
+
     // ── shouldNotifyPending ──────────────────────────────────────────────────
 
     @Test

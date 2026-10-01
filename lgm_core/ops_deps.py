@@ -61,7 +61,7 @@ def op_scan(ctx: Ctx, args: dict) -> dict:
 def op_pending(ctx: Ctx, args: dict) -> dict:
     """List pending dep requests on the Mirror server."""
     c = _client(ctx)
-    repo = args.get("repo", "onyx-platform")
+    repo = args.get("repo") or "onyx-platform"
     r = c.deps_pending(repo)
     items = r.get("items", [])
     return {"repo": repo, "items": items, "count": len(items)}
@@ -70,7 +70,7 @@ def op_pending(ctx: Ctx, args: dict) -> dict:
 def op_debug(ctx: Ctx, args: dict) -> dict:
     """Full diagnostics: env vars, cache roots, mirror connectivity."""
     c = _client(ctx)
-    repo = args.get("repo", "onyx-platform")
+    repo = args.get("repo") or "onyx-platform"
     env_info = {
         "GRADLE_USER_HOME_env": os.environ.get("GRADLE_USER_HOME", "(not set)"),
         "GRADLE_USER_HOME_dotenv": cfg("GRADLE_USER_HOME") or "(not set)",
@@ -131,7 +131,7 @@ def _select_item(items: list[dict], id_prefix: str, label: str) -> tuple[dict, i
 def op_respond(ctx: Ctx, args: dict) -> dict:
     """Find requested coords in local cache and ship them to Mirror."""
     c = _client(ctx)
-    repo = args.get("repo", "onyx-platform")
+    repo = args.get("repo") or "onyx-platform"
     project = args.get("project", "")
     dry_run = args.get("dry_run", False)
     if not ctx.config.sync_password:
@@ -235,7 +235,7 @@ def op_respond(ctx: Ctx, args: dict) -> dict:
 def op_apply(ctx: Ctx, args: dict) -> dict:
     """Download deps response and unpack into gradle cache."""
     c = _client(ctx)
-    repo = args.get("repo", "onyx-platform")
+    repo = args.get("repo") or "onyx-platform"
     project = args.get("project", "")
     npm_install = args.get("npm_install", False)
     yarn = args.get("yarn", False)
@@ -392,7 +392,7 @@ def op_request(ctx: Ctx, args: dict) -> dict:
     """Build a minimum-traffic deps request (manifest v3) and post it to Mirror."""
     import re as _re
     c = _client(ctx)
-    repo = args.get("repo", "onyx-platform")
+    repo = args.get("repo") or "onyx-platform"
     project_path = args.get("project", "")
     npm_scopes = args.get("npm_scopes", "")
     dry_run = args.get("dry_run", False)

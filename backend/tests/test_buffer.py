@@ -1,5 +1,7 @@
 """Tests for /api/buffer — disk-backed cross-machine clipboard with pins and
-client-encrypted hints (hint_enc)."""
+client-encrypted hints (hint_enc). The server terminates crypto, so every
+put goes through the legacy password bundle path (v3 relay is covered by
+test_buffer_v3_relay.py)."""
 import base64
 import json
 import time
@@ -9,18 +11,26 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.core.bundle_crypto import decrypt_dump_bytes, encrypt_bundle_bytes
 from app.routers import buffer
+
+PASSWORD = "buf-legacy-test-pw"
 
 
 @pytest.fixture
 def buf(tmp_path: Path, monkeypatch):
     """Isolated buffer module state rooted in a tmp dir."""
     monkeypatch.setattr(buffer, "storage_dir", tmp_path / "buffer")
+    monkeypatch.setenv("SYNC_PASSWORD", PASSWORD)
     buffer._items = {}
     buffer._loaded = False
+    buffer.server_private_key = None
+    buffer.relay_key = None
     yield buffer
     buffer._items = {}
     buffer._loaded = False
+    buffer.server_private_key = None
+    buffer.relay_key = None
 
 
 @pytest.fixture
@@ -31,10 +41,19 @@ def client(buf):
 
 
 def _put(client, content: bytes, **kw) -> dict:
-    body = {"ciphertext_b64": base64.b64encode(content).decode(), **kw}
+    body = {
+        "ciphertext_b64": base64.b64encode(encrypt_bundle_bytes(content, PASSWORD)).decode(),
+        **kw,
+    }
     resp = client.post("/api/buffer", json=body)
     assert resp.status_code == 200, resp.text
     return resp.json()
+
+
+def _get_plain(client, item_id: str) -> bytes:
+    resp = client.get(f"/api/buffer/{item_id}")
+    assert resp.status_code == 200, resp.text
+    return decrypt_dump_bytes(resp.content, PASSWORD)
 
 
 def test_put_list_get_delete_roundtrip(client):
@@ -45,8 +64,7 @@ def test_put_list_get_delete_roundtrip(client):
     assert items[0]["hint"] == ""
     assert items[0]["pinned"] is False
 
-    got = client.get(f"/api/buffer/{entry['id']}")
-    assert got.content == b"opaque-ciphertext"
+    assert _get_plain(client, entry["id"]) == b"opaque-ciphertext"
 
     assert client.delete(f"/api/buffer/{entry['id']}").status_code == 204
     assert client.get("/api/buffer").json()["items"] == []
@@ -77,7 +95,7 @@ def test_entries_survive_reload(client, buf):
     buf._loaded = False
     items = client.get("/api/buffer").json()["items"]
     assert [i["id"] for i in items] == [entry["id"]]
-    assert client.get(f"/api/buffer/{entry['id']}").content == b"persisted"
+    assert _get_plain(client, entry["id"]) == b"persisted"
 
 
 def test_pinned_survives_ttl_and_eviction(client, buf, monkeypatch):
