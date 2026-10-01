@@ -59,7 +59,7 @@ class SyncEngine(
   }
 
   private fun verifyBackendHandshake(settings: SettingsSnapshot): StepResult {
-    val caps = HandshakeCache.capabilities(settings.baseUrl, settings.mirrorApiKey, settings.syncPassword, settings.mirrorInsecureTls)
+    val caps = HandshakeCache.capabilities(settings.baseUrl, settings.mirrorApiKey, settings.syncPassword, settings.mirrorInsecureTls, mirror)
     if (caps.code !in 200..299) {
       return StepResult(false, "Backend capabilities unavailable", "HTTP ${caps.code}: ${caps.body.take(200)}")
     }
@@ -79,7 +79,7 @@ class SyncEngine(
     if (!caps.passwordProbe) {
       return StepResult(false, "Backend missing password probe", "Update backend or configure SYNC_PASSWORD")
     }
-    val probe = HandshakeCache.passwordProbe(settings.baseUrl, settings.mirrorApiKey, settings.syncPassword, settings.mirrorInsecureTls)
+    val probe = HandshakeCache.passwordProbe(settings.baseUrl, settings.mirrorApiKey, settings.syncPassword, settings.mirrorInsecureTls, mirror)
     if (probe.code !in 200..299 || probe.bytes == null) {
       return StepResult(false, "Password probe unavailable", "HTTP ${probe.code}: ${probe.message.take(200)}")
     }

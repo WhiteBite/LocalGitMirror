@@ -77,7 +77,8 @@ class _FakeGit:
 
 
 class _FakeClient:
-    def __init__(self, mrs: dict, mirror_refs: dict, refs_error: bool = False):
+    def __init__(self, mrs: dict, mirror_refs: dict,
+                 refs_error: LgmError | None = None):
         self.mrs = mrs  # iid -> source_branch
         self.mirror_refs = mirror_refs
         self.refs_error = refs_error
@@ -94,8 +95,8 @@ class _FakeClient:
         return [{"iid": i, "source_branch": b} for i, b in self.mrs.items()]
 
     def sync_refs(self, repo):
-        if self.refs_error:
-            raise LgmError("http", "Repository not found")
+        if self.refs_error is not None:
+            raise self.refs_error
         return {"success": True, "refs": self.mirror_refs}
 
     def sync_send(self, repo, bundle):
@@ -181,12 +182,22 @@ def test_mirror_shas_not_present_locally_are_not_excluded(monkeypatch, tmp_path)
     assert res["send"]["excluded_bases"] == 0
 
 
-def test_mirror_unreachable_sends_full_bundle(monkeypatch, tmp_path):
+def test_repo_not_on_mirror_sends_full_bundle(monkeypatch, tmp_path):
     git = _FakeGit(tips={"b1": "t1"}, local_refs={"b1"}, known_shas=set())
-    client = _FakeClient(mrs={41: "b1"}, mirror_refs={}, refs_error=True)
+    client = _FakeClient(mrs={41: "b1"}, mirror_refs={},
+                         refs_error=LgmError(404, "Repository not found"))
     res = _run(monkeypatch, tmp_path, git, client, {"iid": 41})
     assert git.bundle_cmds[0] == ["refs/heads/b1"]
     assert [t["branch"] for t in res["sent"]] == ["b1"]
+
+
+def test_mirror_unreachable_raises(monkeypatch, tmp_path):
+    git = _FakeGit(tips={"b1": "t1"}, local_refs={"b1"}, known_shas=set())
+    client = _FakeClient(mrs={41: "b1"}, mirror_refs={},
+                         refs_error=LgmError("network", "mirror is dead"))
+    with pytest.raises(LgmError) as ei:
+        _run(monkeypatch, tmp_path, git, client, {"iid": 41})
+    assert ei.value.code == "network"
 
 
 def test_branch_fully_covered_by_other_mirror_refs_is_skipped(monkeypatch, tmp_path):

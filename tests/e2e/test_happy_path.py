@@ -32,19 +32,17 @@ def test_dashboard_loads(page: Page):
     """Test 1: Dashboard should load and show system status"""
     page.goto(BASE_URL)
 
-    # Verify Title
+    # SPA default locale is ru - UI text assertions are in Russian
     expect(page).to_have_title("Dashboard - LocalGitMirror")
 
-    # Verify critical UI elements are present
-    expect(page.get_by_text("Active Project:")).to_be_visible()
-    expect(page.get_by_text("GIT SERVER")).to_be_visible()
-    expect(page.get_by_text("Sync Guide")).to_be_visible()
+    expect(page.get_by_text("Последняя активность")).to_be_visible()
+    expect(page.get_by_text("Сервер", exact=True)).to_be_visible()
+    expect(page.get_by_text("Плагин IDEA")).to_be_visible()
 
-    # Verify navigation works
-    page.get_by_title("Files").click()
+    page.get_by_title("Файлы").click()
     expect(page).to_have_url(f"{BASE_URL}/files")
 
-    page.get_by_title("Dashboard").click()
+    page.get_by_title("Панель управления").click()
     expect(page).to_have_url(f"{BASE_URL}/dashboard")
 
 
@@ -64,7 +62,7 @@ def test_repo_selection_workflow(page: Page):
     page.reload()  # Force discovery
 
     # 2. Check if repo appears in sidebar
-    repo_item = page.get_by_text(repo_name)
+    repo_item = page.locator(".project-item", has_text=repo_name)
     expect(repo_item).to_be_visible()
 
     # 3. Select repo
@@ -72,7 +70,7 @@ def test_repo_selection_workflow(page: Page):
 
     # 4. Verify status bar updated
     expect(page.locator(".status-bar")).to_contain_text(repo_name)
-    expect(page.get_by_text(f"Active Project: {repo_name}")).to_be_visible()
+    expect(page.locator(".active-project-card h2")).to_have_text(repo_name)
 
 
 def test_file_browser_navigation(page: Page):
@@ -91,43 +89,41 @@ def test_file_browser_navigation(page: Page):
     page.goto(f"{BASE_URL}/files")
 
     # Select our repo
-    page.get_by_text(repo_name).click()
+    page.locator(".project-item", has_text=repo_name).click()
 
     # Check if README.md is visible
     expect(page.get_by_text("README.md")).to_be_visible()
 
     # Test search
-    search_input = page.get_by_placeholder("Search files...")
+    search_input = page.get_by_placeholder("Поиск файлов...")
     search_input.fill("main.py")
     expect(page.get_by_text("main.py")).to_be_visible()
     expect(page.get_by_text("README.md")).not_to_be_visible()
 
 
-def test_sync_action(page: Page):
-    """Test 4: Prepare for Work action (The Main Button)"""
+def test_panic_action(page: Page):
+    """Test 4: PANIC button asks for confirmation before stopping the server"""
     page.goto(BASE_URL)
 
-    # Click Prepare for Work
-    sync_btn = page.get_by_role("button", name="Prepare for Work")
-    expect(sync_btn).to_be_enabled()
+    panic_btn = page.get_by_role("button", name="ПАНИКА")
+    expect(panic_btn).to_be_enabled()
 
-    # We should see a success message (alert)
-    # Playwright handles alerts automatically or we can listen for them
     with page.expect_event("dialog") as dialog_info:
-        sync_btn.click()
+        panic_btn.click()
 
     dialog = dialog_info.value
-    assert "Ready" in dialog.message or "Success" in dialog.message
-    dialog.accept()
+    assert "Остановить сервер" in dialog.message
+    # dismissing on purpose: accepting would stop the server under test
+    dialog.dismiss()
 
 
 def test_settings_persistence(page: Page):
     """Test 5: Settings page and theme toggle"""
     page.goto(f"{BASE_URL}/settings")
 
-    expect(page.get_by_text("General Settings")).to_be_visible()
+    expect(page.get_by_role("heading", name="Общие")).to_be_visible()
 
     # Try to change something (if UI allows)
     # For now just verify tabs work
-    page.get_by_text("Git", exact=True).click()
-    expect(page.get_by_text("Git Server Port")).to_be_visible()
+    page.get_by_role("button", name="Git").click()
+    expect(page.get_by_text("Порт HTTPS сервера")).to_be_visible()

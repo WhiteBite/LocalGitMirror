@@ -1,5 +1,9 @@
 # Gradle deps sync — план
 
+> **Внимание:** это исторический план **v1**. Реализован manifest **v3** поверх `/api/documents/*`
+> (`submit|queue|queue-item|fulfill|ready|ready-item|ack`, см. `backend/app/routers/deps.py`).
+> Актуальная картина — в [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Что делаем
 
 Перенос только **внутренних (nexus) gradle-зависимостей** с рабочего на домашний.

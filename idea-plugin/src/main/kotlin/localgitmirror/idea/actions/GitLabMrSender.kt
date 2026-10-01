@@ -8,6 +8,7 @@ import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.gitlab.GitLabApi
 import localgitmirror.idea.gitlab.GitLabConfig
 import localgitmirror.idea.gitlab.MrNotesWriter
+import localgitmirror.idea.gitlab.MrUploadResult
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
@@ -193,7 +194,14 @@ object GitLabMrSender {
       NotificationType.INFORMATION
     )
     if (iid != null && GitLabConfig.hasApi(conf) && !syncRes.repo.isNullOrBlank()) {
-      runCatching { sendMrNotes(project, conf, iid, syncRes.repo, branch) }
+      val notes = sendMrNotes(project, conf, iid, syncRes.repo, branch)
+      if (notes is MrUploadResult.Failed) {
+        notify(
+          project,
+          LocalGitMirrorBundle.message("gitlab.mrnotes.fail", iid, notes.reason),
+          NotificationType.WARNING
+        )
+      }
     }
     history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
       "repo=${syncRes.repo ?: "?"} branch=$branch iid=$iid")
@@ -217,9 +225,12 @@ object GitLabMrSender {
     if (iid != null) "!$iid ($branch)" else branch
 
   /** All MR discussions (open/resolved/system) as markdown into the repo file postbox. */
-  private fun sendMrNotes(project: Project, conf: GitLabConfig.GitLabConf, iid: Int, repo: String, branch: String) {
+  private fun sendMrNotes(project: Project, conf: GitLabConfig.GitLabConf, iid: Int, repo: String, branch: String): MrUploadResult {
     val res = GitLabApi.listMrDiscussions(conf, iid)
-    if (res.code !in 200..299 || res.discussions.isEmpty()) return
+    if (res.code !in 200..299) {
+      return MrUploadResult.Failed(res.code, "list discussions: HTTP ${res.code} ${res.message}")
+    }
+    if (res.discussions.isEmpty()) return MrUploadResult.Ok
     val settings = service<MirrorSettingsService>().state
 
     val mrsResult = GitLabApi.listOpenMrs(conf)
@@ -228,46 +239,52 @@ object GitLabMrSender {
     val updatedAt = mrInfo?.updatedAt ?: ""
 
     val markdown = renderDiscussions(project, iid, title, branch, updatedAt, res.discussions)
-    val plain = File.createTempFile("tmp-mrnotes-", ".md")
-    val encrypted = File.createTempFile("tmp-mrnotes-", ".bin")
-    try {
-      plain.writeText(markdown, Charsets.UTF_8)
-      localgitmirror.idea.workkit.RepoFileSyncCrypto.encryptFile(plain, encrypted, SecretsStore.syncPassword, null)
-      val pathEnc = localgitmirror.idea.workkit.ExchangeCrypto.encryptHint(
-        "mr-notes/mr-!$iid.md", SecretsStore.syncPassword
-      )
-      val up = localgitmirror.idea.mirror.MirrorApi.fileSyncUpload(
-        settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
-        "x/${java.util.UUID.randomUUID().toString().take(8)}", 0L, encrypted, pathEnc, null
-      )
-      if (up.code in 200..299) {
-        notify(
-          project,
-          LocalGitMirrorBundle.message("gitlab.mrnotes.sent", res.discussions.size, iid),
-          NotificationType.INFORMATION
+    return try {
+      val plain = File.createTempFile("tmp-mrnotes-", ".md")
+      val encrypted = File.createTempFile("tmp-mrnotes-", ".bin")
+      try {
+        plain.writeText(markdown, Charsets.UTF_8)
+        localgitmirror.idea.workkit.RepoFileSyncCrypto.encryptFile(plain, encrypted, SecretsStore.syncPassword, null)
+        val pathEnc = localgitmirror.idea.workkit.ExchangeCrypto.encryptHint(
+          "mr-notes/mr-!$iid.md", SecretsStore.syncPassword
         )
+        val up = localgitmirror.idea.mirror.MirrorApi.fileSyncUpload(
+          settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
+          "x/${java.util.UUID.randomUUID().toString().take(8)}", 0L, encrypted, pathEnc, null
+        )
+        if (up.code !in 200..299) {
+          MrUploadResult.Failed(up.code, "HTTP ${up.code}: ${up.message}")
+        } else {
+          notify(
+            project,
+            LocalGitMirrorBundle.message("gitlab.mrnotes.sent", res.discussions.size, iid),
+            NotificationType.INFORMATION
+          )
+          MrUploadResult.Ok
+        }
+      } finally {
+        runCatching { plain.delete() }
+        runCatching { encrypted.delete() }
       }
-    } finally {
-      runCatching { plain.delete() }
-      runCatching { encrypted.delete() }
+    } catch (e: Throwable) {
+      MrUploadResult.Failed(0, "post notes: ${e.message ?: "error"}")
     }
   }
 
   /** Home asked via the postbox (mr-notes-request/mr-!N.md) for this MR's threads. */
-  internal fun sendNotesOnRequest(project: Project, iid: Int): Boolean {
+  internal fun sendNotesOnRequest(project: Project, iid: Int): MrUploadResult {
     val conf = GitLabConfig.resolve(project)
-    if (!GitLabConfig.hasApi(conf)) return false
+    if (!GitLabConfig.hasApi(conf)) return MrUploadResult.Failed(0, "GitLab URL/project/token not configured")
     val settings = service<MirrorSettingsService>().state
-    val baseDir = project.basePath ?: return false
+    val baseDir = project.basePath ?: return MrUploadResult.Failed(0, "project base directory missing")
     val repo = runCatching {
       project.getService(SyncFacadeService::class.java).resolveRepo(File(baseDir), settings).sanitized
     }.getOrDefault("")
-    if (repo.isBlank()) return false
+    if (repo.isBlank()) return MrUploadResult.Failed(0, "repo not resolved")
     val branch = runCatching {
       GitLabApi.listOpenMrs(conf).mrs.firstOrNull { it.iid == iid }?.sourceBranch
     }.getOrNull() ?: ""
-    sendMrNotes(project, conf, iid, repo, branch)
-    return true
+    return sendMrNotes(project, conf, iid, repo, branch)
   }
 
   private fun renderDiscussions(

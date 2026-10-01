@@ -121,3 +121,48 @@ def test_fetch_poms_op_runs_without_client():
     assert isinstance(result, dict)
     assert "fetched" in result
     json.dumps(result)
+
+
+_FROZEN_OPS = {
+    "scan": ["gradle_home", "filter", "verbose"],
+    "pending": ["repo"],
+    "request": ["repo", "project", "npm_scopes", "dry_run"],
+    "respond": ["repo", "project", "dry_run", "id"],
+    "apply": ["repo", "project", "npm_install", "yarn", "yarn_install", "dry_run", "id"],
+    "fetch-poms": ["repo_url", "dry_run"],
+    "publish": ["dry_run"],
+    "debug": ["repo"],
+    "status": [],
+    "repos": [],
+    "branches": ["repo", "project"],
+    "send": ["repo", "branch", "project", "dry_run"],
+    "pull": ["repo", "branch", "since", "haves", "project", "dry_run"],
+    "deps_request": ["repo", "manifest"],
+    "vault_status": [],
+    "branch_delete": ["repo", "branches"],
+    "prune": ["repo", "bases", "older_days", "keep", "apply"],
+    "mr_list": ["repo"],
+    "mr_send": ["iid", "iids", "all_open", "branch", "project", "repo"],
+    "mr_notes": ["repo", "iid"],
+    "mr_replies_send": ["repo", "iid", "file", "text"],
+    "mr_replies_status": ["repo", "iid"],
+    "mr_notes_request": ["repo", "iid"],
+    "guide": [],
+}
+
+
+def test_registry_matches_frozen_baseline():
+    assert len(REGISTRY) == len(_FROZEN_OPS) == 24
+    assert [op.name for op in REGISTRY] == list(_FROZEN_OPS)
+    for op in REGISTRY:
+        assert callable(op.run), f"Op '{op.name}' run is not callable"
+        assert [p.name for p in op.params] == _FROZEN_OPS[op.name], (
+            f"Op '{op.name}' params drifted: {[p.name for p in op.params]}"
+        )
+
+
+def test_facade_reexports_public_api():
+    from lgm_core.ops import REGISTRY, Param, Op, Ctx, get_op, op_names
+    assert REGISTRY is not None and len(REGISTRY) == 24
+    assert callable(get_op) and callable(op_names)
+    assert Param is not None and Op is not None and Ctx is not None

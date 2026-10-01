@@ -532,6 +532,12 @@ def _batch_check_commits(sources, commits):
     return [c for c in deduped if _is_known(c)]
 
 
+class BranchNotFoundError(Exception):
+    def __init__(self, branch: str):
+        super().__init__(f"branch '{branch}' not found on mirror")
+        self.branch = branch
+
+
 def _build_export_bundle(workspace: Path, bundle_path: Path, since, branch, haves):
     """
     Build a git bundle, downloading only what the client needs.
@@ -543,13 +549,16 @@ def _build_export_bundle(workspace: Path, bundle_path: Path, since, branch, have
     4. nothing: bundle --all (full).
 
     Only haves that actually exist on the server are used as exclusions.
+    Raises BranchNotFoundError when an explicitly requested branch is absent.
     Returns the CompletedProcess from `git bundle`.
     """
     # Resolve which refs to include
     if branch:
         # Verify the branch exists on the server
         check_branch = _git(workspace, "rev-parse", "--verify", f"refs/heads/{branch}")
-        include_refs = [f"refs/heads/{branch}"] if check_branch.returncode == 0 else ["--all"]
+        if check_branch.returncode != 0:
+            raise BranchNotFoundError(branch)
+        include_refs = [f"refs/heads/{branch}"]
     else:
         include_refs = ["--all"]
 
@@ -571,6 +580,13 @@ def _build_export_bundle(workspace: Path, bundle_path: Path, since, branch, have
 
     # If exclusions made the bundle empty/invalid, retry without exclusions
     if proc.returncode != 0 and "Refusing to create empty bundle" not in proc.stderr and exclusions:
+        if system_logger:
+            system_logger.warning("Export bundle with haves failed, retrying without exclusions", {
+                "workspace": workspace.name,
+                "branch": branch or "--all",
+                "dropped_exclusions": len(exclusions),
+                "error": _redact_git_text((proc.stderr or "").strip()),
+            })
         proc = _git(workspace, "bundle", "create", str(bundle_path), *include_refs)
 
     return proc
@@ -1395,7 +1411,10 @@ def sync_export_dump(e: str = Form(...), k: Optional[str] = Form(None)):
                         pass
 
         if not served_from_cache:
-            bundle_proc = _build_export_bundle(source, bundle_path, since, branch_name, haves)
+            try:
+                bundle_proc = _build_export_bundle(source, bundle_path, since, branch_name, haves)
+            except BranchNotFoundError as exc:
+                raise HTTPException(404, str(exc))
 
             if bundle_proc.returncode != 0:
                 if "Refusing to create empty bundle" in bundle_proc.stderr:

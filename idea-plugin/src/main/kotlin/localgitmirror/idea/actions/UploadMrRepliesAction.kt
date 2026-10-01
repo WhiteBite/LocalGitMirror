@@ -56,11 +56,12 @@ class UploadMrRepliesAction : AnAction() {
         notify(project, LocalGitMirrorBundle.message("mrreplies.upload.fail", chosen.name, "bad file name"), NotificationType.ERROR)
         return@executeOnPooledThread
       }
-      val ok = localgitmirror.idea.gitlab.MrRepliesTransport.uploadMarkdown(project, iid, chosen.readText(Charsets.UTF_8))
-      if (ok) {
-        notify(project, LocalGitMirrorBundle.message("mrreplies.upload.ok", chosen.name), NotificationType.INFORMATION)
-      } else {
-        notify(project, LocalGitMirrorBundle.message("mrreplies.upload.fail", chosen.name, "upload failed"), NotificationType.ERROR)
+      val outcome = localgitmirror.idea.gitlab.MrRepliesTransport.uploadMarkdownResult(project, iid, chosen.readText(Charsets.UTF_8))
+      when (outcome) {
+        is localgitmirror.idea.gitlab.MrUploadResult.Ok ->
+          notify(project, LocalGitMirrorBundle.message("mrreplies.upload.ok", chosen.name), NotificationType.INFORMATION)
+        is localgitmirror.idea.gitlab.MrUploadResult.Failed ->
+          notify(project, LocalGitMirrorBundle.message("mrreplies.upload.fail", chosen.name, outcome.reason), NotificationType.ERROR)
       }
     }
   }

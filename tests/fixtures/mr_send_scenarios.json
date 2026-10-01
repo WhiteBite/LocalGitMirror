@@ -1,0 +1,83 @@
+[
+  {
+    "name": "fresh-repo-sends-all",
+    "mirror_refs": {},
+    "local_tips": {"b1": "t1"},
+    "existing_shas": [],
+    "branches": ["b1"],
+    "new_commit_count": 5,
+    "expected": {"sent": ["b1"], "skipped": [], "exclude_shas": []}
+  },
+  {
+    "name": "tip-equal-to-mirror-is-skipped",
+    "mirror_refs": {"b1": {"sha": "t1"}},
+    "local_tips": {"b1": "t1"},
+    "existing_shas": [],
+    "branches": ["b1"],
+    "new_commit_count": 0,
+    "expected": {"sent": [], "skipped": ["b1"], "exclude_shas": []}
+  },
+  {
+    "name": "new-tip-on-known-branch-sends-incremental",
+    "mirror_refs": {"b1": {"sha": "old1"}},
+    "local_tips": {"b1": "t1"},
+    "existing_shas": ["old1"],
+    "branches": ["b1"],
+    "new_commit_count": 3,
+    "expected": {"sent": ["b1"], "skipped": [], "exclude_shas": ["old1"]}
+  },
+  {
+    "name": "mixed-skip-and-send",
+    "mirror_refs": {"master": {"sha": "m1"}, "b2": {"sha": "t2"}},
+    "local_tips": {"b1": "t1", "b2": "t2"},
+    "existing_shas": ["m1", "t2"],
+    "branches": ["b1", "b2"],
+    "new_commit_count": 4,
+    "expected": {"sent": ["b1"], "skipped": ["b2"], "exclude_shas": ["m1", "t2"]}
+  },
+  {
+    "name": "multi-branch-one-bundle-dedup-exclusions",
+    "mirror_refs": {"master": {"sha": "m1"}, "develop": {"sha": "m1"}},
+    "local_tips": {"b1": "t1", "b2": "t2", "b3": "t3"},
+    "existing_shas": ["m1"],
+    "branches": ["b1", "b2", "b3"],
+    "new_commit_count": 7,
+    "expected": {"sent": ["b1", "b2", "b3"], "skipped": [], "exclude_shas": ["m1"]}
+  },
+  {
+    "name": "ghost-mirror-sha-not-excluded",
+    "mirror_refs": {"master": {"sha": "ghost"}},
+    "local_tips": {"b1": "t1"},
+    "existing_shas": [],
+    "branches": ["b1"],
+    "new_commit_count": 5,
+    "expected": {"sent": ["b1"], "skipped": [], "exclude_shas": []}
+  },
+  {
+    "name": "zero-new-commits-is-nothing-new",
+    "mirror_refs": {"b1": {"sha": "old1"}, "master": {"sha": "m1"}},
+    "local_tips": {"b1": "t1"},
+    "existing_shas": ["m1"],
+    "branches": ["b1"],
+    "new_commit_count": 0,
+    "expected": {"sent": [], "skipped": ["b1"], "exclude_shas": []}
+  },
+  {
+    "name": "zero-new-commits-flips-tip-differing-branch-too",
+    "mirror_refs": {"b1": {"sha": "t1"}, "master": {"sha": "m1"}},
+    "local_tips": {"b1": "t1", "b2": "t2"},
+    "existing_shas": ["m1"],
+    "branches": ["b1", "b2"],
+    "new_commit_count": 0,
+    "expected": {"sent": [], "skipped": ["b1", "b2"], "exclude_shas": []}
+  },
+  {
+    "name": "all-tips-equal-nothing-new",
+    "mirror_refs": {"b1": {"sha": "t1"}, "b2": {"sha": "t2"}},
+    "local_tips": {"b1": "t1", "b2": "t2"},
+    "existing_shas": [],
+    "branches": ["b1", "b2"],
+    "new_commit_count": 0,
+    "expected": {"sent": [], "skipped": ["b1", "b2"], "exclude_shas": []}
+  }
+]

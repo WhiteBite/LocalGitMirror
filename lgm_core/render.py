@@ -90,6 +90,8 @@ def _render_respond(r: dict) -> list[str]:
         return out
     req_id = r.get("request_id", "?")
     out.append(f"  Request: {str(req_id)[:12]}")
+    if r.get("remaining"):
+        out.append(f"  {r['remaining']} more request(s) in queue")
     manifest = r.get("manifest", {})
     out.append(f"  Manifest: v={manifest.get('version')} missing={len(manifest.get('missing', []))}")
     out.append(f"  Found={r.get('found', 0)}  NotFound={r.get('not_found', 0)}")
@@ -119,6 +121,8 @@ def _render_apply(r: dict) -> list[str]:
         return out
     resp_id = r.get("response_id", "?")
     out.append(f"  Response: {str(resp_id)[:12]}")
+    if r.get("remaining"):
+        out.append(f"  {r['remaining']} more response(s) waiting")
     out.append(f"  Target cache: {r.get('target', '?')}")
     if r.get("layout"):
         out.append(f"  detected sender layout: {r['layout']}")
@@ -239,7 +243,17 @@ def _render_branches(r: dict) -> list[str]:
         updated = info.get("updated", "")
         is_head = info.get("is_head", False)
         marker = " *" if is_head else "  "
-        out.append(f"{marker} {name:30s} {sha}  {updated}")
+        line = f"{marker} {name:30s} {sha}  {updated}"
+        div = info.get("divergence")
+        if div == "ahead":
+            line += f"  ahead {info.get('ahead', 0)}"
+        elif div == "behind":
+            line += f"  behind {info.get('behind', 0)}"
+        elif div == "diverged":
+            line += f"  ahead {info.get('ahead', 0)} / behind {info.get('behind', 0)}"
+        elif div:
+            line += f"  {div}"
+        out.append(line)
     return out
 
 

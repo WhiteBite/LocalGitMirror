@@ -24,13 +24,14 @@ MD = "\n".join([
 
 
 class _StubClient:
-    def __init__(self, markdown=MD):
+    def __init__(self, markdown=MD, gitlab_error=None):
         self.sync_password = PWD
         self._md = markdown
+        self._gitlab_error = gitlab_error or LgmError("config", "GitLab not configured")
         self.sent = None
 
     def gitlab_list_mrs(self):
-        raise LgmError("config", "GitLab not configured")
+        raise self._gitlab_error
 
     def repos(self):
         return {"repos": [{"name": "r1"}]}
@@ -57,6 +58,36 @@ def test_mr_list_falls_back_to_postbox_without_gitlab():
     assert item["unresolved"] == 2
     assert item["source"] == "cache"
     assert item["repo"] == "r1"
+    assert res["errors"] == []
+
+
+def test_mr_list_reraises_non_config_gitlab_error():
+    client = _StubClient(gitlab_error=LgmError(500, "GitLab API error 500: boom"))
+    with pytest.raises(LgmError) as ei:
+        op_mr_list(Ctx(config=SimpleNamespace(sync_password=PWD), client=client), {})
+    assert ei.value.code == 500
+
+
+def test_mr_list_collects_postbox_errors():
+    class _TwoRepoClient:
+        sync_password = PWD
+
+        def gitlab_list_mrs(self):
+            raise LgmError("config", "GitLab not configured")
+
+        def repos(self):
+            return {"repos": [{"name": "good"}, {"name": "bad"}]}
+
+        def file_sync_list(self, repo):
+            if repo == "bad":
+                raise LgmError("network", "mirror unreachable")
+            return {"items": []}
+
+    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=PWD),
+                         client=_TwoRepoClient()), {})
+    assert res["count"] == 0
+    assert res["items"] == []
+    assert res["errors"] == [{"repo": "bad", "error": "mirror unreachable"}]
 
 
 def test_mr_notes_request_uploads_encrypted_request():
