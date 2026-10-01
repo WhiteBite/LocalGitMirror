@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import tarfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -217,15 +218,10 @@ def _resolve_content_path(content_dir: Path, integrity: str) -> Optional[Path]:
     except Exception:
         return None
     hex_digest = digest.hex()
-    if hex_digest is None:
-        return None
     # content-v2/sha512/<prefix(2)>/<full-hex>
-    subdir = content_dir / hex_digest[:2]
-    if not subdir.is_dir():
-        return None
-    for candidate in subdir.iterdir():
-        if candidate.is_file() and candidate.name == hex_digest:
-            return candidate
+    candidate = content_dir / hex_digest[:2] / hex_digest
+    if candidate.is_file():
+        return candidate
     return None
 
 
@@ -299,21 +295,48 @@ def scan_npm_offline_mirror(
 # npm index helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def load_npm_index(vault_root: Path) -> dict:
-    """Load npm index from vault, or return empty dict."""
-    index_path = vault_root / "npm-index.json"
+# кеш на уровне модуля: роутер читает npm-index.json на каждый HTTP-запрос
+_NPM_INDEX_CACHE_LOCK = threading.Lock()
+_NPM_INDEX_CACHE: Dict[str, Tuple[Optional[Tuple[int, int]], dict]] = {}
+_NPM_INDEX_CACHE_MAX_PATHS = 16
+
+
+def _npm_index_stat_key(index_path: Path) -> Optional[Tuple[int, int]]:
     try:
-        return json.loads(index_path.read_text(encoding="utf-8"))
+        st = index_path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def load_npm_index(vault_root: Path) -> dict:
+    """Load npm index from vault, or return empty dict. Cached by mtime+size."""
+    index_path = vault_root / "npm-index.json"
+    stat_key = _npm_index_stat_key(index_path)
+    path_key = str(index_path)
+    with _NPM_INDEX_CACHE_LOCK:
+        cached = _NPM_INDEX_CACHE.get(path_key)
+    if cached is not None and cached[0] == stat_key:
+        return dict(cached[1])
+    try:
+        index = json.loads(index_path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
+    with _NPM_INDEX_CACHE_LOCK:
+        if len(_NPM_INDEX_CACHE) >= _NPM_INDEX_CACHE_MAX_PATHS and path_key not in _NPM_INDEX_CACHE:
+            _NPM_INDEX_CACHE.clear()
+        _NPM_INDEX_CACHE[path_key] = (stat_key, index)
+    return dict(index)
 
 
 def save_npm_index(vault_root: Path, index: dict) -> None:
     """Atomically save npm index."""
     index_path = vault_root / "npm-index.json"
     tmp = index_path.with_suffix(index_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, index_path)
+    with _NPM_INDEX_CACHE_LOCK:
+        tmp.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, index_path)
+        _NPM_INDEX_CACHE[str(index_path)] = (_npm_index_stat_key(index_path), index)
 
 
 def add_to_npm_index(vault_root: Path, artifact: NpmArtifact, sha256: str) -> None:
@@ -324,12 +347,13 @@ def add_to_npm_index(vault_root: Path, artifact: NpmArtifact, sha256: str) -> No
         {"@krypto-ui/components": {"1.2.3": {"tarball_sha256": "...", "integrity": "...", "shasum": "..."}}}
     """
     index = load_npm_index(vault_root)
-    pkg_entry = index.setdefault(artifact.name, {})
+    pkg_entry = dict(index.get(artifact.name, {}))
     pkg_entry[artifact.version] = {
         "tarball_sha256": sha256,
         "integrity": artifact.integrity,
         "shasum": artifact.shasum,
     }
+    index[artifact.name] = pkg_entry
     save_npm_index(vault_root, index)
 
 

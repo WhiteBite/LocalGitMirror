@@ -8,7 +8,7 @@ Algorithm
 ---------
 Key derivation:
   PBKDF2-HMAC-SHA256(password, random_salt[16], iterations=200_000) → 32 bytes
-  Fresh random salt per message — no key caching.
+  Fresh random salt per message.
 
 Encryption:
   AES-256-GCM, fresh 12-byte random nonce per message.
@@ -25,6 +25,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+from functools import lru_cache
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -36,6 +37,7 @@ _NONCE_SIZE = 12
 _KEY_SIZE   = 32
 
 
+@lru_cache(maxsize=64)
 def _derive_key(password: str, salt: bytes) -> bytes:
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),

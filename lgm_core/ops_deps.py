@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .config import cfg
@@ -157,7 +158,7 @@ def op_respond(ctx: Ctx, args: dict) -> dict:
         for a in scan_cache(root):
             a["source"] = "gradle"
             all_arts.append(a)
-    for a in scan_maven_local():
+    for a in scan_maven_local(with_sha1=False):
         a["source"] = "maven"
         all_arts.append(a)
     by_gnv: dict[str, list[dict]] = {}
@@ -325,19 +326,21 @@ def op_apply(ctx: Ctx, args: dict) -> dict:
     tgzs = sorted(npm_mirror.rglob("*.tgz")) if npm_mirror.is_dir() else []
     if tgzs:
         npm_cmd = ["cmd", "/c", "npm"] if os.name == "nt" else ["npm"]
-        npm_ok = npm_fail = 0
-        for tb in tgzs:
+
+        def _cache_add(tb: Path) -> bool:
             try:
                 proc = subprocess.run(
                     npm_cmd + ["cache", "add", str(tb)],
                     capture_output=True, text=True, timeout=120,
                 )
-                if proc.returncode == 0:
-                    npm_ok += 1
-                else:
-                    npm_fail += 1
+                return proc.returncode == 0
             except Exception:
-                npm_fail += 1
+                return False
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            outcomes = list(ex.map(_cache_add, tgzs))
+        npm_ok = sum(outcomes)
+        npm_fail = len(outcomes) - npm_ok
         result["npm"] = {"ok": npm_ok, "fail": npm_fail, "mirror": str(npm_mirror)}
 
     # npm lockfile

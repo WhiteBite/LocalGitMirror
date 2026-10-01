@@ -75,7 +75,17 @@ def maven_local_root() -> Path:
     return Path.home() / ".m2" / "repository"
 
 
+_sha1_memo: dict[tuple[str, int, int], str] = {}
+_SHA1_MEMO_MAX = 8192
+
+
 def _sha1_of(path: Path) -> str:
+    """File SHA-1, memoized by (path, size, mtime) for repeated scans."""
+    st = path.stat()
+    key = (str(path), st.st_size, st.st_mtime_ns)
+    cached = _sha1_memo.get(key)
+    if cached is not None:
+        return cached
     h = hashlib.sha1()
     with path.open("rb") as f:
         while True:
@@ -83,12 +93,17 @@ def _sha1_of(path: Path) -> str:
             if not chunk:
                 break
             h.update(chunk)
-    return h.hexdigest()
+    digest = h.hexdigest()
+    if len(_sha1_memo) >= _SHA1_MEMO_MAX:
+        _sha1_memo.clear()
+    _sha1_memo[key] = digest
+    return digest
 
 
-def scan_maven_local(root: Path | None = None) -> list[dict]:
+def scan_maven_local(root: Path | None = None, with_sha1: bool = True) -> list[dict]:
     """Scan ~/.m2/repository/. Returns artifacts in the same dict shape as
     scan_cache(). Heuristic for version-dir: any file matching <parent>-<this>.*.
+    ``with_sha1=False`` leaves ``sha1`` empty for callers that never read it.
     """
     if root is None:
         root = maven_local_root()
@@ -127,7 +142,7 @@ def scan_maven_local(root: Path | None = None) -> list[dict]:
                     "group": group,
                     "name": name,
                     "version": version,
-                    "sha1": _sha1_of(f),
+                    "sha1": _sha1_of(f) if with_sha1 else "",
                     "file": f.name,
                     "path": str(f),
                     "size": f.stat().st_size,

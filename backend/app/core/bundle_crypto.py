@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import struct
+from functools import lru_cache
 from pathlib import Path
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -42,6 +43,7 @@ PBKDF2_ITERATIONS = 200_000
 KEY_SIZE = 32
 
 
+@lru_cache(maxsize=64)
 def _derive_key(password: str, salt: bytes) -> bytes:
     if not password:
         raise ValueError("Password cannot be empty")

@@ -45,11 +45,18 @@ class LgmError(Exception):
         super().__init__(f"[{code}] {message}")
 
 
+_ssl_ctx_cache: dict[bool, ssl.SSLContext] = {}
+
+
 def _ssl_ctx(insecure: bool = True) -> ssl.SSLContext:
-    ctx = ssl.create_default_context()
-    if insecure:
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+    """Default SSL context, built once per ``insecure`` value and reused."""
+    ctx = _ssl_ctx_cache.get(insecure)
+    if ctx is None:
+        ctx = ssl.create_default_context()
+        if insecure:
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+        _ssl_ctx_cache[insecure] = ctx
     return ctx
 
 
