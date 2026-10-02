@@ -8,6 +8,7 @@ import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.OperationsHistoryService
 import java.awt.BorderLayout
@@ -112,7 +113,9 @@ internal class HistoryView(private val panel: LocalGitMirrorPanel) {
       refreshHistoryLog()
     }
     return JPanel(BorderLayout()).apply {
-      isOpaque = false
+      isOpaque = true
+      background = UIUtil.getPanelBackground()
+      border = JBUI.Borders.customLine(JBColor.border(), 1)
       add(header, BorderLayout.NORTH)
       add(historyScroll, BorderLayout.CENTER)
     }

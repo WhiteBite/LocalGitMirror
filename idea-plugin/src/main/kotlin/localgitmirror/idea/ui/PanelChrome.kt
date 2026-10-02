@@ -6,6 +6,7 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
 import com.intellij.openapi.components.service
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -142,104 +143,191 @@ internal fun LocalGitMirrorPanel.actionRow(vararg components: JComponent): JPane
   return row
 }
 
-/**
- * Rebuild the action groups that feed the panel. [toolbarGroup] is the small
- * icon set actually rendered in the top toolbar; [mainGroup] is the full
- * list shown only in the overflow popup. Registered plugin.xml actions are
- * referenced by id so their localized presentations stay the single source
- * of truth; panel-only operations get thin wrappers.
- */
 internal fun LocalGitMirrorPanel.rebuildGearMenu() {
-  toolbarGroup.removeAll()
-  toolbarGroup.add(panelAction(LocalGitMirrorBundle.message("panel.branch.send"), AllIcons.Actions.Upload) {
+  sendGroup.removeAll()
+  sendGroup.add(panelAction(LocalGitMirrorBundle.message("panel.branch.send"), AllIcons.Actions.Upload) {
     sendSelectedBranches()
   })
-  toolbarGroup.add(panelAction(LocalGitMirrorBundle.message("panel.branch.pull"), AllIcons.Actions.Download) {
-    pullSelectedBranches()
-  })
-  toolbarGroup.addSeparator()
-  toolbarGroup.add(refreshBranchesAction)
-  toolbarGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.testMirror"), AllIcons.Actions.Checked) {
-    testMirror()
-  })
-  toolbarGroup.addSeparator()
-  toolbarGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.settings"), AllIcons.General.Settings) {
-    ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
-    refreshStatus()
-  })
-  toolbarGroup.add(overflowAction)
-
-  mainGroup.removeAll()
-  mainGroup.add(refreshBranchesAction)
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.testMirror"), AllIcons.Actions.Checked) {
-    testMirror()
-  })
-  mainGroup.addSeparator()
-  addRegisteredActions(
+  sendGroup.addSeparator()
+  addRegisteredActionsTo(sendGroup,
     "LocalGitMirror.SyncCurrentBranch",
     "LocalGitMirror.SyncBranch",
     "LocalGitMirror.SendSelectedCommits",
-    "LocalGitMirror.PushAs",
-    "LocalGitMirror.SendGitLabMr",
+    "LocalGitMirror.PushAs"
+  )
+  sendGroup.addSeparator()
+  addRegisteredActionsTo(sendGroup, "LocalGitMirror.SendGitLabMr")
+  sendGroup.add(panelAction(LocalGitMirrorBundle.message("review.sendNotes"), AllIcons.Actions.Upload) {
+    syncMrNotes()
+  })
+  addRegisteredActionsTo(sendGroup, "LocalGitMirror.UploadMrReplies")
+  sendGroup.addSeparator()
+  addRegisteredActionsTo(sendGroup, "LocalGitMirror.FileSendSelected")
+
+  pullGroup.removeAll()
+  pullGroup.add(panelAction(LocalGitMirrorBundle.message("panel.branch.pull"), AllIcons.Actions.Download) {
+    pullSelectedBranches()
+  })
+  pullGroup.addSeparator()
+  addRegisteredActionsTo(pullGroup,
     "LocalGitMirror.SyncPull",
     "LocalGitMirror.PullBack",
     "LocalGitMirror.ApplyLocalSync"
   )
+  pullGroup.addSeparator()
+  addRegisteredActionsTo(pullGroup, "LocalGitMirror.PushMrReplies")
+  addRegisteredActionsTo(pullGroup, "LocalGitMirror.FileFetch")
+
+  mainGroup.removeAll()
+  mainGroup.add(buildBranchesSubmenu())
   mainGroup.addSeparator()
-  addRegisteredActions(
-    "LocalGitMirror.ManageBranches",
-    "LocalGitMirror.PruneMirrorBranches"
+  mainGroup.add(buildReviewSubmenu())
+  mainGroup.addSeparator()
+  mainGroup.add(buildDepsSubmenu())
+  mainGroup.addSeparator()
+  mainGroup.add(buildFilesSubmenu())
+  mainGroup.addSeparator()
+  mainGroup.add(buildServiceSubmenu())
+  mainGroup.addSeparator()
+  mainGroup.add(buildDiagnosticsSubmenu())
+}
+
+private fun LocalGitMirrorPanel.buildBranchesSubmenu(): DefaultActionGroup {
+  val sub = DefaultActionGroup(LocalGitMirrorBundle.message("panel.menu.submenu.branches"), true)
+  sub.add(refreshBranchesAction)
+  sub.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.testMirror"), AllIcons.Actions.Checked) {
+    testMirror()
+  })
+  sub.addSeparator()
+  addRegisteredActionsTo(sub,
+    "LocalGitMirror.SyncCurrentBranch",
+    "LocalGitMirror.SyncBranch",
+    "LocalGitMirror.SendSelectedCommits",
+    "LocalGitMirror.PushAs"
   )
-  mainGroup.addSeparator()
-  addRegisteredActions(
+  sub.addSeparator()
+  addRegisteredActionsTo(sub, "LocalGitMirror.ManageBranches", "LocalGitMirror.PruneMirrorBranches")
+  return sub
+}
+
+private fun LocalGitMirrorPanel.buildReviewSubmenu(): DefaultActionGroup {
+  val sub = DefaultActionGroup(LocalGitMirrorBundle.message("panel.menu.submenu.review"), true)
+  addRegisteredActionsTo(sub,
+    "LocalGitMirror.SendGitLabMr",
+    "LocalGitMirror.UploadMrReplies",
+    "LocalGitMirror.PushMrReplies"
+  )
+  return sub
+}
+
+private fun LocalGitMirrorPanel.buildDepsSubmenu(): DefaultActionGroup {
+  val sub = DefaultActionGroup(LocalGitMirrorBundle.message("panel.menu.submenu.deps"), true)
+  addRegisteredActionsTo(sub,
     "LocalGitMirror.DepsRequest",
     "LocalGitMirror.DepsRespond",
     "LocalGitMirror.DepsApply",
     "LocalGitMirror.MirrorPublish"
   )
-  mainGroup.addSeparator()
-  addRegisteredActions(
-    "LocalGitMirror.FileSendSelected",
-    "LocalGitMirror.FileFetch"
-  )
-  mainGroup.addSeparator()
-  addRegisteredActions(
-    "LocalGitMirror.BufferSend",
-    "LocalGitMirror.BufferPaste",
-    "LocalGitMirror.BufferHistory"
-  )
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.exchange.more.clear"), AllIcons.Actions.GC) {
+  return sub
+}
+
+private fun LocalGitMirrorPanel.buildFilesSubmenu(): DefaultActionGroup {
+  val sub = DefaultActionGroup(LocalGitMirrorBundle.message("panel.menu.submenu.files"), true)
+  addRegisteredActionsTo(sub, "LocalGitMirror.FileSendSelected", "LocalGitMirror.FileFetch")
+  sub.addSeparator()
+  addRegisteredActionsTo(sub, "LocalGitMirror.BufferSend", "LocalGitMirror.BufferPaste", "LocalGitMirror.BufferHistory")
+  sub.add(panelAction(LocalGitMirrorBundle.message("panel.exchange.more.clear"), AllIcons.Actions.GC) {
     clearExchangeFeed()
   })
-  mainGroup.addSeparator()
-  addRegisteredActions(
+  return sub
+}
+
+private fun LocalGitMirrorPanel.buildServiceSubmenu(): DefaultActionGroup {
+  val sub = DefaultActionGroup(LocalGitMirrorBundle.message("panel.menu.submenu.service"), true)
+  sub.add(panelAction(LocalGitMirrorBundle.message("panel.menu.exportBundle"), AllIcons.Actions.Upload) { exportBundle() })
+  sub.add(panelAction(LocalGitMirrorBundle.message("panel.menu.importBundle"), AllIcons.Actions.Download) { importBundle() })
+  sub.addSeparator()
+  sub.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.copyConfig"), AllIcons.Actions.Copy) { copyConfigLine() })
+  sub.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.pasteConfig"), AllIcons.Actions.MenuPaste) { pasteConfigLine() })
+  sub.add(panelAction(LocalGitMirrorBundle.message("panel.menu.vaultSync"), AllIcons.Actions.Download) {
+    localgitmirror.idea.deps.VaultCacheSync.syncInBackground(project, "manual")
+  })
+  sub.addSeparator()
+  sub.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.downloadPlugin"), AllIcons.Actions.Download) { downloadLatestPlugin() })
+  sub.add(panelAction(LocalGitMirrorBundle.message("panel.menu.sendPlugin"), AllIcons.Actions.Upload) { sendPluginBuild() })
+  sub.add(panelAction(LocalGitMirrorBundle.message("panel.menu.installPlugin"), AllIcons.Actions.Download) { installPluginFromCache() })
+  return sub
+}
+
+private fun LocalGitMirrorPanel.buildDiagnosticsSubmenu(): DefaultActionGroup {
+  val sub = DefaultActionGroup(LocalGitMirrorBundle.message("panel.menu.submenu.diagnostics"), true)
+  addRegisteredActionsTo(sub,
     "LocalGitMirror.Preflight",
     "LocalGitMirror.VaultDiagnostics",
     "LocalGitMirror.DryRun",
     "LocalGitMirror.DryRunPull"
   )
-  mainGroup.addSeparator()
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("review.tab.open"), AllIcons.Actions.Show) { tabsPane?.selectedIndex = 1 })
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.exportBundle"), AllIcons.Actions.Upload) { exportBundle() })
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.importBundle"), AllIcons.Actions.Download) { importBundle() })
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.copyConfig"), AllIcons.Actions.Copy) { copyConfigLine() })
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.pasteConfig"), AllIcons.Actions.MenuPaste) { pasteConfigLine() })
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.vaultSync"), AllIcons.Actions.Download) {
-    localgitmirror.idea.deps.VaultCacheSync.syncInBackground(project, "manual")
+  return sub
+}
+
+internal fun LocalGitMirrorPanel.buildTransportBar(): JComponent {
+  val bar = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
+    isOpaque = false
+    border = JBUI.Borders.empty(2, 4)
+  }
+  bar.add(transportMenuButton(LocalGitMirrorBundle.message("panel.transport.send")) { showTransportPopup(sendGroup, it) })
+  bar.add(transportMenuButton(LocalGitMirrorBundle.message("panel.transport.pull")) { showTransportPopup(pullGroup, it) })
+  bar.add(verticalSeparator())
+  bar.add(barIconButton(AllIcons.Actions.Refresh, LocalGitMirrorBundle.message("panel.branch.refresh.tooltip")) {
+    refreshBranchCombo(userInitiated = true, withMirror = true)
   })
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.downloadPlugin"), AllIcons.Actions.Download) { downloadLatestPlugin() })
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.sendPlugin"), AllIcons.Actions.Upload) { sendPluginBuild() })
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("panel.menu.installPlugin"), AllIcons.Actions.Download) { installPluginFromCache() })
-  mainGroup.addSeparator()
-  mainGroup.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.settings"), AllIcons.General.Settings) {
+  bar.add(barIconButton(AllIcons.Actions.Checked, LocalGitMirrorBundle.message("toolwindow.menu.testMirror")) {
+    testMirror()
+  })
+  bar.add(barIconButton(AllIcons.General.Settings, LocalGitMirrorBundle.message("toolwindow.menu.settings")) {
     ShowSettingsUtil.getInstance().showSettingsDialog(project, "localgitmirror.settings")
     refreshStatus()
   })
+  bar.add(barIconButton(AllIcons.Actions.MoreHorizontal, LocalGitMirrorBundle.message("panel.toolbar.more.tooltip", pluginVersionText)) {
+    showOverflowPopup(it)
+  })
+  return bar
 }
 
-internal fun LocalGitMirrorPanel.addRegisteredActions(vararg ids: String) {
+private fun LocalGitMirrorPanel.transportMenuButton(label: String, onClick: (JButton) -> Unit): JButton =
+  JButton("$label \u25BE").apply {
+    font = JBUI.Fonts.smallFont()
+    margin = JBUI.insets(2, 8)
+    isFocusPainted = false
+    addActionListener { onClick(this) }
+  }
+
+private fun LocalGitMirrorPanel.barIconButton(icon: Icon, tooltip: String, onClick: (JButton) -> Unit): JButton =
+  JButton(icon).apply {
+    margin = JBUI.insets(2, 4)
+    isFocusPainted = false
+    isBorderPainted = false
+    isContentAreaFilled = false
+    toolTipText = tooltip
+    addActionListener { onClick(this) }
+  }
+
+private fun verticalSeparator(): JComponent = JSeparator(JSeparator.VERTICAL).apply {
+  preferredSize = Dimension(JBUI.scale(2), JBUI.scale(22))
+}
+
+private fun LocalGitMirrorPanel.showTransportPopup(group: DefaultActionGroup, anchor: JComponent) {
+  val popup = com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+    .createActionGroupPopup(
+      null, group, SimpleDataContext.getProjectContext(project),
+      com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, false
+    )
+  popup.show(com.intellij.ui.awt.RelativePoint.getSouthWestOf(anchor))
+}
+
+internal fun LocalGitMirrorPanel.addRegisteredActionsTo(group: DefaultActionGroup, vararg ids: String) {
   val manager = ActionManager.getInstance()
-  ids.forEach { id -> manager.getAction(id)?.let { mainGroup.add(it) } }
+  ids.forEach { id -> manager.getAction(id)?.let { group.add(it) } }
 }
 
 internal fun LocalGitMirrorPanel.panelAction(title: String, icon: Icon, action: () -> Unit): AnAction =
@@ -255,6 +343,66 @@ internal fun LocalGitMirrorPanel.showOverflowPopup(anchor: JComponent) {
       null, mainGroup, dataContext,
       com.intellij.openapi.ui.popup.JBPopupFactory.ActionSelectionAid.SPEEDSEARCH, true
     )
+  popup.show(com.intellij.ui.awt.RelativePoint.getSouthWestOf(anchor))
+}
+
+/** Compact strip under the transport: connection dot + status line, history popup link on the right. */
+internal fun LocalGitMirrorPanel.buildStatusStrip(): JComponent {
+  status.font = JBUI.Fonts.smallFont()
+  status.foreground = UIUtil.getContextHelpForeground()
+  statusDot.font = JBUI.Fonts.smallFont()
+  val historyLink = JButton(LocalGitMirrorBundle.message("toolwindow.history")).apply {
+    font = JBUI.Fonts.smallFont()
+    isBorderPainted = false
+    isContentAreaFilled = false
+    isFocusPainted = false
+    foreground = JBColor(0x2470B3, 0x548AF7)
+    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+    margin = JBUI.insets(0, 4)
+    addActionListener { showHistoryPopup(this) }
+  }
+  val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
+    isOpaque = false
+    add(statusDot)
+    add(status)
+  }
+  return JPanel(BorderLayout()).apply {
+    isOpaque = false
+    border = JBUI.Borders.empty(2, 8)
+    add(left, BorderLayout.WEST)
+    add(historyLink, BorderLayout.EAST)
+  }
+}
+
+internal fun LocalGitMirrorPanel.updateStatusStrip() {
+  val parts = mutableListOf(
+    LocalGitMirrorBundle.message(
+      if (stripConnected) "panel.status.connected" else "panel.status.disconnected"
+    )
+  )
+  if (stripConnected) {
+    if (stripRole.isNotBlank()) parts += stripRole
+    if (stripRepo.isNotBlank()) parts += LocalGitMirrorBundle.message("panel.status.repo", stripRepo)
+    val behind = allBranchItems.count { it.status == BranchStatus.BEHIND }
+    val ahead = allBranchItems.count { it.status == BranchStatus.AHEAD }
+    if (behind > 0 || ahead > 0) {
+      parts += LocalGitMirrorBundle.message("panel.status.waiting", behind, ahead)
+    }
+  }
+  status.text = parts.joinToString(" \u00b7 ")
+}
+
+internal fun LocalGitMirrorPanel.showHistoryPopup(anchor: JComponent) {
+  val content = historyView.buildHistoryPanel()
+  historyView.refreshHistoryLog()
+  val popup = com.intellij.openapi.ui.popup.JBPopupFactory.getInstance()
+    .createComponentPopupBuilder(content, null)
+    .setRequestFocus(true)
+    .setFocusable(true)
+    .setResizable(true)
+    .setMovable(true)
+    .setMinSize(Dimension(JBUI.scale(360), JBUI.scale(220)))
+    .createPopup()
   popup.show(com.intellij.ui.awt.RelativePoint.getSouthWestOf(anchor))
 }
 
@@ -299,7 +447,6 @@ internal fun LocalGitMirrorPanel.refreshStatus() {
   val connected = s.baseUrl.isNotBlank() &&
     (SecretsStore.cached.syncPassword.isNotBlank() || localgitmirror.idea.mirror.MirrorCrypto.isV3Pinned())
   val machineRole = localgitmirror.idea.deps.RoleDetector.detect(s)
-  val divergedCount = countDivergedBranches()
 
   // Resolve Mirror repo for tooltip (single source of truth)
   val repoRes = try { syncFacade.resolveRepo(dir, s) } catch (_: Throwable) { null }
@@ -307,13 +454,14 @@ internal fun LocalGitMirrorPanel.refreshStatus() {
   var branchCount = 0
   if (connected) {
     branchCount = GitLocal.listBranches(project, dir).size
-    val branchesWord = LocalGitMirrorBundle.message("status.branches", branchCount)
-    val arrow = if (divergedCount > 0) " \u2191" else ""
-    status.text = LocalGitMirrorBundle.message("panel.status.connected") +
-      " \u00b7 $branchCount $branchesWord$arrow"
-  } else {
-    status.text = LocalGitMirrorBundle.message("panel.status.disconnected")
   }
+  stripConnected = connected
+  stripRole = LocalGitMirrorBundle.message(
+    if (machineRole == localgitmirror.idea.deps.MachineRole.WORK)
+      "panel.status.role.work" else "panel.status.role.home"
+  )
+  stripRepo = repoRes?.sanitized ?: ""
+  updateStatusStrip()
   roleBadge.text = if (machineRole == localgitmirror.idea.deps.MachineRole.WORK)
     LocalGitMirrorBundle.message("panel.role.work")
   else

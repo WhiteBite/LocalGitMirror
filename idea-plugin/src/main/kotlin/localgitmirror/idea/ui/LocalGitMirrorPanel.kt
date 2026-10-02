@@ -2,7 +2,6 @@ package localgitmirror.idea.ui
 
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
-import com.intellij.openapi.actionSystem.ActionManager
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
@@ -166,6 +165,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
 
   internal val roleBadge = BadgeLabel("")
   internal val statusDot = JBLabel("\u25CF")
+  internal var stripConnected = false
+  internal var stripRole: String = ""
+  internal var stripRepo: String = ""
+  internal var branchDetail: BranchDetail? = null
   internal var tabsPane: JBTabbedPane? = null
   internal val tabLabels = mutableMapOf<Int, JBLabel>()
   internal val tabPills = mutableMapOf<Int, JComponent>()
@@ -223,16 +226,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     }
   }
 
-  internal val overflowAction = object : AnAction(
-    LocalGitMirrorBundle.message("panel.toolbar.more"),
-    LocalGitMirrorBundle.message("panel.toolbar.more.tooltip", pluginVersionText),
-    AllIcons.Actions.MoreHorizontal
-  ) {
-    override fun actionPerformed(e: AnActionEvent) {
-      val anchor = (e.inputEvent?.component as? JComponent) ?: this@LocalGitMirrorPanel
-      showOverflowPopup(anchor)
-    }
-  }
   internal val branchRefreshGeneration = AtomicLong()
 
   @Volatile
@@ -248,10 +241,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     isOpaque = false
     alignmentX = LEFT_ALIGNMENT
   }
-  /** Full action list — shown only in the overflow popup. */
+  /** Full action list — shown only in the overflow popup, organised into submenus. */
   internal val mainGroup = DefaultActionGroup()
-  /** Compact toolbar set — what actually renders in the panel's top toolbar. */
-  internal val toolbarGroup = DefaultActionGroup()
+  /** Send-side transport actions; rendered as the "↑ Send ▾" bar button popup. */
+  internal val sendGroup = DefaultActionGroup(LocalGitMirrorBundle.message("panel.transport.send"), true)
+  /** Pull-side transport actions; rendered as the "↓ Pull ▾" bar button popup. */
+  internal val pullGroup = DefaultActionGroup(LocalGitMirrorBundle.message("panel.transport.pull"), true)
 
   internal val progress = ProgressController(this)
 
@@ -350,20 +345,20 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     ListSpeedSearch.installOn(branchList)
 
     rebuildGearMenu()
+    project.getService(MrReviewService::class.java).onCacheUpdated = {
+      refreshReview()
+      branchDetail?.refreshFor(branchList.selectedValue)
+    }
 
     val root = SimpleToolWindowPanel(true, true)
-    val toolbar = ActionManager.getInstance()
-      .createActionToolbar("LocalGitMirrorPanel", toolbarGroup, true)
-    toolbar.targetComponent = this
-    root.setToolbar(toolbar.component)
+    root.setToolbar(buildTransportBar())
 
     val progressRow = progress.buildProgressRow()
 
     val tabs = JBTabbedPane()
     tabs.addTab(LocalGitMirrorBundle.message("tab.branches"), buildBranchesTab())
-    tabs.addTab(LocalGitMirrorBundle.message("tab.review"), buildReviewTab())
-    tabs.addTab(LocalGitMirrorBundle.message("tab.deps"), buildDepsTab())
     tabs.addTab(LocalGitMirrorBundle.message("tab.exchange"), buildExchangeTab())
+    tabs.addTab(LocalGitMirrorBundle.message("tab.deps"), buildDepsTab())
     for (i in 0 until tabs.tabCount) {
       tabs.setTabComponentAt(i, makeTabComponent(tabs, i))
     }
@@ -372,8 +367,14 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     tabs.addChangeListener { onTabChanged(tabs.selectedIndex) }
     tabsPane = tabs
 
+    val north = JPanel(BorderLayout()).apply {
+      isOpaque = false
+      add(buildStatusStrip(), BorderLayout.NORTH)
+      add(progressRow, BorderLayout.CENTER)
+    }
+
     val center = JPanel(BorderLayout()).apply { isOpaque = false }
-    center.add(progressRow, BorderLayout.NORTH)
+    center.add(north, BorderLayout.NORTH)
     center.add(tabs, BorderLayout.CENTER)
     center.add(buildFooterRow(), BorderLayout.SOUTH)
     root.setContent(center)
@@ -402,14 +403,13 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   private fun onTabChanged(index: Int) {
     if (project.isDisposed || ApplicationManager.getApplication().isDisposeInProgress) return
     when (index) {
-      1 -> reloadReview(notify = false)
-      2 -> refreshDepsInBackground()
-      3 -> {
+      1 -> {
         refreshExchangeInBackground()
         startExchangePolling()
       }
+      2 -> refreshDepsInBackground()
     }
-    if (index != 3) stopExchangePolling()
+    if (index != 1) stopExchangePolling()
   }
 
   override fun dispose() {

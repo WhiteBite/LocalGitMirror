@@ -5,7 +5,6 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.ui.JBColor
-import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.util.ui.JBUI
@@ -18,6 +17,7 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 import java.awt.BorderLayout
 import java.awt.Component
+import java.awt.Cursor
 import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.event.MouseEvent
@@ -33,76 +33,44 @@ import javax.swing.JScrollPane
 import javax.swing.ListCellRenderer
 
 internal fun LocalGitMirrorPanel.buildBranchesTab(): JComponent {
-  val statusRow = JPanel(BorderLayout()).apply { isOpaque = false }
-  status.font = JBUI.Fonts.smallFont()
-  status.foreground = UIUtil.getContextHelpForeground()
-  statusDot.font = JBUI.Fonts.smallFont()
-  val statusLeft = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(6), 0)).apply {
-    isOpaque = false
-    add(statusDot)
-    add(status)
+  val legendInfo = JBLabel(AllIcons.General.Information).apply {
+    toolTipText = LocalGitMirrorBundle.message("panel.branch.legend")
+    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+    border = JBUI.Borders.emptyLeft(6)
   }
-  statusRow.add(statusLeft, BorderLayout.WEST)
-
-  val sectionRow = JPanel(BorderLayout()).apply { isOpaque = false }
-  sectionRow.add(JBLabel(LocalGitMirrorBundle.message("panel.branch.section")).apply {
-    font = JBUI.Fonts.smallFont()
-    foreground = UIUtil.getContextHelpForeground()
-  }, BorderLayout.WEST)
-  sectionRow.add(JBLabel(LocalGitMirrorBundle.message("panel.branch.legend")).apply {
-    font = JBUI.Fonts.smallFont().deriveFont(Font.PLAIN, JBUI.scale(10f).toFloat())
-    foreground = JBColor(0x5C5F64, 0x5C5F64)
-  }, BorderLayout.EAST)
 
   val searchRow = JPanel(BorderLayout()).apply {
     isOpaque = false
     border = JBUI.Borders.empty(4, 0, 4, 0)
     add(branchFilterField, BorderLayout.CENTER)
+    add(legendInfo, BorderLayout.EAST)
   }
 
   val north = JPanel().apply {
     layout = BoxLayout(this, BoxLayout.Y_AXIS)
     isOpaque = false
-    add(statusRow)
     add(searchRow)
-    add(sectionRow)
   }
 
   val listScroll = JScrollPane(branchList).apply {
     border = BorderFactory.createEmptyBorder()
     viewportBorder = BorderFactory.createEmptyBorder()
+    background = UIUtil.getListBackground()
+    viewport.background = UIUtil.getListBackground()
   }
 
-  val bottom = JPanel(BorderLayout()).apply {
-    isOpaque = false
-    border = JBUI.Borders.empty(4, 0, 0, 0)
-    val left = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0)).apply {
-      isOpaque = false
-      add(primaryBtn(LocalGitMirrorBundle.message("panel.branch.send"), AllIcons.Actions.Upload) {
-        sendSelectedBranches()
-      })
-      add(btn(LocalGitMirrorBundle.message("panel.branch.pull"), AllIcons.Actions.Download) {
-        pullSelectedBranches()
-      })
-    }
-    add(left, BorderLayout.WEST)
-    add(btn(LocalGitMirrorBundle.message("panel.branch.delete"), AllIcons.Actions.GC) {
-      deleteSelectedBranches()
-    }, BorderLayout.EAST)
-  }
+  val detail = BranchDetail(this)
+  branchDetail = detail
+  branchList.addListSelectionListener { detail.refreshFor(branchList.selectedValue) }
+  detail.refreshFor(branchList.selectedValue)
 
-  val top = JPanel(BorderLayout()).apply {
+  return JPanel(BorderLayout()).apply {
     isOpaque = false
     border = JBUI.Borders.empty(4, 8)
     add(north, BorderLayout.NORTH)
     add(listScroll, BorderLayout.CENTER)
-    add(bottom, BorderLayout.SOUTH)
+    add(detail, BorderLayout.SOUTH)
   }
-
-  val split = OnePixelSplitter(true, 0.72f)
-  split.firstComponent = top
-  split.secondComponent = historyView.buildHistoryPanel()
-  return split
 }
 
 /**
@@ -269,6 +237,8 @@ private fun LocalGitMirrorPanel.applyBranchItems(items: List<BranchListItem>, se
     val idx = visibleItems.indexOfFirst { it.name == preferred }
     if (idx >= 0) branchList.selectedIndex = idx
   }
+  updateStatusStrip()
+  branchDetail?.refreshFor(branchList.selectedValue)
 }
 
 internal fun LocalGitMirrorPanel.selectedBranchChoice(): BranchChoice? {
@@ -376,6 +346,7 @@ internal class BranchListCellRenderer : JPanel(BorderLayout()), ListCellRenderer
 
     glyphLabel.text = statusGlyph(value.status)
     glyphLabel.foreground = if (isSelected) selFg else statusFg
+    toolTipText = statusTooltip(value.status)
 
     nameLabel.text = value.name
     nameLabel.font = Font("JetBrains Mono", if (value.isCurrent) Font.BOLD else Font.PLAIN, JBUI.scale(12))
@@ -387,9 +358,13 @@ internal class BranchListCellRenderer : JPanel(BorderLayout()), ListCellRenderer
     }
 
     badgeLabel.text = if (value.mrIid != null)
-      "  !${value.mrIid}${if (value.mrUnresolved > 0) " \u00b7 ${value.mrUnresolved}\u26a0" else ""}"
+      "  !${value.mrIid}${if (value.mrUnresolved > 0) " \u26a0${value.mrUnresolved}" else ""}"
     else ""
-    badgeLabel.foreground = if (isSelected) selFg else JBColor(0xB8860B, 0xE3AE4D)
+    badgeLabel.foreground = when {
+      isSelected -> selFg
+      value.mrUnresolved > 0 -> JBColor(0xB8860B, 0xE3AE4D)
+      else -> JBColor(0x2E7D32, 0x66BB6A)
+    }
 
     val delta = when (value.status) {
       BranchStatus.AHEAD -> value.aheadCount?.let { "+$it" } ?: ""
@@ -421,4 +396,12 @@ private fun statusColor(status: BranchStatus): JBColor = when (status) {
   BranchStatus.BEHIND -> JBColor(0x1565C0, 0x548AF7)
   BranchStatus.MIRROR_ONLY -> JBColor(0x9A7D0A, 0xD4A72C)
   BranchStatus.LOCAL_ONLY -> JBColor.GRAY
+}
+
+private fun statusTooltip(status: BranchStatus): String = when (status) {
+  BranchStatus.SYNCED -> LocalGitMirrorBundle.message("panel.branch.status.synced")
+  BranchStatus.AHEAD -> LocalGitMirrorBundle.message("panel.branch.status.ahead")
+  BranchStatus.BEHIND -> LocalGitMirrorBundle.message("panel.branch.status.behind")
+  BranchStatus.MIRROR_ONLY -> LocalGitMirrorBundle.message("panel.branch.status.mirrorOnly")
+  BranchStatus.LOCAL_ONLY -> LocalGitMirrorBundle.message("panel.branch.status.localOnly")
 }
