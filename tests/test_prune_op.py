@@ -270,9 +270,10 @@ def test_mr_notes_reads_server_resolved_paths():
     monkeypatch_client.file_sync_fetch = lambda repo, item_id: blobs[item_id]
 
     res = op_mr_notes(ctx, {"repo": "r"})
-    paths = [n["path"] for n in res["notes"]]
-    assert paths == ["mr-notes/mr-!9.md", "mr-notes/mr-!7.md"]
-    assert res["notes"][0]["markdown"].startswith("# MR !9")
+    assert res["count"] == 2
+    assert [n["iid"] for n in res["notes"]] == [7, 9]
+    assert [n["path"] for n in res["notes"]] == ["mr-notes/mr-!7.md", "mr-notes/mr-!9.md"]
+    assert res["notes"][1]["markdown"].startswith("# MR !9")
     only9 = op_mr_notes(ctx, {"repo": "r", "iid": 9})
     assert [n["path"] for n in only9["notes"]] == ["mr-notes/mr-!9.md"]
 

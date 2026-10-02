@@ -164,8 +164,10 @@ class MrReplyPushService(private val project: Project) {
         return Downloaded.Skipped("download: HTTP ${dl.code} ${dl.message}")
       }
       val parsed = MrReplies.parse(tmpEnc.readText(Charsets.UTF_8))
-      if (parsed.iid == 0) Downloaded.Skipped("no '# MR !N' header")
-      else Downloaded.Parsed(parsed)
+      // The postbox path mr-replies/mr-!N.md already carries the iid, so a header-less file still posts.
+      val withIid = if (parsed.iid != 0) parsed else replyIid(item.path)?.let { parsed.copy(iid = it) }
+      if (withIid == null || withIid.iid == 0) Downloaded.Skipped("no '# MR !N' header and no iid in path")
+      else Downloaded.Parsed(withIid)
     } catch (e: Throwable) {
       Downloaded.Skipped("decrypt/parse: ${e.message ?: "error"}")
     } finally {

@@ -297,9 +297,12 @@ MR REVIEW REPLIES (home agent -> work PC -> GitLab):
   2. Write answers, then EITHER:
      mr_replies_send repo=<name> iid=<N> file=<path to replies-!N.md>
      mr_replies_send repo=<name> iid=<N> text=<inline markdown>
-     Replies format: sections '## thread <id>' / '## new <file>:<line>' / '## new',
-     optional 'resolve: yes' as the first line of a section.
-  3. mr_replies_status repo=<name> [iid=<N>] — work PC's publish report
+   Replies format: sections '## thread <id>' / '## new <file>:<line>' / '## new',
+   optional 'resolve: yes' as the first line of a section.
+   Comment style: as a human reviewer — issues only (bug, bad call, miss),
+   1-3 sentences, long only when a scenario needs it; anchored at the offending
+   line, imperative, concrete; no praise, no code restating, no filler openers.
+   3. mr_replies_status repo=<name> [iid=<N>] — work PC's publish report
      (posted/failed counts); empty means not published yet.
   The work PC posts approved replies to GitLab; a human may approve them in
   the IDE first, so a pending send is normal — poll mr_replies_status.

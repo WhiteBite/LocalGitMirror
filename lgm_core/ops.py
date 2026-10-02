@@ -259,7 +259,9 @@ REGISTRY: list[Op] = [
     ),
     Op(
         name="mr_notes",
-        summary="Decrypt and show MR discussion notes stored on the mirror (mr-notes/mr-!N.md).",
+        summary=("Read MR discussion notes from the mirror postbox (mr-notes/mr-!N.md); "
+                 "newest per MR. Each thread block carries its 'ID треда' and 'Место: file:line' "
+                 "— copy the id into a '## thread <id>' section of mr_replies_send."),
         params=[
             Param("repo", "str", "", "Mirror repository name", required=True),
             Param("iid", "int", 0, "Only this MR iid (0 = all)"),
@@ -268,12 +270,20 @@ REGISTRY: list[Op] = [
     ),
     Op(
         name="mr_replies_send",
-        summary="Upload agent MR review replies (thread answers, new anchored discussions) to the mirror postbox; the work machine posts them to GitLab.",
+        summary=("Upload agent MR review replies to the mirror postbox; the work machine posts "
+                 "them to GitLab. Reply markdown sections: '## thread <id>' — answer an existing "
+                 "thread (id from mr_notes), '## new <file>:<line>' — new code-anchored discussion, "
+                 "'## new' — general MR note; 'resolve: yes' as the first line of a thread section "
+                 "resolves it. The '# MR !N' header is injected when missing. Comments must read "
+                 "as a human reviewer's: issues only (bug / bad call / miss), 1-3 sentences, "
+                 "anchored at the offending line — no praise, no code restating, no filler."),
         params=[
             Param("repo", "str", "", "Mirror repository name", required=True),
             Param("iid", "int", 0, "GitLab MR iid", required=True),
-            Param("file", "str", "", "Path to a local replies-!N.md file", ),
-            Param("text", "str", "", "Inline replies markdown (alternative to file)"),
+            Param("file", "str", "", "Path to a local replies-!N.md file (same section format)"),
+            Param("text", "str", "", "Inline replies markdown: '## thread <id>' / "
+                                     "'## new <file>:<line>' / '## new' sections, "
+                                     "'resolve: yes' first line per thread"),
         ],
         run=op_mr_replies_send,
     ),

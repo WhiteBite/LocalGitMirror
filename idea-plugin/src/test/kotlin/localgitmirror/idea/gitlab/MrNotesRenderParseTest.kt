@@ -52,6 +52,9 @@ class MrNotesRenderParseTest {
     assertTrue(md.contains("<!-- lgm-thread: 8f2e4c1d -->"), "machine thread marker must be rendered")
     assertTrue(md.contains("**ID треда:** `8f2e4c1d`"), "visible thread id must be rendered")
     assertTrue(md.contains("&nbsp;&nbsp;↳ **Me**"), "replies must be indented with arrow")
+    assertTrue(md.contains("mr_replies_send"), "notes must teach how to reply")
+    assertTrue(md.contains("## thread"), "notes must show the thread section format")
+    assertTrue(md.contains("1-3 предложения"), "notes must carry the human comment style rule")
     assertTrue(!md.contains("```kt"), "no code block without project")
     assertTrue(md.startsWith("<!-- Сгенерировано плагином DocCache"))
   }

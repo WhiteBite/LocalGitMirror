@@ -280,21 +280,28 @@ def op_mr_notes(ctx: Ctx, args: dict) -> dict:
     c = _client(ctx)
     repo = _repo_arg(args)
     lst = c.file_sync_list(repo)
-    items = [
-        i for i in (lst.get("items") or [])
-        if (i.get("path") or "").startswith("mr-notes/")
-    ]
     iid = int(args.get("iid") or 0)
-    if iid:
-        items = [i for i in items if str(i.get("path", "")).endswith(f"mr-!{iid}.md")]
+    newest: dict[int, dict] = {}
+    for i in (lst.get("items") or []):
+        eff = i.get("path") or ""
+        if not eff.startswith("mr-notes/"):
+            continue
+        m = re.search(r"mr-!(\d+)\.md$", eff)
+        if not m:
+            continue
+        n = int(m.group(1))
+        if iid and n != iid:
+            continue
+        if n not in newest or (i.get("mtime") or 0) > (newest[n].get("mtime") or 0):
+            newest[n] = i
     notes = []
-    for i in items:
+    for n, i in sorted(newest.items()):
         try:
             plain = c.file_sync_fetch(repo, i["id"])
-            notes.append({"path": i["path"], "markdown": plain.decode("utf-8")})
+            notes.append({"iid": n, "path": i["path"], "markdown": plain.decode("utf-8")})
         except Exception:
-            notes.append({"path": i["path"], "error": "fetch/decrypt failed (v3 relay)"})
-    return {"success": True, "repo": repo, "notes": notes}
+            notes.append({"iid": n, "path": i["path"], "error": "fetch/decrypt failed (v3 relay)"})
+    return {"success": True, "repo": repo, "count": len(notes), "notes": notes}
 
 
 def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
@@ -317,10 +324,19 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
         return {"success": False, "error": "provide file (path) or text (markdown body)"}
     if "## thread" not in content and "## new" not in content:
         return {"success": False, "error": "no reply sections ('## thread <id>' / '## new') found in content"}
+    # The work-side parser keys off the "# MR !N" header; inject it so the file is never skipped.
+    m = re.search(r"^#\s+MR\s+!(\d+)", content, re.MULTILINE)
+    if m:
+        if int(m.group(1)) != iid:
+            return {"success": False,
+                    "error": f"content header says MR !{m.group(1)} but iid={iid}"}
+    else:
+        content = f"# MR !{iid}\n\n{content}"
 
+    data = content.encode("utf-8")
     display = f"mr-replies/mr-!{iid}.md"
-    res = c.file_sync_send(repo, display, len(content), content.encode("utf-8"))
-    return {"success": True, "repo": repo, "path": display, "size": len(content), "response": res}
+    res = c.file_sync_send(repo, display, len(data), data)
+    return {"success": True, "repo": repo, "path": display, "size": len(data), "response": res}
 
 
 def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:
@@ -329,16 +345,24 @@ def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:
     repo = _repo_arg(args)
     lst = c.file_sync_list(repo)
     iid = int(args.get("iid") or 0)
-    statuses = []
+    newest: dict[int, dict] = {}
     for i in (lst.get("items") or []):
         eff = i.get("path") or ""
         if not eff.startswith("mr-replies-status/"):
             continue
-        if iid and not eff.endswith(f"mr-!{iid}.md"):
+        m = re.search(r"mr-!(\d+)\.md$", eff)
+        if not m:
             continue
+        n = int(m.group(1))
+        if iid and n != iid:
+            continue
+        if n not in newest or (i.get("mtime") or 0) > (newest[n].get("mtime") or 0):
+            newest[n] = i
+    statuses = []
+    for n, i in sorted(newest.items()):
         try:
             plain = c.file_sync_fetch(repo, i["id"])
-            statuses.append({"path": eff, "markdown": plain.decode("utf-8")})
+            statuses.append({"iid": n, "path": i["path"], "markdown": plain.decode("utf-8")})
         except Exception:
-            statuses.append({"path": eff, "error": "fetch/decrypt failed (v3 relay)"})
-    return {"success": True, "repo": repo, "statuses": statuses}
+            statuses.append({"iid": n, "path": i["path"], "error": "fetch/decrypt failed (v3 relay)"})
+    return {"success": True, "repo": repo, "count": len(statuses), "statuses": statuses}
