@@ -462,13 +462,7 @@ internal fun LocalGitMirrorPanel.refreshStatus() {
   )
   stripRepo = repoRes?.sanitized ?: ""
   updateStatusStrip()
-  roleBadge.text = if (machineRole == localgitmirror.idea.deps.MachineRole.WORK)
-    LocalGitMirrorBundle.message("panel.role.work")
-  else
-    LocalGitMirrorBundle.message("panel.role.home")
   statusDot.foreground = if (connected) JBColor(0x5FAD65, 0x5FAD65) else JBColor.GRAY
-  roleBadge.status = if (machineRole == localgitmirror.idea.deps.MachineRole.WORK)
-    BadgeLabel.Status.WARNING else BadgeLabel.Status.GOOD
 
   val pending = localgitmirror.idea.deps.RespondDepsAction.lastKnownPendingCount.get()
   val responses = localgitmirror.idea.deps.ApplyDepsAction.lastKnownResponseCount.get()

@@ -82,6 +82,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   internal val branchListModel = DefaultListModel<BranchListItem>()
   // All items before filtering — used by branchFilterField to re-apply the filter.
   internal var allBranchItems: List<BranchListItem> = emptyList()
+  // Chip filter mode (Все · С MR · Локальные); combines with the free-text filter.
+  internal var branchFilterMode: BranchFilterMode = BranchFilterMode.ALL
   internal var respondButton: javax.swing.JButton? = null
   internal var reviewFetchButton: javax.swing.JButton? = null
   internal var reviewRowsSignature = ""
@@ -163,7 +165,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   }
   internal val exchangePollAlarm = Alarm(Alarm.ThreadToUse.SWING_THREAD, this)
 
-  internal val roleBadge = BadgeLabel("")
   internal val statusDot = JBLabel("\u25CF")
   internal var stripConnected = false
   internal var stripRole: String = ""
@@ -397,7 +398,6 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       font = JBUI.Fonts.smallFont().deriveFont(Font.PLAIN, JBUI.scale(10f).toFloat())
       foreground = UIUtil.getContextHelpForeground()
     }, BorderLayout.WEST)
-    add(roleBadge, BorderLayout.EAST)
   }
 
   private fun onTabChanged(index: Int) {

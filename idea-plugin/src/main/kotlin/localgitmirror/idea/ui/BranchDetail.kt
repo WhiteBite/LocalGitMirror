@@ -124,12 +124,13 @@ internal class BranchDetail(private val panel: LocalGitMirrorPanel) : JPanel(Bor
   private fun mrRow(iid: Int): MrReviewService.MrRowItem? =
     panel.project.getService(MrReviewService::class.java).cachedRows().firstOrNull { it.iid == iid }
 
-  private fun statusText(item: BranchListItem): String = when (item.status) {
-    BranchStatus.SYNCED -> LocalGitMirrorBundle.message("detail.code.synced")
-    BranchStatus.AHEAD -> LocalGitMirrorBundle.message("detail.code.ahead", item.aheadCount ?: "?")
-    BranchStatus.BEHIND -> LocalGitMirrorBundle.message("detail.code.behind", item.behindCount ?: "?")
-    BranchStatus.MIRROR_ONLY -> LocalGitMirrorBundle.message("detail.code.mirrorOnly")
-    BranchStatus.LOCAL_ONLY -> LocalGitMirrorBundle.message("detail.code.localOnly")
+  private fun statusText(item: BranchListItem): String = when {
+    item.mrOnly -> LocalGitMirrorBundle.message("detail.code.mrOnly")
+    item.status == BranchStatus.SYNCED -> LocalGitMirrorBundle.message("detail.code.synced")
+    item.status == BranchStatus.AHEAD -> LocalGitMirrorBundle.message("detail.code.ahead", item.aheadCount ?: "?")
+    item.status == BranchStatus.BEHIND -> LocalGitMirrorBundle.message("detail.code.behind", item.behindCount ?: "?")
+    item.status == BranchStatus.MIRROR_ONLY -> LocalGitMirrorBundle.message("detail.code.mirrorOnly")
+    else -> LocalGitMirrorBundle.message("detail.code.localOnly")
   }
 
   private fun repliesText(mr: MrReviewService.MrRowItem): String {

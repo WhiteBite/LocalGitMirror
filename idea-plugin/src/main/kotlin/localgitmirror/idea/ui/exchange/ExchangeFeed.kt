@@ -79,7 +79,7 @@ internal fun LocalGitMirrorPanel.refreshExchangeInBackground() {
           items.add(
             ExchangeItem(
               ExchangeItem.Kind.FILE, f.id, f.mtime.toDouble(), f.size,
-              readableFileTitle(display, f.size), false, display, repo,
+              readableFileTitle(display), false, display, repo,
               sideOf(meta.side)
             )
           )
@@ -111,10 +111,10 @@ private fun LocalGitMirrorPanel.sideOf(marker: String?): ExchangeItem.Side = whe
 // Legacy postbox items carry an opaque "x/<hex>" wire path (their real name rode in the removed path_enc field).
 private val OPAQUE_NAME = Regex("^[0-9a-fA-F]{6,}$")
 
-private fun readableFileTitle(displayPath: String, size: Long): String {
+private fun readableFileTitle(displayPath: String): String {
   val base = displayPath.substringAfterLast('/').trim()
   if (base.isNotEmpty() && !OPAQUE_NAME.matches(base)) return base
-  return LocalGitMirrorBundle.message("panel.exchange.fallbackName", formatSize(size))
+  return LocalGitMirrorBundle.message("panel.exchange.fallbackName")
 }
 
 private fun LocalGitMirrorPanel.decryptExchangeHint(enc: String, pwd: String, fallback: String): String =

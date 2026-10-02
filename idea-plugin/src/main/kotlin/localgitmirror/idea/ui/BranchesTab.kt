@@ -5,6 +5,7 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.ui.JBColor
+import com.intellij.ui.OnePixelSplitter
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.util.ui.JBUI
@@ -24,12 +25,14 @@ import java.awt.event.MouseEvent
 import java.io.File
 import javax.swing.BorderFactory
 import javax.swing.BoxLayout
+import javax.swing.ButtonGroup
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.JScrollPane
+import javax.swing.JToggleButton
 import javax.swing.ListCellRenderer
 
 internal fun LocalGitMirrorPanel.buildBranchesTab(): JComponent {
@@ -50,6 +53,7 @@ internal fun LocalGitMirrorPanel.buildBranchesTab(): JComponent {
     layout = BoxLayout(this, BoxLayout.Y_AXIS)
     isOpaque = false
     add(searchRow)
+    add(buildBranchFilterChips())
   }
 
   val listScroll = JScrollPane(branchList).apply {
@@ -64,13 +68,47 @@ internal fun LocalGitMirrorPanel.buildBranchesTab(): JComponent {
   branchList.addListSelectionListener { detail.refreshFor(branchList.selectedValue) }
   detail.refreshFor(branchList.selectedValue)
 
-  return JPanel(BorderLayout()).apply {
+  val top = JPanel(BorderLayout()).apply {
     isOpaque = false
-    border = JBUI.Borders.empty(4, 8)
     add(north, BorderLayout.NORTH)
     add(listScroll, BorderLayout.CENTER)
-    add(detail, BorderLayout.SOUTH)
   }
+
+  return OnePixelSplitter(true, 0.7f).apply {
+    isOpaque = false
+    border = JBUI.Borders.empty(4, 8)
+    firstComponent = top
+    secondComponent = detail
+  }
+}
+
+/** Chip toggle row (Все · С MR · Локальные); combines with the free-text filter. */
+private fun LocalGitMirrorPanel.buildBranchFilterChips(): JComponent {
+  val group = ButtonGroup()
+  val all = segChip(LocalGitMirrorBundle.message("panel.branch.chip.all"))
+  val withMr = segChip(LocalGitMirrorBundle.message("panel.branch.chip.withMr"))
+  val local = segChip(LocalGitMirrorBundle.message("panel.branch.chip.local"))
+  group.add(all); group.add(withMr); group.add(local)
+  all.addActionListener { branchFilterMode = BranchFilterMode.ALL; applyBranchFilter() }
+  withMr.addActionListener { branchFilterMode = BranchFilterMode.WITH_MR; applyBranchFilter() }
+  local.addActionListener { branchFilterMode = BranchFilterMode.LOCAL; applyBranchFilter() }
+  when (branchFilterMode) {
+    BranchFilterMode.ALL -> all.isSelected = true
+    BranchFilterMode.WITH_MR -> withMr.isSelected = true
+    BranchFilterMode.LOCAL -> local.isSelected = true
+  }
+  return JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
+    isOpaque = false
+    border = JBUI.Borders.empty(0, 0, 4, 0)
+    add(all); add(withMr); add(local)
+  }
+}
+
+private fun segChip(text: String): JToggleButton = JToggleButton(text).apply {
+  isFocusPainted = false
+  font = JBUI.Fonts.smallFont()
+  margin = JBUI.insets(1, 8)
+  isOpaque = false
 }
 
 /**
@@ -162,13 +200,24 @@ private fun LocalGitMirrorPanel.finishBranchRefresh(detail: String) {
   branchList.toolTipText = "Ветка для Отправить / Подтянуть; ★ есть только на Cache. $detail"
 }
 
+/** Apply the chip mode + free-text filter to a branch-item list. */
+private fun LocalGitMirrorPanel.visibleBranchItems(items: List<BranchListItem>): List<BranchListItem> {
+  val text = branchFilterField.text.trim().lowercase()
+  return items.filter { item ->
+    val modeOk = when (branchFilterMode) {
+      BranchFilterMode.ALL -> true
+      BranchFilterMode.WITH_MR -> item.mrIid != null
+      BranchFilterMode.LOCAL -> item.localHash != null
+    }
+    modeOk && (text.isBlank() || item.name.lowercase().contains(text))
+  }
+}
+
 /** Re-apply the branch filter text to the list model. */
 internal fun LocalGitMirrorPanel.applyBranchFilter() {
-  val filter = branchFilterField.text.trim().lowercase()
   val selectedName = selectedBranchChoice()?.name
   branchListModel.clear()
-  val visible = if (filter.isBlank()) allBranchItems
-                else allBranchItems.filter { it.name.lowercase().contains(filter) }
+  val visible = visibleBranchItems(allBranchItems)
   visible.forEach { branchListModel.addElement(it) }
   if (selectedName != null) {
     val idx = (0 until branchListModel.size()).indexOfFirst { branchListModel.getElementAt(it).name == selectedName }
@@ -183,10 +232,17 @@ private fun LocalGitMirrorPanel.computeBranchItems(
   mirrorRefs: Map<String, String>,
   currentBranch: String?,
 ): List<BranchListItem> {
-  val allNames = (localBranches.toSet() + mirrorRefs.keys).toSortedSet()
+  val mrByBranch = runCatching {
+    project.getService(MrReviewService::class.java).rowsBySourceBranch()
+  }.getOrDefault(emptyMap())
+
+  // Union of local branches, Cache (mirror) refs, and open-MR source branches, deduped by name.
+  val allNames = (localBranches.toSet() + mirrorRefs.keys + mrByBranch.keys).toSortedSet()
   val items = allNames.map { name ->
     val localHash = if (name in localBranches) GitLocal.branchHash(project, dir, name) else null
     val mirrorHash = mirrorRefs[name]
+    val mr = mrByBranch[name]
+    val mrOnly = localHash == null && mirrorHash == null && mr != null
     val status = when {
       localHash == null -> BranchStatus.MIRROR_ONLY
       mirrorHash == null -> BranchStatus.LOCAL_ONLY
@@ -208,17 +264,15 @@ private fun LocalGitMirrorPanel.computeBranchItems(
       mirrorHash = mirrorHash,
       aheadCount = aheadCount,
       behindCount = behindCount,
-      isCurrent = name == currentBranch
+      mrIid = mr?.iid,
+      mrUnresolved = mr?.unresolved ?: 0,
+      isCurrent = name == currentBranch,
+      mrOnly = mrOnly
     )
   }
 
-  val mrByBranch = runCatching {
-    project.getService(MrReviewService::class.java).rowsBySourceBranch()
-  }.getOrDefault(emptyMap())
-  return items.map { item ->
-    val mr = mrByBranch[item.name]
-    item.copy(mrIid = mr?.iid, mrUnresolved = mr?.unresolved ?: 0)
-  }
+  // Attention sort: rows whose MR has unresolved threads float to the top; the rest keep name order.
+  return items.sortedByDescending { if (it.mrUnresolved > 0) 1 else 0 }
 }
 
 /** Swing part of the selector rebuild; EDT only. */
@@ -228,8 +282,7 @@ private fun LocalGitMirrorPanel.applyBranchItems(items: List<BranchListItem>, se
   val preferred = BranchSelectorModel.preferredSelection(selectedName, currentBranch,
     items.map { BranchChoice(it.name, it.localHash != null) })
 
-  val filter = branchFilterField.text.trim().lowercase()
-  val visibleItems = if (filter.isBlank()) items else items.filter { it.name.lowercase().contains(filter) }
+  val visibleItems = visibleBranchItems(items)
 
   branchListModel.clear()
   visibleItems.forEach { branchListModel.addElement(it) }
@@ -312,6 +365,7 @@ internal fun LocalGitMirrorPanel.countDivergedBranches(): Int {
 internal class BranchListCellRenderer : JPanel(BorderLayout()), ListCellRenderer<BranchListItem> {
   private val glyphLabel = JBLabel()
   private val nameLabel = JBLabel()
+  private val originLabel = JBLabel()
   private val badgeLabel = JBLabel()
   private val deltaLabel = JBLabel()
 
@@ -322,12 +376,14 @@ internal class BranchListCellRenderer : JPanel(BorderLayout()), ListCellRenderer
       isOpaque = false
       add(glyphLabel)
       add(nameLabel)
+      add(originLabel)
       add(badgeLabel)
     }
     add(left, BorderLayout.WEST)
     add(deltaLabel, BorderLayout.EAST)
     glyphLabel.font = JBUI.Fonts.smallFont().asBold()
     nameLabel.font = JBUI.Fonts.smallFont()
+    originLabel.font = JBUI.Fonts.smallFont()
     badgeLabel.font = JBUI.Fonts.smallFont()
     deltaLabel.font = JBUI.Fonts.smallFont()
   }
@@ -343,19 +399,27 @@ internal class BranchListCellRenderer : JPanel(BorderLayout()), ListCellRenderer
     if (value == null) return this
     val selFg = UIUtil.getListSelectionForeground(true)
     val statusFg = statusColor(value.status)
+    val mrOnly = value.mrOnly
+    val mrFg = JBColor(0xB8860B, 0xE3AE4D)
 
-    glyphLabel.text = statusGlyph(value.status)
-    glyphLabel.foreground = if (isSelected) selFg else statusFg
-    toolTipText = statusTooltip(value.status)
+    glyphLabel.text = if (mrOnly) "\u2295" else statusGlyph(value.status)
+    glyphLabel.foreground = if (isSelected) selFg else if (mrOnly) mrFg else statusFg
+    toolTipText = if (mrOnly)
+      LocalGitMirrorBundle.message("panel.branch.status.mrOnly") else statusTooltip(value.status)
 
     nameLabel.text = value.name
     nameLabel.font = Font("JetBrains Mono", if (value.isCurrent) Font.BOLD else Font.PLAIN, JBUI.scale(12))
     nameLabel.foreground = when {
       isSelected -> selFg
       value.isCurrent -> JBColor(0x2E7D32, 0x5FAD65)
+      mrOnly -> UIUtil.getListForeground()
       value.status == BranchStatus.MIRROR_ONLY -> UIUtil.getContextHelpForeground()
       else -> UIUtil.getListForeground()
     }
+
+    originLabel.text = if (mrOnly) LocalGitMirrorBundle.message("panel.branch.tag.mrOnly") else ""
+    originLabel.isVisible = mrOnly
+    originLabel.foreground = if (isSelected) selFg else mrFg
 
     badgeLabel.text = if (value.mrIid != null)
       "  !${value.mrIid}${if (value.mrUnresolved > 0) " \u26a0${value.mrUnresolved}" else ""}"
