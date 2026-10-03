@@ -169,6 +169,37 @@ object HttpClient {
     return out.toString(Charsets.UTF_8.name())
   }
 
+  fun readBodyToFileWithProgress(
+    conn: HttpURLConnection,
+    outFile: java.io.File,
+    onProgress: ((read: Long, total: Long) -> Unit)?
+  ): Long {
+    val code = conn.responseCode
+    val stream: InputStream? = try {
+      if (code in 200..299) conn.inputStream else conn.errorStream
+    } catch (_: Exception) {
+      null
+    }
+    if (stream == null) return 0L
+
+    val total = conn.contentLengthLong   // -1 if unknown
+    val buf = ByteArray(1024 * 1024)
+    var read = 0L
+
+    java.io.BufferedInputStream(stream).use { s ->
+      outFile.outputStream().use { out ->
+        while (true) {
+          val n = s.read(buf)
+          if (n < 0) break
+          out.write(buf, 0, n)
+          read += n
+          onProgress?.invoke(read, total)
+        }
+      }
+    }
+    return read
+  }
+
   fun classifyError(t: Throwable): ErrorInfo {
     findPinMismatch(t)?.let { return ErrorInfo("tls-pin", it.message ?: "TLS certificate pin mismatch") }
     return when (t) {
