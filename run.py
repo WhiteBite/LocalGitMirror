@@ -20,6 +20,7 @@ All ports come from .env (WEB_PORT, GIT_PORT, REDIRECT_HTTP_PORT).
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import signal
@@ -37,10 +38,31 @@ VENV = BACKEND / "venv"
 VENV_PY = VENV / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 IS_WIN = os.name == "nt"
 
-# uvicorn log config: timestamps, no ANSI colors (clean when piped/redirected).
+# suppress ACCESS log for plugin background-poll GETs (noise; errors still logged)
+_POLL_PATHS = frozenset({
+    "/api/documents/attachment-list",
+    "/api/documents/ready",
+    "/api/documents/queue",
+    "/api/buffer/list",
+})
+
+
+class _PollFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        line = getattr(record, "request_line", "")
+        if line.startswith("GET "):
+            parts = line.split(" ")
+            if len(parts) > 1:
+                return parts[1].split("?")[0] not in _POLL_PATHS
+        return True
+
+
 _LOG_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
+    "filters": {
+        "poll": {"()": f"{__name__}._PollFilter"},
+    },
     "formatters": {
         "default": {
             "format": "%(asctime)s [%(levelname)s] %(message)s",
@@ -55,7 +77,7 @@ _LOG_CONFIG = {
     },
     "handlers": {
         "default": {"class": "logging.StreamHandler", "formatter": "default"},
-        "access": {"class": "logging.StreamHandler", "formatter": "access"},
+        "access": {"class": "logging.StreamHandler", "formatter": "access", "filters": ["poll"]},
     },
     "loggers": {
         "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
@@ -374,7 +396,42 @@ def run_prod() -> None:
     kwargs = _prod_server_kwargs(web_port, cert, key, have_ssl)
 
     scheme = "https" if "ssl_certfile" in kwargs else "http"
-    print(f"[info] LocalGitMirror (production) -> {scheme}://localhost:{web_port}")
+
+    import socket as _sock
+    try:
+        lan_ip = next(
+            ip for ip in (
+                info[4][0] for info in _sock.getaddrinfo(
+                    _sock.gethostname(), None, _sock.AF_INET
+                )
+            ) if not ip.startswith("127.")
+        )
+    except StopIteration:
+        lan_ip = "localhost"
+
+    api_key = os.getenv("API_KEY", "")
+    storage = os.getenv("STORAGE_PATH", "storage")
+    plugin_v = _newest_plugin_zip_version()
+    has_key = "OK" if api_key else "MISSING (fail-closed 503)"
+    key_hint = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "(short)"
+
+    print()
+    print("  ╔══════════════════════════════════════════════════════════════╗")
+    print(f"  ║  DocCache Mirror  v0.{_git_commit_count() or 0}.0{'':>20}                              ║")
+    print("  ╠══════════════════════════════════════════════════════════════╣")
+    print(f"  ║  Server:      {scheme}://{lan_ip}:{web_port:<42} ║")
+    print(f"  ║  Storage:     {storage:<50} ║")
+    print(f"  ║  API key:     {has_key} ({key_hint}){'':>{max(0, 36 - len(has_key) - len(key_hint))}} ║")
+    if plugin_v:
+        print(f"  ║  Plugin:      v0.{plugin_v}.0{'':>44} ║")
+    print("  ╠══════════════════════════════════════════════════════════════╣")
+    print("  ║  Work PC bootstrap (paste in PowerShell 7):                   ║")
+    print(f"  ║  iex (irm \"{scheme}://{lan_ip}:{web_port}/api/bootstrap\"{'' if web_port == 443 else f' -SkipCertificateCheck'} -Headers @{{Authorization=\"Bearer {api_key[:8]}...\"}})")
+    print("  ╠══════════════════════════════════════════════════════════════╣")
+    print("  ║  IDEA plugin repository URL:                                  ║")
+    print(f"  ║  {scheme}://{lan_ip}:{web_port}/api/plugin/repo.xml{'':>{max(0, 28 - len(str(lan_ip)) - len(str(web_port)))}} ║")
+    print("  ╚══════════════════════════════════════════════════════════════╝")
+    print()
     print("[info] Press Ctrl+C to stop.")
     try:
         uvicorn.run(app, **kwargs)

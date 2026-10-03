@@ -14,16 +14,7 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import java.io.File
 import java.util.concurrent.ThreadLocalRandom
 
-/**
- * Background driver of the MR review loop, gated by `autoMrReview`:
- *  - WORK: pushes reply files to GitLab, re-uploads changed mr-notes ([MrNotesSync]);
- *  - HOME: writes incoming `mr-notes/mr-!N.md` into `.mr-notes/` so agents on
- *    this machine see fresh review notes without opening the IDE panel.
- *
- * Deliberately simple: one daemon thread on a jittered 60 s cadence; every pass
- * re-reads role and settings so toggles apply without a restart. All push
- * safety (marker dedup, ack only on a clean full-file push) lives in [MrReplyPushService].
- */
+/** MR review loop driver. HOME: jittered 60s background poll; WORK: no background traffic (stealth) — [triggerWorkCycle] only. */
 class MrReviewAutoService(private val project: Project) : Disposable {
 
   private val settings get() = service<MirrorSettingsService>().state
@@ -49,15 +40,22 @@ class MrReviewAutoService(private val project: Project) : Disposable {
         if (disposed) break
         if (!settings.autoMrReview || settings.baseUrl.isBlank()) continue
         try {
-          when (RoleDetector.detect(settings)) {
-            MachineRole.WORK -> pollWork()
-            else -> pollHome()
+          if (RoleDetector.detect(settings) != MachineRole.WORK) {
+            pollHome()
           }
         } catch (_: Throwable) {
-          // background best-effort loop: never kill the poller on a bad pass
         }
       }
     }, "DocCache-MrReviewAuto").apply { isDaemon = true }.start()
+  }
+
+  fun triggerWorkCycle() {
+    if (disposed || !settings.autoMrReview || settings.baseUrl.isBlank()) return
+    if (RoleDetector.detect(settings) != MachineRole.WORK) return
+    try {
+      pollWork()
+    } catch (_: Throwable) {
+    }
   }
 
   private fun pollWork() {

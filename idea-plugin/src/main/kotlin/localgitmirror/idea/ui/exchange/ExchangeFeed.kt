@@ -24,10 +24,16 @@ import java.awt.Toolkit
 import java.awt.datatransfer.DataFlavor
 import java.io.File
 
+// stealth: work machines get no periodic exchange polling — only a single fetch on tab open
 private const val EXCHANGE_POLL_MS = 5_000
 
 internal fun LocalGitMirrorPanel.startExchangePolling() {
   exchangePollAlarm.cancelAllRequests()
+  val isWork = try {
+    localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) ==
+      localgitmirror.idea.deps.MachineRole.WORK
+  } catch (_: Throwable) { false }
+  if (isWork) return
   exchangePollAlarm.addRequest({
     if (project.isDisposed) return@addRequest
     if (tabsPane?.selectedIndex == 1) {
