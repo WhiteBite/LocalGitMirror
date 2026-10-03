@@ -176,13 +176,6 @@ class SyncEngine(
       }
       diag(projectDir, diagnostics, "handshake", SyncStepOutcome.OK, hs.message)
 
-      val ensureRepo = ensureRemoteRepo(snapshot.baseUrl, snapshot.mirrorApiKey, repoName, snapshot.syncPassword, snapshot.mirrorInsecureTls, projectDir)
-      if (!ensureRepo.ok) {
-        diag(projectDir, diagnostics, "ensure-remote-repo", SyncStepOutcome.FAIL, ensureRepo.message, mapOf("repo" to repoName))
-        return FullSyncResult(ensureRepo, null, null, repoName, traceId, diagnostics.steps)
-      }
-      diag(projectDir, diagnostics, "ensure-remote-repo", SyncStepOutcome.OK, ensureRepo.message, mapOf("repo" to repoName))
-
       val clean = ensureWorkTreeClean(project, projectDir)
       if (!clean.ok) {
         diag(projectDir, diagnostics, "ensure-work-tree-clean", SyncStepOutcome.FAIL, clean.message)
@@ -198,6 +191,7 @@ class SyncEngine(
         outcome = SyncStepOutcome.OK,
         message = "Multi-branch negotiation completed",
         fields = mapOf(
+          "repo" to repoName,
           "pointerCommit" to (negotiation.pointerCommit ?: ""),
           "excludeBases" to negotiation.excludeBases.joinToString(",")
         )
