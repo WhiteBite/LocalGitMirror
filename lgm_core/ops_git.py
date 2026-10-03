@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import ssl
 import subprocess
 import tempfile
+import urllib.request
+import zipfile
+import io
 from pathlib import Path
 
 from .client import LgmError
@@ -397,3 +401,44 @@ the file postbox is v3 relay-sealed to the server key.
 
 def op_guide(ctx: Ctx, args: dict) -> dict:
     return {"success": True, "guide": _GUIDE}
+
+
+def op_update(ctx: Ctx, args: dict) -> dict:
+    """Download and install the latest CLI tools from the mirror."""
+    c = _client(ctx)
+    tools_root = Path(__file__).resolve().parent.parent
+
+    url = c.base_url + "/api/tools/latest"
+    req = urllib.request.Request(
+        url, headers={
+            "Authorization": f"Bearer {c.api_key}",
+            "X-Session-ID": c.api_key,
+        },
+    )
+    try:
+        with urllib.request.urlopen(
+            req, context=ssl._create_unverified_context(), timeout=60,
+        ) as r:
+            blob = r.read()
+            remote_version = r.headers.get("X-LGM-Version", "unknown")
+    except Exception as e:
+        raise LgmError("network", f"tools download failed: {e}") from None
+
+    zip_bytes = decrypt_bundle(blob, ctx.config.sync_password)
+
+    z = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    updated = []
+    for entry in z.namelist():
+        target = tools_root / entry
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(z.read(entry))
+        updated.append(entry)
+    z.close()
+
+    return {
+        "success": True,
+        "version": remote_version,
+        "files_updated": len(updated),
+        "tools_root": str(tools_root),
+        "message": f"Updated {len(updated)} files to version {remote_version}. Restart the CLI to use the new version.",
+    }

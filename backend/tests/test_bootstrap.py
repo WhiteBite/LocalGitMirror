@@ -1,0 +1,92 @@
+"""Bootstrap router: /api/tools/latest, /api/bootstrap, /api/plugin/repo.xml."""
+import zipfile
+import io
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from tests import _harness
+from app.core.repo_manager import RepoManager
+
+PASSWORD = "bootstrap-test-pw"
+
+
+def _build_client(tmp_path, monkeypatch, plugin_zip=True):
+    storage = tmp_path / "storage"
+    storage.mkdir(parents=True, exist_ok=True)
+    (storage / "settings.json").write_text(
+        '{"git": {"user_name": "Bot", "user_email": "bot@example.com"}}'
+    )
+    monkeypatch.setenv("SYNC_PASSWORD", PASSWORD)
+    monkeypatch.setenv("API_KEY", "bootstrap-test-key")
+    rm = RepoManager(storage)
+    app = _harness.build_app(
+        repo_manager=rm,
+        git_handler=None,
+        git_workspace=None,
+        shared_manager=None,
+        system_logger=None,
+        config={"git_port": 0, "web_port": 0, "storage_path": storage},
+    )
+    from app.routers import bootstrap
+    _harness.inject(repo_manager=rm, system_logger=None, config={})
+    return TestClient(app, headers={"Authorization": "Bearer bootstrap-test-key"})
+
+
+def _make_plugin_zip(tmp_path):
+    dist = tmp_path / "idea-plugin" / "build" / "distributions"
+    dist.mkdir(parents=True, exist_ok=True)
+    zip_path = dist / "localgitmirror-idea-plugin-0.999.0.zip"
+    zip_path.write_bytes(b"fake-plugin-zip")
+    return zip_path
+
+
+def test_tools_latest_plain_zip(tmp_path, monkeypatch):
+    client = _build_client(tmp_path, monkeypatch)
+    resp = client.get("/api/tools/latest")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/zip"
+    zf = zipfile.ZipFile(io.BytesIO(resp.content))
+    names = zf.namelist()
+    assert "lgm.py" in names
+    assert "lgm_mcp.py" in names
+    assert "lgm_core/ops.py" in names
+    assert "lgm_core/client.py" in names
+    assert "lgm_core/crypto.py" in names
+    assert "X-LGM-Version" in resp.headers
+
+
+def test_tools_latest_encrypted(tmp_path, monkeypatch):
+    from app.core.bundle_crypto import decrypt_dump_bytes
+    client = _build_client(tmp_path, monkeypatch)
+    resp = client.get("/api/tools/latest?enc=1")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/octet-stream"
+    plain = decrypt_dump_bytes(resp.content, PASSWORD)
+    zf = zipfile.ZipFile(io.BytesIO(plain))
+    assert "lgm.py" in zf.namelist()
+
+
+def test_bootstrap_returns_powershell(tmp_path, monkeypatch):
+    client = _build_client(tmp_path, monkeypatch)
+    resp = client.get("/api/bootstrap")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/plain")
+    text = resp.text
+    assert "param(" in text
+    assert "Invoke-RestMethod" in text
+    assert "AesGcm" in text
+    assert "bootstrap-test-key" in text
+
+
+def test_plugin_repo_xml(tmp_path, monkeypatch):
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "localgitmirror-idea-plugin-0.999.0.zip").write_bytes(b"fake")
+    monkeypatch.setenv("LGM_PLUGIN_DIST", str(dist_dir))
+    client = _build_client(tmp_path, monkeypatch)
+    resp = client.get("/api/plugin/repo.xml")
+    assert resp.status_code == 200, resp.text
+    assert 'id="localgitmirror.settings"' in resp.text
+    assert 'version="0.999.0"' in resp.text
+    assert "since-build" in resp.text

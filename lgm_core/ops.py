@@ -59,7 +59,7 @@ from .ops_vault import (
 from .ops_git import (
     op_status, op_repos, op_branches, send_branch, send_branches, op_send,
     op_pull, op_deps_request, op_vault_status, op_branch_delete, op_prune,
-    _GUIDE, op_guide,
+    _GUIDE, op_guide, op_update,
 )
 from .ops_mr import (
     _MRN_TITLE, _MRN_BRANCH, _parse_mr_notes_head, _mr_list_from_postbox,
@@ -304,6 +304,12 @@ REGISTRY: list[Op] = [
         params=[],
         run=op_guide,
         needs_client=False,
+    ),
+    Op(
+        name="update",
+        summary="Download and install the latest CLI tools (lgm.py, lgm_mcp.py, lgm_core/) from the mirror.",
+        params=[],
+        run=op_update,
     ),
 ]
 

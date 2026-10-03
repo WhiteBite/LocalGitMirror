@@ -427,6 +427,7 @@ from app.routers import (
     auth_router, deps_router, settings_router, web_router, websocket_router,
     system_router, repos_router, sync_router, files_router, shared_router,
     plugin_router, buffer_router, file_sync_router, mirror_router,
+    bootstrap_router,
 )
 
 # deps router is wired to repo_manager / system_logger inside the lifespan
@@ -445,6 +446,7 @@ app.include_router(deps_router, dependencies=[Depends(get_api_key)])
 app.include_router(mirror_router, dependencies=[Depends(get_api_key)])
 app.include_router(file_sync_router, dependencies=[Depends(get_api_key)])
 app.include_router(plugin_router, dependencies=[Depends(get_api_key)])
+app.include_router(bootstrap_router, dependencies=[Depends(get_api_key)])
 app.include_router(buffer_router, dependencies=[Depends(get_api_key)])
 app.include_router(web_router)
 app.include_router(settings_router, dependencies=[Depends(get_api_key)])
