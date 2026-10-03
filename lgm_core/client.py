@@ -270,11 +270,15 @@ class MirrorClient:
             return decrypt_envelope(resp["e"], self.sync_password)
         return resp
 
-    def sync_negotiate(self, repo: str, commits: list[str]) -> dict:
+    def sync_negotiate(self, repo: str, commits: list[str],
+                       probe: bool = False) -> dict:
         """POST /api/documents/negotiate — create repo if missing, return
-        {refs, head, known}: which of ``commits`` the mirror already has."""
-        e = encrypt_envelope({"repo": repo, "commits": commits},
-                             self.sync_password)
+        {refs, head, known}: which of ``commits`` the mirror already has.
+        ``probe=True`` skips repo creation (dry-run safe)."""
+        payload: dict = {"repo": repo, "commits": commits}
+        if probe:
+            payload["probe"] = True
+        e = encrypt_envelope(payload, self.sync_password)
         resp = self._post_json("/api/documents/negotiate",
                                json.dumps({"e": e}).encode(),
                                content_type="application/json")

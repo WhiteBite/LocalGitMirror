@@ -217,7 +217,7 @@ class SyncEngine(
         }
 
         val applied = mirror.applyKnown(snapshot.baseUrl, snapshot.mirrorApiKey, repoName, pointerHead, branches = branchMap, syncPassword = snapshot.syncPassword, insecureTls = snapshot.mirrorInsecureTls, localBranches = localBranches)
-        if (applied.code in 200..299) {
+        if (applied.code in 200..299 && parseJsonSuccess(applied.body) != false) {
           val branchName = currentBranch
           state.updateAfterSend(projectDir, branchName, pointerHead)
           val okStep = StepResult(true, "Cache already had all commits; applied pointer-only (${branchMap.size} branch(es))", applied.body.take(500))
@@ -225,7 +225,7 @@ class SyncEngine(
           RepoMaintenance.autoGcIfNeeded(project, projectDir)
           return FullSyncResult(okStep, applied, null, repoName, traceId, diagnostics.steps)
         }
-        diag(projectDir, diagnostics, "apply-known", SyncStepOutcome.FAIL, "Pointer-only apply failed", mapOf("repo" to repoName, "httpCode" to applied.code.toString()))
+        diag(projectDir, diagnostics, "apply-known", SyncStepOutcome.FAIL, "Pointer-only apply failed: ${applied.body.take(200)}", mapOf("repo" to repoName, "httpCode" to applied.code.toString()))
       }
 
       // Marker BEFORE the long local step (git bundle + encrypt) so the sync

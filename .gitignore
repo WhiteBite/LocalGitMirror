@@ -120,6 +120,7 @@ test-output.txt
 
 # Agent tooling state
 /.opencode/
+/.omo/
 
 # Foreign scratch scripts (kryptonit-specific, not this project)
 /scripts/set-local-gradle.ps1

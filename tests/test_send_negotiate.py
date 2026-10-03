@@ -74,11 +74,11 @@ class _FakeClient:
                  negotiate_error: LgmError | None = None):
         self.known = known or []
         self.negotiate_error = negotiate_error
-        self.negotiate_calls: list[tuple[str, list[str]]] = []
+        self.negotiate_calls: list[tuple[str, list[str], bool]] = []
         self.sent_bundles: list[bytes] = []
 
-    def sync_negotiate(self, repo, commits):
-        self.negotiate_calls.append((repo, list(commits)))
+    def sync_negotiate(self, repo, commits, probe=False):
+        self.negotiate_calls.append((repo, list(commits), probe))
         if self.negotiate_error is not None:
             raise self.negotiate_error
         return {"success": True, "repo": repo, "created": False,
@@ -103,7 +103,7 @@ def test_send_excludes_mirror_known_shas(monkeypatch, tmp_path):
 
     res = op_send(ctx, {"repo": "r", "project": str(tmp_path), "branch": "b1"})
 
-    assert client.negotiate_calls == [("r", [T1, C3])]
+    assert client.negotiate_calls == [("r", [T1, C3], False)]
     assert git.bundle_cmds[0][3:] == [f"refs/heads/{'b1'}", f"^{T1}"]
     assert res["excluded_bases"] == 1
     assert len(client.sent_bundles) == 1
@@ -119,7 +119,7 @@ def test_send_dry_run_negotiates_and_reports_bases(monkeypatch, tmp_path):
     res = op_send(ctx, {"repo": "r", "project": str(tmp_path),
                         "branch": "b1", "dry_run": True})
 
-    assert client.negotiate_calls == [("r", [T1, C3])]
+    assert client.negotiate_calls == [("r", [T1, C3], True)]
     assert res["excluded_bases"] == 2
     assert client.sent_bundles == []
 
@@ -148,7 +148,7 @@ def test_negotiation_failure_sends_full_bundle(monkeypatch, tmp_path):
 
     res = op_send(ctx, {"repo": "r", "project": str(tmp_path), "branch": "b1"})
 
-    assert client.negotiate_calls == [("r", [T1, C3])]
+    assert client.negotiate_calls == [("r", [T1, C3], False)]
     assert git.bundle_cmds[0][3:] == ["refs/heads/b1"]
     assert res["excluded_bases"] == 0
     assert len(client.sent_bundles) == 1

@@ -464,7 +464,7 @@ def sync_negotiate(request: NegotiateRequest):
         raise HTTPException(400, "Repository name is required")
 
     created = False
-    if repo not in repo_manager.get_repos():
+    if not bool(params.get("probe")) and repo not in repo_manager.get_repos():
         result = repo_manager.create_repo(repo)
         if not result["success"]:
             raise HTTPException(400, result["message"])

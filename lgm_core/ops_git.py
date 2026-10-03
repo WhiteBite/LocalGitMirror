@@ -89,12 +89,14 @@ _NEGOTIATE_CAP = 300
 
 
 def _negotiate_excludes(c, repo: str, proj: Path,
-                        branches: list[str]) -> list[str]:
+                        branches: list[str],
+                        probe: bool = False) -> list[str]:
     """Local commits the mirror reports as known, for ``^sha`` exclusions.
 
     Candidates: branch tips + recent history (``--all`` when no branch).
     Returns ``[]`` on any negotiation failure so the caller sends a full
     bundle; every returned sha exists locally by construction.
+    ``probe=True`` skips repo creation on the mirror (dry-run safe).
     """
     candidates: list[str] = []
     for target in (branches or ["--all"]):
@@ -117,7 +119,7 @@ def _negotiate_excludes(c, repo: str, proj: Path,
     if not candidates:
         return []
     try:
-        resp = c.sync_negotiate(repo, candidates)
+        resp = c.sync_negotiate(repo, candidates, probe=probe)
     except (LgmError, ValueError):
         return []
     known = set(resp.get("known") or [])
@@ -133,7 +135,7 @@ def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
     """
     branches = [branch] if branch else []
     proj = Path(project).resolve()
-    excludes = (_negotiate_excludes(_client(ctx), repo, proj, branches)
+    excludes = (_negotiate_excludes(_client(ctx), repo, proj, branches, probe=dry_run)
                 if proj.is_dir() else [])
     return send_branches(ctx, repo, project, branches, excludes, dry_run)
 
