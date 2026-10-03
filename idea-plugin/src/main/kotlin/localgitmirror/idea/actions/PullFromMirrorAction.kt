@@ -326,7 +326,6 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
               dl.code == 204 -> {
                 // Server has nothing newer than `since` — but we know target hash is missing
                 // locally. This means sinceHash was wrong or server state is inconsistent.
-                // Retry without `since` to get a full bundle.
                 indicator.text = LocalGitMirrorBundle.message("pull.progress.fullBundle")
                 indicator.isIndeterminate = true
                 val dlFull = MirrorSyncApi.exportDump(
@@ -337,7 +336,8 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
                   syncPassword = SecretsStore.syncPassword,
                   insecureTls = settings.mirrorInsecureTls,
                   outFile = dumpOut,
-                  branch = targetBranch
+                  branch = targetBranch,
+                  haves = haves
                 )
                 if (dlFull.code == 204 || dlFull.code !in 200..299 || dlFull.file == null) {
                   notify(project, "[trace=$traceId] ${LocalGitMirrorBundle.message("pull.notify.serverNoObjects", dlFull.code)}", NotificationType.ERROR)

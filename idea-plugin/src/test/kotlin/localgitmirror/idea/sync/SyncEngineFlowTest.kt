@@ -15,6 +15,7 @@ import localgitmirror.idea.sync.v2.SyncEngine
 import localgitmirror.idea.sync.v2.SyncStatePort
 import localgitmirror.idea.sync.v2.WorkKitPort
 import localgitmirror.idea.sync.v2.findLatestDump
+import localgitmirror.idea.sync.v2.generateDump
 import localgitmirror.idea.workkit.WorkKit
 import localgitmirror.idea.workkit.BundleCrypto
 import java.io.File
@@ -118,6 +119,29 @@ class SyncEngineFlowTest {
       assertNull(res.dump)
       assertEquals(0, mirror.uploadCalls)
       assertEquals(1, state.updateCalls)
+      assertEquals(1, work.runBackupCalls)
+    } finally {
+      projectDir.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `no-op incremental with excludeBases does not retry full dump`() {
+    val work = FakeWorkKitPort(noChanges = true)
+    val engine = SyncEngine(workKit = work)
+    val projectDir = createTempDir(prefix = "tmp-engine-noop-nonempty-bases-")
+    try {
+      val res = engine.generateDump(
+        project = dummyProject(),
+        projectDir = projectDir,
+        settings = defaultSnapshot(),
+        repoName = "onyx-platform",
+        excludeBases = listOf("abc1234")
+      )
+      assertEquals(true, res.ok)
+      assertEquals("No new changes to sync", res.message)
+      assertEquals("No new changes to sync", res.details)
+      assertEquals(1, work.runBackupCalls)
     } finally {
       projectDir.deleteRecursively()
     }

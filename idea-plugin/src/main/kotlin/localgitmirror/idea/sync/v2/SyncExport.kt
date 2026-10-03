@@ -22,20 +22,6 @@ internal fun SyncEngine.generateDump(
     negotiationUsed = true
   )
   if (!kitRes.ok() && isNoChangesToSync(kitRes)) {
-    // no-op incremental: retry full dump once to avoid false failures
-    if (excludeBases.isNotEmpty()) {
-      val full = workKit.createSyncPackage(
-        workDir = projectDir,
-        password = settings.syncPassword,
-        repoName = repoName,
-        excludeBases = emptyList(),
-        additionalBranches = additionalBranches,
-        negotiationUsed = true
-      )
-      if (full.ok()) {
-        return StepResult(true, "Dump generated", full.stdout)
-      }
-    }
     return StepResult(true, "No new changes to sync", kitRes.stderr.ifBlank { kitRes.stdout })
   }
   if (!kitRes.ok()) {
