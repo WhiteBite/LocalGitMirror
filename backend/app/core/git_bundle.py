@@ -296,6 +296,7 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
                 system_logger.warning("Failed to push branches", {
                     "repo": repo_name,
                     "branches": [e.split(":", 1)[0] for e in push_errors],
+                    "error": _redact_git_text(overall_err),
                 })
 
         if not pushed_branches and push_errors:

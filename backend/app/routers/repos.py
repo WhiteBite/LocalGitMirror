@@ -105,13 +105,16 @@ def create_collection(request: CollectionCreateRequest, raw_request: Request):
     rid = (request.rid or "").strip()
     # resolve_repo_identifier passes unknown values through; a differing result means the rid matched
     resolved = resolve_repo_identifier(rid, repo_manager)
+    from_envelope = False
     if rid and resolved != rid:
         create_name = resolved
     elif request.e:
         params = _decrypt_params(request.e, _sync_password(), request.k)
-        create_name = (params.get("repo") or "").strip()
+        repo_param = params.get("repo")
+        create_name = repo_param.strip() if isinstance(repo_param, str) else ""
         if not create_name:
             raise HTTPException(400, "Missing 'repo' in request envelope")
+        from_envelope = True
     elif (request.name or "").strip():
         create_name = resolve_repo_identifier((request.name or "").strip(), repo_manager)
     elif rid:
@@ -122,6 +125,8 @@ def create_collection(request: CollectionCreateRequest, raw_request: Request):
     author_email = raw_request.headers.get("X-User-Email")
     result = repo_manager.create_repo(create_name, author_name=author_name, author_email=author_email)
     if result["success"]:
+        if from_envelope:
+            result = dict(result, message="Репозиторий создан")
         if system_logger:
             system_logger.info(f"Создан репозиторий: {create_name}")
     else:

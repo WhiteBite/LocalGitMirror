@@ -92,4 +92,43 @@ class GitLabMrSenderBatchSyncTest {
     assertEquals(false, res.step.ok)
     assertEquals("upload rejected", res.step.message)
   }
+
+  @Test
+  fun `materialize creates a local branch only for remote-only branches`() {
+    val created = mutableListOf<Pair<String, String>>()
+
+    val unresolved = GitLabMrSender.materializeRemoteRefs(
+      listOf("local-a", "remote-b"),
+      branchHash = { if (it == "local-a") "aaa1111" else null },
+      remoteTip = { if (it == "remote-b") "bbb2222" else null },
+      createBranch = { branch, tip -> created += branch to tip; true },
+    )
+
+    assertEquals(emptyList<String>(), unresolved)
+    assertEquals(listOf("remote-b" to "bbb2222"), created)
+  }
+
+  @Test
+  fun `materialize reports branch unresolved when remote tip is missing`() {
+    val unresolved = GitLabMrSender.materializeRemoteRefs(
+      listOf("ghost"),
+      branchHash = { null },
+      remoteTip = { null },
+      createBranch = { _, _ -> true },
+    )
+
+    assertEquals(listOf("ghost"), unresolved)
+  }
+
+  @Test
+  fun `materialize reports branch unresolved when creation fails`() {
+    val unresolved = GitLabMrSender.materializeRemoteRefs(
+      listOf("remote-b"),
+      branchHash = { null },
+      remoteTip = { "bbb2222" },
+      createBranch = { _, _ -> false },
+    )
+
+    assertEquals(listOf("remote-b"), unresolved)
+  }
 }

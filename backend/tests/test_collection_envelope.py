@@ -198,3 +198,49 @@ def test_envelope_creation_v3_with_k_epk(tmp_path, monkeypatch):
     assert resp.json().get("success") is True
     assert repo_name in repo_manager.get_repos()
     assert rid not in repo_manager.get_repos()
+
+
+def test_envelope_creation_response_carries_no_plaintext_name(tmp_path, monkeypatch):
+    repo_manager, client, storage = _build_client(tmp_path, monkeypatch)
+    repo_name = "env-stealth"
+    rid = repo_to_rid(repo_name)
+
+    resp = client.post(
+        "/api/documents/collection",
+        json={"rid": rid, "e": make_envelope({"repo": repo_name}, "e2e-password")},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json().get("success") is True
+    assert repo_name not in resp.text
+    assert repo_name in repo_manager.get_repos()
+
+
+def test_resolved_rid_wins_over_envelope_with_different_name(tmp_path, monkeypatch):
+    repo_manager, client, storage = _build_client(tmp_path, monkeypatch)
+    repo_name = "env-prio"
+    created = client.post("/api/documents/collection", json={"name": repo_name})
+    assert created.status_code == 200, created.text
+
+    rid = repo_to_rid(repo_name)
+    resp = client.post(
+        "/api/documents/collection",
+        json={"rid": rid, "e": make_envelope({"repo": "env-other"}, "e2e-password")},
+    )
+
+    assert resp.status_code == 400
+    assert "уже существует" in resp.json()["detail"]
+    assert "env-other" not in repo_manager.get_repos()
+
+
+def test_envelope_with_non_string_repo_returns_400(tmp_path, monkeypatch):
+    repo_manager, client, storage = _build_client(tmp_path, monkeypatch)
+    rid = repo_to_rid("env-badtype")
+
+    resp = client.post(
+        "/api/documents/collection",
+        json={"rid": rid, "e": make_envelope({"repo": 123}, "e2e-password")},
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "env-badtype" not in [r for r in repo_manager.get_repos()]

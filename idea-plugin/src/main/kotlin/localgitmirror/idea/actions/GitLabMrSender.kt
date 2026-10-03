@@ -113,52 +113,58 @@ object GitLabMrSender {
     val repoInfo = syncFacade.describeRepoTarget(projectDir, settings)
     notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
 
-    val (toSend, syncRes) = sendBatch(branches, plan) {
+    val planned = branches.filter { it !in plan.skipped }
+    val unresolvable = materializeRemoteBranches(project, projectDir, remote, planned)
+    val unresolvableSet = unresolvable.toSet()
+
+    val failures = mutableListOf<String>()
+    for ((branch, iid) in targets.filter { it.first in unresolvableSet }) {
+      history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
+        "branch=$branch iid=$iid err=tip not found locally or on $remote")
+      failures.add("${targetLabel(branch, iid)}: branch tip not found")
+    }
+
+    val sendable = planned.filter { it !in unresolvableSet }
+    val (toSend, syncRes) = sendBatch(sendable, plan) {
       syncFacade.runFullSync(projectDir, settings, additionalBranches = it)
     }
     val attempted = targets.filter { it.first in toSend.toSet() }
-    val skipped = targets.size - attempted.size
+    val skipped = targets.size - attempted.size - targets.count { it.first in unresolvableSet }
 
-    if (syncRes == null) {
-      notify(
-        project,
-        LocalGitMirrorBundle.message("gitlab.notify.batchOkSkipped", 0, targets.size, skipped),
-        NotificationType.INFORMATION
-      )
-      return
-    }
-
-    val result = syncRes.step
-    val failures = mutableListOf<String>()
-    if (!result.ok) {
-      notify(
-        project,
-        "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}",
-        NotificationType.ERROR
-      )
-      for ((branch, iid) in attempted) {
-        history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
-          "branch=$branch iid=$iid err=${result.message.take(300)}")
-        failures.add("${targetLabel(branch, iid)}: ${result.message.take(200)}")
+    val result = syncRes?.step
+    when {
+      result != null && !result.ok -> {
+        notify(
+          project,
+          "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}",
+          NotificationType.ERROR
+        )
+        for ((branch, iid) in attempted) {
+          history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
+            "branch=$branch iid=$iid err=${result.message.take(300)}")
+          failures.add("${targetLabel(branch, iid)}: ${result.message.take(200)}")
+        }
       }
-    } else if (settings.offlineGenerateOnly) {
-      notify(
-        project,
-        "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}' at ${syncRes.dump?.absolutePath ?: result.details}",
-        NotificationType.INFORMATION
-      )
-      for ((branch, iid) in attempted) {
-        history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
-          "offline dump=${syncRes.dump?.absolutePath ?: "?"} branch=$branch iid=$iid")
+      result != null && settings.offlineGenerateOnly -> {
+        notify(
+          project,
+          "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}' at ${syncRes.dump?.absolutePath ?: result.details}",
+          NotificationType.INFORMATION
+        )
+        for ((branch, iid) in attempted) {
+          history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
+            "offline dump=${syncRes.dump?.absolutePath ?: "?"} branch=$branch iid=$iid")
+        }
       }
-    } else {
-      for ((branch, iid) in attempted) {
-        history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
-          "repo=${syncRes.repo ?: "?"} branch=$branch iid=$iid")
+      result != null -> {
+        for ((branch, iid) in attempted) {
+          history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
+            "repo=${syncRes.repo ?: "?"} branch=$branch iid=$iid")
+        }
       }
     }
 
-    val sent = if (result.ok) attempted.size else 0
+    val sent = if (result?.ok == true) attempted.size else 0
     val summary = when {
       failures.isEmpty() && skipped == 0 ->
         LocalGitMirrorBundle.message("gitlab.notify.batchOk", sent, targets.size)
@@ -180,6 +186,33 @@ object GitLabMrSender {
     val toSend = branches.filter { it !in plan.skipped }
     if (toSend.isEmpty()) return toSend to null
     return toSend to runSync(toSend)
+  }
+
+  private fun materializeRemoteBranches(
+    project: Project,
+    projectDir: File,
+    remote: String,
+    branches: List<String>,
+  ): List<String> = materializeRemoteRefs(
+    branches,
+    { GitLocal.branchHash(project, projectDir, it) },
+    { remoteTip(project, projectDir, remote, it) },
+    { branch, tip -> GitLocal.run(project, projectDir, 30, "branch", branch, tip).ok() },
+  )
+
+  internal fun materializeRemoteRefs(
+    branches: List<String>,
+    branchHash: (String) -> String?,
+    remoteTip: (String) -> String?,
+    createBranch: (String, String) -> Boolean,
+  ): List<String> {
+    val unresolved = mutableListOf<String>()
+    for (branch in branches) {
+      if (branchHash(branch) != null) continue
+      val tip = remoteTip(branch)
+      if (tip == null || !createBranch(branch, tip)) unresolved += branch
+    }
+    return unresolved
   }
 
   private fun planMrSend(
