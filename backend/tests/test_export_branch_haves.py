@@ -136,3 +136,30 @@ def test_export_no_branch_falls_back_to_all(tmp_path: Path, monkeypatch):
     inner = _export(client, repo_name)
     assert inner.get("status") == "ok"
     assert inner["_raw_bundle"] is not None
+
+
+def test_export_mixed_known_and_unknown_haves(tmp_path: Path, monkeypatch):
+    client, storage = _make_client(tmp_path, monkeypatch)
+    repo_name = f"mixed-haves-export-{int(time.time())}"
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
+
+    ws = storage / repo_name
+    _run_git(ws, "checkout", "-B", "main")
+    hashes = []
+    for letter in "abc":
+        (ws / f"{letter}.txt").write_text(letter + "\n")
+        _run_git(ws, "add", "."); _run_git(ws, "commit", "-m", f"commit {letter}")
+        hashes.append(_run_git(ws, "rev-parse", "HEAD").stdout.strip())
+
+    bogus_a = "1" * 40
+    bogus_b = "2" * 40
+
+    full = _export(client, repo_name, branch="main")
+    mixed = _export(client, repo_name, branch="main",
+                    haves=f"{bogus_a},{hashes[0]},{hashes[1]},{bogus_b}")
+    known_pair = _export(client, repo_name, branch="main", haves=f"{hashes[0]},{hashes[1]}")
+    only_bogus = _export(client, repo_name, branch="main", haves=f"{bogus_a},{bogus_b}")
+
+    assert len(known_pair["_raw_bundle"]) < len(full["_raw_bundle"])
+    assert len(mixed["_raw_bundle"]) == len(known_pair["_raw_bundle"])
+    assert len(only_bogus["_raw_bundle"]) == len(full["_raw_bundle"])

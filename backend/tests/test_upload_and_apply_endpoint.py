@@ -221,7 +221,7 @@ def test_upload_apply_bootstraps_when_workspace_has_no_branch(monkeypatch, tmp_p
 
 
 def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_path):
-    """New flow: fetch all refs, checkout -f, push --force per branch."""
+    """New flow: fetch all refs, checkout -f, one push --force with all branches."""
     repo = "unrelated_repo"
     workspace = tmp_path / repo
     bare = tmp_path / f"{repo}.git"
@@ -286,10 +286,9 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
     )
 
     assert res["success"] is True
-    # Should have pushed BOTH branches (main and feature)
     push_calls = [c for c in calls if c[0] == "push"]
-    assert len(push_calls) >= 2, f"Expected at least 2 push calls, got {push_calls}"
-    pushed_refs = [c[-1] for c in push_calls]
+    assert len(push_calls) == 1, f"Expected a single push call, got {push_calls}"
+    pushed_refs = push_calls[0][3:]
     assert any("main" in r for r in pushed_refs)
     assert any("feature" in r for r in pushed_refs)
 
