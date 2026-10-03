@@ -186,12 +186,12 @@ def sync_apply_known(request: EnvelopeRequest):
     # them into the workspace under a neutral namespace — HEAD and local
     # branches are never touched by this fetch.
     needed = [commit, *branch_refs.values()]
-    if any(_git(workspace, "cat-file", "-e", f"{h}^{{commit}}").returncode != 0 for h in needed):
-        if bare.exists():
-            _git(workspace, "fetch", str(bare), "+refs/heads/*:refs/lgm/bare/*")
+    present = set(_batch_check_commits([workspace], needed))
+    if len(present) < len(set(needed)) and bare.exists():
+        _git(workspace, "fetch", str(bare), "+refs/heads/*:refs/lgm/bare/*")
+        present = set(_batch_check_commits([workspace], needed))
 
-    exists_proc = _git(workspace, "cat-file", "-e", f"{commit}^{{commit}}")
-    if exists_proc.returncode != 0:
+    if commit not in present:
         _cleanup_lgm_refs(workspace)
         return {"e": encrypt_envelope({"success": False, "message": f"Commit not found locally: {commit}", "repo": repo}, password)}
 
@@ -204,24 +204,42 @@ def sync_apply_known(request: EnvelopeRequest):
         preferred = ((head_proc.stdout or "").strip() if head_proc and head_proc.returncode == 0 else "") or "master"
 
     pushed_branches = []
-    for branch_name, branch_hash in branch_refs.items():
-        check = _git(workspace, "cat-file", "-e", f"{branch_hash}^{{commit}}")
-        if check.returncode != 0:
-            if system_logger:
-                system_logger.warning(
-                    "apply-known: commit not found for branch in workspace or bare",
-                    {"repo": repo}
-                )
-            continue
+    pushable = {b: h for b, h in branch_refs.items() if h in present}
+    missing_branches = [b for b in branch_refs if b not in pushable]
+    if missing_branches and system_logger:
+        system_logger.warning(
+            "apply-known: commit not found for branch in workspace or bare",
+            {"repo": repo, "branches": missing_branches}
+        )
 
-        if bare.exists():
+    if bare.exists() and pushable:
+        for branch_name, branch_hash in pushable.items():
             _git(workspace, "update-ref", f"refs/lgm/ak/{branch_name}", branch_hash)
-            push = _git(workspace, "push", "--force", str(bare), f"refs/lgm/ak/{branch_name}:refs/heads/{branch_name}")
-            if push.returncode == 0:
-                pushed_branches.append(branch_name)
-            elif system_logger:
-                system_logger.warning("apply-known: failed to push branch", {"repo": repo, "error": _redact_git_text(push.stderr)})
+        refspecs = [f"refs/lgm/ak/{b}:refs/heads/{b}" for b in pushable]
+        push = _git(workspace, "push", "--force", str(bare), *refspecs)
+        failed_branches = []
+        if push.returncode == 0:
+            pushed_branches = list(pushable)
+        else:
+            for branch_name in pushable:
+                marker = f"refs/lgm/ak/{branch_name} ->"
+                status = ""
+                for line in (push.stderr or "").splitlines():
+                    if marker in line:
+                        status = line.split(marker, 1)[0].strip()
+                        break
+                if status[:1] in ("*", "+") or ".." in status:
+                    pushed_branches.append(branch_name)
+                else:
+                    failed_branches.append(branch_name)
+        if failed_branches and system_logger:
+            system_logger.warning(
+                "apply-known: failed to push branch",
+                {"repo": repo, "branches": failed_branches,
+                 "error": _redact_git_text(push.stderr)}
+            )
 
+    for branch_name, branch_hash in pushable.items():
         if branch_name == preferred and current_branch == preferred:
             continue  # moved together with the working tree by reset below
         _git(workspace, "update-ref", f"refs/heads/{branch_name}", branch_hash)

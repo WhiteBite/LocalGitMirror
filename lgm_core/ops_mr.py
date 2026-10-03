@@ -295,15 +295,21 @@ def _mirror_refs_safe(c: MirrorClient, repo: str) -> dict:
 def _existing_shas(proj: Path, shas: list[str]) -> list[str]:
     """Keep only SHAs present locally (a ^sha exclusion of an unknown commit
     would make git bundle fail)."""
+    deduped = [s for s in dict.fromkeys(shas) if s]
+    if not deduped:
+        return []
+    proc = subprocess.run(
+        ["git", "-C", str(proj), "cat-file", "--batch-check"],
+        input="\n".join(deduped) + "\n",
+        capture_output=True, text=True, timeout=30,
+    )
+    lines = (proc.stdout or "").splitlines()
     out = []
-    for sha in dict.fromkeys(shas):
-        if not sha:
-            continue
-        chk = subprocess.run(
-            ["git", "-C", str(proj), "cat-file", "-e", f"{sha}^{{commit}}"],
-            capture_output=True, text=True, timeout=30,
-        )
-        if chk.returncode == 0:
+    for i, sha in enumerate(deduped):
+        if i >= len(lines):
+            break
+        parts = lines[i].split(" ", 2)
+        if len(parts) >= 2 and parts[1] == "commit":
             out.append(sha)
     return out
 
