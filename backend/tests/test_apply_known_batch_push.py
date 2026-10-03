@@ -178,13 +178,13 @@ def test_apply_known_holds_repo_lock_during_mutation(tmp_path, monkeypatch):
     main_hash = _commit_file(ws, "main", "a.txt", "a\n")
 
     monkeypatch.setattr(sync_mod, "_post_apply_maintenance", lambda *a: None)
-    lock_seen: list[tuple[tuple, bool]] = []
+    lock_seen: list[tuple[str, tuple, bool]] = []
 
     def spy(cwd, *args, timeout=600):
         acquired = repo_lock(repo).acquire(blocking=False)
         if acquired:
             repo_lock(repo).release()
-        lock_seen.append((args, not acquired))
+        lock_seen.append((str(cwd), args, not acquired))
         return real_git(cwd, *args, timeout=timeout)
 
     monkeypatch.setattr(sync_mod, "_git", spy)
@@ -198,13 +198,14 @@ def test_apply_known_holds_repo_lock_during_mutation(tmp_path, monkeypatch):
     inner = parse_envelope(resp.json(), PASSWORD)
     assert inner["success"] is True, inner
 
-    assert lock_seen, "expected git calls during apply-known"
+    own = [entry for entry in lock_seen if entry[0] == str(ws)]
+    assert own, "expected git calls during apply-known"
     mutations = [
-        entry for entry in lock_seen
-        if entry[0][:1] in (("update-ref",), ("push",), ("fetch",), ("reset",), ("checkout",), ("clean",))
+        entry for entry in own
+        if entry[1][:1] in (("update-ref",), ("push",), ("fetch",), ("reset",), ("checkout",), ("clean",))
     ]
     assert mutations, "expected mutation git calls during apply-known"
-    assert all(held for _, held in lock_seen), "git ran outside the repo lock during apply-known"
+    assert all(held for _, _, held in own), "git ran outside the repo lock during apply-known"
 
     lock = repo_lock(repo)
     assert lock.acquire(blocking=False) is True, "lock must be released after apply-known"

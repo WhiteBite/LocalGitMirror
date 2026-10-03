@@ -115,6 +115,17 @@ object MirrorSyncApi {
         conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
 
+      val pub = MirrorCrypto.pinnedServerPub()
+      // Hybrid dump layout: 0x03 || ephemeralPub[32] || sealed(nonce+ct); peek the 33-byte header.
+      val header = dumpFile.inputStream().use { ins ->
+        val b = ByteArray(33); val r = ins.read(b); if (r >= 33) b else ByteArray(0)
+      }
+      val hybrid = pub != null && header.size == 33 && header[0] == 0x03.toByte()
+      val bundleEpk =
+        if (hybrid) JavaBase64.getUrlEncoder().withoutPadding().encodeToString(header.copyOfRange(1, 33))
+        else null
+      val codec = MirrorCrypto.Codec(if (hybrid) HybridCrypto.Session.create(pub!!) else null, syncPassword)
+
       conn.outputStream.use { os ->
         val writer = OutputStreamWriter(os, StandardCharsets.UTF_8)
 
@@ -131,17 +142,6 @@ object MirrorSyncApi {
           writer.write("\r\n")
           writer.flush()
         }
-
-        val pub = MirrorCrypto.pinnedServerPub()
-        // Hybrid dump layout: 0x03 || ephemeralPub[32] || sealed(nonce+ct); peek the 33-byte header.
-        val header = dumpFile.inputStream().use { ins ->
-          val b = ByteArray(33); val r = ins.read(b); if (r >= 33) b else ByteArray(0)
-        }
-        val hybrid = pub != null && header.size == 33 && header[0] == 0x03.toByte()
-        val bundleEpk =
-          if (hybrid) JavaBase64.getUrlEncoder().withoutPadding().encodeToString(header.copyOfRange(1, 33))
-          else null
-        val codec = MirrorCrypto.Codec(if (hybrid) HybridCrypto.Session.create(pub!!) else null, syncPassword)
 
         // Envelope the repo name + local branches — hides them from DLP
         val envPayload = buildJsonObject {
@@ -191,10 +191,24 @@ object MirrorSyncApi {
       } catch (_: Exception) {
         ""
       }
-      HttpResult(code, body)
+      if (code in 200..299) {
+        HttpResult(code, openEnvelopeBody(body, codec) ?: body)
+      } else {
+        HttpResult(code, body)
+      }
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)
       HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  internal fun openEnvelopeBody(body: String, codec: MirrorCrypto.Codec): String? {
+    return try {
+      val outer = Json.parseToJsonElement(body).jsonObject
+      val eField = outer["e"]?.jsonPrimitive?.contentOrNull ?: return null
+      codec.openEnvelopeStr(eField)
+    } catch (_: Throwable) {
+      null
     }
   }
 
