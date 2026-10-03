@@ -4,6 +4,7 @@ import base64
 import hashlib
 import re
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -33,8 +34,10 @@ from app.core.git_bundle import (
     _git,
     _infer_repo_from_dump_filename,
     _is_junk_branch_name,
+    _post_apply_maintenance,
     _redact_git_text,
 )
+from app.core.repo_lock import repo_lock
 from app.core.sync_envelope import (
     _decrypt_params,
     _hybrid_bundle_ctx,
@@ -94,8 +97,67 @@ class EnvelopeRequest(BaseModel):
     epk: Optional[str] = None
 
 
+class NegotiateRequest(BaseModel):
+    """Sealed one-shot negotiation; `k` is the optional v3 ephemeral public key (base64)."""
+    e: str
+    k: Optional[str] = None
+
+
 # Refname-safe: no spaces, no control chars, not "." or "..", no ".."
 _SAFE_BRANCH = re.compile(r"^[^\x00-\x1f\x7f ~^:?*\[\\]+$")
+
+
+def _collect_sync_refs(workspace: Path, bare: Path):
+    """Merged branch tips for a repo: workspace + bare for-each-ref (bare wins),
+    HEAD sha (workspace first, bare fallback), HEAD branch (bare first),
+    is_head per ref. Returns (refs, head, head_branch)."""
+    def _collect_refs(path: Path) -> dict:
+        out = {}
+        if not path.exists():
+            return out
+        proc = _git(
+            path, "for-each-ref",
+            "--format=%(refname:short) %(objectname) %(committerdate:iso-strict)",
+            "refs/heads/"
+        )
+        if proc.returncode == 0:
+            for line in (proc.stdout or "").strip().split("\n"):
+                if not line:
+                    continue
+                parts = line.split(" ", 2)
+                if len(parts) >= 2:
+                    name = parts[0]
+                    sha  = parts[1]
+                    updated = parts[2].strip() if len(parts) > 2 else ""
+                    out[name] = {"sha": sha, "updated": updated}
+        return out
+
+    # Workspace first, then bare overrides
+    refs: dict = {}
+    refs.update(_collect_refs(workspace))
+    refs.update(_collect_refs(bare))
+
+    # HEAD sha: prefer workspace HEAD, fall back to bare
+    head = ""
+    for path in (workspace, bare):
+        if path.exists():
+            head_proc = _git(path, "rev-parse", "HEAD")
+            if head_proc.returncode == 0 and head_proc.stdout.strip():
+                head = head_proc.stdout.strip()
+                break
+
+    head_branch = ""
+    for path in (bare, workspace):
+        if path.exists():
+            sym = _git(path, "symbolic-ref", "--short", "HEAD")
+            if sym.returncode == 0 and sym.stdout.strip():
+                head_branch = sym.stdout.strip()
+                break
+
+    for name, info in refs.items():
+        info["is_head"] = (name == head_branch)
+
+    return refs, head, head_branch
 
 
 # ============ ROUTES ============
@@ -168,102 +230,112 @@ def sync_apply_known(request: EnvelopeRequest):
     if not workspace.exists():
         return {"e": encrypt_envelope({"success": False, "message": f"Workspace for '{repo}' not found", "repo": repo}, password)}
 
-    _ensure_clean_workspace(workspace)
+    with repo_lock(repo):
+        _ensure_clean_workspace(workspace)
 
-    # ── Collect all branch→hash mappings ──────────────────────
-    branch_refs = {}  # branch_name -> commit_hash
-    if branches_raw:
-        branch_refs.update(branches_raw)
-    branch_refs = {k: v for k, v in branch_refs.items() if not _is_junk_branch_name(k)}
+        # ── Collect all branch→hash mappings ──────────────────────
+        branch_refs = {}  # branch_name -> commit_hash
+        if branches_raw:
+            branch_refs.update(branches_raw)
+        branch_refs = {k: v for k, v in branch_refs.items() if not _is_junk_branch_name(k)}
 
-    current_branch = _attached_branch(workspace)
-    if _is_junk_branch_name(current_branch):
-        current_branch = None
-    if current_branch and current_branch not in branch_refs:
-        branch_refs[current_branch] = commit
+        current_branch = _attached_branch(workspace)
+        if _is_junk_branch_name(current_branch):
+            current_branch = None
+        if current_branch and current_branch not in branch_refs:
+            branch_refs[current_branch] = commit
 
-    # Objects may live only in bare (e.g. pushed there via git-http). Pull
-    # them into the workspace under a neutral namespace — HEAD and local
-    # branches are never touched by this fetch.
-    needed = [commit, *branch_refs.values()]
-    present = set(_batch_check_commits([workspace], needed))
-    if len(present) < len(set(needed)) and bare.exists():
-        _git(workspace, "fetch", str(bare), "+refs/heads/*:refs/lgm/bare/*")
+        # Objects may live only in bare (e.g. pushed there via git-http). Pull
+        # them into the workspace under a neutral namespace — HEAD and local
+        # branches are never touched by this fetch.
+        needed = [commit, *branch_refs.values()]
         present = set(_batch_check_commits([workspace], needed))
+        if len(present) < len(set(needed)) and bare.exists():
+            _git(workspace, "fetch", str(bare), "+refs/heads/*:refs/lgm/bare/*")
+            present = set(_batch_check_commits([workspace], needed))
 
-    if commit not in present:
-        _cleanup_lgm_refs(workspace)
-        return {"e": encrypt_envelope({"success": False, "message": f"Commit not found locally: {commit}", "repo": repo}, password)}
+        if commit not in present:
+            _cleanup_lgm_refs(workspace)
+            return {"e": encrypt_envelope({"success": False, "message": f"Commit not found locally: {commit}", "repo": repo}, password)}
 
-    # Where HEAD should end up: stay on the current branch when attached,
-    # otherwise the sender's primary branch. An already-detached workspace
-    # heals back onto `preferred` below.
-    preferred = current_branch or (next(iter(branch_refs)) if branch_refs else None)
-    if not preferred:
-        head_proc = _git(bare, "symbolic-ref", "--short", "HEAD") if bare.exists() else None
-        preferred = ((head_proc.stdout or "").strip() if head_proc and head_proc.returncode == 0 else "") or "master"
+        # Where HEAD should end up: stay on the current branch when attached,
+        # otherwise the sender's primary branch. An already-detached workspace
+        # heals back onto `preferred` below.
+        preferred = current_branch or (next(iter(branch_refs)) if branch_refs else None)
+        if not preferred:
+            head_proc = _git(bare, "symbolic-ref", "--short", "HEAD") if bare.exists() else None
+            preferred = ((head_proc.stdout or "").strip() if head_proc and head_proc.returncode == 0 else "") or "master"
 
-    pushed_branches = []
-    pushable = {b: h for b, h in branch_refs.items() if h in present}
-    missing_branches = [b for b in branch_refs if b not in pushable]
-    if missing_branches and system_logger:
-        system_logger.warning(
-            "apply-known: commit not found for branch in workspace or bare",
-            {"repo": repo, "branches": missing_branches}
-        )
-
-    if bare.exists() and pushable:
-        for branch_name, branch_hash in pushable.items():
-            _git(workspace, "update-ref", f"refs/lgm/ak/{branch_name}", branch_hash)
-        refspecs = [f"refs/lgm/ak/{b}:refs/heads/{b}" for b in pushable]
-        push = _git(workspace, "push", "--force", str(bare), *refspecs)
-        failed_branches = []
-        if push.returncode == 0:
-            pushed_branches = list(pushable)
-        else:
-            for branch_name in pushable:
-                marker = f"refs/lgm/ak/{branch_name} ->"
-                status = ""
-                for line in (push.stderr or "").splitlines():
-                    if marker in line:
-                        status = line.split(marker, 1)[0].strip()
-                        break
-                if status[:1] in ("*", "+") or ".." in status:
-                    pushed_branches.append(branch_name)
-                else:
-                    failed_branches.append(branch_name)
-        if failed_branches and system_logger:
+        pushed_branches = []
+        pushable = {b: h for b, h in branch_refs.items() if h in present}
+        missing_branches = [b for b in branch_refs if b not in pushable]
+        if missing_branches and system_logger:
             system_logger.warning(
-                "apply-known: failed to push branch",
-                {"repo": repo, "branches": failed_branches,
-                 "error": _redact_git_text(push.stderr)}
+                "apply-known: commit not found for branch in workspace or bare",
+                {"repo": repo, "branches": missing_branches}
             )
 
-    for branch_name, branch_hash in pushable.items():
-        if branch_name == preferred and current_branch == preferred:
-            continue  # moved together with the working tree by reset below
-        _git(workspace, "update-ref", f"refs/heads/{branch_name}", branch_hash)
+        if bare.exists() and pushable:
+            for branch_name, branch_hash in pushable.items():
+                _git(workspace, "update-ref", f"refs/lgm/ak/{branch_name}", branch_hash)
+            refspecs = [f"refs/lgm/ak/{b}:refs/heads/{b}" for b in pushable]
+            push = _git(workspace, "push", "--force", str(bare), *refspecs)
+            failed_branches = []
+            if push.returncode == 0:
+                pushed_branches = list(pushable)
+            else:
+                for branch_name in pushable:
+                    marker = f"refs/lgm/ak/{branch_name} ->"
+                    status = ""
+                    for line in (push.stderr or "").splitlines():
+                        if marker in line:
+                            status = line.split(marker, 1)[0].strip()
+                            break
+                    if status[:1] in ("*", "+") or ".." in status:
+                        pushed_branches.append(branch_name)
+                    else:
+                        failed_branches.append(branch_name)
+            if failed_branches and system_logger:
+                system_logger.warning(
+                    "apply-known: failed to push branch",
+                    {"repo": repo, "branches": failed_branches,
+                     "error": _redact_git_text(push.stderr)}
+                )
 
-    _attach_workspace(workspace, preferred, branch_refs.get(preferred))
-    if _attached_branch(workspace) is None:
-        # Last-resort heal: pin HEAD to the sender's commit under `preferred`.
-        _git(workspace, "checkout", "-f", "-B", preferred, commit)
-    _cleanup_lgm_refs(workspace)
-    if _attached_branch(workspace) is None and system_logger:
-        system_logger.warning("apply-known: workspace HEAD still detached after attach attempt", {"repo": repo, "preferred": preferred})
+        for branch_name, branch_hash in pushable.items():
+            if branch_name == preferred and current_branch == preferred:
+                continue  # moved together with the working tree by reset below
+            _git(workspace, "update-ref", f"refs/heads/{branch_name}", branch_hash)
 
-    if system_logger:
-        system_logger.info("apply-known result", {"repo": repo, "branches_count": len(pushed_branches)})
+        _attach_workspace(workspace, preferred, branch_refs.get(preferred))
+        if _attached_branch(workspace) is None:
+            # Last-resort heal: pin HEAD to the sender's commit under `preferred`.
+            _git(workspace, "checkout", "-f", "-B", preferred, commit)
+        _cleanup_lgm_refs(workspace)
+        if _attached_branch(workspace) is None and system_logger:
+            system_logger.warning("apply-known: workspace HEAD still detached after attach attempt", {"repo": repo, "preferred": preferred})
 
-    result = {
-        "success": True,
-        "repo": repo,
-        "commit": commit,
-        "branches": pushed_branches,
-        "message": f"Applied known commit ({len(pushed_branches)} branch(es): {', '.join(pushed_branches)})",
-    }
+        if system_logger:
+            system_logger.info("apply-known result", {"repo": repo, "branches_count": len(pushed_branches)})
 
-    return {"e": encrypt_envelope(result, password)}
+        result = {
+            "success": True,
+            "repo": repo,
+            "commit": commit,
+            "branches": pushed_branches,
+            "message": f"Applied known commit ({len(pushed_branches)} branch(es): {', '.join(pushed_branches)})",
+        }
+
+        try:
+            threading.Thread(
+                target=_post_apply_maintenance,
+                args=(repo, workspace, bare),
+                daemon=True,
+            ).start()
+        except Exception:
+            pass
+
+        return {"e": encrypt_envelope(result, password)}
 
 
 @router.post("/documents/upload")
@@ -364,54 +436,54 @@ def sync_refs(request: EnvelopeRequest):
     if not workspace.exists() and not bare.exists():
         raise HTTPException(404, "Repository data not found")
 
-    def _collect_refs(path: Path) -> dict:
-        out = {}
-        if not path.exists():
-            return out
-        proc = _git(
-            path, "for-each-ref",
-            "--format=%(refname:short) %(objectname) %(committerdate:iso-strict)",
-            "refs/heads/"
-        )
-        if proc.returncode == 0:
-            for line in (proc.stdout or "").strip().split("\n"):
-                if not line:
-                    continue
-                parts = line.split(" ", 2)
-                if len(parts) >= 2:
-                    name = parts[0]
-                    sha  = parts[1]
-                    updated = parts[2].strip() if len(parts) > 2 else ""
-                    out[name] = {"sha": sha, "updated": updated}
-        return out
-
-    # Workspace first, then bare overrides
-    refs: dict = {}
-    refs.update(_collect_refs(workspace))
-    refs.update(_collect_refs(bare))
-
-    # HEAD sha: prefer workspace HEAD, fall back to bare
-    head = ""
-    for path in (workspace, bare):
-        if path.exists():
-            head_proc = _git(path, "rev-parse", "HEAD")
-            if head_proc.returncode == 0 and head_proc.stdout.strip():
-                head = head_proc.stdout.strip()
-                break
-
-    head_branch = ""
-    for path in (bare, workspace):
-        if path.exists():
-            sym = _git(path, "symbolic-ref", "--short", "HEAD")
-            if sym.returncode == 0 and sym.stdout.strip():
-                head_branch = sym.stdout.strip()
-                break
-
-    for name, info in refs.items():
-        info["is_head"] = (name == head_branch)
+    refs, head, _head_branch = _collect_sync_refs(workspace, bare)
 
     return {"e": encrypt_envelope(
         {"success": True, "repo": repo_name, "head": head, "refs": refs},
+        password,
+    )}
+
+
+@router.post("/documents/negotiate")
+def sync_negotiate(request: NegotiateRequest):
+    """One-shot negotiation for the work PC: create the repo if missing, then
+    return refs, HEAD and which of the client's commits the mirror already
+    has — everything sealed in one response envelope."""
+    password = _sync_password()
+    params = _decrypt_params(request.e, password, request.k)
+
+    if not repo_manager:
+        raise HTTPException(500, "Repo manager не инициализирован")
+
+    repo = (params.get("repo") or "").strip()
+    if not repo:
+        raise HTTPException(400, "Repository name is required")
+
+    created = False
+    if repo not in repo_manager.get_repos():
+        result = repo_manager.create_repo(repo)
+        if not result["success"]:
+            raise HTTPException(400, result["message"])
+        created = True
+
+    workspace = repo_manager._get_workspace_path(repo)
+    bare = repo_manager._get_bare_path(repo)
+
+    refs, head, _head_branch = _collect_sync_refs(workspace, bare)
+
+    commits_raw = params.get("commits") or []
+    commits = [c.strip() for c in commits_raw if c and c.strip()]
+    known = _batch_check_commits([p for p in (workspace, bare) if p and p.exists()], commits)
+
+    return {"e": encrypt_envelope(
+        {
+            "success": True,
+            "repo": repo,
+            "created": created,
+            "refs": refs,
+            "head": head,
+            "known": known,
+        },
         password,
     )}
 

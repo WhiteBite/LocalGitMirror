@@ -5,12 +5,14 @@ import os
 import re
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
 from app.core.bundle_crypto import decrypt_dump_to_bundle
+from app.core.repo_lock import repo_lock
 from app.core.sync_envelope import _hybrid_bundle_ctx
 
 # Injected from main.py
@@ -177,168 +179,208 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
     if not workspace_path.exists():
         return {"success": False, "message": f"Workspace '{repo_name}' is not found"}
 
-    _ensure_clean_workspace(workspace_path)
+    with repo_lock(repo_name):
+        _ensure_clean_workspace(workspace_path)
 
-    hybrid_bundle_ctx = _hybrid_bundle_ctx.get()
-    password = os.getenv("SYNC_PASSWORD", "")
-    if not password and hybrid_bundle_ctx is None:
-        return {"success": False, "message": "SYNC_PASSWORD not configured in environment"}
+        hybrid_bundle_ctx = _hybrid_bundle_ctx.get()
+        password = os.getenv("SYNC_PASSWORD", "")
+        if not password and hybrid_bundle_ctx is None:
+            return {"success": False, "message": "SYNC_PASSWORD not configured in environment"}
 
-    with tempfile.TemporaryDirectory(prefix="idea-sync-") as tmp:
-        tmp_dir = Path(tmp)
-        bundle_path = tmp_dir / "incoming.bundle"
+        with tempfile.TemporaryDirectory(prefix="idea-sync-") as tmp:
+            tmp_dir = Path(tmp)
+            bundle_path = tmp_dir / "incoming.bundle"
 
-        try:
-            if hybrid_bundle_ctx is not None:
-                # v3: the attachment was sealed via the dedicated "kb" ephemeral.
-                bundle_path.write_bytes(hybrid_bundle_ctx.open_bundle(dump_path.read_bytes()))
-            else:
-                decrypt_dump_to_bundle(dump_path, bundle_path, password)
-        except Exception as e:
-            decrypt_msg = str(e).strip() or e.__class__.__name__
-            if "Unsupported" in decrypt_msg and ("format" in decrypt_msg.lower() or "dump" in decrypt_msg.lower()):
-                base_error = "Failed to decrypt dump: Unsupported dump format (likely stale/legacy work_kit on sender)."
-            elif "InvalidTag" in decrypt_msg:
-                base_error = (
-                    "Failed to decrypt dump: InvalidTag "
-                    "(encryption password mismatch between plugin Sync Password and backend SYNC_PASSWORD)"
-                )
-            else:
-                base_error = f"Failed to decrypt dump: {decrypt_msg}"
-            return {"success": False, "message": base_error}
+            try:
+                if hybrid_bundle_ctx is not None:
+                    # v3: the attachment was sealed via the dedicated "kb" ephemeral.
+                    bundle_path.write_bytes(hybrid_bundle_ctx.open_bundle(dump_path.read_bytes()))
+                else:
+                    decrypt_dump_to_bundle(dump_path, bundle_path, password)
+            except Exception as e:
+                decrypt_msg = str(e).strip() or e.__class__.__name__
+                if "Unsupported" in decrypt_msg and ("format" in decrypt_msg.lower() or "dump" in decrypt_msg.lower()):
+                    base_error = "Failed to decrypt dump: Unsupported dump format (likely stale/legacy work_kit on sender)."
+                elif "InvalidTag" in decrypt_msg:
+                    base_error = (
+                        "Failed to decrypt dump: InvalidTag "
+                        "(encryption password mismatch between plugin Sync Password and backend SYNC_PASSWORD)"
+                    )
+                else:
+                    base_error = f"Failed to decrypt dump: {decrypt_msg}"
+                return {"success": False, "message": base_error}
 
-        list_proc = _git(workspace_path, "bundle", "list-heads", str(bundle_path))
-        bundle_refs = {}  # ref_name -> commit_hash
-        if list_proc.returncode == 0:
-            for line in (list_proc.stdout or "").splitlines():
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    commit_hash, ref_name = parts[0], parts[1]
-                    bundle_refs[ref_name] = commit_hash
+            list_proc = _git(workspace_path, "bundle", "list-heads", str(bundle_path))
+            bundle_refs = {}  # ref_name -> commit_hash
+            if list_proc.returncode == 0:
+                for line in (list_proc.stdout or "").splitlines():
+                    parts = line.strip().split()
+                    if len(parts) >= 2:
+                        commit_hash, ref_name = parts[0], parts[1]
+                        bundle_refs[ref_name] = commit_hash
 
-        if system_logger:
-            system_logger.info("Bundle refs", {"repo": repo_name, "ref_count": len(bundle_refs)})
+            if system_logger:
+                system_logger.info("Bundle refs", {"repo": repo_name, "ref_count": len(bundle_refs)})
 
-        # Invariant: refs/lgm/incoming/* never collides with the checked-out branch.
-        fetch_proc = _git(workspace_path, "fetch", str(bundle_path), "+refs/heads/*:refs/lgm/incoming/*")
-        if fetch_proc.returncode != 0:
-            fetch_err = (fetch_proc.stderr or "").strip()
-            if "prerequisite" in fetch_err.lower():
-                if system_logger:
-                    system_logger.warning("Bundle has prerequisite commits, trying HEAD fetch", {"repo": repo_name})
-                head_fetch = _git(workspace_path, "fetch", str(bundle_path), "HEAD")
-                if head_fetch.returncode != 0:
-                    return {
-                        "success": False,
-                        "message": f"Bundle requires prerequisite commits not present on mirror. "
-                                   f"Try a full sync (clear .git/.cache/ on sender). Details: {fetch_err}"
-                    }
-            else:
-                fetch_bare = _git(workspace_path, "fetch", str(bundle_path))
-                if fetch_bare.returncode != 0:
-                    return {"success": False, "message": fetch_err or "Failed to fetch bundle"}
+            # Invariant: refs/lgm/incoming/* never collides with the checked-out branch.
+            fetch_proc = _git(workspace_path, "fetch", str(bundle_path), "+refs/heads/*:refs/lgm/incoming/*")
+            if fetch_proc.returncode != 0:
+                fetch_err = (fetch_proc.stderr or "").strip()
+                if "prerequisite" in fetch_err.lower():
+                    if system_logger:
+                        system_logger.warning("Bundle has prerequisite commits, trying HEAD fetch", {"repo": repo_name})
+                    head_fetch = _git(workspace_path, "fetch", str(bundle_path), "HEAD")
+                    if head_fetch.returncode != 0:
+                        return {
+                            "success": False,
+                            "message": f"Bundle requires prerequisite commits not present on mirror. "
+                                       f"Try a full sync (clear .git/.cache/ on sender). Details: {fetch_err}"
+                        }
+                else:
+                    fetch_bare = _git(workspace_path, "fetch", str(bundle_path))
+                    if fetch_bare.returncode != 0:
+                        return {"success": False, "message": fetch_err or "Failed to fetch bundle"}
 
-        incoming = {}  # branch_name -> commit_hash (list-heads order preserved)
-        for ref_name, commit_hash in bundle_refs.items():
-            if not ref_name.startswith("refs/heads/"):
-                continue
-            branch_name = ref_name[len("refs/heads/"):]
-            if _is_junk_branch_name(branch_name):
-                continue
-            if _git(workspace_path, "cat-file", "-e", f"{commit_hash}^{{commit}}").returncode == 0:
-                incoming[branch_name] = commit_hash
-
-        if not incoming:
-            return {"success": False, "message": "No applicable refs found in bundle"}
-
-        current_branch = _attached_branch(workspace_path)
-        if _is_junk_branch_name(current_branch):
-            current_branch = None
-
-        # The workspace keeps its own branch; the sender's order only heals detached/unborn HEAD
-        preferred_branch = current_branch or next(iter(incoming))
-
-        push_errors = []
-        pushed_branches = []
-        for branch_name, commit_hash in incoming.items():
-            _git(workspace_path, "update-ref", f"refs/lgm/incoming/{branch_name}", commit_hash)
-
-        if bare_path.exists():
-            refspecs = [f"refs/lgm/incoming/{b}:refs/heads/{b}" for b in incoming]
-            push_proc = _git(workspace_path, "push", "--force", str(bare_path), *refspecs)
-            push_lines = ((push_proc.stderr or "") + "\n" + (push_proc.stdout or "")).splitlines()
-            branch_results = {}
-            for line in push_lines:
-                if "->" not in line:
+            incoming = {}  # branch_name -> commit_hash (list-heads order preserved)
+            for ref_name, commit_hash in bundle_refs.items():
+                if not ref_name.startswith("refs/heads/"):
                     continue
-                left = line.partition("->")[0].split()
-                right = line.partition("->")[2].split()
-                src = left[-1] if left else ""
-                dst = right[0] if right else ""
-                for b in incoming:
-                    if src in (f"refs/lgm/incoming/{b}", b) or dst == b:
-                        branch_results[b] = (not line.strip().startswith("!"), line.strip())
-                        break
-            overall_err = (push_proc.stderr or "").strip()
-            for branch_name in incoming:
-                result = branch_results.get(branch_name)
-                if result is None:
-                    ok = push_proc.returncode == 0
-                    detail = overall_err
-                else:
-                    ok, detail = result
-                if ok:
-                    pushed_branches.append(branch_name)
-                else:
-                    push_errors.append(f"{branch_name}: {detail}")
+                branch_name = ref_name[len("refs/heads/"):]
+                if _is_junk_branch_name(branch_name):
+                    continue
+                if _git(workspace_path, "cat-file", "-e", f"{commit_hash}^{{commit}}").returncode == 0:
+                    incoming[branch_name] = commit_hash
 
-            if push_errors and system_logger:
-                system_logger.warning("Failed to push branches", {
-                    "repo": repo_name,
-                    "branches": [e.split(":", 1)[0] for e in push_errors],
-                    "error": _redact_git_text(overall_err),
-                })
+            if not incoming:
+                return {"success": False, "message": "No applicable refs found in bundle"}
 
-        if not pushed_branches and push_errors:
+            current_branch = _attached_branch(workspace_path)
+            if _is_junk_branch_name(current_branch):
+                current_branch = None
+
+            # The workspace keeps its own branch; the sender's order only heals detached/unborn HEAD
+            preferred_branch = current_branch or next(iter(incoming))
+
+            push_errors = []
+            pushed_branches = []
+            for branch_name, commit_hash in incoming.items():
+                _git(workspace_path, "update-ref", f"refs/lgm/incoming/{branch_name}", commit_hash)
+
+            if bare_path.exists():
+                refspecs = [f"refs/lgm/incoming/{b}:refs/heads/{b}" for b in incoming]
+                push_proc = _git(workspace_path, "push", "--force", str(bare_path), *refspecs)
+                push_lines = ((push_proc.stderr or "") + "\n" + (push_proc.stdout or "")).splitlines()
+                branch_results = {}
+                for line in push_lines:
+                    if "->" not in line:
+                        continue
+                    left = line.partition("->")[0].split()
+                    right = line.partition("->")[2].split()
+                    src = left[-1] if left else ""
+                    dst = right[0] if right else ""
+                    for b in incoming:
+                        if src in (f"refs/lgm/incoming/{b}", b) or dst == b:
+                            branch_results[b] = (not line.strip().startswith("!"), line.strip())
+                            break
+                overall_err = (push_proc.stderr or "").strip()
+                for branch_name in incoming:
+                    result = branch_results.get(branch_name)
+                    if result is None:
+                        ok = push_proc.returncode == 0
+                        detail = overall_err
+                    else:
+                        ok, detail = result
+                    if ok:
+                        pushed_branches.append(branch_name)
+                    else:
+                        push_errors.append(f"{branch_name}: {detail}")
+
+                if push_errors and system_logger:
+                    system_logger.warning("Failed to push branches", {
+                        "repo": repo_name,
+                        "branches": [e.split(":", 1)[0] for e in push_errors],
+                        "error": _redact_git_text(overall_err),
+                    })
+
+            if not pushed_branches and push_errors:
+                _cleanup_lgm_refs(workspace_path)
+                return {"success": False, "message": f"Failed to push any branch to bare repo: {'; '.join(push_errors)}"}
+
+            for branch_name, commit_hash in incoming.items():
+                if branch_name == preferred_branch and current_branch == preferred_branch:
+                    continue  # moved together with the working tree by reset below
+                _git(workspace_path, "update-ref", f"refs/heads/{branch_name}", commit_hash)
+
+            attach = _attach_workspace(workspace_path, preferred_branch, incoming.get(preferred_branch))
             _cleanup_lgm_refs(workspace_path)
-            return {"success": False, "message": f"Failed to push any branch to bare repo: {'; '.join(push_errors)}"}
+            if attach.returncode != 0 or not _attached_branch(workspace_path):
+                return {
+                    "success": False,
+                    "message": f"Failed to attach workspace to '{preferred_branch}': "
+                               f"{_redact_git_text((attach.stderr or '').strip())}",
+                }
 
-        for branch_name, commit_hash in incoming.items():
-            if branch_name == preferred_branch and current_branch == preferred_branch:
-                continue  # moved together with the working tree by reset below
-            _git(workspace_path, "update-ref", f"refs/heads/{branch_name}", commit_hash)
+            log_proc = _git(workspace_path, "log", "-1", "--oneline")
+            commit = (log_proc.stdout or "").strip() if log_proc.returncode == 0 else ""
 
-        attach = _attach_workspace(workspace_path, preferred_branch, incoming.get(preferred_branch))
-        _cleanup_lgm_refs(workspace_path)
-        if attach.returncode != 0 or not _attached_branch(workspace_path):
+            if system_logger:
+                system_logger.info(
+                    "upload-and-apply result",
+                    {
+                        "repo": repo_name, "success": True,
+                        "attachment": dump_filename,
+                        "branches_pushed_count": len(pushed_branches),
+                        "branches_failed_count": len(push_errors),
+                    },
+                )
+
+            try:
+                threading.Thread(
+                    target=_post_apply_maintenance,
+                    args=(repo_name, workspace_path, bare_path),
+                    daemon=True,
+                ).start()
+            except Exception:
+                pass
+
             return {
-                "success": False,
-                "message": f"Failed to attach workspace to '{preferred_branch}': "
-                           f"{_redact_git_text((attach.stderr or '').strip())}",
+                "success": True,
+                "repo": repo_name,
+                "attachment": dump_filename,
+                "commit": commit,
+                "message": f"Sync applied successfully ({len(pushed_branches)} branch(es): {', '.join(pushed_branches)})",
+                "branches": pushed_branches,
             }
 
-        log_proc = _git(workspace_path, "log", "-1", "--oneline")
-        commit = (log_proc.stdout or "").strip() if log_proc.returncode == 0 else ""
 
-        if system_logger:
-            system_logger.info(
-                "upload-and-apply result",
-                {
-                    "repo": repo_name, "success": True,
-                    "attachment": dump_filename,
-                    "branches_pushed_count": len(pushed_branches),
-                    "branches_failed_count": len(push_errors),
-                },
-            )
+_MAINTENANCE_INTERVAL_SECONDS = 24 * 3600
+_MAINTENANCE_REPACK_PACKS = 10
 
-        return {
-            "success": True,
-            "repo": repo_name,
-            "attachment": dump_filename,
-            "commit": commit,
-            "message": f"Sync applied successfully ({len(pushed_branches)} branch(es): {', '.join(pushed_branches)})",
-            "branches": pushed_branches,
-        }
+
+def _post_apply_maintenance(repo_name: str, workspace: Optional[Path], bare: Optional[Path]) -> None:
+    """Best-effort commit-graph write + throttled repack; never raises (runs on a daemon thread)."""
+    try:
+        if not repo_manager or not getattr(repo_manager, "storage_path", None):
+            return
+        stamp_dir = Path(repo_manager.storage_path) / ".lgm" / "maintenance"
+        stamp = stamp_dir / f"{repo_name}.stamp"
+        if stamp.exists() and (time.time() - stamp.stat().st_mtime) < _MAINTENANCE_INTERVAL_SECONDS:
+            return
+        for git_dir in (workspace, bare):
+            if not git_dir or not git_dir.exists():
+                continue
+            _git(git_dir, "commit-graph", "write", "--reachable")
+            # workspace checkouts keep their object DB under .git; bare repos are their own git dir
+            objects = git_dir / ".git" / "objects" if (git_dir / ".git").exists() else git_dir / "objects"
+            pack_dir = objects / "pack"
+            if not pack_dir.exists():
+                continue
+            if len(list(pack_dir.glob("*.pack"))) > _MAINTENANCE_REPACK_PACKS:
+                _git(git_dir, "repack", "-adq")
+        stamp_dir.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+    except Exception:
+        pass
 
 
 def _batch_check_commits(sources, commits):

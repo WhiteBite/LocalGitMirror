@@ -10,7 +10,9 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import app.routers.sync as sync_mod
+from app.core import git_bundle
 from app.core.git_bundle import _git as real_git
+from app.core.repo_lock import repo_lock
 from app.core.repo_manager import RepoManager
 from tests import _harness
 from tests.conftest import envelope_post, parse_envelope
@@ -167,3 +169,43 @@ def test_apply_known_rejected_ref_is_not_counted_as_pushed(tmp_path, monkeypatch
     assert inner["branches"] == ["feat"], "non-fast-forward main must not be counted pushed"
     assert _run_git(bare, "rev-parse", "refs/heads/main").stdout.strip() == newer
     assert _run_git(bare, "rev-parse", "refs/heads/feat").stdout.strip() == feat
+
+
+def test_apply_known_holds_repo_lock_during_mutation(tmp_path, monkeypatch):
+    client, storage, rm = _make_client(tmp_path, monkeypatch)
+    repo = f"ak-lock-{int(time.time() * 1000)}"
+    ws, bare = _create_repo(client, storage, rm, repo)
+    main_hash = _commit_file(ws, "main", "a.txt", "a\n")
+
+    monkeypatch.setattr(sync_mod, "_post_apply_maintenance", lambda *a: None)
+    lock_seen: list[tuple[tuple, bool]] = []
+
+    def spy(cwd, *args, timeout=600):
+        acquired = repo_lock(repo).acquire(blocking=False)
+        if acquired:
+            repo_lock(repo).release()
+        lock_seen.append((args, not acquired))
+        return real_git(cwd, *args, timeout=timeout)
+
+    monkeypatch.setattr(sync_mod, "_git", spy)
+    monkeypatch.setattr(git_bundle, "_git", spy)
+
+    resp = envelope_post(client, "/api/documents/link", {
+        "repo": repo,
+        "commit": main_hash,
+    }, PASSWORD)
+    assert resp.status_code == 200, resp.text
+    inner = parse_envelope(resp.json(), PASSWORD)
+    assert inner["success"] is True, inner
+
+    assert lock_seen, "expected git calls during apply-known"
+    mutations = [
+        entry for entry in lock_seen
+        if entry[0][:1] in (("update-ref",), ("push",), ("fetch",), ("reset",), ("checkout",), ("clean",))
+    ]
+    assert mutations, "expected mutation git calls during apply-known"
+    assert all(held for _, held in lock_seen), "git ran outside the repo lock during apply-known"
+
+    lock = repo_lock(repo)
+    assert lock.acquire(blocking=False) is True, "lock must be released after apply-known"
+    lock.release()
