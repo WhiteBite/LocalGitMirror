@@ -284,6 +284,8 @@ REGISTRY: list[Op] = [
             Param("text", "str", "", "Inline replies markdown: '## thread <id>' / "
                                      "'## new <file>:<line>' / '## new' sections, "
                                      "'resolve: yes' first line per thread"),
+            Param("force", "bool", False, "Skip the precheck that rejects anchors colliding "
+                                          "with unresolved threads and unknown thread ids"),
         ],
         run=op_mr_replies_send,
     ),

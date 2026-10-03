@@ -144,7 +144,7 @@ _FROZEN_OPS = {
     "mr_list": ["repo"],
     "mr_send": ["iid", "iids", "all_open", "branch", "project", "repo"],
     "mr_notes": ["repo", "iid"],
-    "mr_replies_send": ["repo", "iid", "file", "text"],
+    "mr_replies_send": ["repo", "iid", "file", "text", "force"],
     "mr_replies_status": ["repo", "iid"],
     "guide": [],
 }

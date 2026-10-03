@@ -11,6 +11,105 @@ from .ops_git import send_branches
 
 _MRN_TITLE = re.compile(r"^# MR !(\d+) — (.*)$")
 _MRN_BRANCH = re.compile(r"^- \*\*Ветка:\*\* `([^`]+)`")
+_NOTES_THREAD_ID = re.compile(r"^\*\*ID треда:\*\* `([^`]+)`")
+_NOTES_ANCHOR = re.compile(r"^\*\*Место:\*\* `([^`]+):(\d+)`")
+_REPLY_THREAD = re.compile(r"^##\s+thread\s+(\S+)\s*$", re.MULTILINE)
+_REPLY_ANCHORED = re.compile(r"^##\s+new\s+(\S+?):(\d+)\s*$", re.MULTILINE)
+ANCHOR_WINDOW = 3
+
+
+def _parse_notes_threads(markdown: str) -> dict:
+    """Unresolved anchors [{id, file, line}] and every thread id rendered in mr-notes."""
+    unresolved: list[dict] = []
+    ids: set[str] = set()
+    section: str | None = None
+    tid = ""
+    for line in markdown.splitlines():
+        if line.startswith("## ⚠"):
+            section, tid = "unresolved", ""
+        elif line.startswith("## ✓ решено") or line.startswith("## ✓ resolved"):
+            section, tid = "resolved", ""
+        elif line.startswith("## "):
+            section, tid = None, ""
+        elif section:
+            m = _NOTES_THREAD_ID.match(line)
+            if m:
+                tid = m.group(1)
+                ids.add(tid)
+                continue
+            a = _NOTES_ANCHOR.match(line)
+            if a and tid:
+                if section == "unresolved":
+                    unresolved.append({"id": tid, "file": a.group(1), "line": int(a.group(2))})
+    return {"ids": ids, "unresolved": unresolved}
+
+
+def _anchor_collisions(anchors: list, unresolved: list) -> list:
+    out = []
+    for file, line in anchors:
+        for t in unresolved:
+            if t["file"] == file and abs(t["line"] - line) <= ANCHOR_WINDOW:
+                out.append({"new": f"{file}:{line}", "thread": t["id"],
+                            "thread_anchor": f"{t['file']}:{t['line']}"})
+    return out
+
+
+def _fetch_newest_notes(c: MirrorClient, repo: str, iid: int) -> str | None:
+    """Newest mr-notes/mr-!iid.md for the repo, or None (missing/unreachable)."""
+    try:
+        lst = c.file_sync_list(repo)
+    except LgmError:
+        return None
+    best = None
+    for i in (lst.get("items") or []):
+        eff = i.get("path") or ""
+        if not eff.startswith("mr-notes/"):
+            continue
+        m = re.search(r"mr-!(\d+)\.md$", eff)
+        if not m or int(m.group(1)) != iid:
+            continue
+        if best is None or (i.get("mtime") or 0) > (best.get("mtime") or 0):
+            best = i
+    if best is None:
+        return None
+    try:
+        return c.file_sync_fetch(repo, best["id"]).decode("utf-8")
+    except Exception:
+        return None
+
+
+def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: bool) -> dict:
+    """Reject replies that duplicate the live review: a '## new' anchor colliding
+    with an unresolved thread (±ANCHOR_WINDOW lines, same file) or a '## thread'
+    id absent from the notes. Fail-open when the notes are unavailable."""
+    thread_refs = _REPLY_THREAD.findall(content)
+    anchors = [(m.group(1), int(m.group(2))) for m in _REPLY_ANCHORED.finditer(content)]
+    if not thread_refs and not anchors:
+        return {"status": "not-needed"}
+    notes = _fetch_newest_notes(c, repo, iid)
+    if notes is None:
+        return {"status": "notes-unavailable"}
+    threads = _parse_notes_threads(notes)
+    collisions = _anchor_collisions(anchors, threads["unresolved"])
+    unknown = [t for t in thread_refs if t not in threads["ids"]]
+    result = {"status": "ok", "collisions": collisions, "unknown_threads": unknown}
+    if not collisions and not unknown:
+        return result
+    result["status"] = "forced" if force else "rejected"
+    if force:
+        return result
+    parts = []
+    for col in collisions:
+        parts.append(
+            f"'## new {col['new']}' collides with unresolved thread {col['thread']} "
+            f"at {col['thread_anchor']} — answer it with '## thread {col['thread']}' "
+            f"instead of opening a duplicate (force=true to override)")
+    for t in unknown:
+        known = ", ".join(sorted(threads["ids"])) or "none"
+        parts.append(f"'## thread {t}' not found in mr-notes for MR !{iid} "
+                     f"(known: {known}); copy the id verbatim from mr_notes")
+    result["error"] = "; ".join(parts)
+    return result
 
 
 def _parse_mr_notes_head(markdown: str) -> dict:
@@ -324,6 +423,9 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
         return {"success": False, "error": "provide file (path) or text (markdown body)"}
     if "## thread" not in content and "## new" not in content:
         return {"success": False, "error": "no reply sections ('## thread <id>' / '## new') found in content"}
+    precheck = _notes_precheck(c, repo, iid, content, force=bool(args.get("force")))
+    if precheck.get("error"):
+        return {"success": False, "error": precheck["error"], "precheck": precheck}
     # The work-side parser keys off the "# MR !N" header; inject it so the file is never skipped.
     m = re.search(r"^#\s+MR\s+!(\d+)", content, re.MULTILINE)
     if m:
@@ -336,7 +438,8 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
     data = content.encode("utf-8")
     display = f"mr-replies/mr-!{iid}.md"
     res = c.file_sync_send(repo, display, len(data), data)
-    return {"success": True, "repo": repo, "path": display, "size": len(data), "response": res}
+    return {"success": True, "repo": repo, "path": display, "size": len(data),
+            "precheck": precheck, "response": res}
 
 
 def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:

@@ -26,6 +26,7 @@ import java.security.MessageDigest
  * ledger are scanned for it, so retries (crash mid-batch, lost HTTP response,
  * re-click) never duplicate comments. The postbox item is acked (deleted)
  * only when the entire file was pushed without failures; partial approvals never ack.
+ * Anchored replies duplicating a live unresolved thread (±3 lines) are skipped.
  */
 class MrReplyPushService(private val project: Project) {
 
@@ -253,6 +254,12 @@ class MrReplyPushService(private val project: Project) {
           }
         }
         MrReplies.Kind.NEW_ANCHORED -> {
+          val clash = anchorClash(reply, discussions.discussions)
+          if (clash != null) {
+            skipped++
+            details.add("$label: unresolved thread ${clash.id} already at ${reply.file}:${clash.anchorLine} — reply into it, don't duplicate")
+            continue
+          }
           val anchored = GitLabApi.postNewDiscussion(conf, iid, body, diffRefs, GitLabApi.DiffPosition(reply.file, reply.line))
           if (anchored.ok()) {
             result = anchored
@@ -332,6 +339,15 @@ class MrReplyPushService(private val project: Project) {
   companion object {
     private val MARKER_RE = Regex("<!-- lgm:[0-9a-f]{8} -->")
     private const val LEDGER_CAP = 500
+    private const val ANCHOR_WINDOW = 3
+
+    /** A new anchored reply within [ANCHOR_WINDOW] lines of a live unresolved thread on the same file duplicates it; answer that thread instead. */
+    internal fun anchorClash(reply: MrReplies.Reply, discussions: List<GitLabApi.MrDiscussion>): GitLabApi.MrDiscussion? =
+      discussions.firstOrNull { d ->
+        !d.resolved && d.notes.any { !it.system } &&
+          d.anchorFile == reply.file &&
+          d.anchorLine != null && kotlin.math.abs(d.anchorLine!! - reply.line) <= ANCHOR_WINDOW
+      }
 
     /** A pass may ack (delete) the postbox item only when it is clean and pushed every parsed reply; thread-gone skips leave replies dead and do not block the ack. */
     internal fun shouldAck(

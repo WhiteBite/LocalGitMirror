@@ -191,5 +191,77 @@ def test_mr_replies_status_returns_newest_per_iid():
     assert res["statuses"][0]["markdown"] == "- posted: 3"
 
 
+def _notes_items(iid=7, thread_id="t1", file="Foo.java", line=75, resolved=False):
+    kind = "## ✓ решено" if resolved else "## ⚠ НЕ РЕШЕНО"
+    md = "\n".join([
+        f"# MR !{iid} — T",
+        "",
+        "- **Ветка:** `b`",
+        "",
+        kind,
+        f"**ID треда:** `{thread_id}`",
+        "",
+        f"**Место:** `{file}:{line}`",
+        "",
+        "**Ivan** _(reviewer · 2026-10-02T10:00:00Z)_:",
+        "body",
+    ])
+    return [{"id": "n1", "path": f"mr-notes/mr-!{iid}.md", "mtime": 9, "content": md}]
+
+
+def _send(client, text, **kw):
+    return op_mr_replies_send(Ctx(config=SimpleNamespace(sync_password=""), client=client),
+                              {"repo": "r1", "iid": 7, "text": text, **kw})
+
+
+def test_mr_replies_send_rejects_anchor_colliding_with_unresolved_thread():
+    res = _send(_StubClient(items=_notes_items()), "## new Foo.java:75\nfix")
+    assert res["success"] is False
+    assert "## thread t1" in res["error"]
+    assert res["precheck"]["collisions"][0]["thread"] == "t1"
+
+
+def test_mr_replies_send_rejects_anchor_within_drift_window():
+    res = _send(_StubClient(items=_notes_items(line=106)), "## new Foo.java:104\nfix")
+    assert res["success"] is False
+    assert "Foo.java:106" in res["error"]
+
+
+def test_mr_replies_send_allows_distant_anchor_same_file():
+    res = _send(_StubClient(items=_notes_items(line=106)), "## new Foo.java:217\nfix")
+    assert res["success"] is True
+
+
+def test_mr_replies_send_resolved_thread_anchor_does_not_clash():
+    res = _send(_StubClient(items=_notes_items(resolved=True)), "## new Foo.java:75\nfix")
+    assert res["success"] is True
+
+
+def test_mr_replies_send_rejects_unknown_thread_id():
+    res = _send(_StubClient(items=_notes_items()), "## thread nope\nfix")
+    assert res["success"] is False
+    assert "'## thread nope' not found" in res["error"]
+    assert "t1" in res["error"]
+
+
+def test_mr_replies_send_accepts_known_thread_id():
+    res = _send(_StubClient(items=_notes_items()), "## thread t1\nfix")
+    assert res["success"] is True
+
+
+def test_mr_replies_send_force_overrides_precheck():
+    client = _StubClient(items=_notes_items())
+    res = _send(client, "## new Foo.java:75\nfix", force=True)
+    assert res["success"] is True
+    assert res["precheck"]["status"] == "forced"
+    assert client.sent is not None
+
+
+def test_mr_replies_send_precheck_failopen_without_notes():
+    res = _send(_StubClient(items=[]), "## new Foo.java:75\nfix")
+    assert res["success"] is True
+    assert res["precheck"]["status"] == "notes-unavailable"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])

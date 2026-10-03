@@ -299,6 +299,9 @@ MR REVIEW REPLIES (home agent -> work PC -> GitLab):
      mr_replies_send repo=<name> iid=<N> text=<inline markdown>
    Replies format: sections '## thread <id>' / '## new <file>:<line>' / '## new',
    optional 'resolve: yes' as the first line of a section.
+   mr_replies_send prechecks the reply against the newest mr-notes: '## new'
+   anchors within +-3 lines of an unresolved thread and '## thread' ids missing
+   from the notes are rejected as duplicates/hallucinations (force=true skips).
    Comment style: as a human reviewer — issues only (bug, bad call, miss),
    1-3 sentences, long only when a scenario needs it; anchored at the offending
    line, imperative, concrete; no praise, no code restating, no filler openers.
