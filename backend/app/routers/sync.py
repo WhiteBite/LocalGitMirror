@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -393,10 +393,14 @@ async def sync_upload_and_apply(
         safe_name = filename if (filename.endswith(".dmp") or filename.endswith(".bin")) else f"cache_{repo_hash}_{ts}.bin"
         dump_path = tmp_dir / Path(safe_name).name
 
-        payload = await attachment.read()
+        with dump_path.open("wb") as sink:
+            while True:
+                chunk = await attachment.read(1024 * 1024)
+                if not chunk:
+                    break
+                sink.write(chunk)
 
         def _apply() -> dict:
-            dump_path.write_bytes(payload)
             return _apply_dump_to_repo_and_sync_bare(
                 dump_path=dump_path, repo_name=repo_name, dump_filename=dump_path.name
             )
@@ -716,6 +720,7 @@ def sync_export_dump(e: str = Form(...), k: Optional[str] = Form(None)):
     # sync handler Starlette runs it in a threadpool, keeping the event loop free.
     password = _sync_password()
     params = _decrypt_params(e, password, k)
+    want_bin = params.get("format") == "bin"
 
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
@@ -793,10 +798,17 @@ def sync_export_dump(e: str = Form(...), k: Optional[str] = Form(None)):
 
             if bundle_proc.returncode != 0:
                 if "Refusing to create empty bundle" in bundle_proc.stderr:
-                    return {"e": encrypt_envelope(
+                    env = encrypt_envelope(
                         {"status": "no_content", "head": head, "repo": repo_name},
                         password,
-                    )}
+                    )
+                    if want_bin:
+                        return Response(
+                            content=b"",
+                            media_type="application/octet-stream",
+                            headers={"X-LGM-Env": env},
+                        )
+                    return {"e": env}
                 raise HTTPException(500, bundle_proc.stderr.strip() or "Failed to create bundle")
 
             # Store the freshly built bundle for subsequent identical requests.
@@ -813,10 +825,14 @@ def sync_export_dump(e: str = Form(...), k: Optional[str] = Form(None)):
                 sealed = hybrid_ctx.seal_bundle(bundle_path.read_bytes())
             except Exception as exc:
                 raise HTTPException(500, f"Failed to create sync package: {exc}")
-            return {
-                "e": encrypt_envelope({"status": "ok", "head": head, "repo": repo_name}, password),
-                "d": base64.b64encode(sealed).decode("ascii"),
-            }
+            env = encrypt_envelope({"status": "ok", "head": head, "repo": repo_name}, password)
+            if want_bin:
+                return Response(
+                    content=sealed,
+                    media_type="application/octet-stream",
+                    headers={"X-LGM-Env": env},
+                )
+            return {"e": env, "d": base64.b64encode(sealed).decode("ascii")}
 
         ts = datetime.now().strftime("%Y%m%d_%H%M")
         dump_path = tmp_dir / f".tmp_{uuid.uuid4().hex[:8]}"
@@ -825,10 +841,15 @@ def sync_export_dump(e: str = Form(...), k: Optional[str] = Form(None)):
         except Exception as exc:
             raise HTTPException(500, f"Failed to create sync package: {exc}")
 
-        return {
-            "e": encrypt_envelope({"status": "ok", "head": head, "repo": repo_name}, password),
-            "d": base64.b64encode(dump_path.read_bytes()).decode("ascii"),
-        }
+        dump_bytes = dump_path.read_bytes()
+        env = encrypt_envelope({"status": "ok", "head": head, "repo": repo_name}, password)
+        if want_bin:
+            return Response(
+                content=dump_bytes,
+                media_type="application/octet-stream",
+                headers={"X-LGM-Env": env},
+            )
+        return {"e": env, "d": base64.b64encode(dump_bytes).decode("ascii")}
 
 
 @router.post("/documents/preview")
