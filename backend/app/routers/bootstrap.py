@@ -1,9 +1,9 @@
 """Bootstrap, tools distribution and plugin-repository endpoints.
 
-Serves three things the work PC needs on day one (and on every update):
-  /api/tools/latest   — zip of lgm.py + lgm_mcp.py + lgm_core/, optionally sealed
-  /api/bootstrap      — PowerShell one-liner script (plain text, no secrets inside
-                        except the server URL; the sync password is prompted)
+Serves four things the work PC needs on day one (and on every update):
+  /api/tools/latest    — zip of lgm.py + lgm_mcp.py + lgm_core/, optionally sealed
+  /api/bootstrap       — PowerShell one-liner script (stealth-risky; see /work-pc-bundle)
+  /api/work-pc-bundle  — single zip with plugin + tools + README, no credentials inside
   /api/plugin/repo.xml — IntelliJ custom plugin repository descriptor
 """
 
@@ -231,3 +231,68 @@ def bootstrap_script(request: Request):
         api_key=api_key,
     )
     return PlainTextResponse(content=script, media_type="text/plain")
+
+
+_README_TEMPLATE = """DocCache v{version} — Work PC Setup
+=====================================
+
+Server: {base_url}
+
+1) IDEA Plugin
+   Open IDEA → Settings → Plugins → gear icon → Install Plugin from Disk
+   Select: plugin/{plugin_filename}
+   In plugin settings (Tools → DocCache): enter Server URL, API Key, Sync Password
+   (get them from the server console banner or ask the home PC operator)
+
+2) CLI / MCP tools
+   Extract tools/ to any folder (e.g. D:\\Tools\\lgm)
+   Create .env in that folder:
+     BASE_URL={base_url}
+     API_KEY=<enter from server banner>
+     SYNC_PASSWORD=<enter from server banner>
+   Test: python lgm.py status
+
+3) OpenCode MCP (optional)
+   Add to ~/.config/opencode/opencode.json:
+     "mcp": {{"doccache-tools": {{"command": "python", "args": ["D:/Tools/lgm/lgm_mcp.py"],
+       "env": {{"BASE_URL": "{base_url}", "API_KEY": "<key>"}}}}}}
+
+4) IDEA plugin auto-update (optional)
+   Settings → Plugins → gear → Manage Plugin Repositories → Add:
+     {base_url}/api/plugin/repo.xml
+   IDEA will check for updates automatically
+
+Updates: python lgm.py update (or re-download this bundle)
+Credentials are NOT included in this file for security.
+"""
+
+
+@router.get("/work-pc-bundle")
+def work_pc_bundle(request: Request):
+    """Single zip for Telegram/flash transfer: plugin + tools + README (no credentials)."""
+    base_url = str(request.base_url).rstrip("/")
+
+    plugin = _plugin_archive()
+    from app.routers.plugin import _parse_version
+    plugin_version = _parse_version(plugin.name) or "0.0.0"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(plugin, f"plugin/{plugin.name}")
+        for arcname, path in _tools_files():
+            zf.write(path, f"tools/{arcname}")
+        readme = _README_TEMPLATE.format(
+            version=_tools_version(),
+            base_url=base_url,
+            plugin_filename=plugin.name,
+        )
+        zf.writestr("README.txt", readme)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="doccache-setup-v{plugin_version}.zip"',
+            "X-LGM-Version": _tools_version(),
+        },
+    )
