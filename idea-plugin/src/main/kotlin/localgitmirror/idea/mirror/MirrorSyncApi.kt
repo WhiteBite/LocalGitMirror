@@ -455,6 +455,7 @@ object MirrorSyncApi {
         if (!since.isNullOrBlank()) put("since", since)
         if (!branch.isNullOrBlank()) put("branch", branch)
         if (haves.isNotEmpty()) put("haves", haves.joinToString(","))
+        put("format", "bin")
       }
       val codec = MirrorCrypto.beginCall(syncPassword)
       val e = codec.sealEnvelope(params)
@@ -479,6 +480,28 @@ object MirrorSyncApi {
       if (code !in 200..299) {
         val body = HttpClient.readBody(conn)
         return DownloadResult(code, null, body.take(500))
+      }
+
+      val envHeader = conn.getHeaderField("X-LGM-Env")
+      if (isBinaryExportResponse(conn.contentType, envHeader)) {
+        val inner = parseExportEnvelopeHeader(envHeader, codec)
+          ?: return DownloadResult(500, null, "Missing envelope in response")
+        val status = inner["status"]?.jsonPrimitive?.contentOrNull ?: ""
+        val head = inner["head"]?.jsonPrimitive?.contentOrNull
+        val hdrRepo = inner["repo"]?.jsonPrimitive?.contentOrNull
+        if (status == "no_content") {
+          return DownloadResult(204, null, "No new commits", head = head, repo = hdrRepo)
+        }
+        // body carries sealed bytes; outFile must hold the opened bundle, hence the temp file
+        val tmpSealed = File(outFile.parentFile, ".tmp_" + UUID.randomUUID().toString().take(8))
+        try {
+          HttpClient.readBodyToFileWithProgress(conn, tmpSealed, onProgress)
+          outFile.writeBytes(codec.bundleToDisk(tmpSealed.readBytes()))
+        } finally {
+          runCatching { tmpSealed.delete() }
+        }
+        codec.wipe()
+        return DownloadResult(code, outFile, "OK", head = head, repo = hdrRepo)
       }
 
       // Response: {"e": "<encrypted {status,head,repo}>", "d": "<bundle base64>"}
@@ -507,6 +530,19 @@ object MirrorSyncApi {
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)
       DownloadResult(0, null, "${e.type}: ${e.message}")
+    }
+  }
+
+  internal fun isBinaryExportResponse(contentType: String?, envHeader: String?): Boolean =
+    contentType?.contains("application/octet-stream", ignoreCase = true) == true ||
+      !envHeader.isNullOrBlank()
+
+  internal fun parseExportEnvelopeHeader(headerValue: String?, codec: MirrorCrypto.Codec): JsonObject? {
+    if (headerValue.isNullOrBlank()) return null
+    return try {
+      codec.openEnvelopeJson(headerValue)
+    } catch (_: Exception) {
+      null
     }
   }
 
