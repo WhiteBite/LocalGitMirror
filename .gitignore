@@ -126,3 +126,4 @@ test-output.txt
 # Foreign scratch scripts (kryptonit-specific, not this project)
 /scripts/set-local-gradle.ps1
 /scripts/diag-work-deps.ps1
+doccache-setup*.zip
