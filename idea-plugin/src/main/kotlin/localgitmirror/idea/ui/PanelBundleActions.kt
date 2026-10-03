@@ -146,7 +146,7 @@ internal fun LocalGitMirrorPanel.syncSelectedBranches() {
   }
 }
 
-/** Send multiple branches in sequence. */
+/** Send multiple branches as one sync: single bundle, single upload. */
 internal fun LocalGitMirrorPanel.syncMultipleBranches(branches: List<String>) {
   if (isSyncing) {
     notify("Операция уже выполняется", NotificationType.WARNING)
@@ -162,22 +162,17 @@ internal fun LocalGitMirrorPanel.syncMultipleBranches(branches: List<String>) {
       }
       val settings = service<MirrorSettingsService>().state
 
-      for ((index, branch) in branches.withIndex()) {
-        indicator.checkCanceled()
-        indicator.fraction = index.toDouble() / branches.size
-        indicator.text = "Отправка $branch (${index + 1}/${branches.size})"
-
-        try {
-          val result = syncFacade.runFullSync(dir, settings, additionalBranches = listOf(branch))
-          if (!result.step.ok) {
-            notify("Ошибка отправки $branch: ${result.step.message}", NotificationType.ERROR)
-          }
-        } catch (e: Exception) {
-          notify("Ошибка отправки $branch: ${e.message}", NotificationType.ERROR)
+      indicator.text = "Отправка ${branches.size} веток: ${branches.joinToString(", ")}"
+      try {
+        val result = syncFacade.runFullSync(dir, settings, additionalBranches = branches)
+        if (!result.step.ok) {
+          notify("Ошибка отправки ${branches.size} веток: ${result.step.message}", NotificationType.ERROR)
+        } else {
+          notify("Отправлено ${branches.size} веток: ${branches.joinToString(", ")}", NotificationType.INFORMATION)
         }
+      } catch (e: Exception) {
+        notify("Ошибка отправки ${branches.size} веток: ${e.message}", NotificationType.ERROR)
       }
-
-      notify("Отправлено ${branches.size} веток: ${branches.joinToString(", ")}", NotificationType.INFORMATION)
     }
 
     override fun onSuccess() {
