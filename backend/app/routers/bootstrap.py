@@ -33,7 +33,7 @@ def _repo_root() -> Path:
 def _tools_files() -> list[tuple[str, Path]]:
     root = _repo_root()
     files: list[tuple[str, Path]] = []
-    for name in ("lgm.py", "lgm_mcp.py", "_lgm_npm.py"):
+    for name in ("lgm.py", "lgm_mcp.py", "_lgm_npm.py", "setup.py"):
         p = root / name
         if p.is_file():
             files.append((name, p))
@@ -244,20 +244,20 @@ Server: __SERVER_URL__
    In plugin settings (Tools → DocCache): enter Server URL, API Key, Sync Password
    (get them from the server console banner or ask the home PC operator)
 
-2) CLI / MCP tools
-   Extract tools/ to any folder (e.g. D:\\Tools\\lgm)
-   Create .env in that folder:
+2) CLI / MCP tools + OpenCode
+   Open terminal in the extracted tools/ folder and run:
+     python setup.py
+   It will ask for Server URL, API Key, Sync Password,
+   copy tools to ~/Tools/lgm, write .env, and configure OpenCode MCP.
+
+   Manual alternative (if setup.py doesn't work):
+   Create .env in this folder:
      BASE_URL=__SERVER_URL__
      API_KEY=<enter from server banner>
      SYNC_PASSWORD=<enter from server banner>
    Test: python lgm.py status
 
-3) OpenCode MCP (optional)
-   Add to ~/.config/opencode/opencode.json:
-     "mcp": {{"doccache-tools": {{"command": "python", "args": ["D:/Tools/lgm/lgm_mcp.py"],
-       "env": {{"BASE_URL": "__SERVER_URL__", "API_KEY": "<key>"}}}}}}
-
-4) IDEA plugin auto-update (optional)
+3) IDEA plugin auto-update (optional)
    Settings → Plugins → gear → Manage Plugin Repositories → Add:
      __SERVER_URL__/api/plugin/repo.xml
    IDEA will check for updates automatically
