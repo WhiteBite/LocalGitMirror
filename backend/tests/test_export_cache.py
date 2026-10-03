@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.bundle_crypto import FORMAT_VERSION, decrypt_dump_bytes, decrypt_dump_to_bundle
+from app.core import git_bundle
+from app.core.bundle_crypto import decrypt_dump_to_bundle, encrypt_bundle_bytes
 from app.core.git_bundle import _EXPORT_CACHE_MAX_ENTRIES
 from app.core.repo_manager import RepoManager
 from tests import _harness
@@ -222,9 +223,9 @@ def test_corrupt_cache_falls_back(tmp_path, monkeypatch):
     assert refs2.get("refs/heads/trunk") == refs1.get("refs/heads/trunk")
 
 
-# ── Test 5: cache stores encrypted bytes at rest (not plaintext) ─────────────
+# ── Test 5: cache stores plaintext git bundles at rest ───────────────────────
 
-def test_cache_stores_encrypted_bytes(tmp_path, monkeypatch):
+def test_cache_stores_plaintext_bundle(tmp_path, monkeypatch):
     monkeypatch.setenv("SYNC_PASSWORD", PASSWORD)
     client, repo, bare, work, rm, storage = _make_repo(tmp_path)
 
@@ -235,42 +236,89 @@ def test_cache_stores_encrypted_bytes(tmp_path, monkeypatch):
     assert len(entries) == 1, f"expected one cached entry, found {entries}"
     raw = entries[0].read_bytes()
 
-    # Encrypted blob starts with FORMAT_VERSION (0x01), not a git bundle header
-    # (which starts with "# v3 git bundle" or similar text).
-    assert raw[0] == FORMAT_VERSION, "cache file must start with encryption version byte"
-    assert not raw.startswith(b"# v"), "cache file must not be a plaintext git bundle"
-
-    # The encrypted bytes must decrypt back to a valid git bundle.
-    plaintext = decrypt_dump_bytes(raw, PASSWORD)
-    assert plaintext.startswith(b"# v"), "decrypted cache must be a valid git bundle"
+    assert raw.startswith(b"# v"), "cache file must be a plaintext git bundle"
+    proc = subprocess.run(
+        ["git", "bundle", "list-heads", str(entries[0])],
+        cwd=str(tmp_path), capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, f"cached entry must be a valid bundle: {proc.stderr}"
 
 
-# ── Test 6: legacy plaintext cache entry is treated as a miss ─────────────────
+# ── Test 6: legacy encrypted cache entry is treated as a miss ────────────────
 
-def test_legacy_plaintext_cache_is_miss(tmp_path, monkeypatch):
+def test_legacy_encrypted_cache_is_miss(tmp_path, monkeypatch):
     monkeypatch.setenv("SYNC_PASSWORD", PASSWORD)
     client, repo, bare, work, rm, storage = _make_repo(tmp_path)
 
-    # Populate the cache to discover the key, then overwrite with a plaintext
-    # git bundle (simulating a legacy entry from before at-rest encryption).
     first = _export(client, repo, branch="trunk")
-    refs1, bundle_path = _bundle_refs(first["data"], tmp_path, "warm")
+    refs1, _ = _bundle_refs(first["data"], tmp_path, "warm")
 
     cache_dir = storage / ".lgm" / "_export_cache"
     entries = [p for p in cache_dir.iterdir() if p.is_file() and not p.name.startswith(".tmp_")]
     assert len(entries) == 1
     key = entries[0].name
 
-    # Overwrite with the raw plaintext bundle bytes.
-    entries[0].write_bytes(bundle_path.read_bytes())
+    _, bundle_path = _bundle_refs(first["data"], tmp_path, "warmbundle")
+    entries[0].write_bytes(encrypt_bundle_bytes(bundle_path.read_bytes(), PASSWORD))
 
-    # Export must treat the legacy plaintext entry as a miss and rebuild.
     second = _export(client, repo, branch="trunk")
     assert second["status"] == "ok"
     refs2, _ = _bundle_refs(second["data"], tmp_path, "rebuilt")
     assert refs2.get("refs/heads/trunk") == refs1.get("refs/heads/trunk")
 
-    # The cache entry must now be encrypted (re-stored after rebuild).
     raw = (cache_dir / key).read_bytes()
-    assert raw[0] == FORMAT_VERSION, "rebuilt cache entry must be encrypted"
+    assert raw.startswith(b"# v"), "rebuilt cache entry must be a plaintext git bundle"
+
+
+# ── Test 7: cache is enabled without SYNC_PASSWORD ───────────────────────────
+
+def test_cache_roundtrip_without_sync_password(tmp_path, monkeypatch):
+    monkeypatch.delenv("SYNC_PASSWORD", raising=False)
+    storage = tmp_path / "storage"
+    storage.mkdir(parents=True, exist_ok=True)
+
+    class _RM:
+        storage_path = storage
+
+    monkeypatch.setattr(git_bundle, "repo_manager", _RM(), raising=False)
+
+    cache_dir = git_bundle._export_cache_dir()
+    assert cache_dir == storage / ".lgm" / "_export_cache"
+
+    work = tmp_path / "bundle-src"
+    work.mkdir()
+    _run_git(work, "init")
+    _run_git(work, "config", "user.email", "c@example.com")
+    _run_git(work, "config", "user.name", "C")
+    (work / "f.txt").write_text("x\n", encoding="utf-8")
+    _run_git(work, "add", "f.txt")
+    _run_git(work, "commit", "-m", "cache me")
+    bundle = tmp_path / "plain.bundle"
+    _run_git(work, "bundle", "create", str(bundle), "--all")
+
+    key = git_bundle._export_cache_key("repo", "head", "trunk", None, "aaa,bbb")
+    git_bundle._export_cache_store(cache_dir, key, bundle)
+    assert (cache_dir / key).read_bytes() == bundle.read_bytes()
+
+    dest = tmp_path / "hit.bundle"
+    assert git_bundle._export_cache_lookup(cache_dir, key, dest) is True
+    assert dest.read_bytes() == bundle.read_bytes()
+    proc = subprocess.run(
+        ["git", "bundle", "list-heads", str(dest)],
+        cwd=str(tmp_path), capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, f"cache hit must pass the caller's list-heads check: {proc.stderr}"
+
+
+# ── Test 8: cache key canonicalizes haves ────────────────────────────────────
+
+def test_cache_key_canonicalizes_haves():
+    key = git_bundle._export_cache_key
+    base = key("repo", "head", "trunk", None, "aaa,bbb")
+
+    assert base == key("repo", "head", "trunk", None, "bbb,aaa")
+    assert base == key("repo", "head", "trunk", None, "aaa, bbb,,aaa")
+    assert base != key("repo", "head", "trunk", None, "aaa,ccc")
+    assert base != key("repo", "head2", "trunk", None, "aaa,bbb")
+    assert key("repo", "head", "trunk", " s1 ", None) == key("repo", "head", "trunk", "s1", None)
 

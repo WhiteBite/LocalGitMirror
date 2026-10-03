@@ -19,7 +19,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.core.bundle_crypto import decrypt_dump_to_bundle, encrypt_bundle_to_dump
+from app.core import git_bundle
+from app.core.bundle_crypto import MAGIC, decrypt_dump_to_bundle, encrypt_bundle_to_dump
 from app.core.repo_manager import RepoManager
 from tests import _harness
 from tests.conftest import envelope_form_post, parse_envelope
@@ -219,3 +220,128 @@ def test_multi_branch_roundtrip_work_to_home(tmp_path: Path, monkeypatch):
     _run_git(home, "checkout", "feature-xyz")
     assert (home / "feature.txt").exists(), "feature.txt missing after checkout feature-xyz"
     assert (home / "readme.txt").exists(), "readme.txt missing after checkout feature-xyz"
+
+
+class _P:
+    def __init__(self, rc=0, out="", err=""):
+        self.returncode = rc
+        self.stdout = out
+        self.stderr = err
+
+
+def _mock_apply_env(monkeypatch, tmp_path: Path, push_result):
+    repo = "single-push-repo"
+    workspace = tmp_path / repo
+    bare = tmp_path / f"{repo}.git"
+    workspace.mkdir()
+    bare.mkdir()
+
+    class _RM:
+        def get_repos(self):
+            return [repo]
+
+        def _get_workspace_path(self, _r):
+            return workspace
+
+        def _get_bare_path(self, _r):
+            return bare
+
+    monkeypatch.setattr(git_bundle, "repo_manager", _RM(), raising=False)
+    monkeypatch.setenv("SYNC_PASSWORD", "pwd")
+
+    dump = tmp_path / "dump_single-push-repo_20260101_0000.dmp"
+    dump.write_bytes(MAGIC + b"x" * 64)
+
+    def _fake_decrypt(_dump, out, _pwd):
+        out.write_bytes(b"bundle")
+
+    monkeypatch.setattr(git_bundle, "decrypt_dump_to_bundle", _fake_decrypt)
+
+    calls = []
+
+    def _fake_git(_wd, *args):
+        calls.append(args)
+        if args[:2] == ("status", "--porcelain"):
+            return _P(0, "")
+        if args[:2] == ("bundle", "list-heads"):
+            return _P(0, "aaa1111 refs/heads/master\nbbb2222 refs/heads/feature\nccc3333 refs/heads/ulw/w2\n")
+        if args[:3] == ("symbolic-ref", "--short", "-q"):
+            return _P(0, "master\n")
+        if args[0] == "push":
+            return push_result
+        if args[:2] == ("log", "-1"):
+            return _P(0, "aaa1111 head\n")
+        return _P(0, "", "")
+
+    monkeypatch.setattr(git_bundle, "_git", _fake_git)
+    return repo, dump, calls
+
+
+def _apply(repo, dump):
+    return git_bundle._apply_dump_to_repo_and_sync_bare(
+        dump_path=dump, repo_name=repo, dump_filename=dump.name)
+
+
+def test_apply_pushes_all_branches_in_one_git_push(tmp_path: Path, monkeypatch):
+    ok = _P(0, "", (
+        "To /mocked/bare\n"
+        " * [new branch]      refs/lgm/incoming/master -> master\n"
+        "   aaa1111..bbb2222  refs/lgm/incoming/feature -> feature\n"
+        " * [new branch]      refs/lgm/incoming/ulw/w2 -> ulw/w2\n"
+    ))
+    repo, dump, calls = _mock_apply_env(monkeypatch, tmp_path, ok)
+
+    res = _apply(repo, dump)
+
+    assert res["success"] is True, res
+    assert set(res["branches"]) == {"master", "feature", "ulw/w2"}
+
+    push_calls = [c for c in calls if c[0] == "push"]
+    assert len(push_calls) == 1, f"expected one push call, got {push_calls}"
+    assert push_calls[0][1] == "--force"
+    assert set(push_calls[0][3:]) == {
+        "refs/lgm/incoming/master:refs/heads/master",
+        "refs/lgm/incoming/feature:refs/heads/feature",
+        "refs/lgm/incoming/ulw/w2:refs/heads/ulw/w2",
+    }
+
+    incoming_updates = [i for i, c in enumerate(calls)
+                        if c[0] == "update-ref" and str(c[1]).startswith("refs/lgm/incoming")]
+    push_idx = next(i for i, c in enumerate(calls) if c[0] == "push")
+    assert len(incoming_updates) == 3
+    assert max(incoming_updates) < push_idx
+
+
+def test_apply_single_push_partial_rejection_keeps_successful_branches(tmp_path: Path, monkeypatch):
+    partial = _P(1, "", (
+        "To /mocked/bare\n"
+        " * [new branch]      refs/lgm/incoming/master -> master\n"
+        " ! [rejected]        refs/lgm/incoming/feature -> feature (non-fast-forward)\n"
+        " ! [remote rejected] refs/lgm/incoming/ulw/w2 -> ulw/w2 (pre-receive hook declined)\n"
+    ))
+    repo, dump, _ = _mock_apply_env(monkeypatch, tmp_path, partial)
+
+    res = _apply(repo, dump)
+
+    assert res["success"] is True, res
+    assert res["branches"] == ["master"]
+
+
+def test_apply_single_push_unparseable_ref_counts_as_failed(tmp_path: Path, monkeypatch):
+    weird = _P(1, "", "To /mocked/bare\n * [new branch]      refs/lgm/incoming/master -> master\n")
+    repo, dump, _ = _mock_apply_env(monkeypatch, tmp_path, weird)
+
+    res = _apply(repo, dump)
+
+    assert res["success"] is True, res
+    assert res["branches"] == ["master"]
+
+
+def test_apply_single_push_all_up_to_date_counts_as_pushed(tmp_path: Path, monkeypatch):
+    uptodate = _P(0, "", "To /mocked/bare\nEverything up-to-date\n")
+    repo, dump, _ = _mock_apply_env(monkeypatch, tmp_path, uptodate)
+
+    res = _apply(repo, dump)
+
+    assert res["success"] is True, res
+    assert set(res["branches"]) == {"master", "feature", "ulw/w2"}

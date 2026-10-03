@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from app.core.bundle_crypto import decrypt_dump_bytes, decrypt_dump_to_bundle, encrypt_bundle_bytes
+from app.core.bundle_crypto import decrypt_dump_to_bundle
 from app.core.sync_envelope import _hybrid_bundle_ctx
 
 # Injected from main.py
@@ -30,9 +30,6 @@ def _redact_git_text(s: str) -> str:
 
 def _git(cwd: Path, *args: str, timeout: int = 600) -> subprocess.CompletedProcess:
     cmd = ["git", *args]
-    if system_logger:
-        system_logger.info(f"Exec: git {cmd[1] if len(cmd) > 1 else ''} (cwd={cwd.name})")
-
     try:
         proc = subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=timeout)
@@ -44,11 +41,8 @@ def _git(cwd: Path, *args: str, timeout: int = 600) -> subprocess.CompletedProce
             stderr=f"git command timed out after {timeout}s",
         )
 
-    if system_logger:
-        if proc.stderr and proc.stderr.strip():
-            system_logger.info(f"Git Stderr: {_redact_git_text(proc.stderr.strip())}")
-        if proc.returncode != 0:
-            system_logger.error(f"Git Failed ({proc.returncode}): {_redact_git_text(proc.stdout.strip())}")
+    if system_logger and proc.returncode != 0:
+        system_logger.error(f"Git Failed ({proc.returncode}): {_redact_git_text(proc.stdout.strip())}")
 
     return proc
 
@@ -268,19 +262,41 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
         pushed_branches = []
         for branch_name, commit_hash in incoming.items():
             _git(workspace_path, "update-ref", f"refs/lgm/incoming/{branch_name}", commit_hash)
-            if bare_path.exists():
-                push_proc = _git(
-                    workspace_path, "push", "--force",
-                    str(bare_path),
-                    f"refs/lgm/incoming/{branch_name}:refs/heads/{branch_name}"
-                )
-                if push_proc.returncode == 0:
+
+        if bare_path.exists():
+            refspecs = [f"refs/lgm/incoming/{b}:refs/heads/{b}" for b in incoming]
+            push_proc = _git(workspace_path, "push", "--force", str(bare_path), *refspecs)
+            push_lines = ((push_proc.stderr or "") + "\n" + (push_proc.stdout or "")).splitlines()
+            branch_results = {}
+            for line in push_lines:
+                if "->" not in line:
+                    continue
+                left = line.partition("->")[0].split()
+                right = line.partition("->")[2].split()
+                src = left[-1] if left else ""
+                dst = right[0] if right else ""
+                for b in incoming:
+                    if src in (f"refs/lgm/incoming/{b}", b) or dst == b:
+                        branch_results[b] = (not line.strip().startswith("!"), line.strip())
+                        break
+            overall_err = (push_proc.stderr or "").strip()
+            for branch_name in incoming:
+                result = branch_results.get(branch_name)
+                if result is None:
+                    ok = push_proc.returncode == 0
+                    detail = overall_err
+                else:
+                    ok, detail = result
+                if ok:
                     pushed_branches.append(branch_name)
                 else:
-                    err = (push_proc.stderr or "").strip()
-                    push_errors.append(f"{branch_name}: {err}")
-                    if system_logger:
-                        system_logger.warning("Failed to push branch", {"repo": repo_name, "error": _redact_git_text(err)})
+                    push_errors.append(f"{branch_name}: {detail}")
+
+            if push_errors and system_logger:
+                system_logger.warning("Failed to push branches", {
+                    "repo": repo_name,
+                    "branches": [e.split(":", 1)[0] for e in push_errors],
+                })
 
         if not pushed_branches and push_errors:
             _cleanup_lgm_refs(workspace_path)
@@ -407,17 +423,13 @@ def _build_export_bundle(workspace: Path, bundle_path: Path, since, branch, have
         include_refs = ["--all"]
 
     # Build exclusion list from valid haves (or legacy `since`)
-    exclusions = []
     have_list = []
     if haves:
         have_list = [h.strip() for h in haves.split(",") if h.strip()]
     if since and since not in have_list:
         have_list.append(since.strip())
 
-    for h in have_list:
-        # Only exclude commits the server actually has
-        if _git(workspace, "cat-file", "-e", f"{h}^{{commit}}").returncode == 0:
-            exclusions.append(f"^{h}")
+    exclusions = [f"^{h}" for h in _batch_check_commits([workspace], have_list)]
 
     args = ["bundle", "create", str(bundle_path)] + include_refs + exclusions
     proc = _git(workspace, *args)
@@ -436,7 +448,7 @@ def _build_export_bundle(workspace: Path, bundle_path: Path, since, branch, have
     return proc
 
 
-# Content-addressed, encrypted-at-rest bundle cache; any error is a miss (rebuild).
+# Content-addressed plaintext bundle cache; any error is a miss (rebuild).
 _EXPORT_CACHE_DIRNAME = "_export_cache"
 _EXPORT_CACHE_TTL_SECONDS = 3600  # 1 hour
 _EXPORT_CACHE_MAX_ENTRIES = 20    # LRU cap by mtime
@@ -446,8 +458,6 @@ def _export_cache_dir() -> Optional[Path]:
     """Return (creating if needed) the cache directory under storage, or None."""
     try:
         if not repo_manager or not getattr(repo_manager, "storage_path", None):
-            return None
-        if not os.getenv("SYNC_PASSWORD", ""):
             return None
         storage = Path(repo_manager.storage_path)
         _lgm = storage / ".lgm" / _EXPORT_CACHE_DIRNAME
@@ -461,12 +471,13 @@ def _export_cache_dir() -> Optional[Path]:
 
 def _export_cache_key(repo_name: str, head: str, branch, since, haves) -> str:
     """sha256 over the inputs that fully determine the bundle bytes."""
+    have_list = sorted({h.strip() for h in (haves or "").split(",") if h.strip()})
     parts = [
         repo_name or "",
         head or "",
         (branch or ""),
-        (since or ""),
-        (haves or ""),
+        (since or "").strip(),
+        ",".join(have_list),
     ]
     joined = "\x00".join(parts)
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()
@@ -505,20 +516,17 @@ def _export_cache_prune(cache_dir: Path) -> None:
 
 
 def _export_cache_lookup(cache_dir: Path, key: str, dest: Path) -> bool:
-    """Decrypt a cached bundle for `key` into `dest`. Return True on a usable hit.
+    """Copy a cached bundle for `key` into `dest`. Return True on a usable hit.
 
-    Failure to decrypt (legacy plaintext entry, tampered data, wrong password)
-    is treated as a cache miss — the caller rebuilds from scratch.
+    The caller validates the bytes with `git bundle list-heads`; a corrupt or
+    legacy-encrypted entry fails there and is treated as a cache miss — the
+    caller rebuilds from scratch.
     """
-    password = os.getenv("SYNC_PASSWORD", "")
-    if not password:
-        return False
     try:
         cached = cache_dir / key
         if not cached.is_file() or cached.stat().st_size == 0:
             return False
-        plaintext = decrypt_dump_bytes(cached.read_bytes(), password)
-        dest.write_bytes(plaintext)
+        dest.write_bytes(cached.read_bytes())
         try:
             os.utime(cached, None)
         except Exception:
@@ -529,16 +537,12 @@ def _export_cache_lookup(cache_dir: Path, key: str, dest: Path) -> bool:
 
 
 def _export_cache_store(cache_dir: Path, key: str, bundle_path: Path) -> None:
-    """Encrypt and store the freshly built bundle under `key` (atomic, best-effort)."""
-    password = os.getenv("SYNC_PASSWORD", "")
-    if not password:
-        return
+    """Store the freshly built bundle under `key` (atomic, best-effort)."""
     tmp = cache_dir / f".tmp_{uuid.uuid4().hex[:8]}"
     try:
         if not bundle_path.is_file() or bundle_path.stat().st_size == 0:
             return
-        encrypted = encrypt_bundle_bytes(bundle_path.read_bytes(), password)
-        tmp.write_bytes(encrypted)
+        tmp.write_bytes(bundle_path.read_bytes())
         target = cache_dir / key
         os.replace(tmp, target)
     except Exception:
