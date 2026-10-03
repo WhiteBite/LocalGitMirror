@@ -55,7 +55,7 @@ class SyncEngineFlowTest {
   @Test
   fun `pointer-only path skips dump and upload`() {
     val mirror = FakeMirrorPort(
-      hasCommitsBody = """{"known":["abc1234"]}""",
+      negotiateKnown = setOf("abc1234"),
       applyKnownResult = HttpResult(200, "ok")
     )
     val git = FakeGitPort(head = "abc1234")
@@ -70,6 +70,7 @@ class SyncEngineFlowTest {
       assertEquals(true, res.step.ok)
       assertEquals("onyx-platform", res.repo)
       assertNotNull(res.http)
+      assertEquals(1, mirror.negotiateCalls)
       assertEquals(1, mirror.applyKnownCalls)
       assertEquals(0, work.runBackupCalls)
       assertEquals(0, mirror.uploadCalls)
@@ -80,8 +81,63 @@ class SyncEngineFlowTest {
   }
 
   @Test
+  fun `pointer-only fires when known contains all branch tips`() {
+    val head = "abc1234"
+    val mirror = FakeMirrorPort(
+      negotiateRefs = mapOf(
+        "main" to MirrorSyncApi.RefInfo(head, "2026-03-13T12:00:00Z", true),
+        "feature" to MirrorSyncApi.RefInfo(head, "2026-03-13T12:00:00Z", false)
+      ),
+      negotiateKnown = setOf(head),
+      applyKnownResult = HttpResult(200, "ok")
+    )
+    val git = FakeGitPort(head = head)
+    val work = FakeWorkKitPort()
+    val state = FakeStatePort()
+    val resolver = fixedResolver("onyx-platform")
+
+    val engine = SyncEngine(mirror = mirror, git = git, workKit = work, state = state, resolver = resolver)
+    val projectDir = createTempDir(prefix = "tmp-engine-tips-")
+    try {
+      val res = engine.runFullSyncWithSnapshot(
+        project = dummyProject(), projectDir = projectDir, snapshot = defaultSnapshot(),
+        additionalBranches = listOf("feature")
+      )
+      assertEquals(true, res.step.ok)
+      assertEquals(1, mirror.negotiateCalls)
+      assertEquals(1, mirror.applyKnownCalls)
+      assertEquals(0, work.runBackupCalls)
+      assertEquals(0, mirror.uploadCalls)
+    } finally {
+      projectDir.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `negotiate failure falls back to full bundle upload`() {
+    val mirror = FakeMirrorPort(negotiateCode = 503)
+    val git = FakeGitPort(head = "abc1234")
+    val work = FakeWorkKitPort(createDump = true)
+    val state = FakeStatePort()
+    val resolver = fixedResolver("onyx-platform")
+
+    val engine = SyncEngine(mirror = mirror, git = git, workKit = work, state = state, resolver = resolver)
+    val projectDir = createTempDir(prefix = "tmp-engine-negotiate-fail-")
+    try {
+      val res = engine.runFullSyncWithSnapshot(project = dummyProject(), projectDir = projectDir, snapshot = defaultSnapshot())
+      assertEquals(true, res.step.ok)
+      assertEquals(1, mirror.negotiateCalls)
+      assertEquals(0, mirror.applyKnownCalls)
+      assertEquals(1, work.runBackupCalls)
+      assertEquals(1, mirror.uploadCalls)
+    } finally {
+      projectDir.deleteRecursively()
+    }
+  }
+
+  @Test
   fun `offline mode generates dump and skips upload`() {
-    val mirror = FakeMirrorPort(hasCommitsBody = """{"known":[]}""")
+    val mirror = FakeMirrorPort()
     val git = FakeGitPort(head = "abc1234")
     val work = FakeWorkKitPort(createDump = true)
     val state = FakeStatePort()
@@ -104,7 +160,7 @@ class SyncEngineFlowTest {
 
   @Test
   fun `no-op incremental does not fail sync`() {
-    val mirror = FakeMirrorPort(hasCommitsBody = """{"known":[]}""")
+    val mirror = FakeMirrorPort()
     val git = FakeGitPort(head = "abc1234")
     val work = FakeWorkKitPort(createDump = false, noChanges = true)
     val state = FakeStatePort()
@@ -149,7 +205,7 @@ class SyncEngineFlowTest {
 
   @Test
   fun `fails when generation succeeds but no dump discoverable`() {
-    val mirror = FakeMirrorPort(hasCommitsBody = """{"known":[]}""")
+    val mirror = FakeMirrorPort()
     val git = FakeGitPort(head = "abc1234")
     val work = FakeWorkKitPort(createDump = false)
     val state = FakeStatePort()
@@ -225,11 +281,14 @@ class SyncEngineFlowTest {
   }
 
   private class FakeMirrorPort(
-    private val hasCommitsBody: String = """{"known":[]}""",
-    private val applyKnownResult: HttpResult = HttpResult(404, "missing")
+    private val applyKnownResult: HttpResult = HttpResult(404, "missing"),
+    private val negotiateCode: Int = 200,
+    private val negotiateRefs: Map<String, MirrorSyncApi.RefInfo> = emptyMap(),
+    private val negotiateKnown: Set<String> = emptySet()
   ) : MirrorPort {
     var applyKnownCalls: Int = 0
     var uploadCalls: Int = 0
+    var negotiateCalls: Int = 0
 
     override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean, projectDir: File?): HttpResult {
       return HttpResult(200, "ok")
@@ -245,7 +304,15 @@ class SyncEngineFlowTest {
     }
 
     override fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): HttpResult {
-      return HttpResult(200, hasCommitsBody)
+      return HttpResult(200, """{"known":[]}""")
+    }
+
+    override fun negotiate(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): MirrorSyncApi.NegotiateResult {
+      negotiateCalls += 1
+      if (negotiateCode !in 200..299) {
+        return MirrorSyncApi.NegotiateResult(negotiateCode, false, null, null, emptySet(), "negotiate unavailable")
+      }
+      return MirrorSyncApi.NegotiateResult(200, created = false, refs = negotiateRefs, head = null, known = negotiateKnown, message = "OK")
     }
 
     override fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, branches: Map<String, String>, syncPassword: String, insecureTls: Boolean, localBranches: List<String>): HttpResult {

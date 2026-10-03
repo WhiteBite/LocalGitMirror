@@ -142,13 +142,6 @@ internal fun SyncEngine.negotiateMultiBranch(
   val head = git.headHash(project, projectDir) ?: return MultiBranchNegotiation(null, emptyList())
   val currentBranch = git.currentBranch(project, projectDir).orEmpty()
 
-  // server tips are exclude-base candidates even with empty local state
-  val serverRefs = mirror.getRefs(settings.baseUrl, settings.mirrorApiKey, repo, settings.syncPassword, settings.mirrorInsecureTls)
-  val serverKnown: Set<String> = serverRefs.refs?.values
-    ?.mapNotNull { it.sha.takeIf { s -> s.isNotBlank() && hashRe.matches(s) }?.lowercase() }
-    ?.toHashSet()
-    ?: emptySet()
-
   // first confirmed ancestor of the tip becomes the ^base
   data class BranchInfo(val name: String, val tip: String, val candidates: List<String>, val guaranteed: List<String> = emptyList())
   val branchInfos = mutableListOf<BranchInfo>()
@@ -171,20 +164,24 @@ internal fun SyncEngine.negotiateMultiBranch(
     branchInfos.add(BranchInfo(br, tip, deduped, recentOfBranch.filter { hashRe.matches(it) }))
   }
 
-  // single hasCommits over the union, minus confirmed server tips
-  val askable = branchInfos.flatMap { it.candidates }
-    .filter { it.lowercase() !in serverKnown }
+  // one round trip: server creates the repo and batch-checks every candidate
+  val candidates = branchInfos.flatMap { it.candidates }
+    .filter { hashRe.matches(it) }
     .distinct()
     .take(SyncConstants.HAS_COMMITS_CANDIDATE_LIMIT)
 
-  val knownFromHas: Set<String> = if (askable.isEmpty()) emptySet() else {
-    val has = mirror.hasCommits(settings.baseUrl, settings.mirrorApiKey, repo, askable, settings.syncPassword, settings.mirrorInsecureTls)
-    if (has.code !in 200..299) emptySet() else parseKnownCommitHashes(has.body)
-  }
+  val neg = mirror.negotiate(settings.baseUrl, settings.mirrorApiKey, repo, candidates, settings.syncPassword, settings.mirrorInsecureTls)
+  val serverRefs = neg.refs
+  if (neg.code !in 200..299 || serverRefs == null) return MultiBranchNegotiation(null, emptyList())
 
-  val known: Set<String> = HashSet<String>(serverKnown.size + knownFromHas.size).also {
+  // server tips are exclude-base candidates even with empty local state
+  val serverKnown: Set<String> = serverRefs.values
+    .mapNotNull { it.sha.takeIf { s -> s.isNotBlank() && hashRe.matches(s) }?.lowercase() }
+    .toHashSet()
+
+  val known: Set<String> = HashSet<String>(serverKnown.size + neg.known.size).also {
     it.addAll(serverKnown)
-    it.addAll(knownFromHas)
+    it.addAll(neg.known)
   }
 
   if (known.isEmpty()) return MultiBranchNegotiation(null, emptyList())
@@ -199,18 +196,17 @@ internal fun SyncEngine.negotiateMultiBranch(
   }
 
   // merge-base, then own history, then verified hints; git calls capped
-  val serverTipsByRecency = serverRefs.refs?.values
-    ?.filter { it.sha.isNotBlank() && hashRe.matches(it.sha) }
-    ?.sortedWith(compareByDescending<MirrorSyncApi.RefInfo> { it.updated }.thenBy { it.sha })
-    ?.map { it.sha }
-    ?: emptyList()
+  val serverTipsByRecency = serverRefs.values
+    .filter { it.sha.isNotBlank() && hashRe.matches(it.sha) }
+    .sortedWith(compareByDescending<MirrorSyncApi.RefInfo> { it.updated }.thenBy { it.sha })
+    .map { it.sha }
 
   val excludeBases = mutableListOf<String>()
   for (info in branchInfos) {
     val startedAt = System.currentTimeMillis()
 
     // Try merge-base with server tip first (fastest path)
-    val serverTip = serverRefs.refs?.get(info.name)?.sha
+    val serverTip = serverRefs[info.name]?.sha
     if (serverTip != null && known.contains(serverTip.lowercase())) {
       val mergeBase = git.mergeBase(project, projectDir, info.tip, serverTip)
       if (mergeBase != null && mergeBase.lowercase() != info.tip.lowercase()) {

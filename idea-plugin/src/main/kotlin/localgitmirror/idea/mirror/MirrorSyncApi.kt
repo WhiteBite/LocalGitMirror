@@ -9,6 +9,7 @@ import java.util.UUID
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -20,6 +21,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import localgitmirror.idea.net.HttpClient
+import localgitmirror.idea.sync.v2.SyncConstants
 import localgitmirror.idea.workkit.HybridCrypto
 
 object MirrorSyncApi {
@@ -29,6 +31,21 @@ object MirrorSyncApi {
     val isHead: Boolean
   )
   data class RefsResult(val code: Int, val message: String, val head: String?, val refs: Map<String, RefInfo>?)
+
+  private fun parseRefInfos(refsEl: JsonElement?, head: String?): Map<String, RefInfo> {
+    if (refsEl == null || refsEl == JsonNull) return emptyMap()
+    val refsMap = mutableMapOf<String, RefInfo>()
+    for ((branch, el) in refsEl.jsonObject.entries) {
+      val o = el.jsonObject
+      refsMap[branch] = RefInfo(
+        sha = o["sha"]?.jsonPrimitive?.contentOrNull ?: "",
+        updated = o["updated"]?.jsonPrimitive?.contentOrNull ?: "",
+        isHead = o["is_head"]?.jsonPrimitive?.booleanOrNull
+          ?: (o["sha"]?.jsonPrimitive?.contentOrNull == head)
+      )
+    }
+    return refsMap
+  }
 
   fun getRefs(
     baseUrl: String,
@@ -65,19 +82,7 @@ object MirrorSyncApi {
         val inner = codec.openEnvelopeJson(eField)
 
         val head = inner["head"]?.jsonPrimitive?.contentOrNull
-        val refsMap = mutableMapOf<String, RefInfo>()
-        val refsEl = inner["refs"]
-        if (refsEl != null && refsEl != JsonNull) {
-          for ((branch, el) in refsEl.jsonObject.entries) {
-            val o = el.jsonObject
-            refsMap[branch] = RefInfo(
-              sha = o["sha"]?.jsonPrimitive?.contentOrNull ?: "",
-              updated = o["updated"]?.jsonPrimitive?.contentOrNull ?: "",
-              isHead = o["is_head"]?.jsonPrimitive?.booleanOrNull
-                ?: (o["sha"]?.jsonPrimitive?.contentOrNull == head)
-            )
-          }
-        }
+        val refsMap = parseRefInfos(inner["refs"], head)
         RefsResult(code, "OK", head, refsMap)
       } else {
         RefsResult(code, body.take(500), null, null)
@@ -283,6 +288,80 @@ object MirrorSyncApi {
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)
       HttpResult(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  data class NegotiateResult(
+    val code: Int,
+    val created: Boolean,
+    val refs: Map<String, RefInfo>?,
+    val head: String?,
+    val known: Set<String>,
+    val message: String
+  )
+
+  /** One-shot negotiation: server creates the repo if missing, returns refs + which candidates it already has. */
+  fun negotiate(
+    baseUrl: String,
+    apiKey: String,
+    repo: String,
+    commits: List<String>,
+    syncPassword: String,
+    insecureTls: Boolean
+  ): NegotiateResult {
+    return try {
+      val url = URL("${baseUrl.trimEnd('/')}/api/documents/negotiate")
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "POST"
+      conn.doOutput = true
+      conn.connectTimeout = 30_000
+      conn.readTimeout = 30_000
+      conn.setRequestProperty("Content-Type", "application/json")
+      if (apiKey.isNotBlank()) {
+        conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      }
+
+      val params = buildJsonObject {
+        put("repo", repo)
+        put("commits", buildJsonArray {
+          commits.take(SyncConstants.HAS_COMMITS_CANDIDATE_LIMIT).forEach { add(JsonPrimitive(it)) }
+        })
+      }
+      val codec = MirrorCrypto.beginCall(syncPassword)
+      val e = codec.sealEnvelope(params)
+      val payload = buildJsonObject {
+        put("e", e)
+        codec.epkB64?.let { put("k", it) }
+      }
+      conn.outputStream.use { os ->
+        os.write(payload.toString().toByteArray(StandardCharsets.UTF_8))
+      }
+
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+
+      if (code in 200..299) {
+        val outer = Json.parseToJsonElement(body).jsonObject
+        val eField = outer["e"]?.jsonPrimitive?.contentOrNull
+          ?: return NegotiateResult(code, false, null, null, emptySet(), "Missing envelope in response")
+        val inner = codec.openEnvelopeJson(eField)
+
+        val head = inner["head"]?.jsonPrimitive?.contentOrNull
+        val known = MirrorTransport.stringList(inner, "known").mapTo(HashSet()) { it.lowercase() }
+        NegotiateResult(
+          code = code,
+          created = inner["created"]?.jsonPrimitive?.booleanOrNull ?: false,
+          refs = parseRefInfos(inner["refs"], head),
+          head = head,
+          known = known,
+          message = "OK"
+        )
+      } else {
+        NegotiateResult(code, false, null, null, emptySet(), body.take(500))
+      }
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      NegotiateResult(0, false, null, null, emptySet(), "${e.type}: ${e.message}")
     }
   }
 

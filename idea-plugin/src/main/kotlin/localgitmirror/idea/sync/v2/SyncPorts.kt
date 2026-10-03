@@ -15,6 +15,7 @@ interface MirrorPort {
   fun passwordProbe(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorAuthApi.ProbeResult
   fun getRefs(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean): MirrorSyncApi.RefsResult
   fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): HttpResult
+  fun negotiate(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): MirrorSyncApi.NegotiateResult
   fun applyKnown(baseUrl: String, apiKey: String, repo: String, commit: String, branches: Map<String, String> = emptyMap(), syncPassword: String, insecureTls: Boolean, localBranches: List<String> = emptyList()): HttpResult
   fun uploadAndApply(baseUrl: String, apiKey: String, repo: String, dumpFile: File, syncPassword: String, insecureTls: Boolean, projectDir: File? = null, localBranches: List<String> = emptyList()): HttpResult
 }
@@ -43,6 +44,11 @@ object DefaultMirrorPort : MirrorPort {
   @Suppress("HttpCallOnEdt")
   override fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): HttpResult {
     return MirrorSyncApi.hasCommits(baseUrl, apiKey, repo, commits, syncPassword, insecureTls)
+  }
+
+  @Suppress("HttpCallOnEdt")
+  override fun negotiate(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): MirrorSyncApi.NegotiateResult {
+    return MirrorSyncApi.negotiate(baseUrl, apiKey, repo, commits, syncPassword, insecureTls)
   }
 
   @Suppress("HttpCallOnEdt")
