@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lgm_core.client import LgmError, MirrorClient
 from lgm_core.config import Config
 from lgm_core.ops import Ctx, get_op, op_mr_send
+from lgm_core.ops_mr import _existing_shas
 from lgm_core.render import render
 
 
@@ -26,8 +27,8 @@ class _FakeGit:
     """Dispatches the git subprocess calls mr_send makes.
 
     tips: branch -> sha after fetch; local_refs: branches already existing as
-    refs/heads/* (others take the update-ref path); known_shas: commits
-    `cat-file -e` confirms (exclusion candidates).
+    refs/heads/* (others take the update-ref path); known_shas: commits the
+    single `cat-file --batch-check` reports as present (exclusion candidates).
     """
 
     def __init__(self, tips: dict, local_refs: set, known_shas: set,
@@ -39,8 +40,10 @@ class _FakeGit:
         self.fetch_cmds: list[list[str]] = []
         self.bundle_cmds: list[list[str]] = []
         self.update_refs: list[str] = []
+        self.batch_inputs: list[str] = []
 
-    def __call__(self, cmd, cwd=None, capture_output=None, text=None, timeout=None):
+    def __call__(self, cmd, cwd=None, capture_output=None, text=None,
+                 timeout=None, input=None):
         args = cmd[3:] if cmd[1] == "-C" else cmd[1:]
         proj = cmd[2] if cmd[1] == "-C" else cwd
 
@@ -63,9 +66,11 @@ class _FakeGit:
         if args[0] == "rev-parse":
             branch = args[1].removeprefix("refs/heads/")
             return ok(self.tips[branch] + "\n") if branch in self.tips else fail()
-        if args[0] == "cat-file" and args[1] == "-e":
-            sha = args[2].removesuffix("^{commit}")
-            return ok() if sha in self.known_shas else fail()
+        if args[0] == "cat-file" and args[1] == "--batch-check":
+            self.batch_inputs.append(input or "")
+            lines = [f"{s} commit 123" if s in self.known_shas else f"{s} missing"
+                     for s in (input or "").splitlines()]
+            return ok("\n".join(lines) + "\n")
         if args[0] == "rev-list" and args[1] == "--count":
             return ok(str(self.revlist_count))
         if args[0] == "bundle" and args[1] == "create":
@@ -180,6 +185,46 @@ def test_mirror_shas_not_present_locally_are_not_excluded(monkeypatch, tmp_path)
     res = _run(monkeypatch, tmp_path, git, client, {"iid": 41})
     assert git.bundle_cmds[0] == ["refs/heads/b1"]
     assert res["send"]["excluded_bases"] == 0
+
+
+def test_existing_shas_single_batch_check_for_many_mirror_tips(monkeypatch, tmp_path):
+    git = _FakeGit(tips={"b1": "t1"}, local_refs={"b1"}, known_shas={"m1", "m2"})
+    client = _FakeClient(mrs={41: "b1"},
+                         mirror_refs={"master": {"sha": "m1"},
+                                      "dev": {"sha": "m2"},
+                                      "gone": {"sha": "g9"}})
+    res = _run(monkeypatch, tmp_path, git, client, {"iid": 41})
+    assert len(git.batch_inputs) == 1
+    assert git.batch_inputs[0].splitlines() == ["m1", "m2", "g9"]
+    assert git.bundle_cmds[0] == ["refs/heads/b1", "^m1", "^m2"]
+    assert res["send"]["excluded_bases"] == 2
+
+
+def _git_in(repo: Path, *args: str) -> str:
+    proc = subprocess.run(["git", *args], cwd=str(repo),
+                          capture_output=True, text=True, timeout=30)
+    assert proc.returncode == 0, f"git {' '.join(args)}: {proc.stderr}"
+    return proc.stdout.strip()
+
+
+def test_existing_shas_matches_cat_file_e_semantics(tmp_path):
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _git_in(proj, "init", "-q")
+    _git_in(proj, "config", "user.email", "t@t")
+    _git_in(proj, "config", "user.name", "t")
+    (proj / "a.txt").write_text("a\n", encoding="utf-8")
+    _git_in(proj, "add", "a.txt")
+    _git_in(proj, "commit", "-qm", "one")
+    tip1 = _git_in(proj, "rev-parse", "HEAD")
+    (proj / "b.txt").write_text("b\n", encoding="utf-8")
+    _git_in(proj, "add", "b.txt")
+    _git_in(proj, "commit", "-qm", "two")
+    tip2 = _git_in(proj, "rev-parse", "HEAD")
+    tree = _git_in(proj, "rev-parse", "HEAD^{tree}")
+    ghost = "f" * 40
+
+    assert _existing_shas(proj, [tip2, tip1, tree, ghost, tip2, ""]) == [tip2, tip1]
 
 
 def test_repo_not_on_mirror_sends_full_bundle(monkeypatch, tmp_path):

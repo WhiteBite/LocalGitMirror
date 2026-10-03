@@ -38,8 +38,10 @@ class _FakeGit:
         self.known_shas = known_shas
         self.revlist_count = revlist_count
         self.bundle_cmds: list[list[str]] = []
+        self.batch_inputs: list[str] = []
 
-    def __call__(self, cmd, cwd=None, capture_output=None, text=None, timeout=None):
+    def __call__(self, cmd, cwd=None, capture_output=None, text=None,
+                 timeout=None, input=None):
         args = cmd[3:] if cmd[1] == "-C" else cmd[1:]
 
         def ok(stdout=""):
@@ -58,9 +60,11 @@ class _FakeGit:
         if args[0] == "rev-parse":
             branch = args[1].removeprefix("refs/heads/")
             return ok(self.tips[branch] + "\n") if branch in self.tips else fail()
-        if args[0] == "cat-file" and args[1] == "-e":
-            sha = args[2].removesuffix("^{commit}")
-            return ok() if sha in self.known_shas else fail()
+        if args[0] == "cat-file" and args[1] == "--batch-check":
+            self.batch_inputs.append(input or "")
+            lines = [f"{s} commit 123" if s in self.known_shas else f"{s} missing"
+                     for s in (input or "").splitlines()]
+            return ok("\n".join(lines) + "\n")
         if args[0] == "rev-list" and args[1] == "--count":
             return ok(str(self.revlist_count))
         if args[0] == "bundle" and args[1] == "create":
@@ -123,3 +127,15 @@ def test_mr_send_matches_shared_fixture(monkeypatch, tmp_path, scenario):
         assert "nothing new" in res["message"]
         assert git.bundle_cmds == []
         assert client.sent_bundles == []
+
+
+def test_existing_shas_batched_into_single_cat_file_call(monkeypatch, tmp_path):
+    git = _FakeGit(tips={"b1": "t1"}, local_refs={"b1"}, known_shas={"m1", "m2"})
+    client = _FakeClient(mirror_refs={"master": {"sha": "m1"},
+                                      "dev": {"sha": "m2"},
+                                      "gone": {"sha": "g9"}})
+    res = _run(monkeypatch, tmp_path, git, client, {"branch": "b1"})
+    assert len(git.batch_inputs) == 1
+    assert git.batch_inputs[0].splitlines() == ["m1", "m2", "g9"]
+    assert git.bundle_cmds[0] == ["refs/heads/b1", "^m1", "^m2"]
+    assert res["send"]["excluded_bases"] == 2
