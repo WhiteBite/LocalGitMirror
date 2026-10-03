@@ -61,11 +61,29 @@ class _PollFilter(logging.Filter):
         return True
 
 
+class _ShutdownNoiseFilter(logging.Filter):
+    """Suppress uvicorn's ERROR spam during normal Ctrl+C shutdown."""
+    _QUIET = (
+        "cancel",
+        "cancelled",
+        "timeout graceful shutdown",
+        "traceback",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.ERROR:
+            msg = record.getMessage().lower()
+            if any(q in msg for q in self._QUIET):
+                return False
+        return True
+
+
 _LOG_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
     "filters": {
         "poll": {"()": f"{__name__}._PollFilter"},
+        "shutdown_noise": {"()": f"{__name__}._ShutdownNoiseFilter"},
     },
     "formatters": {
         "default": {
@@ -80,7 +98,7 @@ _LOG_CONFIG = {
         },
     },
     "handlers": {
-        "default": {"class": "logging.StreamHandler", "formatter": "default"},
+        "default": {"class": "logging.StreamHandler", "formatter": "default", "filters": ["shutdown_noise"]},
         "access": {"class": "logging.StreamHandler", "formatter": "access", "filters": ["poll"]},
     },
     "loggers": {
@@ -458,6 +476,7 @@ def run_prod() -> None:
         uvicorn.run(app, **kwargs)
     except KeyboardInterrupt:
         pass
+    os._exit(0)
 
 
 # ── development ──────────────────────────────────────────────────────────────

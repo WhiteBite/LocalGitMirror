@@ -6,3 +6,4 @@ REM   start.bat        -> production
 REM   start.bat dev    -> development (backend --reload + Vite, one window)
 python run.py %*
 if errorlevel 1 pause
+exit /B %ERRORLEVEL%
