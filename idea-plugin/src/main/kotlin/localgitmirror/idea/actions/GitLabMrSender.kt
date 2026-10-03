@@ -15,12 +15,7 @@ import localgitmirror.idea.sync.v2.SyncEngine
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
 
-/**
- * Shared tail of the MR transfer: fetch source branches from origin and run
- * the usual send-branch pipeline (checkout -> full sync -> restore), for a
- * single MR or a batch. Called on a background thread by [SendGitLabMrAction]
- * and the panel MR list dialog.
- */
+/** Shared tail of the MR transfer: fetch source branches from origin, then send. Must run on a background thread. */
 object GitLabMrSender {
 
   fun precheck(project: Project): Boolean {
@@ -118,39 +113,52 @@ object GitLabMrSender {
     val repoInfo = syncFacade.describeRepoTarget(projectDir, settings)
     notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
 
-    val originalBranch = GitLocal.currentBranch(project, projectDir)
-    var sent = 0
-    var skipped = 0
-    val failures = mutableListOf<String>()
-    try {
-      for ((branch, iid) in targets) {
-        if (branch in plan.skipped) {
-          skipped++
-          continue
-        }
-        val co = GitLocal.checkout(project, projectDir, branch)
-        if (!co.ok()) {
-          notify(
-            project,
-            LocalGitMirrorBundle.message("action.syncBranch.checkoutFailed", branch, co.stderr),
-            NotificationType.ERROR
-          )
-          history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
-            "branch=$branch iid=$iid err=${co.stderr.take(300)}")
-          failures.add("${targetLabel(branch, iid)}: ${co.stderr.take(200)}")
-          continue
-        }
-        val syncRes = syncFacade.runFullSync(projectDir, settings)
-        if (reportSyncOutcome(project, settings, syncRes, branch, iid, history)) {
-          sent++
-        } else {
-          failures.add("${targetLabel(branch, iid)}: ${syncRes.step.message.take(200)}")
-        }
-      }
-    } finally {
-      restoreBranch(project, projectDir, originalBranch)
+    val (toSend, syncRes) = sendBatch(branches, plan) {
+      syncFacade.runFullSync(projectDir, settings, additionalBranches = it)
+    }
+    val attempted = targets.filter { it.first in toSend.toSet() }
+    val skipped = targets.size - attempted.size
+
+    if (syncRes == null) {
+      notify(
+        project,
+        LocalGitMirrorBundle.message("gitlab.notify.batchOkSkipped", 0, targets.size, skipped),
+        NotificationType.INFORMATION
+      )
+      return
     }
 
+    val result = syncRes.step
+    val failures = mutableListOf<String>()
+    if (!result.ok) {
+      notify(
+        project,
+        "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}",
+        NotificationType.ERROR
+      )
+      for ((branch, iid) in attempted) {
+        history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
+          "branch=$branch iid=$iid err=${result.message.take(300)}")
+        failures.add("${targetLabel(branch, iid)}: ${result.message.take(200)}")
+      }
+    } else if (settings.offlineGenerateOnly) {
+      notify(
+        project,
+        "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}' at ${syncRes.dump?.absolutePath ?: result.details}",
+        NotificationType.INFORMATION
+      )
+      for ((branch, iid) in attempted) {
+        history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
+          "offline dump=${syncRes.dump?.absolutePath ?: "?"} branch=$branch iid=$iid")
+      }
+    } else {
+      for ((branch, iid) in attempted) {
+        history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
+          "repo=${syncRes.repo ?: "?"} branch=$branch iid=$iid")
+      }
+    }
+
+    val sent = if (result.ok) attempted.size else 0
     val summary = when {
       failures.isEmpty() && skipped == 0 ->
         LocalGitMirrorBundle.message("gitlab.notify.batchOk", sent, targets.size)
@@ -162,6 +170,16 @@ object GitLabMrSender {
         LocalGitMirrorBundle.message("gitlab.notify.batchPartialSkipped", sent, targets.size, skipped, failures.joinToString("\n"))
     }
     notify(project, summary, if (failures.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING)
+  }
+
+  internal fun sendBatch(
+    branches: List<String>,
+    plan: MrSendPlanner.Plan,
+    runSync: (List<String>) -> SyncEngine.FullSyncResult,
+  ): Pair<List<String>, SyncEngine.FullSyncResult?> {
+    val toSend = branches.filter { it !in plan.skipped }
+    if (toSend.isEmpty()) return toSend to null
+    return toSend to runSync(toSend)
   }
 
   private fun planMrSend(
