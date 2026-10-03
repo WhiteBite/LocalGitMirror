@@ -197,15 +197,15 @@ def test_upload_apply_bootstraps_when_workspace_has_no_branch(monkeypatch, tmp_p
             return _P(0, "master\n")
         if args[0] == "fetch":
             return _P(0, "")
+        if args[0] == "rev-parse" and args[1] == "refs/heads/master":
+            return _P(0, "abc123\n")
         if args[:2] == ("checkout", "-f"):
             return _P(0, "")
         if args[0] == "reset":
             return _P(0, "")
-        if args[0] == "push":
-            return _P(0, "")
         if args[:2] == ("log", "-1"):
             return _P(0, "abc123 Initial\n")
-        return _P(0, "")
+        return _P(0, "", "")
 
     monkeypatch.setattr(git_bundle, "_git", _fake_git)
 
@@ -221,7 +221,7 @@ def test_upload_apply_bootstraps_when_workspace_has_no_branch(monkeypatch, tmp_p
 
 
 def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_path):
-    """New flow: fetch all refs, checkout -f, one push --force with all branches."""
+    """New flow: one bare fetch with all branches, workspace synced from bare."""
     repo = "unrelated_repo"
     workspace = tmp_path / repo
     bare = tmp_path / f"{repo}.git"
@@ -257,8 +257,8 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
             self.stdout = out
             self.stderr = err
 
-    def _fake_git(_wd, *args):
-        calls.append(args)
+    def _fake_git(wd, *args):
+        calls.append((wd, args))
         if args[:2] == ("status", "--porcelain"):
             return _P(0, "")
         if args[:2] == ("bundle", "list-heads"):
@@ -267,11 +267,12 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
             return _P(0, "main\n", "")
         if args[0] == "fetch":
             return _P(0, "", "")
+        if args[0] == "rev-parse" and wd == bare:
+            hashes = {"refs/heads/main": "def456", "refs/heads/feature": "abc789"}
+            return _P(0, hashes.get(args[1], "") + "\n")
         if args[:2] == ("checkout", "-f"):
             return _P(0, "", "")
         if args[0] == "reset":
-            return _P(0, "", "")
-        if args[0] == "push":
             return _P(0, "", "")
         if args[:2] == ("log", "-1"):
             return _P(0, "def456 Replace branch\n", "")
@@ -286,11 +287,11 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
     )
 
     assert res["success"] is True
-    push_calls = [c for c in calls if c[0] == "push"]
-    assert len(push_calls) == 1, f"Expected a single push call, got {push_calls}"
-    pushed_refs = push_calls[0][3:]
-    assert any("main" in r for r in pushed_refs)
-    assert any("feature" in r for r in pushed_refs)
+    bare_fetches = [c for wd, c in calls if c[0] == "fetch" and wd == bare]
+    assert len(bare_fetches) == 1, f"Expected a single bare fetch call, got {bare_fetches}"
+    fetched_refs = bare_fetches[0][3:]
+    assert any("main" in r for r in fetched_refs)
+    assert any("feature" in r for r in fetched_refs)
 
 
 def test_apply_dump_proceeds_despite_dirty_workspace(monkeypatch, tmp_path):
@@ -341,7 +342,7 @@ def test_apply_dump_proceeds_despite_dirty_workspace(monkeypatch, tmp_path):
     assert "Uncommitted changes" not in res["message"]
 
 
-def test_apply_dump_force_push_failure_after_unrelated_histories(monkeypatch, tmp_path):
+def test_apply_dump_bare_fetch_failure_after_unrelated_histories(monkeypatch, tmp_path):
     repo = "force_fail_repo"
     workspace = tmp_path / repo
     bare = tmp_path / f"{repo}.git"
@@ -380,16 +381,10 @@ def test_apply_dump_force_push_failure_after_unrelated_histories(monkeypatch, tm
             return _P(0, "", "")
         if args[:2] == ("bundle", "list-heads"):
             return _P(0, "def456 refs/heads/main\n")
-        if args[:3] == ("rev-parse", "--abbrev-ref", "HEAD"):
+        if args[:3] == ("symbolic-ref", "--short", "-q"):
             return _P(0, "main\n", "")
-        if args[:2] == ("checkout", "--detach"):
-            return _P(0, "", "")
         if args[0] == "fetch":
-            return _P(0, "", "")
-        if args[:2] == ("checkout", "-f"):
-            return _P(0, "", "")
-        if args[0] == "push":
-            return _P(1, "", "fatal: push failed")
+            return _P(1, "", "fatal: fetch failed")
         if args[:2] == ("log", "-1"):
             return _P(0, "def456 Replace branch\n", "")
         return _P(0, "", "")
@@ -403,4 +398,4 @@ def test_apply_dump_force_push_failure_after_unrelated_histories(monkeypatch, tm
     )
 
     assert res["success"] is False
-    assert "push" in res["message"].lower()
+    assert "fetch" in res["message"].lower()

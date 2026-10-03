@@ -222,37 +222,96 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
             if system_logger:
                 system_logger.info("Bundle refs", {"repo": repo_name, "ref_count": len(bundle_refs)})
 
-            # Invariant: refs/lgm/incoming/* never collides with the checked-out branch.
-            fetch_proc = _git(workspace_path, "fetch", str(bundle_path), "+refs/heads/*:refs/lgm/incoming/*")
-            if fetch_proc.returncode != 0:
-                fetch_err = (fetch_proc.stderr or "").strip()
-                if "prerequisite" in fetch_err.lower():
-                    if system_logger:
-                        system_logger.warning("Bundle has prerequisite commits, trying HEAD fetch", {"repo": repo_name})
-                    head_fetch = _git(workspace_path, "fetch", str(bundle_path), "HEAD")
-                    if head_fetch.returncode != 0:
-                        return {
-                            "success": False,
-                            "message": f"Bundle requires prerequisite commits not present on mirror. "
-                                       f"Try a full sync (clear .git/.cache/ on sender). Details: {fetch_err}"
-                        }
-                else:
-                    fetch_bare = _git(workspace_path, "fetch", str(bundle_path))
-                    if fetch_bare.returncode != 0:
-                        return {"success": False, "message": fetch_err or "Failed to fetch bundle"}
-
-            incoming = {}  # branch_name -> commit_hash (list-heads order preserved)
+            candidates = {}  # branch_name -> commit_hash (list-heads order preserved)
             for ref_name, commit_hash in bundle_refs.items():
                 if not ref_name.startswith("refs/heads/"):
                     continue
                 branch_name = ref_name[len("refs/heads/"):]
                 if _is_junk_branch_name(branch_name):
                     continue
-                if _git(workspace_path, "cat-file", "-e", f"{commit_hash}^{{commit}}").returncode == 0:
-                    incoming[branch_name] = commit_hash
+                candidates[branch_name] = commit_hash
 
-            if not incoming:
+            if not candidates:
                 return {"success": False, "message": "No applicable refs found in bundle"}
+
+            # objects are written once into bare; the workspace takes a local hardlink fetch from it
+            fetch_err = ""
+            if bare_path.exists():
+                refspecs = [f"+refs/heads/{b}:refs/heads/{b}" for b in candidates]
+                fetch_proc = _git(bare_path, "fetch", "--force", str(bundle_path), *refspecs)
+                if fetch_proc.returncode != 0:
+                    fetch_err = (fetch_proc.stderr or "").strip()
+                    if "prerequisite" in fetch_err.lower():
+                        if system_logger:
+                            system_logger.warning(
+                                "Bundle has prerequisite commits, trying workspace relay", {"repo": repo_name})
+                        # bare can lag the workspace (its commits reach bare only via sync flows) — relay through it
+                        relay = _git(workspace_path, "fetch", str(bundle_path),
+                                     "+refs/heads/*:refs/lgm/incoming/*")
+                        if relay.returncode == 0:
+                            relay_refspecs = [f"+refs/lgm/incoming/{b}:refs/heads/{b}" for b in candidates]
+                            fetch_proc = _git(bare_path, "fetch", "--force", str(workspace_path), *relay_refspecs)
+                            if fetch_proc.returncode == 0:
+                                fetch_err = ""
+                        if fetch_err:
+                            head_fetch = _git(workspace_path, "fetch", str(bundle_path), "HEAD")
+                            if head_fetch.returncode != 0:
+                                return {
+                                    "success": False,
+                                    "message": f"Bundle requires prerequisite commits not present on mirror. "
+                                               f"Try a full sync (clear .git/.cache/ on sender). Details: {fetch_err}"
+                                }
+                    else:
+                        fetch_bare = _git(bare_path, "fetch", "--force", str(bundle_path),
+                                          "+refs/heads/*:refs/heads/*")
+                        if fetch_bare.returncode != 0:
+                            return {"success": False, "message": fetch_err or "Failed to fetch bundle"}
+                        fetch_err = ""
+                        # the wildcard refspec can carry junk refs the filtered refspecs excluded
+                        for ref_name in bundle_refs:
+                            if not ref_name.startswith("refs/heads/"):
+                                continue
+                            if _is_junk_branch_name(ref_name[len("refs/heads/"):]):
+                                _git(bare_path, "update-ref", "-d", ref_name)
+
+            pushed_branches = []
+            push_errors = []
+            if bare_path.exists():
+                for branch_name, commit_hash in candidates.items():
+                    rp = _git(bare_path, "rev-parse", f"refs/heads/{branch_name}")
+                    if rp.returncode == 0 and (rp.stdout or "").strip() == commit_hash:
+                        pushed_branches.append(branch_name)
+                    else:
+                        push_errors.append(f"{branch_name}: {fetch_err or 'ref missing or stale after fetch'}")
+
+                if push_errors and system_logger:
+                    system_logger.warning("Failed to land branches in bare", {
+                        "repo": repo_name,
+                        "branches": [e.split(":", 1)[0] for e in push_errors],
+                        "error": _redact_git_text(fetch_err),
+                    })
+            else:
+                ws_fetch = _git(workspace_path, "fetch", str(bundle_path), "+refs/heads/*:refs/lgm/incoming/*")
+                if ws_fetch.returncode != 0:
+                    return {"success": False, "message": (ws_fetch.stderr or "").strip() or "Failed to fetch bundle"}
+                pushed_branches = list(candidates)
+
+            if not pushed_branches and push_errors:
+                _cleanup_lgm_refs(workspace_path)
+                return {"success": False, "message": f"Failed to land any branch in bare repo: {'; '.join(push_errors)}"}
+
+            incoming = {b: candidates[b] for b in pushed_branches}
+
+            if bare_path.exists():
+                # Invariant: refs/lgm/incoming/* never collides with the checked-out branch.
+                sync_refspecs = [f"+refs/heads/{b}:refs/lgm/incoming/{b}" for b in pushed_branches]
+                sync_proc = _git(workspace_path, "fetch", "--force", str(bare_path), *sync_refspecs)
+                if sync_proc.returncode != 0:
+                    _cleanup_lgm_refs(workspace_path)
+                    return {
+                        "success": False,
+                        "message": (sync_proc.stderr or "").strip() or "Failed to sync workspace from bare repo",
+                    }
 
             current_branch = _attached_branch(workspace_path)
             if _is_junk_branch_name(current_branch):
@@ -260,51 +319,6 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
 
             # The workspace keeps its own branch; the sender's order only heals detached/unborn HEAD
             preferred_branch = current_branch or next(iter(incoming))
-
-            push_errors = []
-            pushed_branches = []
-            for branch_name, commit_hash in incoming.items():
-                _git(workspace_path, "update-ref", f"refs/lgm/incoming/{branch_name}", commit_hash)
-
-            if bare_path.exists():
-                refspecs = [f"refs/lgm/incoming/{b}:refs/heads/{b}" for b in incoming]
-                push_proc = _git(workspace_path, "push", "--force", str(bare_path), *refspecs)
-                push_lines = ((push_proc.stderr or "") + "\n" + (push_proc.stdout or "")).splitlines()
-                branch_results = {}
-                for line in push_lines:
-                    if "->" not in line:
-                        continue
-                    left = line.partition("->")[0].split()
-                    right = line.partition("->")[2].split()
-                    src = left[-1] if left else ""
-                    dst = right[0] if right else ""
-                    for b in incoming:
-                        if src in (f"refs/lgm/incoming/{b}", b) or dst == b:
-                            branch_results[b] = (not line.strip().startswith("!"), line.strip())
-                            break
-                overall_err = (push_proc.stderr or "").strip()
-                for branch_name in incoming:
-                    result = branch_results.get(branch_name)
-                    if result is None:
-                        ok = push_proc.returncode == 0
-                        detail = overall_err
-                    else:
-                        ok, detail = result
-                    if ok:
-                        pushed_branches.append(branch_name)
-                    else:
-                        push_errors.append(f"{branch_name}: {detail}")
-
-                if push_errors and system_logger:
-                    system_logger.warning("Failed to push branches", {
-                        "repo": repo_name,
-                        "branches": [e.split(":", 1)[0] for e in push_errors],
-                        "error": _redact_git_text(overall_err),
-                    })
-
-            if not pushed_branches and push_errors:
-                _cleanup_lgm_refs(workspace_path)
-                return {"success": False, "message": f"Failed to push any branch to bare repo: {'; '.join(push_errors)}"}
 
             for branch_name, commit_hash in incoming.items():
                 if branch_name == preferred_branch and current_branch == preferred_branch:

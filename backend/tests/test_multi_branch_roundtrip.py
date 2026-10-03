@@ -229,8 +229,10 @@ class _P:
         self.stderr = err
 
 
-def _mock_apply_env(monkeypatch, tmp_path: Path, push_result):
-    repo = "single-push-repo"
+def _mock_apply_env(monkeypatch, tmp_path: Path, bare_refs: dict, heads: str = None, bare_fetch=None):
+    """Mocked apply environment. bare_refs: branch -> hash that rev-parse in
+    the bare repo reports (the landing verification source of truth)."""
+    repo = "single-fetch-repo"
     workspace = tmp_path / repo
     bare = tmp_path / f"{repo}.git"
     workspace.mkdir()
@@ -249,7 +251,7 @@ def _mock_apply_env(monkeypatch, tmp_path: Path, push_result):
     monkeypatch.setattr(git_bundle, "repo_manager", _RM(), raising=False)
     monkeypatch.setenv("SYNC_PASSWORD", "pwd")
 
-    dump = tmp_path / "dump_single-push-repo_20260101_0000.dmp"
+    dump = tmp_path / "dump_single-fetch-repo_20260101_0000.dmp"
     dump.write_bytes(MAGIC + b"x" * 64)
 
     def _fake_decrypt(_dump, out, _pwd):
@@ -259,22 +261,29 @@ def _mock_apply_env(monkeypatch, tmp_path: Path, push_result):
 
     calls = []
 
-    def _fake_git(_wd, *args):
-        calls.append(args)
+    def _fake_git(wd, *args):
+        calls.append((wd, args))
         if args[:2] == ("status", "--porcelain"):
             return _P(0, "")
         if args[:2] == ("bundle", "list-heads"):
-            return _P(0, "aaa1111 refs/heads/master\nbbb2222 refs/heads/feature\nccc3333 refs/heads/ulw/w2\n")
+            return _P(0, heads or "aaa1111 refs/heads/master\nbbb2222 refs/heads/feature\nccc3333 refs/heads/ulw/w2\n")
         if args[:3] == ("symbolic-ref", "--short", "-q"):
             return _P(0, "master\n")
-        if args[0] == "push":
-            return push_result
+        if args[0] == "fetch" and wd == bare and bare_fetch is not None:
+            return bare_fetch(args)
+        if args[0] == "fetch":
+            return _P(0, "")
+        if args[0] == "rev-parse" and wd == bare:
+            branch = args[1][len("refs/heads/"):]
+            if branch in bare_refs:
+                return _P(0, bare_refs[branch] + "\n")
+            return _P(128, "", "fatal: ambiguous argument 'refs/heads/...'")
         if args[:2] == ("log", "-1"):
             return _P(0, "aaa1111 head\n")
         return _P(0, "", "")
 
     monkeypatch.setattr(git_bundle, "_git", _fake_git)
-    return repo, dump, calls
+    return repo, dump, calls, workspace, bare
 
 
 def _apply(repo, dump):
@@ -282,66 +291,283 @@ def _apply(repo, dump):
         dump_path=dump, repo_name=repo, dump_filename=dump.name)
 
 
-def test_apply_pushes_all_branches_in_one_git_push(tmp_path: Path, monkeypatch):
-    ok = _P(0, "", (
-        "To /mocked/bare\n"
-        " * [new branch]      refs/lgm/incoming/master -> master\n"
-        "   aaa1111..bbb2222  refs/lgm/incoming/feature -> feature\n"
-        " * [new branch]      refs/lgm/incoming/ulw/w2 -> ulw/w2\n"
-    ))
-    repo, dump, calls = _mock_apply_env(monkeypatch, tmp_path, ok)
+def test_apply_fetches_all_branches_into_bare_in_one_fetch(tmp_path: Path, monkeypatch):
+    repo, dump, calls, ws, bare = _mock_apply_env(
+        monkeypatch, tmp_path,
+        bare_refs={"master": "aaa1111", "feature": "bbb2222", "ulw/w2": "ccc3333"},
+    )
 
     res = _apply(repo, dump)
 
     assert res["success"] is True, res
     assert set(res["branches"]) == {"master", "feature", "ulw/w2"}
 
-    push_calls = [c for c in calls if c[0] == "push"]
-    assert len(push_calls) == 1, f"expected one push call, got {push_calls}"
-    assert push_calls[0][1] == "--force"
-    assert set(push_calls[0][3:]) == {
-        "refs/lgm/incoming/master:refs/heads/master",
-        "refs/lgm/incoming/feature:refs/heads/feature",
-        "refs/lgm/incoming/ulw/w2:refs/heads/ulw/w2",
+    bare_fetches = [c for wd, c in calls if c[0] == "fetch" and wd == bare]
+    assert len(bare_fetches) == 1, f"expected one bare fetch, got {bare_fetches}"
+    assert bare_fetches[0][1] == "--force"
+    assert set(bare_fetches[0][3:]) == {
+        "+refs/heads/master:refs/heads/master",
+        "+refs/heads/feature:refs/heads/feature",
+        "+refs/heads/ulw/w2:refs/heads/ulw/w2",
     }
 
-    incoming_updates = [i for i, c in enumerate(calls)
-                        if c[0] == "update-ref" and str(c[1]).startswith("refs/lgm/incoming")]
-    push_idx = next(i for i, c in enumerate(calls) if c[0] == "push")
-    assert len(incoming_updates) == 3
-    assert max(incoming_updates) < push_idx
+    ws_fetches = [c for wd, c in calls if c[0] == "fetch" and wd == ws]
+    assert len(ws_fetches) == 1, f"expected one workspace sync fetch, got {ws_fetches}"
+    assert ws_fetches[0][1] == "--force"
+    assert set(ws_fetches[0][3:]) == {
+        "+refs/heads/master:refs/lgm/incoming/master",
+        "+refs/heads/feature:refs/lgm/incoming/feature",
+        "+refs/heads/ulw/w2:refs/lgm/incoming/ulw/w2",
+    }
+
+    assert not [c for wd, c in calls if c[0] == "push"], "apply must not push; bare is fed by fetch"
+
+    ws_sync_idx = calls.index((ws, ws_fetches[0]))
+    head_updates = [i for i, (wd, c) in enumerate(calls)
+                    if c[0] == "update-ref" and str(c[1]).startswith("refs/heads/")]
+    assert {calls[i][1][1] for i in head_updates} == {"refs/heads/feature", "refs/heads/ulw/w2"}
+    assert all(i > ws_sync_idx for i in head_updates), "workspace refs move only after the sync fetch"
 
 
-def test_apply_single_push_partial_rejection_keeps_successful_branches(tmp_path: Path, monkeypatch):
-    partial = _P(1, "", (
-        "To /mocked/bare\n"
-        " * [new branch]      refs/lgm/incoming/master -> master\n"
-        " ! [rejected]        refs/lgm/incoming/feature -> feature (non-fast-forward)\n"
-        " ! [remote rejected] refs/lgm/incoming/ulw/w2 -> ulw/w2 (pre-receive hook declined)\n"
-    ))
-    repo, dump, _ = _mock_apply_env(monkeypatch, tmp_path, partial)
-
-    res = _apply(repo, dump)
-
-    assert res["success"] is True, res
-    assert res["branches"] == ["master"]
-
-
-def test_apply_single_push_unparseable_ref_counts_as_failed(tmp_path: Path, monkeypatch):
-    weird = _P(1, "", "To /mocked/bare\n * [new branch]      refs/lgm/incoming/master -> master\n")
-    repo, dump, _ = _mock_apply_env(monkeypatch, tmp_path, weird)
+def test_apply_partial_landing_keeps_successful_branches(tmp_path: Path, monkeypatch):
+    repo, dump, calls, ws, bare = _mock_apply_env(
+        monkeypatch, tmp_path,
+        bare_refs={"master": "aaa1111"},
+    )
 
     res = _apply(repo, dump)
 
     assert res["success"] is True, res
     assert res["branches"] == ["master"]
 
+    ws_fetches = [c for wd, c in calls if c[0] == "fetch" and wd == ws]
+    assert len(ws_fetches) == 1
+    assert ws_fetches[0][3:] == ("+refs/heads/master:refs/lgm/incoming/master",)
 
-def test_apply_single_push_all_up_to_date_counts_as_pushed(tmp_path: Path, monkeypatch):
-    uptodate = _P(0, "", "To /mocked/bare\nEverything up-to-date\n")
-    repo, dump, _ = _mock_apply_env(monkeypatch, tmp_path, uptodate)
+    failed_ref_updates = [c for wd, c in calls
+                          if c[0] == "update-ref" and str(c[1]).startswith("refs/heads/feature")]
+    assert failed_ref_updates == [], "branch that failed landing must not get a workspace ref"
+
+
+def test_apply_landing_failure_for_all_branches_fails(tmp_path: Path, monkeypatch):
+    repo, dump, calls, ws, bare = _mock_apply_env(
+        monkeypatch, tmp_path,
+        bare_refs={},
+    )
+
+    res = _apply(repo, dump)
+
+    assert res["success"] is False, res
+    assert "Failed to land any branch" in res["message"]
+    assert not [c for wd, c in calls if c[0] == "fetch" and wd == ws], (
+        "workspace must not be synced when nothing landed in bare"
+    )
+
+
+def test_apply_wildcard_fallback_sweeps_junk_refs_from_bare(tmp_path: Path, monkeypatch):
+    def _bare_fetch(args):
+        if "+refs/heads/*:refs/heads/*" in args:
+            return _P(0, "")
+        return _P(1, "", "fatal: multi-refspec bundle fetch quirk")
+
+    repo, dump, calls, ws, bare = _mock_apply_env(
+        monkeypatch, tmp_path,
+        bare_refs={"master": "aaa1111"},
+        heads="aaa1111 refs/heads/master\naaa1111 refs/heads/HEAD\n",
+        bare_fetch=_bare_fetch,
+    )
 
     res = _apply(repo, dump)
 
     assert res["success"] is True, res
-    assert set(res["branches"]) == {"master", "feature", "ulw/w2"}
+    assert res["branches"] == ["master"]
+    assert (bare, ("update-ref", "-d", "refs/heads/HEAD")) in calls, (
+        "wildcard fallback must sweep junk refs out of bare"
+    )
+
+
+def test_apply_objects_resolve_in_bare_and_workspace(tmp_path: Path, monkeypatch):
+    password = "e2e-objects-pw"
+    monkeypatch.setenv("SYNC_PASSWORD", password)
+
+    storage = tmp_path / "storage"
+    storage.mkdir(parents=True, exist_ok=True)
+    (storage / "settings.json").write_text(
+        json.dumps({"git": {"user_name": "E2E Bot", "user_email": "e2e@example.com"}}),
+        encoding="utf-8",
+    )
+
+    repo_name = f"e2e-objects-{int(time.time())}"
+    client = _build_client(storage)
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
+
+    workspace = storage / repo_name
+    bare = storage / ".lgm" / "bare" / f"{repo_name}.git"
+
+    work = tmp_path / "work_objects"
+    work.mkdir()
+    _run_git(work, "init")
+    _run_git(work, "config", "user.email", "work@example.com")
+    _run_git(work, "config", "user.name", "Work User")
+    _run_git(work, "checkout", "-B", "master")
+    (work / "a.txt").write_text("a\n", encoding="utf-8")
+    _run_git(work, "add", "a.txt")
+    _run_git(work, "commit", "-m", "master commit")
+    master_hash = _run_git(work, "rev-parse", "HEAD").stdout.strip()
+    _run_git(work, "checkout", "-b", "feature")
+    (work / "f.txt").write_text("f\n", encoding="utf-8")
+    _run_git(work, "add", "f.txt")
+    _run_git(work, "commit", "-m", "feature commit")
+    feature_hash = _run_git(work, "rev-parse", "HEAD").stdout.strip()
+
+    bundle = tmp_path / "objects.bundle"
+    _run_git(work, "bundle", "create", str(bundle), "feature", "master")
+    dump = tmp_path / f"dump_{repo_name}_objects.dmp"
+    encrypt_bundle_to_dump(bundle, dump, password)
+
+    upload = envelope_form_post(
+        client, "/api/documents/upload", {"repo": repo_name}, password,
+        files={"attachment": (dump.name, dump.read_bytes(), "application/octet-stream")},
+    )
+    assert upload.status_code == 200, upload.text
+    body = parse_envelope(upload.json(), password)
+    assert body.get("success") is True, body
+    assert set(body.get("branches", [])) == {"master", "feature"}
+
+    for branch, expected in (("master", master_hash), ("feature", feature_hash)):
+        for git_dir in (bare, workspace):
+            rp = subprocess.run(
+                ["git", "rev-parse", f"refs/heads/{branch}"], cwd=str(git_dir),
+                capture_output=True, text=True,
+            )
+            assert rp.returncode == 0, f"{git_dir}: {rp.stderr}"
+            assert rp.stdout.strip() == expected, f"{git_dir} {branch}: {rp.stdout.strip()} != {expected}"
+            cat = subprocess.run(
+                ["git", "cat-file", "-e", f"{expected}^{{commit}}"], cwd=str(git_dir),
+                capture_output=True, text=True,
+            )
+            assert cat.returncode == 0, f"commit {expected} missing in {git_dir}"
+
+
+def test_apply_junk_head_branch_never_lands_in_bare(tmp_path: Path, monkeypatch):
+    password = "e2e-junk-pw"
+    monkeypatch.setenv("SYNC_PASSWORD", password)
+
+    storage = tmp_path / "storage"
+    storage.mkdir(parents=True, exist_ok=True)
+    (storage / "settings.json").write_text(
+        json.dumps({"git": {"user_name": "E2E Bot", "user_email": "e2e@example.com"}}),
+        encoding="utf-8",
+    )
+
+    repo_name = f"e2e-junk-{int(time.time())}"
+    client = _build_client(storage)
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
+
+    workspace = storage / repo_name
+    bare = storage / ".lgm" / "bare" / f"{repo_name}.git"
+
+    work = tmp_path / "work_junk"
+    work.mkdir()
+    _run_git(work, "init")
+    _run_git(work, "config", "user.email", "work@example.com")
+    _run_git(work, "config", "user.name", "Work User")
+    _run_git(work, "checkout", "-B", "main")
+    (work / "m.txt").write_text("m\n", encoding="utf-8")
+    _run_git(work, "add", "m.txt")
+    _run_git(work, "commit", "-m", "main commit")
+    tip = _run_git(work, "rev-parse", "HEAD").stdout.strip()
+    _run_git(work, "update-ref", "refs/heads/HEAD", tip)
+
+    bundle = tmp_path / "junk.bundle"
+    _run_git(work, "bundle", "create", str(bundle), "--all")
+    heads = _run_git(work, "bundle", "list-heads", str(bundle)).stdout
+    assert "refs/heads/HEAD" in heads, "precondition: bundle carries the junk ref"
+
+    dump = tmp_path / f"dump_{repo_name}_junk.dmp"
+    encrypt_bundle_to_dump(bundle, dump, password)
+
+    upload = envelope_form_post(
+        client, "/api/documents/upload", {"repo": repo_name}, password,
+        files={"attachment": (dump.name, dump.read_bytes(), "application/octet-stream")},
+    )
+    assert upload.status_code == 200, upload.text
+    body = parse_envelope(upload.json(), password)
+    assert body.get("success") is True, body
+
+    for git_dir in (bare, workspace):
+        proc = subprocess.run(
+            ["git", "for-each-ref", "--format=%(refname)", "refs/heads"],
+            cwd=str(git_dir), capture_output=True, text=True,
+        )
+        refnames = [r.strip() for r in proc.stdout.splitlines() if r.strip()]
+        assert "refs/heads/HEAD" not in refnames, f"junk ref landed in {git_dir}: {refnames}"
+
+    bare_main = subprocess.run(
+        ["git", "rev-parse", "refs/heads/main"], cwd=str(bare),
+        capture_output=True, text=True,
+    )
+    assert bare_main.stdout.strip() == tip
+
+
+def test_apply_incremental_bundle_with_workspace_only_base(tmp_path: Path, monkeypatch):
+    """Incremental bundle whose prerequisite commit exists only in the workspace
+    (bare lags): the bare-first fetch fails on prerequisites and must relay the
+    bundle through the workspace instead of erroring out."""
+    password = "e2e-relay-pw"
+    monkeypatch.setenv("SYNC_PASSWORD", password)
+
+    storage = tmp_path / "storage"
+    storage.mkdir(parents=True, exist_ok=True)
+    (storage / "settings.json").write_text(
+        json.dumps({"git": {"user_name": "E2E Bot", "user_email": "e2e@example.com"}}),
+        encoding="utf-8",
+    )
+
+    repo_name = f"e2e-relay-{int(time.time())}"
+    client = _build_client(storage)
+    assert client.post("/api/documents/collection", json={"name": repo_name}).status_code == 200
+
+    workspace = storage / repo_name
+    bare = storage / ".lgm" / "bare" / f"{repo_name}.git"
+
+    _run_git(workspace, "config", "user.email", "home@example.com")
+    _run_git(workspace, "config", "user.name", "Home User")
+    (workspace / "base.txt").write_text("base\n", encoding="utf-8")
+    _run_git(workspace, "add", "base.txt")
+    _run_git(workspace, "commit", "-m", "workspace-only base")
+    base_hash = _run_git(workspace, "rev-parse", "HEAD").stdout.strip()
+    branch = _run_git(workspace, "symbolic-ref", "--short", "HEAD").stdout.strip()
+
+    bare_check = subprocess.run(
+        ["git", "cat-file", "-e", f"{base_hash}^{{commit}}"], cwd=str(bare),
+        capture_output=True, text=True,
+    )
+    assert bare_check.returncode != 0, "precondition: base commit must be workspace-only"
+
+    work = tmp_path / "work_relay"
+    _run_git(tmp_path, "clone", str(workspace), str(work))
+    _run_git(work, "config", "user.email", "work@example.com")
+    _run_git(work, "config", "user.name", "Work User")
+    (work / "tip.txt").write_text("tip\n", encoding="utf-8")
+    _run_git(work, "add", "tip.txt")
+    _run_git(work, "commit", "-m", "sender tip")
+    tip_hash = _run_git(work, "rev-parse", "HEAD").stdout.strip()
+
+    bundle = tmp_path / "relay.bundle"
+    _run_git(work, "bundle", "create", str(bundle), f"^{base_hash}", branch)
+    dump = tmp_path / f"dump_{repo_name}_relay.dmp"
+    encrypt_bundle_to_dump(bundle, dump, password)
+
+    upload = envelope_form_post(
+        client, "/api/documents/upload", {"repo": repo_name}, password,
+        files={"attachment": (dump.name, dump.read_bytes(), "application/octet-stream")},
+    )
+    assert upload.status_code == 200, upload.text
+    body = parse_envelope(upload.json(), password)
+    assert body.get("success") is True, body
+    assert body.get("branches") == [branch]
+
+    assert _run_git(bare, "rev-parse", f"refs/heads/{branch}").stdout.strip() == tip_hash
+    assert _run_git(workspace, "rev-parse", f"refs/heads/{branch}").stdout.strip() == tip_hash
+    assert _run_git(workspace, "symbolic-ref", "--short", "HEAD").stdout.strip() == branch
