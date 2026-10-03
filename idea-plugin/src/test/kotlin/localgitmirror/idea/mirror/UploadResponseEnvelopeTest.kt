@@ -43,4 +43,16 @@ class UploadResponseEnvelopeTest {
 
     assertNull(MirrorSyncApi.openEnvelopeBody("""{"e":"$sealed"}""", codec))
   }
+
+  @Test
+  fun `wiped codec cannot open a v3 sealed envelope`() {
+    val kpg = java.security.KeyPairGenerator.getInstance("XDH").apply { initialize(java.security.spec.NamedParameterSpec.X25519) }
+    val serverKp = kpg.generateKeyPair()
+    val pub = localgitmirror.idea.workkit.HybridCrypto.publicKeyToRaw(serverKp.public as java.security.interfaces.XECPublicKey)
+    val codec = MirrorCrypto.Codec(localgitmirror.idea.workkit.HybridCrypto.Session.create(pub), "unused")
+    val sealed = codec.sealEnvelope(buildJsonObject { put("success", JsonPrimitive(false)) })
+    codec.wipe()
+
+    assertNull(MirrorSyncApi.openEnvelopeBody("""{"e":"$sealed"}""", codec))
+  }
 }

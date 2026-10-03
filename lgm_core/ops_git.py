@@ -118,7 +118,7 @@ def _negotiate_excludes(c, repo: str, proj: Path,
         return []
     try:
         resp = c.sync_negotiate(repo, candidates)
-    except LgmError:
+    except (LgmError, ValueError):
         return []
     known = set(resp.get("known") or [])
     return [s for s in candidates if s in known]

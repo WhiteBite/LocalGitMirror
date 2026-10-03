@@ -182,7 +182,6 @@ object MirrorSyncApi {
 
         writer.write("--$boundary--\r\n")
         writer.flush()
-        codec.wipe()
       }
 
       val code = conn.responseCode
@@ -191,11 +190,13 @@ object MirrorSyncApi {
       } catch (_: Exception) {
         ""
       }
-      if (code in 200..299) {
+      val result = if (code in 200..299) {
         HttpResult(code, openEnvelopeBody(body, codec) ?: body)
       } else {
         HttpResult(code, body)
       }
+      codec.wipe()
+      result
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)
       HttpResult(0, "${e.type}: ${e.message}")
