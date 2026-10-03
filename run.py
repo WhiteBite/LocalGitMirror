@@ -49,11 +49,15 @@ _POLL_PATHS = frozenset({
 
 class _PollFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        line = getattr(record, "request_line", "")
-        if line.startswith("GET "):
-            parts = line.split(" ")
-            if len(parts) > 1:
-                return parts[1].split("?")[0] not in _POLL_PATHS
+        # uvicorn access logs pass args as (client_addr, method, full_path, http_version, status_code)
+        if record.args and len(record.args) >= 3:
+            try:
+                method = str(record.args[1])
+                full_path = str(record.args[2])
+                if method == "GET":
+                    return full_path.split("?")[0] not in _POLL_PATHS
+            except (IndexError, TypeError):
+                pass
         return True
 
 
@@ -398,16 +402,23 @@ def run_prod() -> None:
     scheme = "https" if "ssl_certfile" in kwargs else "http"
 
     import socket as _sock
+    lan_ip = "localhost"
     try:
-        lan_ip = next(
-            ip for ip in (
-                info[4][0] for info in _sock.getaddrinfo(
-                    _sock.gethostname(), None, _sock.AF_INET
-                )
-            ) if not ip.startswith("127.")
-        )
-    except StopIteration:
-        lan_ip = "localhost"
+        s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+    except OSError:
+        try:
+            lan_ip = next(
+                ip for ip in (
+                    info[4][0] for info in _sock.getaddrinfo(
+                        _sock.gethostname(), None, _sock.AF_INET
+                    )
+                ) if ip.startswith(("192.168.", "10."))
+            )
+        except StopIteration:
+            pass
 
     api_key = os.getenv("API_KEY", "")
     storage = os.getenv("STORAGE_PATH", "storage")
@@ -426,7 +437,7 @@ def run_prod() -> None:
         print(f"  ║  Plugin:      v0.{plugin_v}.0{'':>44} ║")
     print("  ╠══════════════════════════════════════════════════════════════╣")
     print("  ║  Work PC bootstrap (paste in PowerShell 7):                   ║")
-    print(f"  ║  iex (irm \"{scheme}://{lan_ip}:{web_port}/api/bootstrap\"{'' if web_port == 443 else f' -SkipCertificateCheck'} -Headers @{{Authorization=\"Bearer {api_key[:8]}...\"}})")
+    print(f"  ║  iex (irm \"{scheme}://{lan_ip}:{web_port}/api/bootstrap\" -SkipCertificateCheck -Headers @{{Authorization=\"Bearer {api_key}\"}})")
     print("  ╠══════════════════════════════════════════════════════════════╣")
     print("  ║  IDEA plugin repository URL:                                  ║")
     print(f"  ║  {scheme}://{lan_ip}:{web_port}/api/plugin/repo.xml{'':>{max(0, 28 - len(str(lan_ip)) - len(str(web_port)))}} ║")
