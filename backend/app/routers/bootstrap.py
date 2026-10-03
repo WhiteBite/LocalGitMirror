@@ -233,10 +233,10 @@ def bootstrap_script(request: Request):
     return PlainTextResponse(content=script, media_type="text/plain")
 
 
-_README_TEMPLATE = """DocCache v{version} — Work PC Setup
+_README_PLACEHOLDER = """DocCache v{version} — Work PC Setup
 =====================================
 
-Server: {base_url}
+Server: __SERVER_URL__
 
 1) IDEA Plugin
    Open IDEA → Settings → Plugins → gear icon → Install Plugin from Disk
@@ -247,7 +247,7 @@ Server: {base_url}
 2) CLI / MCP tools
    Extract tools/ to any folder (e.g. D:\\Tools\\lgm)
    Create .env in that folder:
-     BASE_URL={base_url}
+     BASE_URL=__SERVER_URL__
      API_KEY=<enter from server banner>
      SYNC_PASSWORD=<enter from server banner>
    Test: python lgm.py status
@@ -255,11 +255,11 @@ Server: {base_url}
 3) OpenCode MCP (optional)
    Add to ~/.config/opencode/opencode.json:
      "mcp": {{"doccache-tools": {{"command": "python", "args": ["D:/Tools/lgm/lgm_mcp.py"],
-       "env": {{"BASE_URL": "{base_url}", "API_KEY": "<key>"}}}}}}
+       "env": {{"BASE_URL": "__SERVER_URL__", "API_KEY": "<key>"}}}}}}
 
 4) IDEA plugin auto-update (optional)
    Settings → Plugins → gear → Manage Plugin Repositories → Add:
-     {base_url}/api/plugin/repo.xml
+     __SERVER_URL__/api/plugin/repo.xml
    IDEA will check for updates automatically
 
 Updates: python lgm.py update (or re-download this bundle)
@@ -267,32 +267,90 @@ Credentials are NOT included in this file for security.
 """
 
 
-@router.get("/work-pc-bundle")
-def work_pc_bundle(request: Request):
-    """Single zip for Telegram/flash transfer: plugin + tools + README (no credentials)."""
-    base_url = str(request.base_url).rstrip("/")
+_BUNDLE_DIR_NAME = "work-pc-bundle"
+_BUNDLE_LOCK = __import__("threading").Lock()
 
+
+def _bundle_dir() -> Path:
+    return _repo_root() / "idea-plugin" / "build" / _BUNDLE_DIR_NAME
+
+
+def _bundle_cache_path() -> Optional[Path]:
+    d = _bundle_dir()
+    if not d.is_dir():
+        return None
+    candidates = sorted(d.glob("doccache-setup-v*.zip"))
+    return candidates[-1] if candidates else None
+
+
+def _bundle_cache_version(path: Path) -> Optional[str]:
+    m = __import__("re").fullmatch(r"doccache-setup-v(\d+)\.zip", path.name)
+    return m.group(1) if m else None
+
+
+def _generate_bundle_zip(dest_dir: Path) -> Path:
+    """Build the work-pc bundle zip (plugin + tools + README placeholder)."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
     plugin = _plugin_archive()
     from app.routers.plugin import _parse_version
-    plugin_version = _parse_version(plugin.name) or "0.0.0"
+    version = _parse_version(plugin.name) or "0.0.0"
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(plugin, f"plugin/{plugin.name}")
         for arcname, path in _tools_files():
             zf.write(path, f"tools/{arcname}")
-        readme = _README_TEMPLATE.format(
+        zf.writestr("README.txt", _README_PLACEHOLDER.format(
             version=_tools_version(),
-            base_url=base_url,
             plugin_filename=plugin.name,
-        )
-        zf.writestr("README.txt", readme)
+        ))
+
+    major = version.split(".")[1] if "." in version else "0"
+    dest = dest_dir / f"doccache-setup-v{major}.zip"
+    dest.write_bytes(buf.getvalue())
+    for old in dest_dir.glob("doccache-setup-v*.zip"):
+        if old != dest:
+            old.unlink(missing_ok=True)
+    return dest
+
+
+def ensure_work_pc_bundle() -> Path:
+    """Return the current bundle path, rebuilding if stale (same pattern as plugin)."""
+    cache = _bundle_cache_path()
+    expected = _tools_version().split(".")[1] if "." in _tools_version() else "0"
+    if cache is not None and _bundle_cache_version(cache) == expected:
+        return cache
+
+    with _BUNDLE_LOCK:
+        cache = _bundle_cache_path()
+        if cache is not None and _bundle_cache_version(cache) == expected:
+            return cache
+        return _generate_bundle_zip(_bundle_dir())
+
+
+@router.get("/work-pc-bundle")
+def work_pc_bundle(request: Request):
+    """Serve the pre-built work-pc bundle zip, injecting the server URL into README."""
+    bundle_path = ensure_work_pc_bundle()
+    base_url = str(request.base_url).rstrip("/")
+    from app.routers.plugin import _parse_version
+    plugin = _plugin_archive()
+    version = _parse_version(plugin.name) or "0.0.0"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(bundle_path, "r") as src, \
+         zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
+        for item in src.infolist():
+            data = src.read(item.filename)
+            if item.filename == "README.txt":
+                data = data.replace(b"__SERVER_URL__", base_url.encode("utf-8"))
+            dst.writestr(item, data)
 
     return Response(
         content=buf.getvalue(),
         media_type="application/zip",
         headers={
-            "Content-Disposition": f'attachment; filename="doccache-setup-v{plugin_version}.zip"',
+            "Content-Disposition": f'attachment; filename="doccache-setup-v{version}.zip"',
             "X-LGM-Version": _tools_version(),
         },
     )

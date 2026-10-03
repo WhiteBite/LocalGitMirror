@@ -378,6 +378,12 @@ def run_prod() -> None:
     if str(BACKEND) not in sys.path:
         sys.path.insert(0, str(BACKEND))
 
+    try:
+        from app.routers.bootstrap import ensure_work_pc_bundle
+        ensure_work_pc_bundle()
+    except Exception as exc:
+        print(f"[warn] work-pc bundle not built: {exc}")
+
     import uvicorn
     from app.main import CONFIG, app
 
