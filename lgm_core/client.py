@@ -270,6 +270,18 @@ class MirrorClient:
             return decrypt_envelope(resp["e"], self.sync_password)
         return resp
 
+    def sync_negotiate(self, repo: str, commits: list[str]) -> dict:
+        """POST /api/documents/negotiate — create repo if missing, return
+        {refs, head, known}: which of ``commits`` the mirror already has."""
+        e = encrypt_envelope({"repo": repo, "commits": commits},
+                             self.sync_password)
+        resp = self._post_json("/api/documents/negotiate",
+                               json.dumps({"e": e}).encode(),
+                               content_type="application/json")
+        if "e" in resp:
+            return decrypt_envelope(resp["e"], self.sync_password)
+        return resp
+
     def sync_apply_known(self, repo: str, commit: str,
                          branches: Optional[dict] = None,
                          local_branches: Optional[list] = None) -> dict:

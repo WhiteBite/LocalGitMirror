@@ -85,11 +85,57 @@ def op_branches(ctx: Ctx, args: dict) -> dict:
     return result
 
 
+_NEGOTIATE_CAP = 300
+
+
+def _negotiate_excludes(c, repo: str, proj: Path,
+                        branches: list[str]) -> list[str]:
+    """Local commits the mirror reports as known, for ``^sha`` exclusions.
+
+    Candidates: branch tips + recent history (``--all`` when no branch).
+    Returns ``[]`` on any negotiation failure so the caller sends a full
+    bundle; every returned sha exists locally by construction.
+    """
+    candidates: list[str] = []
+    for target in (branches or ["--all"]):
+        if target != "--all":
+            proc = subprocess.run(
+                ["git", "rev-parse", f"refs/heads/{target}"],
+                cwd=str(proj), capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode == 0:
+                candidates.append(proc.stdout.strip())
+        rev = target if target == "--all" else f"refs/heads/{target}"
+        proc = subprocess.run(
+            ["git", "rev-list", "--max-count=100", rev],
+            cwd=str(proj), capture_output=True, text=True, timeout=60,
+        )
+        if proc.returncode == 0:
+            candidates.extend(proc.stdout.split())
+    candidates = [s for s in dict.fromkeys(candidates)
+                  if len(s) == 40][:_NEGOTIATE_CAP]
+    if not candidates:
+        return []
+    try:
+        resp = c.sync_negotiate(repo, candidates)
+    except LgmError:
+        return []
+    known = set(resp.get("known") or [])
+    return [s for s in candidates if s in known]
+
+
 def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
                 dry_run: bool = False) -> dict:
-    """Bundle a branch (or --all) from a local git project and upload it."""
+    """Bundle a branch (or --all) from a local git project and upload it.
+
+    Negotiates with the mirror first: its known commits become ``^sha``
+    exclusions, so repeat sends carry only new commits.
+    """
     branches = [branch] if branch else []
-    return send_branches(ctx, repo, project, branches, [], dry_run)
+    proj = Path(project).resolve()
+    excludes = (_negotiate_excludes(_client(ctx), repo, proj, branches)
+                if proj.is_dir() else [])
+    return send_branches(ctx, repo, project, branches, excludes, dry_run)
 
 
 def send_branches(ctx: Ctx, repo: str, project: str, branches: list[str],
@@ -149,8 +195,32 @@ def op_send(ctx: Ctx, args: dict) -> dict:
     return send_branch(ctx, repo, project, branch, dry_run)
 
 
+def _local_haves(proj: Path, branch: str) -> str:
+    """Local branch tips + recent history, comma-joined, for export
+    negotiation; empty when the dir is not a git repo."""
+    haves: list[str] = []
+    proc = subprocess.run(
+        ["git", "for-each-ref", "--format=%(objectname)", "refs/heads/"],
+        cwd=str(proj), capture_output=True, text=True, timeout=60,
+    )
+    if proc.returncode == 0:
+        haves.extend(proc.stdout.split())
+    proc = subprocess.run(
+        ["git", "rev-list", "--max-count=200", branch or "HEAD"],
+        cwd=str(proj), capture_output=True, text=True, timeout=60,
+    )
+    if proc.returncode == 0:
+        haves.extend(proc.stdout.split())
+    return ",".join([s for s in dict.fromkeys(haves)
+                     if len(s) == 40][:_NEGOTIATE_CAP])
+
+
 def op_pull(ctx: Ctx, args: dict) -> dict:
-    """Pull an encrypted git bundle from the mirror and fetch it locally."""
+    """Pull an encrypted git bundle from the mirror and fetch it locally.
+
+    Without ``--haves`` the local repo is negotiated automatically so the
+    mirror bundles only what this machine lacks.
+    """
     c = _client(ctx)
     repo = args.get("repo", "")
     branch = args.get("branch", "")
@@ -162,6 +232,11 @@ def op_pull(ctx: Ctx, args: dict) -> dict:
         raise LgmError("config", "--repo is required")
     if not ctx.config.sync_password:
         raise LgmError("config", "SYNC_PASSWORD not set")
+
+    if not haves and project:
+        proj = Path(project).resolve()
+        if proj.is_dir():
+            haves = _local_haves(proj, branch)
 
     result = c.sync_pull(repo, branch=branch, since=since, haves=haves)
     status = result.get("status", "")
