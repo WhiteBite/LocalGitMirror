@@ -429,19 +429,22 @@ def run_prod() -> None:
     lan_ip = "localhost"
     try:
         s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
+        s.settimeout(1)
         s.connect(("8.8.8.8", 80))
         lan_ip = s.getsockname()[0]
         s.close()
     except OSError:
+        pass
+    if lan_ip.startswith(("127.", "172.", "169.")):
         try:
-            lan_ip = next(
-                ip for ip in (
-                    info[4][0] for info in _sock.getaddrinfo(
-                        _sock.gethostname(), None, _sock.AF_INET
-                    )
-                ) if ip.startswith(("192.168.", "10."))
-            )
-        except StopIteration:
+            ips = []
+            for info in _sock.getaddrinfo(_sock.gethostname(), None, _sock.AF_INET):
+                ip = info[4][0]
+                if ip.startswith(("192.168.", "10.")) and ip not in ips:
+                    ips.append(ip)
+            if ips:
+                lan_ip = ips[0]
+        except OSError:
             pass
 
     api_key = os.getenv("API_KEY", "")
