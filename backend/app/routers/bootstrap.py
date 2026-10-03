@@ -33,7 +33,7 @@ def _repo_root() -> Path:
 def _tools_files() -> list[tuple[str, Path]]:
     root = _repo_root()
     files: list[tuple[str, Path]] = []
-    for name in ("lgm.py", "lgm_mcp.py"):
+    for name in ("lgm.py", "lgm_mcp.py", "_lgm_npm.py"):
         p = root / name
         if p.is_file():
             files.append((name, p))
