@@ -4,10 +4,12 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from app.core.sync_envelope import _decrypt_params, _sync_password
 from app.routers._rid import resolve_repo_identifier
 
 router = APIRouter(prefix="/api", tags=["repos"])
@@ -30,6 +32,8 @@ class RepoSelectRequest(BaseModel):
 class CollectionCreateRequest(BaseModel):
     rid: str = ""
     name: str = ""
+    e: Optional[str] = None
+    k: Optional[str] = None
 
 
 class StoragePathRequest(BaseModel):
@@ -92,20 +96,34 @@ def create_collection(request: CollectionCreateRequest, raw_request: Request):
 
     Accepts either ``rid`` (obfuscated repo identifier) or ``name`` (plain
     repo name). The rid is resolved to a repo name via the shared helper;
-    a plain name is used as-is.
+    a plain name is used as-is. A rid that resolves to no existing repo may
+    carry a sealed envelope (``e`` + optional ``k``) whose inner ``repo``
+    field names the repository to create.
     """
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
-    raw = (request.rid or "").strip() or (request.name or "").strip()
-    resolved = resolve_repo_identifier(raw, repo_manager)
-    if not resolved:
+    rid = (request.rid or "").strip()
+    # resolve_repo_identifier passes unknown values through; a differing result means the rid matched
+    resolved = resolve_repo_identifier(rid, repo_manager)
+    if rid and resolved != rid:
+        create_name = resolved
+    elif request.e:
+        params = _decrypt_params(request.e, _sync_password(), request.k)
+        create_name = (params.get("repo") or "").strip()
+        if not create_name:
+            raise HTTPException(400, "Missing 'repo' in request envelope")
+    elif (request.name or "").strip():
+        create_name = resolve_repo_identifier((request.name or "").strip(), repo_manager)
+    elif rid:
+        create_name = rid
+    else:
         raise HTTPException(400, "Missing 'rid' or 'name'")
     author_name = raw_request.headers.get("X-User-Name")
     author_email = raw_request.headers.get("X-User-Email")
-    result = repo_manager.create_repo(resolved, author_name=author_name, author_email=author_email)
+    result = repo_manager.create_repo(create_name, author_name=author_name, author_email=author_email)
     if result["success"]:
         if system_logger:
-            system_logger.info(f"Создан репозиторий: {resolved}")
+            system_logger.info(f"Создан репозиторий: {create_name}")
     else:
         if system_logger:
             system_logger.error(f"Не удалось создать репозиторий: {result['message']}")

@@ -71,8 +71,8 @@ class SyncEngine(
     return resolver.resolve(project, projectDir, "").sanitized
   }
 
-  fun ensureRemoteRepo(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File? = null): StepResult {
-    val res = mirror.ensureRepoExists(baseUrl, apiKey, repo, insecureTls, projectDir)
+  fun ensureRemoteRepo(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean, projectDir: File? = null): StepResult {
+    val res = mirror.ensureRepoExists(baseUrl, apiKey, repo, syncPassword, insecureTls, projectDir)
     if (res.code !in 200..299) {
       return StepResult(false, "Failed to ensure Cache repo", "HTTP ${res.code}: ${res.body.take(300)}")
     }
@@ -176,7 +176,7 @@ class SyncEngine(
       }
       diag(projectDir, diagnostics, "handshake", SyncStepOutcome.OK, hs.message)
 
-      val ensureRepo = ensureRemoteRepo(snapshot.baseUrl, snapshot.mirrorApiKey, repoName, snapshot.mirrorInsecureTls, projectDir)
+      val ensureRepo = ensureRemoteRepo(snapshot.baseUrl, snapshot.mirrorApiKey, repoName, snapshot.syncPassword, snapshot.mirrorInsecureTls, projectDir)
       if (!ensureRepo.ok) {
         diag(projectDir, diagnostics, "ensure-remote-repo", SyncStepOutcome.FAIL, ensureRepo.message, mapOf("repo" to repoName))
         return FullSyncResult(ensureRepo, null, null, repoName, traceId, diagnostics.steps)

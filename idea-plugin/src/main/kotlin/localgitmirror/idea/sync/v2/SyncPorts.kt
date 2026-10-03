@@ -10,7 +10,7 @@ import localgitmirror.idea.workkit.WorkKit
 import java.io.File
 
 interface MirrorPort {
-  fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File? = null): HttpResult
+  fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean, projectDir: File? = null): HttpResult
   fun capabilities(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorAuthApi.CapabilitiesResult
   fun passwordProbe(baseUrl: String, apiKey: String, insecureTls: Boolean): MirrorAuthApi.ProbeResult
   fun getRefs(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean): MirrorSyncApi.RefsResult
@@ -21,8 +21,8 @@ interface MirrorPort {
 
 object DefaultMirrorPort : MirrorPort {
   @Suppress("HttpCallOnEdt")
-  override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File?): HttpResult {
-    return MirrorSyncApi.ensureRepoExists(baseUrl, apiKey, repo, insecureTls, projectDir)
+  override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean, projectDir: File?): HttpResult {
+    return MirrorSyncApi.ensureRepoExists(baseUrl, apiKey, repo, syncPassword, insecureTls, projectDir)
   }
 
   @Suppress("HttpCallOnEdt")

@@ -207,7 +207,7 @@ class SyncEngineFlowTest {
     var applyKnownCalls: Int = 0
     var uploadCalls: Int = 0
 
-    override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean, projectDir: File?): HttpResult {
+    override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean, projectDir: File?): HttpResult {
       return HttpResult(200, "ok")
     }
 

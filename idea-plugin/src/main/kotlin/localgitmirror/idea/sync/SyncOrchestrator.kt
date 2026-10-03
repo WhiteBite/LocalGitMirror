@@ -49,8 +49,8 @@ object SyncOrchestrator {
     return engine.inferRepoName(project, projectDir, settings)
   }
 
-  fun ensureRemoteRepo(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): StepResult {
-    return engine.ensureRemoteRepo(baseUrl, apiKey, repo, insecureTls).toLegacy()
+  fun ensureRemoteRepo(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean): StepResult {
+    return engine.ensureRemoteRepo(baseUrl, apiKey, repo, syncPassword, insecureTls).toLegacy()
   }
 
   fun ensureWorkTreeClean(project: Project, projectDir: File): StepResult {

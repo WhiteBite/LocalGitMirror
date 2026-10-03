@@ -104,7 +104,7 @@ object MirrorSyncApi {
       conn.requestMethod = "POST"
       conn.doOutput = true
       conn.connectTimeout = 60_000
-      conn.readTimeout = 60_000
+      conn.readTimeout = 600_000
       conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
       if (apiKey.isNotBlank()) {
         conn.setRequestProperty("Authorization", "Bearer $apiKey")
@@ -197,6 +197,7 @@ object MirrorSyncApi {
     baseUrl: String,
     apiKey: String,
     repo: String,
+    syncPassword: String,
     insecureTls: Boolean,
     projectDir: File? = null
   ): HttpResult {
@@ -212,10 +213,17 @@ object MirrorSyncApi {
         conn.setRequestProperty("Authorization", "Bearer $apiKey")
       }
 
-      val payload = "{\"rid\":\"${MirrorTransport.rid(repo)}\"}"
-      conn.outputStream.use { os ->
-        os.write(payload.toByteArray(StandardCharsets.UTF_8))
+      val codec = MirrorCrypto.beginCall(syncPassword)
+      val e = codec.sealEnvelope(buildJsonObject { put("repo", repo) })
+      val payload = buildJsonObject {
+        put("rid", MirrorTransport.rid(repo))
+        put("e", e)
+        codec.epkB64?.let { put("k", it) }
       }
+      conn.outputStream.use { os ->
+        os.write(payload.toString().toByteArray(StandardCharsets.UTF_8))
+      }
+      codec.wipe()
 
       val code = conn.responseCode
       val body = HttpClient.readBody(conn)

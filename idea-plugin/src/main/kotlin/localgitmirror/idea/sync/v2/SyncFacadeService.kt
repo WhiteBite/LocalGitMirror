@@ -30,8 +30,8 @@ class SyncFacadeService(private val project: Project) {
     return engine.validateSettings(settings)
   }
 
-  fun ensureRemoteRepo(baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean): SyncEngine.StepResult {
-    return engine.ensureRemoteRepo(baseUrl, apiKey, repo, insecureTls)
+  fun ensureRemoteRepo(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean): SyncEngine.StepResult {
+    return engine.ensureRemoteRepo(baseUrl, apiKey, repo, syncPassword, insecureTls)
   }
 
   fun runFullSync(projectDir: File, settings: MirrorSettingsService.State, additionalBranches: List<String> = emptyList()): SyncEngine.FullSyncResult {
