@@ -67,6 +67,11 @@ from .ops_mr import (
     _mirror_refs_safe, _existing_shas, _new_commit_count, op_mr_send,
     op_mr_notes, op_mr_replies_send, op_mr_replies_status,
 )
+from .ops_chat import (
+    op_chat_send, op_chat_list,
+    op_file_send, op_file_list, op_file_get,
+    op_config_get, op_config_set,
+)
 
 
 # ── REGISTRY ─────────────────────────────────────────────────────────────────
@@ -310,6 +315,67 @@ REGISTRY: list[Op] = [
         summary="Download and install the latest CLI tools (lgm.py, lgm_mcp.py, lgm_core/) from the mirror.",
         params=[],
         run=op_update,
+    ),
+    Op(
+        name="chat_send",
+        summary="Send a chat message to the other machine via the exchange buffer.",
+        params=[
+            Param("text", "str", "", "Message text", required=True),
+        ],
+        run=op_chat_send,
+    ),
+    Op(
+        name="chat_list",
+        summary="Read chat messages from the exchange buffer (newest first).",
+        params=[
+            Param("count", "int", 20, "Max messages to return (1-100)"),
+        ],
+        run=op_chat_list,
+    ),
+    Op(
+        name="file_send",
+        summary="Send a file to the other machine via the encrypted postbox.",
+        params=[
+            Param("path", "str", "", "Local file path to send", required=True),
+            Param("repo", "str", "", "Mirror repository name", required=True),
+        ],
+        run=op_file_send,
+    ),
+    Op(
+        name="file_list",
+        summary="List files in the postbox for a repo.",
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+        ],
+        run=op_file_list,
+    ),
+    Op(
+        name="file_get",
+        summary="Download a file from the postbox.",
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("id", "str", "", "File ID from file_list", required=True),
+            Param("save", "str", "", "Local path to save the file to"),
+        ],
+        run=op_file_get,
+    ),
+    Op(
+        name="config_get",
+        summary="Read server settings (all, or a specific section).",
+        params=[
+            Param("section", "str", "", "Settings section: general, git, ui (empty = all)"),
+        ],
+        run=op_config_get,
+    ),
+    Op(
+        name="config_set",
+        summary="Update a server setting for debugging/reconfiguration.",
+        params=[
+            Param("section", "str", "", "Settings section: general, git, ui", required=True),
+            Param("key", "str", "", "Setting key within the section", required=True),
+            Param("value", "str", "", "New value (auto-parsed: bool/int/float/JSON/string)", required=True),
+        ],
+        run=op_config_set,
     ),
 ]
 
