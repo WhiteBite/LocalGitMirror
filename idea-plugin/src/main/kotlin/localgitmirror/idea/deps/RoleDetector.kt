@@ -106,6 +106,10 @@ object RoleDetector {
     val host = parseHost(baseUrl) ?: return@runCatching MachineRole.WORK
     if (host.lowercase() in LOCAL_HOSTS) return@runCatching MachineRole.HOME
 
+    // mDNS: <hostname>.local always refers to this machine
+    val localHostname = java.net.InetAddress.getLocalHost().hostName
+    if (host.equals("$localHostname.local", ignoreCase = true)) return@runCatching MachineRole.HOME
+
     val localAddresses = mutableSetOf<String>()
     val interfaces = NetworkInterface.getNetworkInterfaces() ?: return@runCatching MachineRole.WORK
     for (ni in interfaces) {
