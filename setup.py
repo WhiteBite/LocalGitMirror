@@ -105,6 +105,8 @@ def main() -> None:
     args = ap.parse_args()
 
     url = args.url or prompt("Server URL", f"https://{__import__('socket').gethostname()}.local")
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
     key = args.key or prompt("API Key")
     password = args.password or prompt("Sync Password")
     install = Path(args.install_dir) if args.install_dir else DEFAULT_INSTALL
