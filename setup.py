@@ -104,7 +104,7 @@ def main() -> None:
     ap.add_argument("--install-dir", default="", help="Where to place the tools")
     args = ap.parse_args()
 
-    url = args.url or prompt("Server URL")
+    url = args.url or prompt("Server URL", f"https://{__import__('socket').gethostname()}.local")
     key = args.key or prompt("API Key")
     password = args.password or prompt("Sync Password")
     install = Path(args.install_dir) if args.install_dir else DEFAULT_INSTALL

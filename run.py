@@ -426,6 +426,9 @@ def run_prod() -> None:
     scheme = "https" if "ssl_certfile" in kwargs else "http"
 
     import socket as _sock
+    hostname = _sock.gethostname()
+    mdns_host = f"{hostname}.local"
+
     lan_ip = "localhost"
     try:
         s = _sock.socket(_sock.AF_INET, _sock.SOCK_DGRAM)
@@ -447,6 +450,8 @@ def run_prod() -> None:
         except OSError:
             pass
 
+    display_host = mdns_host if mdns_host else lan_ip
+
     api_key = os.getenv("API_KEY", "")
     storage = os.getenv("STORAGE_PATH", "storage")
     plugin_v = _newest_plugin_zip_version()
@@ -457,21 +462,22 @@ def run_prod() -> None:
     print("  ╔══════════════════════════════════════════════════════════════╗")
     print(f"  ║  DocCache Mirror  v0.{_git_commit_count() or 0}.0{'':>20}                              ║")
     print("  ╠══════════════════════════════════════════════════════════════╣")
-    print(f"  ║  Server:      {scheme}://{lan_ip}:{web_port:<42} ║")
+    print(f"  ║  Server:      {scheme}://{display_host}:{web_port:<42} ║")
+    print(f"  ║  IP fallback: {scheme}://{lan_ip}:{web_port:<44} ║")
     print(f"  ║  Storage:     {storage:<50} ║")
     print(f"  ║  API key:     {has_key} ({key_hint}){'':>{max(0, 36 - len(has_key) - len(key_hint))}} ║")
     if plugin_v:
         print(f"  ║  Plugin:      v0.{plugin_v}.0{'':>44} ║")
     print("  ╠══════════════════════════════════════════════════════════════╣")
     print("  ║  Work PC setup (Telegram / file transfer):                   ║")
-    print(f"  ║  curl -k \"{scheme}://{lan_ip}:{web_port}/api/work-pc-bundle\"{'' if not api_key else f' -H \"Authorization: Bearer {api_key}\"'} -o doccache-setup.zip")
-    print("  ║  Send via Telegram → extract on work PC → follow README.txt")
+    print(f"  ║  curl -k \"{scheme}://{display_host}:{web_port}/api/work-pc-bundle\" -H \"Authorization: Bearer {api_key}\" -o doccache-setup.zip")
+    print("  ║  Send via Telegram → extract on work PC → run tools/setup.py")
     print("  ╠══════════════════════════════════════════════════════════════╣")
     print("  ║  API Key (enter in plugin settings):                         ║")
     print(f"  ║  {api_key:<54} ║")
     print("  ╠══════════════════════════════════════════════════════════════╣")
     print("  ║  IDEA plugin repository URL:                                  ║")
-    print(f"  ║  {scheme}://{lan_ip}:{web_port}/api/plugin/repo.xml{'':>{max(0, 28 - len(str(lan_ip)) - len(str(web_port)))}} ║")
+    print(f"  ║  {scheme}://{display_host}:{web_port}/api/plugin/repo.xml{'':>{max(0, 28 - len(display_host) - len(str(web_port)))}} ║")
     print("  ╚══════════════════════════════════════════════════════════════╝")
     print()
     print("[info] Press Ctrl+C to stop.")
