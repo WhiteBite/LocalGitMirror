@@ -83,12 +83,14 @@ def configure_opencode(install_dir: Path, url: str, key: str) -> None:
 
     config.setdefault("mcp", {})
     config["mcp"]["doccache-tools"] = {
+        "type": "local",
         "command": "python",
         "args": [str(install_dir / "lgm_mcp.py")],
         "env": {
             "BASE_URL": url,
             "API_KEY": key,
         },
+        "enabled": True,
     }
 
     config_path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
