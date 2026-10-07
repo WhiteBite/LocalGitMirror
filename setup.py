@@ -18,7 +18,9 @@ TOOLS_DIR = Path(__file__).resolve().parent
 DEFAULT_INSTALL = Path.home() / "Tools" / "lgm"
 
 OPENCODE_PATHS = [
+    Path.home() / ".config" / "opencode" / "opencode.jsonc",
     Path.home() / ".config" / "opencode" / "opencode.json",
+    Path.home() / ".opencode" / "opencode.jsonc",
     Path.home() / ".opencode" / "opencode.json",
 ]
 
@@ -84,8 +86,7 @@ def configure_opencode(install_dir: Path, url: str, key: str) -> None:
     config.setdefault("mcp", {})
     config["mcp"]["doccache-tools"] = {
         "type": "local",
-        "command": "python",
-        "args": [str(install_dir / "lgm_mcp.py")],
+        "command": ["python", str(install_dir / "lgm_mcp.py")],
         "env": {
             "BASE_URL": url,
             "API_KEY": key,
