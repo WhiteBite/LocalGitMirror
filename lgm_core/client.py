@@ -442,21 +442,26 @@ class MirrorClient:
         except Exception as e:
             raise LgmError("network", f"GitLab unreachable: {e}") from None
 
-    def gitlab_list_mrs(self) -> list:
-        """GET /api/v4/projects/<id>/merge_requests?state=opened — open MRs."""
-        url, token, project = self._gitlab_config()
-        proj_id = urllib.parse.quote(project, safe="")
+    def gitlab_list_mrs(self, project: str = "") -> list:
+        """GET /api/v4/projects/<id>/merge_requests?state=opened — open MRs.
+
+        ``project`` overrides GITLAB_PROJECT for registry-driven multi-project
+        sync; the response is the raw GitLab list (capped at 50, like the plugin).
+        """
+        url, token, default_project = self._gitlab_config()
+        proj_id = urllib.parse.quote((project or default_project), safe="")
         data = self._gitlab_get(
-            f"{url}/api/v4/projects/{proj_id}/merge_requests?state=opened", token
+            f"{url}/api/v4/projects/{proj_id}/merge_requests"
+            "?state=opened&order_by=updated_at&sort=desc&per_page=50", token
         )
         if not isinstance(data, list):
             raise LgmError("network", f"GitLab returned non-list for merge_requests: {type(data).__name__}")
         return data
 
-    def gitlab_get_mr(self, iid: int) -> dict:
+    def gitlab_get_mr(self, iid: int, project: str = "") -> dict:
         """GET /api/v4/projects/<id>/merge_requests/<iid> — one MR."""
-        url, token, project = self._gitlab_config()
-        proj_id = urllib.parse.quote(project, safe="")
+        url, token, default_project = self._gitlab_config()
+        proj_id = urllib.parse.quote((project or default_project), safe="")
         try:
             iid_int = int(iid)
         except (TypeError, ValueError):
@@ -467,6 +472,31 @@ class MirrorClient:
         if not isinstance(data, dict):
             raise LgmError("network", f"GitLab returned non-dict for merge_request: {type(data).__name__}")
         return data
+
+    def gitlab_list_discussions(self, iid: int, project: str = "") -> list:
+        """GET .../merge_requests/<iid>/discussions — every thread of the MR
+        (open and resolved, system notes included), paginated until an empty
+        page, capped at 10 pages of 100."""
+        url, token, default_project = self._gitlab_config()
+        proj_id = urllib.parse.quote((project or default_project), safe="")
+        try:
+            iid_int = int(iid)
+        except (TypeError, ValueError):
+            raise LgmError("config", f"MR iid must be an integer, got: {iid!r}") from None
+        out: list = []
+        page = 1
+        while page <= 10:
+            data = self._gitlab_get(
+                f"{url}/api/v4/projects/{proj_id}/merge_requests/{iid_int}"
+                f"/discussions?per_page=100&page={page}", token
+            )
+            if not isinstance(data, list):
+                raise LgmError("network", f"GitLab returned non-list for discussions: {type(data).__name__}")
+            if not data:
+                break
+            out.extend(data)
+            page += 1
+        return out
 
     # ── deps (gradle/npm artifact sync) — /api/documents/* ─────────────
     # These endpoints are plain multipart (no envelope) — the payload itself

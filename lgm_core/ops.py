@@ -72,6 +72,9 @@ from .ops_chat import (
     op_file_send, op_file_list, op_file_get,
     op_config_get, op_config_set,
 )
+from .ops_projects import (
+    op_mr_projects_scan, op_mr_projects_list, op_mr_sync_all,
+)
 
 
 # ── REGISTRY ─────────────────────────────────────────────────────────────────
@@ -376,6 +379,30 @@ REGISTRY: list[Op] = [
             Param("value", "str", "", "New value (auto-parsed: bool/int/float/JSON/string)", required=True),
         ],
         run=op_config_set,
+    ),
+    Op(
+        name="mr_projects_scan",
+        summary="Register local GitLab checkouts found under a root directory for mr_sync_all.",
+        params=[
+            Param("root", "str", "", "Directory containing project checkouts", required=True),
+        ],
+        run=op_mr_projects_scan,
+        needs_client=False,
+    ),
+    Op(
+        name="mr_projects_list",
+        summary="Show the registered MR-sync projects (repo, path, GitLab project).",
+        params=[],
+        run=op_mr_projects_list,
+        needs_client=False,
+    ),
+    Op(
+        name="mr_sync_all",
+        summary="Sync every open MR of every registered project to the mirror: branches (mirror delta) + notes (content-hash delta).",
+        params=[
+            Param("dry_run", "bool", False, "List the MRs without transferring anything"),
+        ],
+        run=op_mr_sync_all,
     ),
 ]
 

@@ -211,7 +211,8 @@ def test_gitlab_list_mrs_builds_url_and_headers(monkeypatch):
 
     assert captured["url"] == (
         "https://gitlab.corp.example.com/api/v4/projects/"
-        "group%2Fsub%2Fproject/merge_requests?state=opened"
+        "group%2Fsub%2Fproject/merge_requests"
+        "?state=opened&order_by=updated_at&sort=desc&per_page=50"
     )
     assert captured["headers"].get("Private-token") == "tok123"
     assert mrs[0]["iid"] == 7
