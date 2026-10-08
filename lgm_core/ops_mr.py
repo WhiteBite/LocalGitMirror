@@ -5,6 +5,7 @@ import subprocess
 from pathlib import Path
 
 from .client import MirrorClient, LgmError
+from .git_remote import gitlab_project_for
 from .op_models import Ctx, _client, _repo_arg
 from .ops_git import send_branches
 
@@ -208,8 +209,13 @@ def op_mr_list(ctx: Ctx, args: dict) -> dict:
     return {"count": len(items), "items": items, "errors": errors}
 
 
-def _resolve_mr_targets(c: MirrorClient, args: dict) -> list[dict]:
-    """Resolve requested MRs/branches to [{iid, branch}], deduped by branch."""
+def _resolve_mr_targets(c: MirrorClient, args: dict,
+                        project: str = "") -> list[dict]:
+    """Resolve requested MRs/branches to [{iid, branch}], deduped by branch.
+
+    ``project`` is the GitLab project path derived from the --project
+    checkout's origin remote; empty falls back to GITLAB_PROJECT.
+    """
     try:
         iid_single = int(args.get("iid", 0) or 0)
     except (TypeError, ValueError):
@@ -237,10 +243,10 @@ def _resolve_mr_targets(c: MirrorClient, args: dict) -> list[dict]:
             targets.append({"iid": iid, "branch": branch})
 
     if args.get("all_open", False):
-        for m in c.gitlab_list_mrs():
+        for m in c.gitlab_list_mrs(project=project):
             _add(m.get("iid"), m.get("source_branch") or "")
     for i in iids:
-        mr = c.gitlab_get_mr(i)
+        mr = c.gitlab_get_mr(i, project=project)
         branch = (mr.get("source_branch") or "").strip()
         if not branch:
             raise LgmError("gitlab", f"MR !{i}: empty source branch")
@@ -352,7 +358,8 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
     if not proj.is_dir():
         raise LgmError("config", f"project not found: {proj}")
 
-    targets = _resolve_mr_targets(c, args)
+    gitlab_project = gitlab_project_for(proj)
+    targets = _resolve_mr_targets(c, args, project=gitlab_project)
     if not targets:
         raise LgmError("config", "--iid, --iids, --all-open or --branch is required")
 

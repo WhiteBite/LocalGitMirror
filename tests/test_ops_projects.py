@@ -9,9 +9,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lgm_core.client import LgmError, MirrorClient
 from lgm_core.config import Config
+from lgm_core.git_remote import parse_remote as _parse_remote
 from lgm_core.mr_notes_render import parse_discussions, render_markdown
 from lgm_core.op_models import Ctx
-from lgm_core.ops_projects import _parse_remote
+from lgm_core.ops_projects import op_mr_projects_scan, op_mr_projects_list, op_mr_sync_all
 
 
 def _ctx(sync_password: str = "pw") -> Ctx:
@@ -203,11 +204,12 @@ def _git_init(d: Path, remote: str) -> None:
 
 
 def test_mr_projects_scan_registers_gitlab_repos(tmp_path, monkeypatch):
+    import lgm_core.git_remote as gitrem
     import lgm_core.ops_projects as opmod
     monkeypatch.setattr(opmod, "_REGISTRY_PATH", tmp_path / "mr-projects.json")
-    monkeypatch.setattr(
-        opmod, "cfg",
-        lambda key, default="": "https://gitlab.corp" if key == "GITLAB_URL" else default)
+    fake_cfg = lambda key, default="": "https://gitlab.corp" if key == "GITLAB_URL" else default
+    monkeypatch.setattr(opmod, "cfg", fake_cfg)
+    monkeypatch.setattr(gitrem, "cfg", fake_cfg)
 
     root = tmp_path / "src"
     _git_init(root / "doctransformer", "https://gitlab.corp/dev/onyx/doctransformer.git")

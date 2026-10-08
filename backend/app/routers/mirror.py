@@ -504,12 +504,14 @@ async def mirror_publish_npm(
 def npm_get_packument(package_name: str, request: Request):
     """Serve npm packument (package metadata) from vault index.
 
-    Returns JSON with versions, dist-tags, tarball URLs pointing to localhost.
+    Tarball URLs point back at the scheme://host[:port] this packument was
+    requested from, so the registry and tarballs stay consistent whatever
+    host/port the consumer (npm/yarn at home) is configured with.
     """
     _guard_data_plane(request)
     package_name = package_name.strip("/")
     index = load_npm_index(vault_root())
-    packument = build_packument(package_name, index)
+    packument = build_packument(package_name, index, str(request.base_url).rstrip("/"))
     if packument is None:
         raise HTTPException(404, "Package not found")
     return packument

@@ -353,6 +353,9 @@ class TestNpmServeEndpoints:
         body = resp.json()
         assert body["name"] == "@krypto-ui/components"
         assert "1.2.3" in body["versions"]
+        tarball = body["versions"]["1.2.3"]["dist"]["tarball"]
+        assert tarball.startswith(
+            "http://testserver/api/cache/npm/@krypto-ui/components/-/")
 
     def test_serve_missing_returns_404(self, client, vault):
         resp = client.get("/api/cache/npm/@krypto-ui/missing/1.0.0")

@@ -54,6 +54,8 @@ class _FakeGit:
             return ok()
         if args[0] == "update-ref":
             return ok()
+        if args[0] == "remote":
+            return fail()
         if args[:2] == ["rev-parse", "--verify"]:
             branch = args[2].removeprefix("refs/heads/")
             return ok(self.tips[branch] + "\n") if branch in self.local_refs else fail()
@@ -79,10 +81,10 @@ class _FakeClient:
         self.mirror_refs = mirror_refs
         self.sent_bundles: list[bytes] = []
 
-    def gitlab_get_mr(self, iid):
+    def gitlab_get_mr(self, iid, project=""):
         raise AssertionError(f"unexpected gitlab_get_mr({iid})")
 
-    def gitlab_list_mrs(self):
+    def gitlab_list_mrs(self, project=""):
         raise AssertionError("unexpected gitlab_list_mrs()")
 
     def sync_refs(self, repo):

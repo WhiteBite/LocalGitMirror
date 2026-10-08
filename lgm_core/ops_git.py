@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .client import LgmError
 from .crypto import decrypt_bundle
-from .op_models import Ctx, _client, _role_guess
+from .op_models import Ctx, _client, _repo_arg, _role_guess
 
 
 # ── New ops ──────────────────────────────────────────────────────────────────
@@ -285,7 +285,7 @@ def op_pull(ctx: Ctx, args: dict) -> dict:
 def op_deps_request(ctx: Ctx, args: dict) -> dict:
     """Post a pre-built encrypted manifest file to /api/documents/submit."""
     c = _client(ctx)
-    repo = args.get("repo") or "onyx-platform"
+    repo = _repo_arg(args)
     manifest_path = args.get("manifest", "")
     if not manifest_path:
         raise LgmError("config", "--manifest is required (path to encrypted manifest)")

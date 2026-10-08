@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-import subprocess
 import time
 from pathlib import Path
 
 from .client import LgmError
 from .config import cfg
+from .git_remote import gitlab_project_for
 from .mr_notes_render import parse_discussions, render_markdown
 from .op_models import Ctx, _client
 from .ops_git import send_branches
@@ -70,29 +70,6 @@ def _should_skip(stored: dict | None, current_hash: str, now: float) -> bool:
         return False
 
 
-def _origin_remote(proj: Path) -> str:
-    proc = subprocess.run(
-        ["git", "-C", str(proj), "remote", "get-url", "origin"],
-        capture_output=True, timeout=30,
-    )
-    return proc.stdout.decode(errors="replace").strip() if proc.returncode == 0 else ""
-
-
-def _parse_remote(url: str) -> tuple[str, str]:
-    """(host, project_path) from https://host/group/proj.git or git@host:group/proj.git."""
-    if not url:
-        return "", ""
-    if url.startswith("git@"):
-        host, _, path = url[4:].partition(":")
-    else:
-        body = url.split("://", 1)[-1]
-        host, _, path = body.partition("/")
-    path = path.strip().strip("/")
-    if path.endswith(".git"):
-        path = path[:-4]
-    return host.lower(), path
-
-
 def op_mr_projects_scan(ctx: Ctx, args: dict) -> dict:
     """Register local GitLab checkouts found under --root into the sync registry."""
     root = (args.get("root") or "").strip()
@@ -105,7 +82,6 @@ def op_mr_projects_scan(ctx: Ctx, args: dict) -> dict:
     gitlab_url = cfg("GITLAB_URL").rstrip("/")
     if not gitlab_url:
         raise LgmError("config", "GITLAB_URL is not set — cannot match project remotes")
-    host = gitlab_url.split("://", 1)[-1].partition("/")[0].lower()
 
     reg = _load_registry()
     entries = [e for e in reg["projects"] if isinstance(e, dict)]
@@ -116,9 +92,8 @@ def op_mr_projects_scan(ctx: Ctx, args: dict) -> dict:
     for child in sorted(root_dir.iterdir()):
         if not (child / ".git").exists():
             continue
-        remote = _origin_remote(child)
-        remote_host, gitlab_path = _parse_remote(remote)
-        if not gitlab_path or remote_host != host:
+        gitlab_path = gitlab_project_for(child)
+        if not gitlab_path:
             continue
         repo = gitlab_path.rsplit("/", 1)[-1].strip()
         if not repo:
@@ -136,7 +111,7 @@ def op_mr_projects_scan(ctx: Ctx, args: dict) -> dict:
 
     reg["projects"] = entries
     _save_registry(reg)
-    return {"success": True, "root": str(root_dir), "gitlab_host": host,
+    return {"success": True, "root": str(root_dir),
             "added": added, "updated": updated, "total": len(entries),
             "projects": entries}
 

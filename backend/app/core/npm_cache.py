@@ -359,11 +359,13 @@ def add_to_npm_index(vault_root: Path, artifact: NpmArtifact, sha256: str) -> No
         save_npm_index(vault_root, index)
 
 
-def build_packument(package_name: str, index: dict) -> Optional[dict]:
+def build_packument(package_name: str, index: dict, base_url: str) -> Optional[dict]:
     """Build a minimal npm packument from vault index.
 
     Returns JSON-serializable dict with versions, dist-tags, and tarball URLs
-    pointing to localhost.
+    pointing back at ``base_url`` — the scheme://host[:port] the packument
+    itself was served from, so whatever registry URL npm resolved works for
+    the tarballs too.
     """
     pkg_versions = index.get(package_name)
     if not pkg_versions:
@@ -381,7 +383,7 @@ def build_packument(package_name: str, index: dict) -> Optional[dict]:
             "dist": {
                 "shasum": info.get("shasum", ""),
                 "integrity": info.get("integrity", ""),
-                "tarball": f"http://localhost:8000/api/cache/npm/{package_name}/-/{package_name.replace('/', '%2f')}-{ver}.tgz",
+                "tarball": f"{base_url}/api/cache/npm/{package_name}/-/{package_name.replace('/', '%2f')}-{ver}.tgz",
             },
         }
 

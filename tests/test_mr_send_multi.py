@@ -59,6 +59,8 @@ class _FakeGit:
         if args[0] == "update-ref":
             self.update_refs.append(args[1])
             return ok()
+        if args[0] == "remote":
+            return fail()
         if args[:2] == ["rev-parse", "--verify"]:
             ref = args[2]
             branch = ref.removeprefix("refs/heads/")
@@ -91,11 +93,11 @@ class _FakeClient:
         self.list_calls = 0
         self.get_calls: list[int] = []
 
-    def gitlab_get_mr(self, iid):
+    def gitlab_get_mr(self, iid, project=""):
         self.get_calls.append(iid)
         return {"iid": iid, "source_branch": self.mrs[iid]}
 
-    def gitlab_list_mrs(self):
+    def gitlab_list_mrs(self, project=""):
         self.list_calls += 1
         return [{"iid": i, "source_branch": b} for i, b in self.mrs.items()]
 
@@ -273,6 +275,56 @@ def test_no_targets_is_a_config_error(monkeypatch, tmp_path):
     with pytest.raises(LgmError) as ei:
         _run(monkeypatch, tmp_path, git, client, {})
     assert "--iid" in ei.value.message
+
+
+def test_mr_send_derives_gitlab_project_from_origin_remote(monkeypatch, tmp_path):
+    import lgm_core.git_remote as gitrem
+
+    monkeypatch.setattr(
+        gitrem, "cfg",
+        lambda key, default="": "https://gitlab.corp" if key == "GITLAB_URL" else default)
+    monkeypatch.setattr(
+        gitrem, "origin_remote_url",
+        lambda proj: "https://gitlab.corp/dev/onyx/doctransformer.git")
+
+    git = _FakeGit(tips={"b1": "t1"}, local_refs={"b1"}, known_shas=set())
+    client = _FakeClient(mrs={41: "b1"}, mirror_refs={})
+    captured = {}
+    real_list = client.gitlab_list_mrs
+
+    def spy_list(project=""):
+        captured["project"] = project
+        return real_list(project=project)
+
+    client.gitlab_list_mrs = spy_list
+    res = _run(monkeypatch, tmp_path, git, client, {"all_open": True})
+    assert captured["project"] == "dev/onyx/doctransformer"
+    assert [t["branch"] for t in res["sent"]] == ["b1"]
+
+
+def test_mr_send_falls_back_to_env_project_when_remote_host_differs(monkeypatch, tmp_path):
+    import lgm_core.git_remote as gitrem
+
+    monkeypatch.setattr(
+        gitrem, "cfg",
+        lambda key, default="": "https://gitlab.corp" if key == "GITLAB_URL" else default)
+    monkeypatch.setattr(
+        gitrem, "origin_remote_url",
+        lambda proj: "https://github.com/some/repo.git")
+
+    git = _FakeGit(tips={"b1": "t1"}, local_refs={"b1"}, known_shas=set())
+    client = _FakeClient(mrs={41: "b1"}, mirror_refs={})
+    captured = {}
+    real_list = client.gitlab_list_mrs
+
+    def spy_list(project=""):
+        captured["project"] = project
+        return real_list(project=project)
+
+    client.gitlab_list_mrs = spy_list
+    res = _run(monkeypatch, tmp_path, git, client, {"all_open": True})
+    assert captured["project"] == ""
+    assert [t["branch"] for t in res["sent"]] == ["b1"]
 
 
 def test_registry_params():

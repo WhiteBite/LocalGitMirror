@@ -94,7 +94,7 @@ REGISTRY: list[Op] = [
     Op(
         name="pending",
         summary="List pending dependency requests on the Mirror server.",
-        params=[Param("repo", "str", "", "Repository name")],
+        params=[Param("repo", "str", "", "Repository name", required=True)],
         run=op_pending,
     ),
     Op(
@@ -154,7 +154,7 @@ REGISTRY: list[Op] = [
     Op(
         name="debug",
         summary="Full diagnostics: env vars, cache roots, mirror connectivity.",
-        params=[Param("repo", "str", "", "Repository name")],
+        params=[Param("repo", "str", "", "Repository name", required=True)],
         run=op_debug,
     ),
     # ── New ops ──────────────────────────────────────────────────────────
@@ -208,7 +208,7 @@ REGISTRY: list[Op] = [
         name="deps_request",
         summary="Post a pre-built encrypted manifest file to /api/documents/submit.",
         params=[
-            Param("repo", "str", "", "Repository name"),
+            Param("repo", "str", "", "Repository name", required=True),
             Param("manifest", "str", "", "Path to encrypted manifest file", required=True),
         ],
         run=op_deps_request,
