@@ -135,7 +135,8 @@ class MirrorClient:
             with urllib.request.urlopen(
                 req, context=_ssl_ctx(self.insecure_tls), timeout=self.timeout,
             ) as r:
-                return json.loads(r.read())
+                body = r.read()
+                return json.loads(body) if body else {}
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
             raise LgmError(e.code, body) from None

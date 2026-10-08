@@ -11,6 +11,7 @@ from .ops_git import send_branches
 
 _MRN_TITLE = re.compile(r"^# MR !(\d+) — (.*)$")
 _MRN_BRANCH = re.compile(r"^- \*\*Ветка:\*\* `([^`]+)`")
+_MRN_UPDATED = re.compile(r"^- \*\*Обновлено:\*\* (\S+)")
 _NOTES_THREAD_ID = re.compile(r"^\*\*ID треда:\*\* `([^`]+)`")
 _NOTES_ANCHOR = re.compile(r"^\*\*Место:\*\* `([^`]+):(\d+)`")
 _REPLY_THREAD = re.compile(r"^##\s+thread\s+(\S+)\s*$", re.MULTILINE)
@@ -115,6 +116,7 @@ def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: b
 def _parse_mr_notes_head(markdown: str) -> dict:
     iid, title, branch = 0, "", ""
     unresolved = 0
+    updated = ""
     for line in markdown.splitlines():
         m = _MRN_TITLE.match(line)
         if m:
@@ -123,9 +125,13 @@ def _parse_mr_notes_head(markdown: str) -> dict:
         b = _MRN_BRANCH.match(line)
         if b:
             branch = b.group(1)
+        u = _MRN_UPDATED.match(line)
+        if u:
+            updated = u.group(1)
         if line.startswith("## ⚠"):
             unresolved += 1
-    return {"iid": iid, "title": title, "source_branch": branch, "unresolved": unresolved}
+    return {"iid": iid, "title": title, "source_branch": branch,
+            "unresolved": unresolved, "updated": updated}
 
 
 def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
@@ -168,7 +174,7 @@ def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
                 "iid": head["iid"],
                 "title": head["title"],
                 "source_branch": head["source_branch"],
-                "updated_at": "",
+                "updated_at": head["updated"],
                 "unresolved": head["unresolved"],
                 "source": "cache",
                 "repo": name,

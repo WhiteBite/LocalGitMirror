@@ -69,6 +69,23 @@ def test_mr_list_falls_back_to_postbox_without_gitlab():
     assert res["errors"] == []
 
 
+def test_mr_list_extracts_updated_at_from_notes():
+    md = "\n".join([
+        "# MR !7 — Title seven",
+        "",
+        "- **Ветка:** `feat/x`",
+        "- **Обновлено:** 2026-10-03T11:38:04.050Z · **Источник:** GitLab MR !7",
+    ])
+    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=""),
+                          client=_StubClient(markdown=md)), {})
+    assert res["items"][0]["updated_at"] == "2026-10-03T11:38:04.050Z"
+
+
+def test_mr_list_updated_at_empty_when_notes_lack_line():
+    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=""), client=_StubClient()), {})
+    assert res["items"][0]["updated_at"] == ""
+
+
 def test_mr_list_reraises_non_config_gitlab_error():
     client = _StubClient(gitlab_error=LgmError(500, "GitLab API error 500: boom"))
     with pytest.raises(LgmError) as ei:
