@@ -68,6 +68,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     if (descriptor != null) "v${descriptor.version}" else "v?"
   }
 
+  internal val pluginVersionLabel = JBLabel(LocalGitMirrorBundle.message("panel.footer.version", pluginVersionText)).apply {
+    font = JBUI.Fonts.smallFont().deriveFont(Font.PLAIN, JBUI.scale(10f).toFloat())
+    foreground = UIUtil.getContextHelpForeground()
+  }
+
   internal val historyService = service<OperationsHistoryService>()
   internal val syncFacade = project.getService(SyncFacadeService::class.java)
   internal var historyListener: (() -> Unit)? = null
@@ -389,15 +394,13 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     refreshStatus()
     refreshReview()
     refreshHistoryLog()
+    checkPluginVersionHintInBackground()
   }
 
   private fun buildFooterRow(): JPanel = JPanel(BorderLayout()).apply {
     isOpaque = false
     border = JBUI.Borders.empty(2, 8)
-    add(JBLabel(LocalGitMirrorBundle.message("panel.footer.version", pluginVersionText)).apply {
-      font = JBUI.Fonts.smallFont().deriveFont(Font.PLAIN, JBUI.scale(10f).toFloat())
-      foreground = UIUtil.getContextHelpForeground()
-    }, BorderLayout.WEST)
+    add(pluginVersionLabel, BorderLayout.WEST)
   }
 
   private fun onTabChanged(index: Int) {

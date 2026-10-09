@@ -1,6 +1,7 @@
 package localgitmirror.idea.ui
 
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
@@ -329,6 +330,35 @@ internal fun LocalGitMirrorPanel.runPullDryRun() {
       isSyncing = false
     }
   })
+}
+
+
+// one LAN metadata call on tool-window open: turns the footer version into a clickable update hint
+internal fun LocalGitMirrorPanel.checkPluginVersionHintInBackground() {
+  val settings = service<MirrorSettingsService>().state
+  if (settings.baseUrl.isBlank()) return
+
+  ApplicationManager.getApplication().executeOnPooledThread {
+    val info = MirrorPluginApi.pluginInfo(
+      settings.baseUrl, SecretsStore.mirrorApiKey, settings.mirrorInsecureTls, SecretsStore.syncPassword,
+    )
+    if (info.code !in 200..299 || !info.available) return@executeOnPooledThread
+    val decision = PluginUpdateLogic.decide(pluginVersionText, info.version)
+    if (decision !is PluginUpdateLogic.Decision.Update) return@executeOnPooledThread
+
+    com.intellij.util.ui.UIUtil.invokeLaterIfNeeded {
+      if (project.isDisposed) return@invokeLaterIfNeeded
+      pluginVersionLabel.text = "$pluginVersionText \u2192 v${decision.remote}"
+      pluginVersionLabel.foreground = com.intellij.ui.JBColor(0xB8860B, 0xE3AE4D)
+      pluginVersionLabel.cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+      pluginVersionLabel.toolTipText = LocalGitMirrorBundle.message("pluginupdate.hint.tooltip")
+      pluginVersionLabel.addMouseListener(object : java.awt.event.MouseAdapter() {
+        override fun mouseClicked(e: java.awt.event.MouseEvent) {
+          checkPluginUpdate()
+        }
+      })
+    }
+  }
 }
 
 
