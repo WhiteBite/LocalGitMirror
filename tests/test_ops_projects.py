@@ -353,22 +353,47 @@ def test_mr_sync_all_reports_gitlab_failure_per_repo(tmp_path, monkeypatch):
 
 
 
-def test_gitlab_list_mrs_project_override(monkeypatch):
-    c = MirrorClient(base_url="https://localhost:1")
-    monkeypatch.setattr(c, "_gitlab_config",
-                        lambda: ("https://gitlab.corp", "tok", "default/proj"))
+def _mock_gitlab_env(monkeypatch, **overrides):
+    from lgm_core import config as config_mod
+    env = {"GITLAB_URL": "https://gitlab.corp", "GITLAB_TOKEN": "tok"}
+    env.update(overrides)
+    monkeypatch.setattr(config_mod, "_ENV", env)
+    for k in ("GITLAB_URL", "GITLAB_TOKEN", "GITLAB_PROJECT"):
+        monkeypatch.delenv(k, raising=False)
+
+
+def _capture_url(monkeypatch, c) -> dict:
     captured = {}
     monkeypatch.setattr(c, "_gitlab_get",
                         lambda url, token: (captured.__setitem__("url", url), [])[1])
+    return captured
+
+
+def test_gitlab_list_mrs_project_override(monkeypatch):
+    _mock_gitlab_env(monkeypatch, GITLAB_PROJECT="default/proj")
+    c = MirrorClient(base_url="https://localhost:1")
+    captured = _capture_url(monkeypatch, c)
     c.gitlab_list_mrs(project="dev/onyx/doctransformer")
     assert "projects/dev%2Fonyx%2Fdoctransformer/merge_requests" in captured["url"]
     assert "state=opened&order_by=updated_at&sort=desc&per_page=50" in captured["url"]
 
 
-def test_gitlab_list_discussions_pagination(monkeypatch):
+def test_gitlab_explicit_project_needs_no_global_default(monkeypatch):
+    """Registry-driven sync passes project explicitly; no global GITLAB_PROJECT required."""
+    _mock_gitlab_env(monkeypatch)
     c = MirrorClient(base_url="https://localhost:1")
-    monkeypatch.setattr(c, "_gitlab_config",
-                        lambda: ("https://gitlab.corp", "tok", "p"))
+    captured = _capture_url(monkeypatch, c)
+    c.gitlab_list_mrs(project="dev/onyx/phonyx")
+    assert "projects/dev%2Fonyx%2Fphonyx/merge_requests" in captured["url"]
+    with pytest.raises(LgmError) as ei:
+        c.gitlab_list_mrs()
+    assert ei.value.code == "config"
+    assert "GITLAB_PROJECT" in ei.value.message
+
+
+def test_gitlab_list_discussions_pagination(monkeypatch):
+    _mock_gitlab_env(monkeypatch, GITLAB_PROJECT="p")
+    c = MirrorClient(base_url="https://localhost:1")
     pages = {1: [{"id": "a"}] * 100, 2: [{"id": "b"}]}
 
     def fake_get(url, token):

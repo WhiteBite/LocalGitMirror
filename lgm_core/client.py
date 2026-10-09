@@ -413,11 +413,12 @@ class MirrorClient:
     # (personal access token, sent as PRIVATE-TOKEN), GITLAB_PROJECT (path or
     # numeric id, URL-encoded into the API path).
 
-    def _gitlab_config(self) -> tuple[str, str, str]:
-        """Resolve (url, token, project) from cfg; raise LgmError when unset."""
+    def _gitlab_config(self, project_override: str = "") -> tuple[str, str, str]:
+        """Resolve (url, token, project); ``project_override`` wins over GITLAB_PROJECT
+        so registry-driven multi-project sync needs no global default."""
         url = cfg("GITLAB_URL").rstrip("/")
         token = cfg("GITLAB_TOKEN")
-        project = cfg("GITLAB_PROJECT")
+        project = project_override or cfg("GITLAB_PROJECT")
         missing = [k for k, v in (("GITLAB_URL", url), ("GITLAB_TOKEN", token),
                                   ("GITLAB_PROJECT", project)) if not v]
         if missing:
@@ -448,8 +449,8 @@ class MirrorClient:
         ``project`` overrides GITLAB_PROJECT for registry-driven multi-project
         sync; the response is the raw GitLab list (capped at 50, like the plugin).
         """
-        url, token, default_project = self._gitlab_config()
-        proj_id = urllib.parse.quote((project or default_project), safe="")
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
         data = self._gitlab_get(
             f"{url}/api/v4/projects/{proj_id}/merge_requests"
             "?state=opened&order_by=updated_at&sort=desc&per_page=50", token
@@ -460,8 +461,8 @@ class MirrorClient:
 
     def gitlab_get_mr(self, iid: int, project: str = "") -> dict:
         """GET /api/v4/projects/<id>/merge_requests/<iid> — one MR."""
-        url, token, default_project = self._gitlab_config()
-        proj_id = urllib.parse.quote((project or default_project), safe="")
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
         try:
             iid_int = int(iid)
         except (TypeError, ValueError):
@@ -477,8 +478,8 @@ class MirrorClient:
         """GET .../merge_requests/<iid>/discussions — every thread of the MR
         (open and resolved, system notes included), paginated until an empty
         page, capped at 10 pages of 100."""
-        url, token, default_project = self._gitlab_config()
-        proj_id = urllib.parse.quote((project or default_project), safe="")
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
         try:
             iid_int = int(iid)
         except (TypeError, ValueError):
