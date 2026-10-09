@@ -14,8 +14,8 @@ class _StorageOnlyManager:
         self.storage_path = storage
 
 
-def _run_git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
-    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+def _run_git(cwd: Path, *args: str, input: str = "") -> subprocess.CompletedProcess:
+    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, input=input)
     if proc.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {proc.stderr}")
     return proc
@@ -87,11 +87,15 @@ def test_maintenance_repacks_when_many_packs(tmp_path, monkeypatch):
     ws = _build_repo(tmp_path / "ws")
     pack_dir = ws / ".git" / "objects" / "pack"
     pack_dir.mkdir(parents=True, exist_ok=True)
+    # pack-objects writes exactly one pack per call regardless of git version
     for i in range(11):
         (ws / f"f{i}.txt").write_text(f"v{i}\n", encoding="utf-8")
         _run_git(ws, "add", ".")
         _run_git(ws, "commit", "-m", f"c{i}")
-        _run_git(ws, "repack")
+    commits = _run_git(ws, "rev-list", "--reverse", "HEAD").stdout.split()
+    assert len(commits) == 12
+    for sha in commits:
+        _run_git(ws, "pack-objects", str(pack_dir / "pack"), input=f"{sha}\n")
     assert len(list(pack_dir.glob("*.pack"))) > 10
 
     storage = tmp_path / "storage"
