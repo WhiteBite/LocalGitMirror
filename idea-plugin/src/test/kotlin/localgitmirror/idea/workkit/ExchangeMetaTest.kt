@@ -70,4 +70,11 @@ class ExchangeMetaTest {
     assertEquals("padded first line", meta.text)
     assertTrue(meta.text.length <= 80)
   }
+
+  @Test
+  fun `nonce roundtrips for echo dedup and is null when absent`() {
+    val meta = ExchangeMeta.parseHint(ExchangeMeta.hintJson("body", nonce = "local-abc123"))
+    assertEquals("local-abc123", meta.nonce)
+    assertNull(ExchangeMeta.parseHint("""{"s":"h","h":"web"}""").nonce)
+  }
 }

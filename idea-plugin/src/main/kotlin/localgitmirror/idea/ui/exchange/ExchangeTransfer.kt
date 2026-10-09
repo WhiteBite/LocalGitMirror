@@ -74,7 +74,7 @@ internal fun LocalGitMirrorPanel.sendChatText(text: String): Boolean {
     )
   )
   renderChat(scrollToBottom = true)
-  submitTextEcho(localId, s, pwd, text, null)
+  submitTextEcho(localId, s, pwd, text, null, localId)
   return true
 }
 
@@ -83,14 +83,15 @@ internal fun LocalGitMirrorPanel.submitTextEcho(
   s: MirrorSettingsService.State,
   pwd: String,
   text: String,
-  hintOverride: String?
+  hintOverride: String?,
+  nonce: String? = null
 ) {
   ProgressManager.getInstance().run(object :
     Task.Backgroundable(project, LocalGitMirrorBundle.message("buffer.task.send"), true) {
     private var result: Pair<Boolean, String?> = false to null
     override fun run(indicator: ProgressIndicator) {
       indicator.isIndeterminate = true
-      result = sendTextToBufferSync(s, pwd, text, hintOverride)
+      result = sendTextToBufferSync(s, pwd, text, hintOverride, nonce)
     }
     override fun onSuccess() = finishEcho(localId, result.first, result.second)
     override fun onThrowable(t: Throwable) = finishEcho(localId, false, null)
@@ -103,11 +104,12 @@ private fun LocalGitMirrorPanel.sendTextToBufferSync(
   s: MirrorSettingsService.State,
   pwd: String,
   text: String,
-  hintOverride: String?
+  hintOverride: String?,
+  nonce: String? = null
 ): Pair<Boolean, String?> {
   return try {
     val sealed = MirrorCrypto.sealBufferPayload(text.toByteArray(Charsets.UTF_8), pwd)
-    val meta = ExchangeMeta.hintJson(text, hintOverride, localMetaSide())
+    val meta = ExchangeMeta.hintJson(text, hintOverride, localMetaSide(), nonce)
     val hintEnc = if (pwd.isBlank()) "" else ExchangeCrypto.encryptHint(meta, pwd)
     val res = MirrorBufferApi.bufferPut(
       s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls,
@@ -164,7 +166,7 @@ internal fun LocalGitMirrorPanel.submitLogTailEcho(localId: String, s: MirrorSet
         null
       }
       val text = tail ?: return
-      result = sendTextToBufferSync(s, pwd, text, "idea.log tail")
+      result = sendTextToBufferSync(s, pwd, text, "idea.log tail", localId)
     }
 
     override fun onSuccess() {

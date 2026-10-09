@@ -36,7 +36,9 @@ import javax.swing.SwingUtilities
 
 private fun LocalGitMirrorPanel.chatMessages(): List<ExchangeItem> {
   val echoed = echoIdByServerId.keys
-  return (allServerItems.filterNot { it.id in echoed } + chatEchoes).sortedBy { it.ts }
+  val echoIds = chatEchoes.map { it.id }.toSet()
+  return (allServerItems.filterNot { it.id in echoed || it.nonce in echoIds } + chatEchoes)
+    .sortedBy { it.ts }
 }
 
 internal fun LocalGitMirrorPanel.renderChat(scrollToBottom: Boolean = false) {

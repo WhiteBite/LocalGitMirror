@@ -18,6 +18,7 @@ internal data class ExchangeItem(
   val localText: String? = null,
   val localFile: String? = null,
   val localTemp: Boolean = false,
+  val nonce: String? = null,
 ) {
   enum class Kind { BUFFER, FILE }
   enum class Side { WORK, HOME, UNKNOWN }

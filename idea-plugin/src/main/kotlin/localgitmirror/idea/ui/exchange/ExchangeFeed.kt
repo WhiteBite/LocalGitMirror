@@ -73,7 +73,7 @@ internal fun LocalGitMirrorPanel.refreshExchangeInBackground() {
           items.add(
             ExchangeItem(
               ExchangeItem.Kind.BUFFER, b.id, b.ts, b.size, text, b.pinned, "", "",
-              sideOf(meta.side)
+              sideOf(meta.side), nonce = meta.nonce
             )
           )
         }
