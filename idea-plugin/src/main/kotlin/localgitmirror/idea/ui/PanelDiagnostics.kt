@@ -332,6 +332,157 @@ internal fun LocalGitMirrorPanel.runPullDryRun() {
 }
 
 
+// install applies on IDE restart: the platform unzips the new plugin and deletes the old one via its startup script
+internal fun LocalGitMirrorPanel.checkPluginUpdate() {
+  val settings = service<MirrorSettingsService>().state
+  if (settings.baseUrl.isBlank()) {
+    notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
+    return
+  }
+
+  isSyncing = true
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Проверка обновления плагина", true) {
+    override fun run(indicator: ProgressIndicator) {
+      try {
+        indicator.isIndeterminate = true
+        indicator.text = "Проверяем версию на Cache…"
+
+        val info = MirrorPluginApi.pluginInfo(settings.baseUrl, SecretsStore.mirrorApiKey, settings.mirrorInsecureTls, SecretsStore.syncPassword)
+        if (info.code == 404 || !info.available) {
+          notify("В Cache нет собранного плагина. Запустите 'gradle buildPlugin' на сервере.", NotificationType.WARNING)
+          return
+        }
+        if (info.code !in 200..299) {
+          notify("Cache недоступен (HTTP ${info.code}): ${info.message.take(200)}", NotificationType.ERROR)
+          return
+        }
+
+        when (val decision = PluginUpdateLogic.decide(pluginVersionText, info.version)) {
+          is PluginUpdateLogic.Decision.UpToDate -> {
+            notify(LocalGitMirrorBundle.message("pluginupdate.actual", pluginVersionText), NotificationType.INFORMATION)
+            historyService.add(LocalGitMirrorBundle.message("history.op.pluginDownload"), true, "up-to-date $pluginVersionText")
+          }
+
+          is PluginUpdateLogic.Decision.Update -> {
+            val confirmed = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Boolean> {
+              Messages.showYesNoDialog(
+                project,
+                LocalGitMirrorBundle.message("pluginupdate.confirm.text", decision.remote, decision.current),
+                LocalGitMirrorBundle.message("pluginupdate.confirm.title"),
+                LocalGitMirrorBundle.message("pluginupdate.confirm.yes"),
+                LocalGitMirrorBundle.message("pluginupdate.confirm.no"),
+                null,
+              ) == Messages.YES
+            }
+            if (!confirmed) {
+              notify(LocalGitMirrorBundle.message("pluginupdate.declined"), NotificationType.INFORMATION)
+              return
+            }
+
+            val tmp = com.intellij.openapi.util.io.FileUtil.createTempFile("doccache-plugin", ".zip")
+            indicator.isIndeterminate = false
+            indicator.text = "Скачивание v${decision.remote}…"
+
+            val res = MirrorPluginApi.pluginDownload(
+              baseUrl = settings.baseUrl,
+              apiKey = SecretsStore.mirrorApiKey,
+              insecureTls = settings.mirrorInsecureTls,
+              outFile = tmp,
+              syncPassword = SecretsStore.syncPassword,
+              onProgress = { read, total ->
+                if (total > 0) {
+                  indicator.fraction = (read.toDouble() / total).coerceIn(0.0, 1.0)
+                  indicator.text = "Скачивание… ${"%.1f".format(read / 1_048_576.0)} / ${"%.1f".format(total / 1_048_576.0)} МБ"
+                }
+              },
+            )
+            if (res.code !in 200..299 || res.file == null) {
+              notify("Не удалось скачать плагин (HTTP ${res.code}): ${res.message.take(200)}", NotificationType.ERROR)
+              historyService.add(LocalGitMirrorBundle.message("history.op.pluginDownload"), false, "HTTP ${res.code} ${res.message.take(200)}")
+              return
+            }
+
+            if (info.sha256 != null) {
+              val md = java.security.MessageDigest.getInstance("SHA-256")
+              tmp.inputStream().use { ins ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                  val n = ins.read(buf)
+                  if (n < 0) break
+                  md.update(buf, 0, n)
+                }
+              }
+              val actual = md.digest().joinToString("") { b -> "%02x".format(b) }
+              if (!actual.equals(info.sha256, ignoreCase = true)) {
+                tmp.delete()
+                notify(
+                  "Контрольная сумма плагина не совпадает с сервером (ожидалась ${info.sha256.take(16)}…, получена ${actual.take(16)}…). Файл удалён — установка небезопасна.",
+                  NotificationType.ERROR,
+                )
+                historyService.add(LocalGitMirrorBundle.message("history.op.pluginDownload"), false, "sha256 mismatch: $actual != ${info.sha256}")
+                return
+              }
+            }
+
+            val pluginId = com.intellij.openapi.extensions.PluginId.getId("localgitmirror.idea.orchestrator")
+            val installed = com.intellij.ide.plugins.PluginManagerCore.getPlugin(pluginId)
+            if (installed == null) {
+              notify("Плагин DocCache не найден в реестре IDE — попробуйте ручную установку.", NotificationType.ERROR)
+              return
+            }
+            val oldPath = installed.takeIf { !it.isBundled }?.pluginPath
+
+            try {
+              com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Unit> {
+                com.intellij.ide.plugins.PluginInstaller.installAfterRestart(installed, tmp.toPath(), oldPath, true)
+              }
+              historyService.add(
+                LocalGitMirrorBundle.message("history.op.pluginDownload"), true,
+                "v${decision.remote} install-after-restart (was v${decision.current})",
+              )
+              append("Plugin update scheduled: v${decision.current} -> v${decision.remote}")
+
+              val restartNow = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Boolean> {
+                Messages.showYesNoDialog(
+                  project,
+                  LocalGitMirrorBundle.message("pluginupdate.done.text", decision.remote),
+                  LocalGitMirrorBundle.message("pluginupdate.done.title"),
+                  LocalGitMirrorBundle.message("pluginupdate.restart.now"),
+                  LocalGitMirrorBundle.message("pluginupdate.restart.later"),
+                  null,
+                ) == Messages.YES
+              }
+              if (restartNow) {
+                com.intellij.openapi.application.ApplicationManager.getApplication().restart()
+              } else {
+                notify(LocalGitMirrorBundle.message("pluginupdate.applied.later", decision.remote), NotificationType.INFORMATION)
+              }
+            } catch (t: Throwable) {
+              tmp.delete()
+              notify(
+                LocalGitMirrorBundle.message("pluginupdate.install.failed", (t.message ?: t.javaClass.simpleName).take(200)),
+                NotificationType.WARNING,
+              )
+              historyService.add(
+                LocalGitMirrorBundle.message("history.op.pluginDownload"), false,
+                "install failed: ${t.javaClass.simpleName}: ${t.message?.take(200)}",
+              )
+              downloadLatestPlugin()
+            }
+          }
+
+          PluginUpdateLogic.Decision.Unknown -> downloadLatestPlugin()
+        }
+      } finally {
+        isSyncing = false
+      }
+    }
+
+    override fun onFinished() { isSyncing = false }
+  })
+}
+
+
 /**
  * Pulls the freshest plugin .zip the Mirror has built and drops it into the
  * user's Downloads folder. The IDE plugin can't install zips silently

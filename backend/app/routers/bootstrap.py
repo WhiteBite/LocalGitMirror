@@ -119,7 +119,7 @@ def plugin_repo_xml():
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         "<plugins>\n"
-        f'  <plugin id="localgitmirror.settings" '
+        f'  <plugin id="localgitmirror.idea.orchestrator" '
         f'url="{{BASE_URL}}/api/plugin/latest" version="{version}">\n'
         f'    <idea-version since-build="241" until-build="263.*"/>\n'
         "    <name>DocCache</name>\n"

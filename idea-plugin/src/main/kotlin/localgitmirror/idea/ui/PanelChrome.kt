@@ -253,7 +253,7 @@ private fun LocalGitMirrorPanel.buildServiceSubmenu(): DefaultActionGroup {
     localgitmirror.idea.deps.VaultCacheSync.syncInBackground(project, "manual")
   })
   sub.addSeparator()
-  sub.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.downloadPlugin"), AllIcons.Actions.Download) { downloadLatestPlugin() })
+  sub.add(panelAction(LocalGitMirrorBundle.message("toolwindow.menu.downloadPlugin"), AllIcons.Actions.Refresh) { checkPluginUpdate() })
   sub.add(panelAction(LocalGitMirrorBundle.message("panel.menu.sendPlugin"), AllIcons.Actions.Upload) { sendPluginBuild() })
   sub.add(panelAction(LocalGitMirrorBundle.message("panel.menu.installPlugin"), AllIcons.Actions.Download) { installPluginFromCache() })
   return sub

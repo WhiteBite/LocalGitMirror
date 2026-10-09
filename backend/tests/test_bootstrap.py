@@ -87,7 +87,7 @@ def test_plugin_repo_xml(tmp_path, monkeypatch):
     client = _build_client(tmp_path, monkeypatch)
     resp = client.get("/api/plugin/repo.xml")
     assert resp.status_code == 200, resp.text
-    assert 'id="localgitmirror.settings"' in resp.text
+    assert 'id="localgitmirror.idea.orchestrator"' in resp.text
     assert 'version="0.999.0"' in resp.text
     assert "since-build" in resp.text
 
