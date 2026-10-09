@@ -67,6 +67,22 @@ def test_tools_latest_encrypted(tmp_path, monkeypatch):
     assert "lgm.py" in zf.namelist()
 
 
+def test_tools_latest_wire_format_matches_client_unwrap(tmp_path, monkeypatch):
+    """Both server wire formats (raw zip, enc=1 sealed) feed op_update's unwrap."""
+    from lgm_core.ops_git import _unwrap_tools_blob
+    client = _build_client(tmp_path, monkeypatch)
+
+    raw = client.get("/api/tools/latest")
+    assert raw.status_code == 200, raw.text
+    raw_zip = zipfile.ZipFile(io.BytesIO(_unwrap_tools_blob(raw.content, PASSWORD)))
+    assert "lgm.py" in raw_zip.namelist()
+
+    sealed = client.get("/api/tools/latest?enc=1")
+    assert sealed.status_code == 200, sealed.text
+    sealed_zip = zipfile.ZipFile(io.BytesIO(_unwrap_tools_blob(sealed.content, PASSWORD)))
+    assert "lgm.py" in sealed_zip.namelist()
+
+
 def test_bootstrap_returns_powershell(tmp_path, monkeypatch):
     client = _build_client(tmp_path, monkeypatch)
     resp = client.get("/api/bootstrap")

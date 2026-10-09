@@ -28,6 +28,9 @@ jobs:
       - name: Run unit tests
         run: python -m pytest backend/tests/ -q --tb=short --ignore=backend/tests/test_api.py --ignore=backend/tests/test_integration.py
 
+      - name: Run CLI/MCP core tests
+        run: python -m pytest tests/ -q --tb=short -m "not integration" --ignore=tests/e2e
+
   # ─── Frontend: build dist ────────────────────────────────────────
   frontend:
     name: Frontend Build
@@ -71,6 +74,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.10'
+
+      - name: Test plugin
+        working-directory: idea-plugin
+        run: gradle test --no-daemon
 
       - name: Build plugin
         working-directory: idea-plugin
