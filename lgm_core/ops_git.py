@@ -403,12 +403,17 @@ def op_guide(ctx: Ctx, args: dict) -> dict:
     return {"success": True, "guide": _GUIDE}
 
 
+def _unwrap_tools_blob(blob: bytes, password: str) -> bytes:
+    """Raw zip (PK prefix) passes through; a sealed bundle is decrypted."""
+    return blob if blob[:2] == b"PK" else decrypt_bundle(blob, password)
+
+
 def op_update(ctx: Ctx, args: dict) -> dict:
     """Download and install the latest CLI tools from the mirror."""
     c = _client(ctx)
     tools_root = Path(__file__).resolve().parent.parent
 
-    url = c.base_url + "/api/tools/latest"
+    url = c.base_url + "/api/tools/latest?enc=1"
     req = urllib.request.Request(
         url, headers={
             "Authorization": f"Bearer {c.api_key}",
@@ -424,7 +429,7 @@ def op_update(ctx: Ctx, args: dict) -> dict:
     except Exception as e:
         raise LgmError("network", f"tools download failed: {e}") from None
 
-    zip_bytes = decrypt_bundle(blob, ctx.config.sync_password)
+    zip_bytes = _unwrap_tools_blob(blob, ctx.config.sync_password)
 
     z = zipfile.ZipFile(io.BytesIO(zip_bytes))
     updated = []
