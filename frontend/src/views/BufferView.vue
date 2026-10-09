@@ -159,6 +159,7 @@ import { ref, computed, reactive, watch, nextTick, onActivated, onDeactivated, o
 import { useI18n } from 'vue-i18n'
 import axios from 'axios'
 import { useBufferStore } from '@/stores/buffer'
+import { previewOf } from '@/lib/exchangeMeta'
 import { usePostboxStore } from '@/stores/postbox'
 import { useReposStore } from '@/stores/repos'
 import { useSystemStore } from '@/stores/system'
@@ -499,12 +500,18 @@ async function settlePending(p, job) {
   }
 }
 
+async function pushTextToBuffer(text) {
+  const res = await bufferStore.pushItem(text)
+  if (res?.id) metas[`b-${res.id}`] = { side: 'h', text: previewOf(text) }
+  await bufferStore.fetchItems()
+}
+
 async function sendComposer() {
   const text = composer.value.replace(/\n+$/, '')
   if (!text.trim()) return
   composer.value = ''
   const p = pushPending({ kind: 'message', text })
-  await settlePending(p, () => bufferStore.pushItem(text))
+  await settlePending(p, () => pushTextToBuffer(text))
 }
 
 function onAttach(e) {
@@ -529,7 +536,7 @@ async function retryPending(msg) {
   msg.status = 'pending'
   await settlePending(msg, async () => {
     if (msg.kind === 'message') {
-      await bufferStore.pushItem(msg.text)
+      await pushTextToBuffer(msg.text)
     } else {
       const bytes = new Uint8Array(await msg.file.arrayBuffer())
       await postboxStore.uploadFile(rid.value, msg.name, bytes)
@@ -569,7 +576,7 @@ async function onPaste(e) {
   if (text && text.trim()) {
     e.preventDefault()
     const p = pushPending({ kind: 'message', text })
-    await settlePending(p, () => bufferStore.pushItem(text))
+    await settlePending(p, () => pushTextToBuffer(text))
   }
 }
 

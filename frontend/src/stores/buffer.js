@@ -51,7 +51,7 @@ export const useBufferStore = defineStore('buffer', () => {
    * Encrypt `text` and push it. The preview travels as `hint_enc` (bundle-v2
    * ciphertext, base64) whose plaintext is the side-metadata JSON
    * {"s":"h","h":<first line, 80 chars>} — the plaintext `hint` field is
-   * legacy and must never be sent. Returns {id, ts} of the stored entry.
+   * legacy and must never be sent. Returns {id, ts}; caller refreshes the list.
    */
   async function pushItem(text) {
     error.value = null
@@ -66,7 +66,6 @@ export const useBufferStore = defineStore('buffer', () => {
       hint_enc: await encryptText(buildHintMeta(text), password)
     }
     const res = await axios.post('/api/buffer', payload)
-    await fetchItems()
     return res.data
   }
 

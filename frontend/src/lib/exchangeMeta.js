@@ -3,9 +3,12 @@
 export const SIDE_HOME = 'h'
 export const SIDE_WORK = 'w'
 
+export function previewOf(text) {
+  return (text.split('\n')[0] || '').trim().slice(0, 80)
+}
+
 export function buildHintMeta(text) {
-  const first = (text.split('\n')[0] || '').trim().slice(0, 80)
-  return JSON.stringify({ s: SIDE_HOME, h: first })
+  return JSON.stringify({ s: SIDE_HOME, h: previewOf(text) })
 }
 
 export function parseMeta(decrypted, field) {
