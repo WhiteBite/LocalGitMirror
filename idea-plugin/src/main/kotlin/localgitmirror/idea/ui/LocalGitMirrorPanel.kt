@@ -27,9 +27,12 @@ import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.*
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import localgitmirror.idea.ui.exchange.ExchangeItem
+import localgitmirror.idea.ui.exchange.ExchangePushClient
+import localgitmirror.idea.ui.exchange.ensureExchangePush
 import localgitmirror.idea.ui.exchange.refreshExchangeInBackground
 import localgitmirror.idea.ui.exchange.startExchangePolling
 import localgitmirror.idea.ui.exchange.stopExchangePolling
+import localgitmirror.idea.ui.exchange.stopExchangePush
 import localgitmirror.idea.ui.exchange.uploadFilesToPostbox
 import java.awt.*
 import java.awt.datatransfer.DataFlavor
@@ -151,6 +154,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   internal val bubbleThumbLabels = mutableMapOf<String, JBLabel>()
   internal val expandedIds = mutableSetOf<String>()
   internal var lastChatSignature: String? = null
+  // HOME-only live push channel (/ws/exchange); WORK never connects (stealth).
+  internal var exchangePush: ExchangePushClient? = null
 
   internal val chatPanel = JPanel().apply {
     layout = BoxLayout(this, BoxLayout.Y_AXIS)
@@ -410,6 +415,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
       1 -> {
         refreshExchangeInBackground()
         startExchangePolling()
+        ensureExchangePush()
       }
       2 -> refreshDepsInBackground()
     }
@@ -417,6 +423,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   }
 
   override fun dispose() {
+    stopExchangePush()
     historyListener?.let { historyService.removeChangeListener(it) }
     historyListener = null
     exchangePollAlarm.cancelAllRequests()

@@ -24,7 +24,7 @@ object HttpClient {
   data class Response(val code: Int, val body: String)
   data class ErrorInfo(val type: String, val message: String)
 
-  private fun trustAllSslSocketFactory(): SSLSocketFactory {
+  private fun trustAllSslContext(): SSLContext {
     val trustAll = arrayOf<TrustManager>(
       object : X509TrustManager {
         override fun getAcceptedIssuers() = arrayOf<java.security.cert.X509Certificate>()
@@ -34,10 +34,10 @@ object HttpClient {
     )
     val ctx = SSLContext.getInstance("TLS")
     ctx.init(null, trustAll, java.security.SecureRandom())
-    return ctx.socketFactory
+    return ctx
   }
 
-  private fun pinnedSslSocketFactory(storedHex: String): SSLSocketFactory {
+  private fun pinnedSslContext(storedHex: String): SSLContext {
     val pinChecking = arrayOf<TrustManager>(
       object : X509TrustManager {
         override fun getAcceptedIssuers() = arrayOf<java.security.cert.X509Certificate>()
@@ -54,7 +54,20 @@ object HttpClient {
     )
     val ctx = SSLContext.getInstance("TLS")
     ctx.init(null, pinChecking, java.security.SecureRandom())
-    return ctx.socketFactory
+    return ctx
+  }
+
+  private fun trustAllSslSocketFactory(): SSLSocketFactory = trustAllSslContext().socketFactory
+
+  private fun pinnedSslSocketFactory(storedHex: String): SSLSocketFactory = pinnedSslContext(storedHex).socketFactory
+
+  /** TLS policy as a raw SSLContext for non-URLConnection transports (e.g. java.net.http WebSocket). */
+  fun sslContextFor(url: URL, insecureTls: Boolean): SSLContext? {
+    if (url.protocol != "https") return null
+    val pinnedHex = pinnedServerHex(url)
+    if (pinnedHex != null) return pinnedSslContext(pinnedHex)
+    if (insecureTls) return trustAllSslContext()
+    return null
   }
 
   private fun storeServerPin(hex: String) {
