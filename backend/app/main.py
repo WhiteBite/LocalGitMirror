@@ -201,6 +201,10 @@ async def lifespan(app: FastAPI):
     mirror.repo_manager = repo_manager
     mirror.system_logger = system_logger
 
+    import asyncio as _asyncio
+    from app.routers import websocket as _websocket_mod
+    _websocket_mod.set_main_loop(_asyncio.get_running_loop())
+
     from app.core import git_bundle, sync_envelope
     from app.routers import system as system_router_mod
     from app.routers import repos as repos_router_mod

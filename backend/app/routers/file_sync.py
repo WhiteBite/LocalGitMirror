@@ -32,6 +32,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core import hybrid_crypto
 from app.core.mirror_dataplane import _is_loopback
 from app.routers._rid import resolve_repo_identifier
+from app.routers.websocket import notify_exchange_change
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
@@ -275,6 +276,7 @@ async def docs_attachment_upload(
 
     if system_logger:
         system_logger.info("file-sync item stored", {"repo": repo, "id": item_id, "bytes": len(payload)})
+    notify_exchange_change("postbox_upload", repo=repo)
     return {"success": True, "repo": repo, "id": item_id, "path": rel_path, "size": len(payload)}
 
 
@@ -324,4 +326,5 @@ def docs_attachment_ack(
         meta.unlink(missing_ok=True)
     except OSError as exc:
         raise HTTPException(500, f"Failed to delete file: {exc}")
+    notify_exchange_change("postbox_ack", repo=repo)
     return {"success": True, "deleted": existed, "repo": repo, "id": item_id}

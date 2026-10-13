@@ -1,3 +1,4 @@
+import asyncio
 import os
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -9,6 +10,15 @@ router = APIRouter(tags=["websocket"])
 # Active WebSocket connections
 active_connections = []
 file_watch_connections = []
+exchange_connections = []
+
+# Captured from the lifespan so sync (threadpool) router code can broadcast.
+_main_loop = None
+
+
+def set_main_loop(loop) -> None:
+    global _main_loop
+    _main_loop = loop
 
 
 def _validate_ws_token(websocket: WebSocket) -> bool:
@@ -55,6 +65,57 @@ async def notify_file_change(event_data):
             await connection.send_json({"type": "file_change", "data": event_data})
         except Exception:
             # Connection might be dead, it will be removed in finally block
+            pass
+
+
+async def _broadcast_exchange(payload):
+    for connection in list(exchange_connections):
+        try:
+            await connection.send_json(payload)
+        except Exception:
+            pass
+
+
+def notify_exchange_change(kind: str, **extra) -> None:
+    """Broadcast an exchange mutation to /ws/exchange subscribers.
+
+    Safe to call from sync router code: run_coroutine_threadsafe is legal from
+    any thread, including the loop's own.
+    """
+    loop = _main_loop
+    if loop is None or not loop.is_running():
+        return
+    payload = {"type": "exchange_change", "kind": kind}
+    payload.update(extra)
+    try:
+        asyncio.run_coroutine_threadsafe(_broadcast_exchange(payload), loop)
+    except RuntimeError:
+        pass
+
+
+@router.websocket("/ws/exchange")
+async def websocket_exchange(websocket: WebSocket):
+    """Exchange (chat buffer + postbox) change notifications."""
+    if not _validate_ws_token(websocket):
+        await websocket.close(code=1008)
+        return
+    await websocket.accept()
+    exchange_connections.append(websocket)
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        pass
+    except (ConnectionResetError, RuntimeError):
+        pass
+    finally:
+        try:
+            if websocket in exchange_connections:
+                exchange_connections.remove(websocket)
+        except Exception:
             pass
 
 

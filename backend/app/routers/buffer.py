@@ -37,6 +37,7 @@ from pydantic import BaseModel
 
 from app.core import hybrid_crypto
 from app.core.bundle_crypto import decrypt_dump_bytes, encrypt_bundle_bytes
+from app.routers.websocket import notify_exchange_change
 
 router = APIRouter(prefix="/api/buffer", tags=["buffer"])
 
@@ -253,6 +254,7 @@ def buffer_put(req: BufferPutRequest):
         _items[item["id"]] = item
         _prune_locked()
 
+    notify_exchange_change("buffer_put")
     return BufferPutResponse(id=item["id"], ts=item["ts"])
 
 
@@ -299,6 +301,7 @@ async def buffer_pin(item_id: str, req: BufferPinRequest):
             raise HTTPException(status_code=404, detail="Not Found")
         it["pinned"] = bool(req.pinned)
         _write_item(it, None)
+    notify_exchange_change("buffer_pin")
     return {"success": True, "id": item_id, "pinned": it["pinned"]}
 
 
@@ -309,6 +312,7 @@ async def buffer_delete(item_id: str):
         if _find(item_id) is None:
             raise HTTPException(status_code=404, detail="Not Found")
         _drop_locked(item_id)
+    notify_exchange_change("buffer_delete")
     return Response(status_code=204)
 
 
@@ -318,4 +322,5 @@ async def buffer_clear():
         _load_locked()
         for item_id in list(_items):
             _drop_locked(item_id)
+    notify_exchange_change("buffer_clear")
     return Response(status_code=204)
