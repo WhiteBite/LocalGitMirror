@@ -45,7 +45,7 @@ object HttpClient {
         override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>, authType: String) {
           val leaf = chain.firstOrNull() ?: throw CertificateException("Server presented no certificate")
           when (val verdict = TlsPinPolicy.evaluate(leaf.encoded, storedHex)) {
-            is TlsPinPolicy.Verdict.TrustOnFirstUse -> storeServerPin(verdict.sha256Hex)
+            is TlsPinPolicy.Verdict.TrustOnFirstUse -> storeServerPin(leaf.encoded)
             TlsPinPolicy.Verdict.Match -> {}
             is TlsPinPolicy.Verdict.Mismatch -> throw TlsPinMismatchException(verdict.expectedHex, verdict.actualHex)
           }
@@ -64,34 +64,49 @@ object HttpClient {
   /** TLS policy as a raw SSLContext for non-URLConnection transports (e.g. java.net.http WebSocket). */
   fun sslContextFor(url: URL, insecureTls: Boolean): SSLContext? {
     if (url.protocol != "https") return null
-    val pinnedHex = pinnedServerHex(url)
-    if (pinnedHex != null) return pinnedSslContext(pinnedHex)
-    if (insecureTls) return trustAllSslContext()
-    return null
+    return when (val decision = TlsDecision.resolve(url, loadTlsInput(insecureTls))) {
+      is TlsDecision.Pinned -> pinnedSslContext(decision.storedHex)
+      TlsDecision.TrustAll -> trustAllSslContext()
+      TlsDecision.Default -> null
+    }
   }
 
-  private fun storeServerPin(hex: String) {
-    runCatching { service<MirrorSettingsService>().state.serverCertSha256 = hex }
-  }
-
-  private fun pinnedServerHex(url: URL): String? {
-    if (url.protocol != "https") return null
-    val state = try {
+  internal val defaultStateProvider: () -> MirrorSettingsService.State? = {
+    try {
       service<MirrorSettingsService>().state
     } catch (_: Throwable) {
-      return null
+      null
     }
-    if (!state.tlsPinEnabled) return null
-    val base = try {
-      URL(state.baseUrl.trim())
-    } catch (_: Throwable) {
-      return null
-    }
-    if (url.host != base.host || effectivePort(url) != effectivePort(base)) return null
-    return state.serverCertSha256
   }
 
-  private fun effectivePort(url: URL): Int = if (url.port != -1) url.port else url.defaultPort
+  // test seam; production reads the IntelliJ service
+  internal var stateProvider: () -> MirrorSettingsService.State? = defaultStateProvider
+
+  private fun loadTlsInput(callerInsecure: Boolean): TlsDecision.Input {
+    val state = stateProvider() ?: return TlsDecision.Input(
+      baseUrl = "", pinEnabled = false, mirrorInsecure = false, callerInsecure = callerInsecure, storedPin = ""
+    )
+    return TlsDecision.Input(
+      baseUrl = state.baseUrl,
+      pinEnabled = state.tlsPinEnabled,
+      mirrorInsecure = state.mirrorInsecureTls,
+      callerInsecure = callerInsecure,
+      storedPin = state.serverCertSha256
+    )
+  }
+
+  private val pinStoreLock = Any()
+
+  private fun storeServerPin(leafDer: ByteArray) {
+    synchronized(pinStoreLock) {
+      val state = stateProvider() ?: return
+      when (val verdict = TlsPinPolicy.evaluate(leafDer, state.serverCertSha256)) {
+        is TlsPinPolicy.Verdict.TrustOnFirstUse -> state.serverCertSha256 = verdict.sha256Hex
+        TlsPinPolicy.Verdict.Match -> {}
+        is TlsPinPolicy.Verdict.Mismatch -> throw TlsPinMismatchException(verdict.expectedHex, verdict.actualHex)
+      }
+    }
+  }
 
   private val trustAllHostnameVerifier = HostnameVerifier { _, _ -> true }
 
@@ -117,15 +132,19 @@ object HttpClient {
 
   fun open(url: URL, insecureTls: Boolean): HttpURLConnection {
     val conn = openWithIdeProxy(url)
+    conn.instanceFollowRedirects = false
     conn.setRequestProperty("User-Agent", userAgent)
     if (conn is HttpsURLConnection) {
-      val pinnedHex = pinnedServerHex(url)
-      if (pinnedHex != null) {
-        conn.sslSocketFactory = pinnedSslSocketFactory(pinnedHex)
-        conn.hostnameVerifier = trustAllHostnameVerifier
-      } else if (insecureTls) {
-        conn.sslSocketFactory = trustAllSslSocketFactory()
-        conn.hostnameVerifier = trustAllHostnameVerifier
+      when (val decision = TlsDecision.resolve(url, loadTlsInput(insecureTls))) {
+        is TlsDecision.Pinned -> {
+          conn.sslSocketFactory = pinnedSslSocketFactory(decision.storedHex)
+          conn.hostnameVerifier = trustAllHostnameVerifier
+        }
+        TlsDecision.TrustAll -> {
+          conn.sslSocketFactory = trustAllSslSocketFactory()
+          conn.hostnameVerifier = trustAllHostnameVerifier
+        }
+        TlsDecision.Default -> {}
       }
     }
     return conn
@@ -213,16 +232,21 @@ object HttpClient {
     return read
   }
 
-  fun classifyError(t: Throwable): ErrorInfo {
+  fun classifyError(t: Throwable, isMirror: Boolean = true): ErrorInfo {
     findPinMismatch(t)?.let { return ErrorInfo("tls-pin", it.message ?: "TLS certificate pin mismatch") }
     return when (t) {
       is ConnectException -> ErrorInfo("connect", "Cannot connect to server. Check URL/port and that server is running.")
       is UnknownHostException -> ErrorInfo("dns", "Host not found. Check server address.")
       is SocketTimeoutException -> ErrorInfo("timeout", "Connection timed out. Check network/server load.")
-      is SSLException -> ErrorInfo("ssl", "TLS/SSL handshake failed. Try enabling insecure TLS for self-signed certs.")
+      is SSLException -> ErrorInfo("ssl", if (isMirror) MIRROR_SSL_ADVICE else GITLAB_SSL_ADVICE)
       else -> ErrorInfo("network", t.message ?: "Network error")
     }
   }
+
+  private const val MIRROR_SSL_ADVICE =
+    "TLS/SSL handshake failed. If the mirror certificate was renewed, clear the stored TLS pin in DocCache settings."
+  private const val GITLAB_SSL_ADVICE =
+    "TLS/SSL handshake failed. Enable the GitLab insecure TLS toggle in settings for self-signed certificates."
 
   private fun findPinMismatch(t: Throwable): TlsPinMismatchException? {
     var current: Throwable? = t

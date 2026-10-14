@@ -21,7 +21,7 @@ import java.net.URLEncoder
  *
  * Style mirrors [localgitmirror.idea.mirror.MirrorApi]: HttpURLConnection via
  * the shared [HttpClient] (IDE proxy + optional trust-all TLS from
- * settings.mirrorInsecureTls), explicit timeouts, kotlinx-serialization-json
+ * settings.gitlabInsecureTls), explicit timeouts, kotlinx-serialization-json
  * parsing and graceful HttpResult-style error objects — never thrown
  * exceptions.
  */
@@ -43,7 +43,7 @@ object GitLabApi {
   data class VerifyResult(val code: Int, val projectName: String?, val message: String)
 
   private fun insecureTls(): Boolean = try {
-    service<MirrorSettingsService>().state.mirrorInsecureTls
+    service<MirrorSettingsService>().state.gitlabInsecureTls
   } catch (_: Throwable) {
     false
   }
@@ -202,7 +202,7 @@ object GitLabApi {
       }
       MrsResult(code, mrs, "OK")
     } catch (t: Throwable) {
-      val e = HttpClient.classifyError(t)
+      val e = HttpClient.classifyError(t, isMirror = false)
       MrsResult(0, emptyList(), "${e.type}: ${e.message}")
     }
   }
@@ -221,7 +221,7 @@ object GitLabApi {
       val branch = o["source_branch"]?.jsonPrimitive?.contentOrNull
       MrBranchResult(code, branch, "OK")
     } catch (t: Throwable) {
-      val e = HttpClient.classifyError(t)
+      val e = HttpClient.classifyError(t, isMirror = false)
       MrBranchResult(0, null, "${e.type}: ${e.message}")
     }
   }
@@ -248,7 +248,7 @@ object GitLabApi {
       } else null
       MrDetail(code, branch, diffRefs, "OK")
     } catch (t: Throwable) {
-      val e = HttpClient.classifyError(t)
+      val e = HttpClient.classifyError(t, isMirror = false)
       MrDetail(0, "", null, "${e.type}: ${e.message}")
     }
   }
@@ -273,7 +273,7 @@ object GitLabApi {
       val body = HttpClient.readBody(conn)
       if (code in 200..299) WriteResult(code, "OK") else WriteResult(code, body.take(300))
     } catch (t: Throwable) {
-      val e = HttpClient.classifyError(t)
+      val e = HttpClient.classifyError(t, isMirror = false)
       WriteResult(0, "${e.type}: ${e.message}")
     }
   }
