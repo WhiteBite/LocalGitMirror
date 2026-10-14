@@ -10,6 +10,7 @@ import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import localgitmirror.idea.git.GitDirCache
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorCrypto
@@ -281,9 +282,7 @@ class PullFromMirrorAction(
           indicator.checkCanceled()
           val hasObjects = git(dir, indicator, "cat-file", "-e", targetHash).exitCode == 0
 
-val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
-          val rawGd = gitDirRes.stdout.trim()
-          val gitDir = if (File(rawGd).isAbsolute) File(rawGd) else File(dir, rawGd)
+          val gitDir = GitDirCache.gitDir(dir)
 
           if (!hasObjects) {
             indicator.text = LocalGitMirrorBundle.message("pull.progress.downloadObjects")
@@ -588,9 +587,7 @@ val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
    * The temp file is deleted in `finally` regardless of success.
    */
   private fun fetchFromBundle(dir: File, decryptedBytes: ByteArray, indicator: ProgressIndicator?, onError: (String) -> Unit) {
-    val gitDirRes = git(dir, indicator, "rev-parse", "--git-dir")
-    val raw = gitDirRes.stdout.trim()
-    val gitDir = if (File(raw).isAbsolute) File(raw) else File(dir, raw)
+    val gitDir = GitDirCache.gitDir(dir)
     val cacheDir = File(gitDir, ".cache").also { if (!it.exists()) it.mkdirs() }
     val tmpBundle = File(cacheDir, ".bundle_${UUID.randomUUID().toString().take(8)}")
 

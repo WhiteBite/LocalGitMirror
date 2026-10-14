@@ -1,6 +1,7 @@
 package localgitmirror.idea.sync
 
 import java.io.File
+import localgitmirror.idea.git.GitDirCache
 
 /**
  * Lightweight state store to pick best incremental bases across branches.
@@ -16,14 +17,7 @@ object SyncStateStore {
   private const val LEGACY_TMP_DIR = ".localgitmirror/tmp"
 
   /** Resolve .git dir via git rev-parse (handles worktrees). */
-  private fun gitDir(projectDir: File): File {
-    val proc = ProcessBuilder(listOf("git", "rev-parse", "--git-dir"))
-      .directory(projectDir).redirectErrorStream(false).start()
-    val raw = proc.inputStream.bufferedReader().readText().trim()
-    proc.waitFor()
-    val f = File(raw)
-    return if (f.isAbsolute) f else File(projectDir, raw)
-  }
+  private fun gitDir(projectDir: File): File = GitDirCache.gitDir(projectDir)
 
   private fun stateDir(projectDir: File): File = File(gitDir(projectDir), STATE_SUBDIR)
 

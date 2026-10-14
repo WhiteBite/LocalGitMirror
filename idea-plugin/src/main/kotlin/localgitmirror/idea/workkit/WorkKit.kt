@@ -2,6 +2,7 @@ package localgitmirror.idea.workkit
 
 import com.intellij.openapi.components.service
 import java.io.File
+import localgitmirror.idea.git.GitDirCache
 import localgitmirror.idea.settings.MirrorSettingsService
 
 object WorkKit {
@@ -67,12 +68,7 @@ object WorkKit {
   }
 
   fun syncDir(projectDir: File): File {
-    val gitDirRes = ProcessBuilder(listOf("git", "rev-parse", "--git-dir"))
-      .directory(projectDir).redirectErrorStream(false).start()
-    val raw = gitDirRes.inputStream.bufferedReader().readText().trim()
-    gitDirRes.waitFor()
-    val gitDir = if (File(raw).isAbsolute) File(raw) else File(projectDir, raw)
-    return File(gitDir, ".cache")
+    return File(GitDirCache.gitDir(projectDir), ".cache")
   }
 
   fun findLatestDump(projectDir: File, repoName: String): File? {

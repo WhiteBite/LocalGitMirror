@@ -1,8 +1,10 @@
 package localgitmirror.idea.sync.v2
 
 import com.intellij.openapi.project.Project
+import localgitmirror.idea.git.GitDirCache
 import localgitmirror.idea.sync.v2.SyncEngine.StepResult
 import java.io.File
+import java.io.IOException
 
 internal fun SyncEngine.generateDump(
   project: Project,
@@ -76,13 +78,12 @@ private fun findSyncFileFromGeneratorOutput(projectDir: File, output: String?): 
 
 private fun findLatestAnySyncFile(projectDir: File): File? {
   // Resolve .git/.cache/ directory for sync files
-  val proc = ProcessBuilder(listOf("git", "rev-parse", "--git-dir"))
-    .directory(projectDir).redirectErrorStream(false).start()
-  val rawGitDir = proc.inputStream.bufferedReader().readText().trim()
-  proc.waitFor()
-  val gitDir = if (File(rawGitDir).isAbsolute) File(rawGitDir) else File(projectDir, rawGitDir)
-  val syncDir = File(gitDir, ".cache")
-  val dirs = listOf(syncDir, projectDir)
+  val gitDir = try {
+    GitDirCache.gitDir(projectDir)
+  } catch (e: IOException) {
+    null
+  }
+  val dirs = listOfNotNull(gitDir?.let { File(it, ".cache") }, projectDir)
   val files = mutableListOf<File>()
   for (dir in dirs) {
     if (!dir.exists() || !dir.isDirectory) continue

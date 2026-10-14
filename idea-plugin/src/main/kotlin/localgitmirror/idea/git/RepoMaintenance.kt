@@ -3,6 +3,7 @@ package localgitmirror.idea.git
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import java.io.File
+import java.io.IOException
 import localgitmirror.idea.sync.SyncLogger
 
 /**
@@ -36,10 +37,11 @@ object RepoMaintenance {
   }
 
   private fun run(project: Project, workDir: File) {
-    val gitDirRes = GitLocal.run(project, workDir, 10, "rev-parse", "--git-dir")
-    if (!gitDirRes.ok()) return
-    val raw = gitDirRes.stdout.trim()
-    val gitDir = if (File(raw).isAbsolute) File(raw) else File(workDir, raw)
+    val gitDir = try {
+      GitDirCache.gitDir(workDir)
+    } catch (e: IOException) {
+      return
+    }
     val stamp = File(gitDir, ".cache/last-auto-gc")
     val now = System.currentTimeMillis()
     if (stamp.exists() && now - stamp.lastModified() < MIN_INTERVAL_MS) return

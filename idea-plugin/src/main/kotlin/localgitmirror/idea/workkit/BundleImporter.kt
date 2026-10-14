@@ -1,9 +1,11 @@
 package localgitmirror.idea.workkit
 
 import java.io.File
+import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import localgitmirror.idea.actions.PullLogic
+import localgitmirror.idea.git.GitDirCache
 
 object BundleImporter {
   private const val SYNC_STATE_PULL = ".pull-state"
@@ -39,11 +41,7 @@ object BundleImporter {
       // the file is a raw git bundle. Legacy pull delivers a password-encrypted
       // dump. Detect the git-bundle signature and skip decryption when present.
       val bundleBytes = if (PullLogic.looksLikeGitBundle(raw)) raw else BundleCrypto.decryptDumpBytes(raw, password)
-      val gitDirRes = ProcessBuilder(listOf("git", "rev-parse", "--git-dir"))
-        .directory(workDir).redirectErrorStream(false).start()
-      val rawGitDir = gitDirRes.inputStream.bufferedReader().readText().trim()
-      gitDirRes.waitFor()
-      val gitDir = if (java.io.File(rawGitDir).isAbsolute) java.io.File(rawGitDir) else File(workDir, rawGitDir)
+      val gitDir = GitDirCache.gitDir(workDir)
       val tmpDir = File(gitDir, ".cache")
       if (!tmpDir.exists()) tmpDir.mkdirs()
       val bundleFile = File(tmpDir, ".tmp_${java.util.UUID.randomUUID().toString().take(8)}")
@@ -230,8 +228,12 @@ object BundleImporter {
         ?: BundleBranchInfo("HEAD", "unknown", "HEAD")
   }
 
-  private fun ensureGitRepo(workDir: File) {    val r = git(workDir, "rev-parse", "--git-dir")
-    if (r.exitCode != 0) throw RuntimeException("Not a valid git repository. Run from your project directory.")
+  private fun ensureGitRepo(workDir: File) {
+    try {
+      GitDirCache.gitDir(workDir)
+    } catch (e: IOException) {
+      throw RuntimeException("Not a valid git repository. Run from your project directory.")
+    }
   }
 
   private fun currentBranch(workDir: File): String {

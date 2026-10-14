@@ -2,8 +2,10 @@ package localgitmirror.idea.workkit
 
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import localgitmirror.idea.git.GitDirCache
 import localgitmirror.idea.sync.SyncLogger
 
 object NativeBundleBuilder {
@@ -15,13 +17,7 @@ object NativeBundleBuilder {
   )
 
   /** Resolve the actual .git directory (handles worktrees). */
-  private fun gitDir(workDir: File): File {
-    val res = git(workDir, "rev-parse", "--git-dir")
-    if (res.exitCode != 0) throw RuntimeException("Not a valid git repository.")
-    val raw = res.stdout.trim()
-    val f = File(raw)
-    return if (f.isAbsolute) f else File(workDir, raw)
-  }
+  private fun gitDir(workDir: File): File = GitDirCache.gitDir(workDir)
 
   private fun syncStateFile(workDir: File): File = File(gitDir(workDir), ".fetch-state")
 
@@ -98,8 +94,9 @@ object NativeBundleBuilder {
   }
 
   private fun ensureGitRepo(workDir: File) {
-    val res = git(workDir, "rev-parse", "--git-dir")
-    if (res.exitCode != 0) {
+    try {
+      GitDirCache.gitDir(workDir)
+    } catch (e: IOException) {
       throw RuntimeException("Not a valid git repository. Run from your project directory.")
     }
   }
