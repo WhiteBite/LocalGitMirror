@@ -14,11 +14,17 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     // ui language: auto | en | ru
     var uiLanguage: String = "auto",
 
-    var mirrorInsecureTls: Boolean = true,
+    var mirrorInsecureTls: Boolean = false,
 
     // empty serverCertSha256 = TOFU: first pinned connect stores the observed hash
-    var tlsPinEnabled: Boolean = false,
+    var tlsPinEnabled: Boolean = true,
     var serverCertSha256: String = "",
+
+    // corporate gitlab is often self-signed; separate knob from mirror tls
+    var gitlabInsecureTls: Boolean = true,
+
+    // guards the one-time legacy migration; code never flips it back to false
+    var tlsDefaultsMigrated: Boolean = false,
 
     var pullBackDefaultMode: String = "new-branch",
 
@@ -91,5 +97,19 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
 
   override fun loadState(state: State) {
     XmlSerializerUtil.copyBean(state, this.state)
+    // legacy persisted state predates secure defaults; migrate once
+    val migration = TlsDefaults.migrate(
+      pinEnabled = this.state.tlsPinEnabled,
+      insecure = this.state.mirrorInsecureTls,
+      migrated = this.state.tlsDefaultsMigrated
+    )
+    this.state.tlsPinEnabled = migration.pinEnabled
+    this.state.mirrorInsecureTls = migration.insecure
+    this.state.tlsDefaultsMigrated = migration.migrated
+  }
+
+  override fun noStateLoaded() {
+    // fresh install: defaults are already secure, nothing to migrate
+    state.tlsDefaultsMigrated = true
   }
 }
