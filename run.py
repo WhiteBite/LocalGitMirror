@@ -599,6 +599,12 @@ def run_dev() -> None:
 
 # ── entry point ──────────────────────────────────────────────────────────────
 def main() -> None:
+    # cp1251-консоль не умеет юникод-баннер: заменяем неэнкодаемые символы вместо падения
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
     argv = sys.argv[1:]
     mode = (argv[0].lower() if argv else "prod")
     if mode in ("-h", "--help", "help"):
