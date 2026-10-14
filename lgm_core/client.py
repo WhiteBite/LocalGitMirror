@@ -100,6 +100,9 @@ class MirrorClient:
     def __init__(self, base_url: str = "", api_key: str = "",
                  insecure_tls: bool = True, timeout: int = 15,
                  sync_password: str = ""):
+        base_url = base_url.strip()
+        if base_url and not base_url.startswith(("http://", "https://")):
+            base_url = "https://" + base_url
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.insecure_tls = insecure_tls
