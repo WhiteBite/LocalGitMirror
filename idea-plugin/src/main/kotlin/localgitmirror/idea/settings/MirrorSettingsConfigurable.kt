@@ -104,7 +104,10 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
               isEditable = false
               pinField = this
             }
-          button("Clear pin") { pinField?.text = "" }
+          button("Clear pin") {
+            state.serverCertSha256 = ""
+            pinField?.text = ""
+          }
         }
       }
 
@@ -219,6 +222,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
   override fun apply() {
     val panel = dialogPanel ?: return
+    val previousUrl = state.baseUrl
     panel.apply()
     SecretsStore.mirrorApiKey = mirrorApiKeyLocal
     SecretsStore.syncPassword = syncPasswordLocal
@@ -230,6 +234,10 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
       url.isBlank() -> url
       url.startsWith("http://") || url.startsWith("https://") -> url.trimEnd('/')
       else -> "https://${url.trimEnd('/')}"
+    }
+    if (state.baseUrl != previousUrl) {
+      // pin belongs to the old server; a stale pin guarantees mismatch
+      state.serverCertSha256 = ""
     }
   }
 
@@ -264,9 +272,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
             )
           }
           servers.size == 1 -> {
-            val server = servers.first()
-            state.baseUrl = server.toUrl()
-            if (server.tls) state.mirrorInsecureTls = true
+            state.baseUrl = servers.first().toUrl()
             dialogPanel?.reset()
           }
           else -> {
@@ -280,7 +286,6 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
               val idx = options.indexOf(chosen)
               if (idx >= 0) {
                 state.baseUrl = servers[idx].toUrl()
-                if (servers[idx].tls) state.mirrorInsecureTls = true
                 dialogPanel?.reset()
               }
             }

@@ -12,11 +12,13 @@ import java.security.SecureRandom
 
 data class ConfigSnapshot(
   val baseUrl: String,
-  val mirrorInsecureTls: Boolean,
+  // never populated from the line: TLS trust is machine-local
+  val mirrorInsecureTls: Boolean = false,
   val offlineGenerateOnly: Boolean,
   val pullBackDefaultMode: String,
   val mirrorApiKey: String,
-  val syncPassword: String
+  val syncPassword: String,
+  val serverCertSha256: String = ""
 )
 
 object ConfigLineCodec {
@@ -88,11 +90,11 @@ object ConfigLineCodec {
   fun encode(snapshot: ConfigSnapshot): String {
     val raw = listOf(
       "baseUrl=${snapshot.baseUrl}",
-      "mirrorInsecureTls=${snapshot.mirrorInsecureTls}",
       "offlineGenerateOnly=${snapshot.offlineGenerateOnly}",
       "pullBackDefaultMode=${snapshot.pullBackDefaultMode}",
       "mirrorApiKey=${snapshot.mirrorApiKey}",
-      "syncPassword=${snapshot.syncPassword}"
+      "syncPassword=${snapshot.syncPassword}",
+      "pin=${snapshot.serverCertSha256}"
     ).joinToString("\n")
 
     val encrypted = encrypt(raw)
@@ -191,14 +193,12 @@ object ConfigLineCodec {
 
     return ConfigSnapshot(
       baseUrl = map["baseUrl"].orEmpty(),
-      mirrorInsecureTls = map["mirrorInsecureTls"].equals("true", ignoreCase = true),
       offlineGenerateOnly = map["offlineGenerateOnly"].equals("true", ignoreCase = true),
       pullBackDefaultMode = map["pullBackDefaultMode"].orEmpty().ifBlank { "new-branch" },
       mirrorApiKey = map["mirrorApiKey"].orEmpty(),
-      syncPassword = map["syncPassword"].orEmpty()
-      // Legacy keys (repo, gitRemoteName, gitLab*, workMode, simpleUiMode) are
-      // read from map but intentionally NOT used: repo is per-project now and
-      // gitRemoteName is auto-detected, so neither belongs in a connection profile.
+      syncPassword = map["syncPassword"].orEmpty(),
+      serverCertSha256 = map["pin"].orEmpty()
+      // legacy keys (repo, gitRemoteName, gitLab*, mirrorInsecureTls) are parsed but ignored for backward compat
     )
   }
 

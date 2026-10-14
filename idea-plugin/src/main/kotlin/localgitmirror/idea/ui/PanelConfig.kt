@@ -19,11 +19,11 @@ internal fun LocalGitMirrorPanel.copyConfigLine() {
   val line = ConfigLineCodec.encode(
     ConfigSnapshot(
       baseUrl = s.baseUrl,
-      mirrorInsecureTls = s.mirrorInsecureTls,
       offlineGenerateOnly = s.offlineGenerateOnly,
       pullBackDefaultMode = s.pullBackDefaultMode,
       mirrorApiKey = SecretsStore.mirrorApiKey,
-      syncPassword = SecretsStore.syncPassword
+      syncPassword = SecretsStore.syncPassword,
+      serverCertSha256 = s.serverCertSha256
     )
   )
 
@@ -86,10 +86,11 @@ internal fun LocalGitMirrorPanel.pasteConfigLine() {
 
 internal fun LocalGitMirrorPanel.applySnapshot(snapshot: ConfigSnapshot) {
   val s = service<MirrorSettingsService>().state
+  if (s.baseUrl != snapshot.baseUrl) s.serverCertSha256 = ""
   s.baseUrl = snapshot.baseUrl
-  s.mirrorInsecureTls = snapshot.mirrorInsecureTls
   s.offlineGenerateOnly = snapshot.offlineGenerateOnly
   s.pullBackDefaultMode = snapshot.pullBackDefaultMode
+  if (snapshot.serverCertSha256.isNotBlank()) s.serverCertSha256 = snapshot.serverCertSha256
 
   SecretsStore.mirrorApiKey = snapshot.mirrorApiKey
   SecretsStore.syncPassword = snapshot.syncPassword

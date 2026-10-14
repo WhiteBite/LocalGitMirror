@@ -16,7 +16,7 @@ class ConfigLineCodecTest {
   fun `encode then decode roundtrip preserves values`() {
     val snapshot = ConfigSnapshot(
       baseUrl = "https://127.0.0.1:443",
-      mirrorInsecureTls = true,
+      mirrorInsecureTls = false,
       offlineGenerateOnly = false,
       pullBackDefaultMode = "new-branch",
       mirrorApiKey = "api-key",
@@ -109,7 +109,7 @@ class ConfigLineCodecTest {
 
     assertNotNull(decoded, "Old config with obsolete fields must parse without returning null")
     assertEquals("https://192.168.1.50:443", decoded.baseUrl)
-    assertEquals(true, decoded.mirrorInsecureTls)
+    assertEquals(false, decoded.mirrorInsecureTls)
     assertEquals("some-api-key", decoded.mirrorApiKey)
     assertEquals("secret123", decoded.syncPassword)
     // repo, gitRemoteName, gitLab* are no longer part of ConfigSnapshot — ignored.
@@ -205,5 +205,89 @@ class ConfigLineCodecTest {
     val decoded = ConfigLineCodec.decode(extracted)
     assertNotNull(decoded)
     assertEquals("https://payload-only", decoded.baseUrl)
+  }
+
+  @Test
+  fun `legacy line with mirrorInsecureTls does not re-enable insecure on import`() {
+    val raw = """
+      baseUrl=https://legacy.example:443
+      mirrorInsecureTls=true
+      pullBackDefaultMode=new-branch
+      mirrorApiKey=k
+      syncPassword=p
+    """.trimIndent()
+
+    val token = "LGM_CONFIG_V1:" + java.util.Base64.getEncoder().encodeToString(raw.toByteArray())
+    val decoded = ConfigLineCodec.decode(token)
+
+    assertNotNull(decoded)
+    assertEquals(false, decoded.mirrorInsecureTls)
+  }
+
+  @Test
+  fun `encode does not carry mirrorInsecureTls to another machine`() {
+    val snapshot = ConfigSnapshot(
+      baseUrl = "https://src.example:443",
+      mirrorInsecureTls = true,
+      offlineGenerateOnly = false,
+      pullBackDefaultMode = "new-branch",
+      mirrorApiKey = "k",
+      syncPassword = "p"
+    )
+
+    val decoded = ConfigLineCodec.decode(ConfigLineCodec.encode(snapshot))
+
+    assertNotNull(decoded)
+    assertEquals(false, decoded.mirrorInsecureTls)
+  }
+
+  @Test
+  fun `roundtrip carries server cert pin`() {
+    val snapshot = ConfigSnapshot(
+      baseUrl = "https://pin.example:443",
+      offlineGenerateOnly = false,
+      pullBackDefaultMode = "new-branch",
+      mirrorApiKey = "k",
+      syncPassword = "p",
+      serverCertSha256 = "aa:bb:cc:dd"
+    )
+
+    val decoded = ConfigLineCodec.decode(ConfigLineCodec.encode(snapshot))
+
+    assertNotNull(decoded)
+    assertEquals("aa:bb:cc:dd", decoded.serverCertSha256)
+  }
+
+  @Test
+  fun `legacy line without pin key yields empty pin`() {
+    val raw = """
+      baseUrl=https://old.example:443
+      pullBackDefaultMode=new-branch
+      mirrorApiKey=k
+      syncPassword=p
+    """.trimIndent()
+
+    val token = "LGM_CONFIG_V1:" + java.util.Base64.getEncoder().encodeToString(raw.toByteArray())
+    val decoded = ConfigLineCodec.decode(token)
+
+    assertNotNull(decoded)
+    assertEquals("", decoded.serverCertSha256)
+  }
+
+  @Test
+  fun `roundtrip preserves all carried fields including pin`() {
+    val snapshot = ConfigSnapshot(
+      baseUrl = "https://full.example:444",
+      offlineGenerateOnly = true,
+      pullBackDefaultMode = "ff-only",
+      mirrorApiKey = "key-123",
+      syncPassword = "pw-456",
+      serverCertSha256 = "deadbeefcafe"
+    )
+
+    val decoded = ConfigLineCodec.decode(ConfigLineCodec.encode(snapshot))
+
+    assertNotNull(decoded)
+    assertEquals(snapshot, decoded)
   }
 }
