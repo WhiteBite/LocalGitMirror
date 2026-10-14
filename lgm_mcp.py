@@ -168,6 +168,8 @@ def _call_tool(name: str, arguments: dict) -> dict:
         api_key=config.api_key,
         insecure_tls=config.insecure_tls,
         sync_password=config.sync_password,
+        pin_sha256=config.pin_sha256,
+        pin_file=config.pin_file,
     )
     ctx = Ctx(config=config, client=client)
 

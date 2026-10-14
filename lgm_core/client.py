@@ -4,8 +4,9 @@ Auth: sends **both** ``Authorization: Bearer <key>`` and the legacy
 ``X-Session-ID: <key>`` header so the same client works against servers
 that accept either (the backend's ``get_api_key`` checks both).
 
-TLS: when ``insecure_tls`` is True (default), an unverified SSL context is
-used — the mirror runs with a self-signed cert.
+TLS: connections are pinned via TOFU (see ``tls_pin``) — the mirror runs
+with a self-signed cert.  ``insecure_tls=True`` is the escape hatch: an
+unverified SSL context, no pinning.
 
 Errors: ``LgmError`` carries a structured ``code`` (HTTP status int or
 ``"network"``) and ``message``.  Callers can inspect ``code`` to decide
@@ -29,6 +30,7 @@ from typing import Optional
 from .crypto import encrypt_envelope, decrypt_envelope, encrypt_bundle
 from .relay_crypto import RelaySession, RELAY_AAD_POSTBOX, decode_pub_b64
 from .config import cfg
+from .tls_pin import TlsPinMismatchError, pin_https_opener
 
 
 def repo_to_rid(repo_name: str) -> str:
@@ -98,8 +100,9 @@ class MirrorClient:
     """Thin HTTP client covering the full Mirror API surface."""
 
     def __init__(self, base_url: str = "", api_key: str = "",
-                 insecure_tls: bool = True, timeout: int = 15,
-                 sync_password: str = ""):
+                 insecure_tls: bool = False, timeout: int = 15,
+                 sync_password: str = "", pin_sha256: str = "",
+                 pin_file: str = ""):
         base_url = base_url.strip()
         if base_url and not base_url.startswith(("http://", "https://")):
             base_url = "https://" + base_url
@@ -108,22 +111,34 @@ class MirrorClient:
         self.insecure_tls = insecure_tls
         self.timeout = timeout
         self.sync_password = sync_password
+        self.pin_sha256 = pin_sha256
+        self.pin_file = pin_file
         self._server_pub: Optional[bytes] = None
+        self._opener: Optional[urllib.request.OpenerDirector] = None
 
     # ── low-level helpers ────────────────────────────────────────────────
 
     def _url(self, path: str) -> str:
         return self.base_url + path
 
+    def _open(self, req: urllib.request.Request, timeout: int):
+        """Single funnel for mirror requests: insecure escape hatch or pinned."""
+        if self.insecure_tls:
+            return urllib.request.urlopen(
+                req, context=_ssl_ctx(True), timeout=timeout)
+        if self._opener is None:
+            self._opener = pin_https_opener(
+                pin_sha256=self.pin_sha256, pin_file=self.pin_file)
+        return self._opener.open(req, timeout=timeout)
+
     def _get_json(self, path: str, timeout: Optional[int] = None) -> dict:
         url = self._url(path)
         req = urllib.request.Request(url, headers=_auth_headers(self.api_key))
         try:
-            with urllib.request.urlopen(
-                req, context=_ssl_ctx(self.insecure_tls),
-                timeout=timeout or self.timeout,
-            ) as r:
+            with self._open(req, timeout=timeout or self.timeout) as r:
                 return json.loads(r.read())
+        except TlsPinMismatchError:
+            raise
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
             raise LgmError(e.code, body) from None
@@ -135,11 +150,11 @@ class MirrorClient:
         req = urllib.request.Request(url, method="DELETE",
                                      headers=_auth_headers(self.api_key))
         try:
-            with urllib.request.urlopen(
-                req, context=_ssl_ctx(self.insecure_tls), timeout=self.timeout,
-            ) as r:
+            with self._open(req, timeout=self.timeout) as r:
                 body = r.read()
                 return json.loads(body) if body else {}
+        except TlsPinMismatchError:
+            raise
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
             raise LgmError(e.code, body) from None
@@ -153,11 +168,10 @@ class MirrorClient:
         headers = {**_auth_headers(self.api_key), "Content-Type": content_type}
         req = urllib.request.Request(url, data=body, method="POST", headers=headers)
         try:
-            with urllib.request.urlopen(
-                req, context=_ssl_ctx(self.insecure_tls),
-                timeout=timeout or self.timeout,
-            ) as r:
+            with self._open(req, timeout=timeout or self.timeout) as r:
                 return json.loads(r.read())
+        except TlsPinMismatchError:
+            raise
         except urllib.error.HTTPError as e:
             body_txt = e.read().decode(errors="replace")
             raise LgmError(e.code, body_txt) from None
@@ -198,11 +212,10 @@ class MirrorClient:
         }
         req = urllib.request.Request(url, data=body, method="POST", headers=headers)
         try:
-            with urllib.request.urlopen(
-                req, context=_ssl_ctx(self.insecure_tls),
-                timeout=timeout or 120,
-            ) as r:
+            with self._open(req, timeout=timeout or 120) as r:
                 return json.loads(r.read())
+        except TlsPinMismatchError:
+            raise
         except urllib.error.HTTPError as e:
             body_txt = e.read().decode(errors="replace")
             raise LgmError(e.code, body_txt) from None
@@ -213,11 +226,11 @@ class MirrorClient:
         url = self._url(path)
         req = urllib.request.Request(url, headers=_auth_headers(self.api_key))
         try:
-            with urllib.request.urlopen(
-                req, context=_ssl_ctx(self.insecure_tls), timeout=120,
-            ) as r:
+            with self._open(req, timeout=120) as r:
                 out.write_bytes(r.read())
             return True
+        except TlsPinMismatchError:
+            raise
         except Exception:
             return False
 
@@ -226,10 +239,10 @@ class MirrorClient:
         req = urllib.request.Request(
             url, headers={**_auth_headers(self.api_key), **(headers or {})})
         try:
-            with urllib.request.urlopen(
-                req, context=_ssl_ctx(self.insecure_tls), timeout=120,
-            ) as r:
+            with self._open(req, timeout=120) as r:
                 return r.read()
+        except TlsPinMismatchError:
+            raise
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
             raise LgmError(e.code, body) from None

@@ -74,7 +74,9 @@ class Config:
     api_key: str = ""
     sync_password: str = ""
     storage_path: str = ""
-    insecure_tls: bool = True
+    insecure_tls: bool = False
+    pin_sha256: str = ""
+    pin_file: str = ""
     # Extra env values needed by gradle/npm scanning (GRADLE_USER_HOME, etc.)
     env: dict = field(default_factory=dict, repr=False)
 
@@ -87,12 +89,16 @@ class Config:
         sync_password: str = "",
         storage_path: str = "",
         insecure_tls: bool | None = None,
+        pin_sha256: str = "",
+        pin_file: str = "",
         env_path: Path | None = None,
     ) -> "Config":
         """Build a Config from .env → process env → explicit overrides.
 
-        Explicit (non-empty) overrides always win.  ``insecure_tls`` defaults
-        to ``True`` (self-signed cert on the mirror).
+        Explicit (non-empty) overrides always win.  ``insecure_tls`` comes
+        from ``LGM_INSECURE_TLS`` (truthy: "1"/"true") and defaults to
+        ``False`` — connections are pinned via TOFU unless the escape hatch
+        is enabled explicitly.
         """
         # Re-load .env if a custom path was given (tests).
         local_env = load_env(env_path) if env_path else _ENV
@@ -105,12 +111,16 @@ class Config:
                 return os.environ.get(key) or local_env.get(key) or ""
             return local_env.get(key) or os.environ.get(key) or ""
 
+        if insecure_tls is None:
+            insecure_tls = _resolve("LGM_INSECURE_TLS", "").lower() in ("1", "true")
         return cls(
             base_url=_resolve("BASE_URL", base_url) or "https://localhost:443",
             api_key=_resolve("API_KEY", api_key),
             sync_password=_resolve("SYNC_PASSWORD", sync_password),
             storage_path=_resolve("STORAGE_PATH", storage_path),
-            insecure_tls=True if insecure_tls is None else insecure_tls,
+            insecure_tls=insecure_tls,
+            pin_sha256=_resolve("LGM_TLS_PIN_SHA256", pin_sha256),
+            pin_file=_resolve("LGM_TLS_PIN_FILE", pin_file),
             env=local_env,
         )
 
@@ -120,6 +130,8 @@ class Config:
             "base_url": self.base_url,
             "api_key": self.api_key,
             "insecure_tls": self.insecure_tls,
+            "pin_sha256": self.pin_sha256,
+            "pin_file": self.pin_file,
         }
 
 

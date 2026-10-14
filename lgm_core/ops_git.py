@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ssl
 import subprocess
 import tempfile
 import urllib.request
@@ -438,9 +437,7 @@ def op_update(ctx: Ctx, args: dict) -> dict:
         },
     )
     try:
-        with urllib.request.urlopen(
-            req, context=ssl._create_unverified_context(), timeout=60,
-        ) as r:
+        with c._open(req, timeout=60) as r:
             blob = r.read()
             remote_version = r.headers.get("X-LGM-Version", "unknown")
     except Exception as e:
