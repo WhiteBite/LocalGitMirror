@@ -79,6 +79,11 @@ class DepsAutomationService(private val project: Project) : Disposable {
 
   /** Idempotent; each poller pass re-reads role and settings, so later toggles apply without a restart. */
   fun start() {
+    // master gate; started stays false when disabled so a later settings flip can still enable
+    if (!DepsAutomationGate.enabled(settings.depsAutomationMode, role == MachineRole.HOME)) {
+      DepsDiagnostics.event("automation: disabled by depsAutomationMode")
+      return
+    }
     if (started) return
     started = true
 

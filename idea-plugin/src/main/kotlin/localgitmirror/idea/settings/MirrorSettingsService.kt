@@ -73,6 +73,9 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     // "home" / "work" forces the role manually.
     var machineRole: String = "auto",
 
+    // Master gate for all deps automation: "auto" = only on HOME, "on"/"off" force.
+    var depsAutomationMode: String = "auto",
+
     // HOME: automatically detect missing corporate deps and send a request.
     var autoRequestDeps: Boolean = true,
     // WORK: automatically respond to pending deps requests.
