@@ -16,7 +16,7 @@ from .op_models import Ctx, _client, _repo_arg, _role_guess
 # ── New ops ──────────────────────────────────────────────────────────────────
 
 def op_status(ctx: Ctx, args: dict) -> dict:
-    """Server capabilities + repos + role guess."""
+    """Server capabilities + repos + role guess + tools version drift."""
     c = _client(ctx)
     caps = {}
     repos_r = {}
@@ -29,8 +29,25 @@ def op_status(ctx: Ctx, args: dict) -> dict:
     except LgmError as e:
         repos_r = {"error": e.message, "code": e.code}
     role = _role_guess(caps, repos_r) if "error" not in caps else "unknown"
+    tools = {"local": _local_tools_version()}
+    try:
+        mirror_v = str(c.tools_version().get("version", ""))
+        if mirror_v:
+            tools["mirror"] = mirror_v
+            tools["outdated"] = mirror_v != tools["local"] and tools["local"] != "dev"
+    except LgmError:
+        pass
     return {"capabilities": caps, "repos": repos_r, "role_guess": role,
-            "base_url": ctx.config.base_url}
+            "base_url": ctx.config.base_url, "tools": tools}
+
+
+def _local_tools_version(root: Path | None = None) -> str:
+    """Deployed copies ship a VERSION file written by the mirror's tools zip."""
+    vf = (root or Path(__file__).resolve().parent.parent) / "VERSION"
+    try:
+        return vf.read_text(encoding="utf-8").strip() or "dev"
+    except OSError:
+        return "dev"
 
 
 def op_repos(ctx: Ctx, args: dict) -> dict:

@@ -49,6 +49,8 @@ def _tools_zip() -> bytes:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for arcname, path in _tools_files():
             zf.write(path, arcname)
+        # Deployed copies read this to detect drift against the mirror (op_status).
+        zf.writestr("VERSION", _tools_version())
     return buf.getvalue()
 
 
@@ -92,9 +94,20 @@ def _plugin_archive() -> Path:
     return _current_zip()
 
 
+@router.get("/tools/version")
+def tools_version_probe():
+    """Cheap version probe for agent-side update checks (op_status)."""
+    return {"version": _tools_version()}
+
+
 @router.get("/tools/latest")
-def tools_latest(enc: bool = Query(False)):
-    """Zip lgm.py + lgm_mcp.py + lgm_core/ and serve, optionally sealed."""
+def tools_latest(enc: bool = Query(True)):
+    """Zip lgm.py + lgm_mcp.py + lgm_core/ and serve.
+
+    Sealed by default: a client that predates the ?enc flag still requests
+    without it and successfully decrypts the bundle, so broken old updaters
+    self-heal on the next `lgm update`. Raw zip is opt-in via ?enc=0.
+    """
     blob = _tools_zip()
     if enc:
         sealed = encrypt_bundle_bytes(blob, _sync_password())

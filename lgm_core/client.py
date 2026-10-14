@@ -240,8 +240,12 @@ class MirrorClient:
         return self._get_json("/api/health")
 
     def repos(self) -> dict:
-        """GET /api/repos — list repos + current."""
+        """GET /api/repos - list repos + current."""
         return self._get_json("/api/repos")
+
+    def tools_version(self) -> dict:
+        """GET /api/tools/version - mirror-side tools version probe."""
+        return self._get_json("/api/tools/version")
 
     def plugin_info(self) -> dict:
         """GET /api/plugin/info — current plugin archive metadata."""

@@ -41,9 +41,9 @@ def _make_plugin_zip(tmp_path):
     return zip_path
 
 
-def test_tools_latest_plain_zip(tmp_path, monkeypatch):
+def test_tools_latest_plain_zip_opt_in(tmp_path, monkeypatch):
     client = _build_client(tmp_path, monkeypatch)
-    resp = client.get("/api/tools/latest")
+    resp = client.get("/api/tools/latest?enc=0")
     assert resp.status_code == 200, resp.text
     assert resp.headers["content-type"] == "application/zip"
     zf = zipfile.ZipFile(io.BytesIO(resp.content))
@@ -54,6 +54,27 @@ def test_tools_latest_plain_zip(tmp_path, monkeypatch):
     assert "lgm_core/client.py" in names
     assert "lgm_core/crypto.py" in names
     assert "X-LGM-Version" in resp.headers
+
+
+def test_tools_latest_default_is_sealed_with_version_file(tmp_path, monkeypatch):
+    from app.core.bundle_crypto import decrypt_dump_bytes
+    client = _build_client(tmp_path, monkeypatch)
+    resp = client.get("/api/tools/latest")
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/octet-stream"
+    plain = decrypt_dump_bytes(resp.content, PASSWORD)
+    zf = zipfile.ZipFile(io.BytesIO(plain))
+    names = zf.namelist()
+    assert "lgm.py" in names
+    assert "VERSION" in names
+    assert zf.read("VERSION").decode("utf-8").startswith("0.")
+
+
+def test_tools_version_endpoint(tmp_path, monkeypatch):
+    client = _build_client(tmp_path, monkeypatch)
+    resp = client.get("/api/tools/version")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["version"].startswith("0.")
 
 
 def test_tools_latest_encrypted(tmp_path, monkeypatch):
@@ -68,11 +89,16 @@ def test_tools_latest_encrypted(tmp_path, monkeypatch):
 
 
 def test_tools_latest_wire_format_matches_client_unwrap(tmp_path, monkeypatch):
-    """Both server wire formats (raw zip, enc=1 sealed) feed op_update's unwrap."""
+    """All server wire formats (default sealed, enc=1 sealed, enc=0 raw) feed op_update's unwrap."""
     from lgm_core.ops_git import _unwrap_tools_blob
     client = _build_client(tmp_path, monkeypatch)
 
-    raw = client.get("/api/tools/latest")
+    default = client.get("/api/tools/latest")
+    assert default.status_code == 200, default.text
+    default_zip = zipfile.ZipFile(io.BytesIO(_unwrap_tools_blob(default.content, PASSWORD)))
+    assert "lgm.py" in default_zip.namelist()
+
+    raw = client.get("/api/tools/latest?enc=0")
     assert raw.status_code == 200, raw.text
     raw_zip = zipfile.ZipFile(io.BytesIO(_unwrap_tools_blob(raw.content, PASSWORD)))
     assert "lgm.py" in raw_zip.namelist()
