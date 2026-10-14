@@ -279,18 +279,13 @@ private fun fetchAndCopy(
   ts: Double,
   historyService: OperationsHistoryService
 ) {
-  val res = MirrorBufferApi.bufferGet(settings.baseUrl, apiKey, settings.mirrorInsecureTls, id)
-  if (res.code !in 200..299 || res.file == null) {
+  val res = MirrorBufferApi.bufferGetBytes(settings.baseUrl, apiKey, settings.mirrorInsecureTls, id)
+  if (res.code !in 200..299 || res.bytes == null) {
     notify(project, LocalGitMirrorBundle.message("notify.buffer.getFail", res.code.toString(), res.message.take(200)), NotificationType.ERROR)
     historyService.add("Buffer paste", false, "HTTP ${res.code}: ${res.message.take(200)}")
     return
   }
-  val ciphertext = try { res.file.readBytes() } catch (t: Throwable) {
-    notify(project, LocalGitMirrorBundle.message("notify.buffer.getFail", "0", t.message ?: ""), NotificationType.ERROR)
-    return
-  } finally {
-    try { res.file.delete() } catch (_: Throwable) {}
-  }
+  val ciphertext = res.bytes
 
   val plain = try {
     val bytes = if (res.decrypted) ciphertext else BundleCrypto.decryptDumpBytes(ciphertext, pwd)

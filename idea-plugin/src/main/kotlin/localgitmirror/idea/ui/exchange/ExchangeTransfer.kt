@@ -376,16 +376,14 @@ internal fun LocalGitMirrorPanel.loadChatBody(item: ExchangeItem, onLoaded: (Str
     Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.exchange.task.download"), true) {
     private var body: String? = null
     override fun run(indicator: ProgressIndicator) {
-      val res = MirrorBufferApi.bufferGet(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, item.effectiveId)
-      if (res.code !in 200..299 || res.file == null) return
+      val res = MirrorBufferApi.bufferGetBytes(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, item.effectiveId)
+      if (res.code !in 200..299 || res.bytes == null) return
       body = try {
-        val bytes = if (res.decrypted) res.file.readBytes()
-        else BundleCrypto.decryptDumpBytes(res.file.readBytes(), pwd)
+        val bytes = if (res.decrypted) res.bytes
+        else BundleCrypto.decryptDumpBytes(res.bytes, pwd)
         String(bytes, Charsets.UTF_8)
       } catch (_: Throwable) {
         null
-      } finally {
-        runCatching { res.file.delete() }
       }
     }
 

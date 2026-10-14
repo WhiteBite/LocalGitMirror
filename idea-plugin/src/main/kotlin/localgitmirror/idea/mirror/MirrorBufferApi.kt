@@ -1,6 +1,5 @@
 package localgitmirror.idea.mirror
 
-import java.io.File
 import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.Base64 as JavaBase64
@@ -100,15 +99,17 @@ object MirrorBufferApi {
     }
   }
 
+  data class BufferBytes(val code: Int, val bytes: ByteArray?, val decrypted: Boolean, val message: String)
+
   /**
-   * Fetch a single entry body.
+   * Fetch a single entry body in memory.
    *
    * In v3 mode (pinned server key) the request carries `X-LGM-Epk` and the
    * server re-seals the blob to that ephemeral; it is opened here, so the
-   * returned file holds PLAINTEXT and [DownloadResult.decrypted] is true.
-   * Otherwise the file holds the legacy password container as before.
+   * returned bytes hold PLAINTEXT and [BufferBytes.decrypted] is true.
+   * Otherwise the bytes hold the legacy password container for the caller to open.
    */
-  fun bufferGet(baseUrl: String, apiKey: String, insecureTls: Boolean, id: String): DownloadResult {
+  fun bufferGetBytes(baseUrl: String, apiKey: String, insecureTls: Boolean, id: String): BufferBytes {
     val session = MirrorCrypto.pinnedServerPub()?.let { HybridCrypto.Session.create(it) }
     return try {
       val safeId = java.net.URLEncoder.encode(id, "UTF-8")
@@ -120,14 +121,13 @@ object MirrorBufferApi {
       if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
       session?.let { conn.setRequestProperty("X-LGM-Epk", it.epkB64) }
       val code = conn.responseCode
-      if (code !in 200..299) return DownloadResult(code, null, HttpClient.readBody(conn).take(500))
+      if (code !in 200..299) return BufferBytes(code, null, decrypted = false, HttpClient.readBody(conn).take(500))
       val bytes = conn.inputStream.use { it.readBytes() }
-      val plain = if (session != null) session.openRelay(bytes, HybridCrypto.RELAY_AAD_BUFFER) else bytes
-      val tmp = File.createTempFile("tmp-", ".bin").apply { writeBytes(plain); deleteOnExit() }
-      DownloadResult(code, tmp, "OK", decrypted = session != null)
+      if (session != null) BufferBytes(code, session.openRelay(bytes, HybridCrypto.RELAY_AAD_BUFFER), decrypted = true, "OK")
+      else BufferBytes(code, bytes, decrypted = false, "OK")
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t)
-      DownloadResult(0, null, "${e.type}: ${e.message}")
+      BufferBytes(0, null, decrypted = false, "${e.type}: ${e.message}")
     } finally {
       session?.wipe()
     }

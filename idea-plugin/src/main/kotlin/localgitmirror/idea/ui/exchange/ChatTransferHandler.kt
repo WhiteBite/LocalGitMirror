@@ -103,14 +103,12 @@ private fun LocalGitMirrorPanel.fetchExportData(item: ExchangeItem): Any? {
   val pwd = SecretsStore.syncPassword
   if (!bufferExportAllowed(s.baseUrl, pwd, MirrorCrypto.isV3Pinned())) return null
   if (item.kind == ExchangeItem.Kind.BUFFER) {
-    val res = MirrorBufferApi.bufferGet(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, item.effectiveId)
-    if (res.code !in 200..299 || res.file == null) return null
+    val res = MirrorBufferApi.bufferGetBytes(s.baseUrl, SecretsStore.mirrorApiKey, s.mirrorInsecureTls, item.effectiveId)
+    if (res.code !in 200..299 || res.bytes == null) return null
     return try {
-      String(bufferExportBytes(res.file.readBytes(), pwd, res.decrypted), Charsets.UTF_8)
+      String(bufferExportBytes(res.bytes, pwd, res.decrypted), Charsets.UTF_8)
     } catch (_: Throwable) {
       null
-    } finally {
-      runCatching { res.file.delete() }
     }
   }
   val enc = File.createTempFile("lgm-export-", ".bin")

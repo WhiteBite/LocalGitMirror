@@ -73,17 +73,13 @@ class BufferRoundTripTest {
       assertTrue(put.code in 200..299, "put failed: ${put.code} ${put.message}")
       val id = assertNotNull(put.id)
 
-      val get = MirrorBufferApi.bufferGet(base, "", false, id)
+      val get = MirrorBufferApi.bufferGetBytes(base, "", false, id)
       assertEquals(200, get.code)
-      val file = assertNotNull(get.file)
-      try {
-        val roundTripped = String(BundleCrypto.decryptDumpBytes(file.readBytes(), "pw"), Charsets.UTF_8)
-        assertEquals(text, roundTripped)
-        assertEquals(text.length, roundTripped.length)
-        assertEquals(text.lines(), roundTripped.lines())
-      } finally {
-        file.delete()
-      }
+      val container = assertNotNull(get.bytes)
+      val roundTripped = String(BundleCrypto.decryptDumpBytes(container, "pw"), Charsets.UTF_8)
+      assertEquals(text, roundTripped)
+      assertEquals(text.length, roundTripped.length)
+      assertEquals(text.lines(), roundTripped.lines())
 
       val meta = ExchangeMeta.parseHint(ExchangeCrypto.decryptHint(hintEnc, "pw"))
       assertEquals(ExchangeMeta.SIDE_PLUGIN, meta.side)
