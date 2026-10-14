@@ -12,8 +12,10 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lgm_core.client import LgmError
+from lgm_core.config import Config
 from lgm_core.crypto import encrypt_bundle
 from lgm_core.ops import Ctx, get_op, op_apply, op_branches, op_respond
+from lgm_core.ops_deps import deps_automation_enabled
 from lgm_core.render import render
 
 PWD = "test-sync-password"
@@ -211,7 +213,8 @@ def test_apply_defaults_to_first_item(monkeypatch, tmp_path):
     monkeypatch.setattr("lgm_core.ops_deps.maven_local_root", lambda: tmp_path)
     monkeypatch.setattr("lgm_core.ops_deps._ensure_mavenlocal_init_script",
                         lambda: None)
-    ctx = Ctx(config=SimpleNamespace(sync_password=PWD),
+    ctx = Ctx(config=SimpleNamespace(sync_password=PWD, deps_automation="auto",
+                                     machine_role="home"),
               client=_QueueClient(_ITEMS, zip_bytes=_zip_bytes()))
     res = op_apply(ctx, {"repo": "r", "dry_run": True})
     assert res["response_id"] == _ITEMS[0]["id"]
@@ -223,7 +226,8 @@ def test_apply_selects_non_first_item_by_id_prefix(monkeypatch, tmp_path):
     monkeypatch.setattr("lgm_core.ops_deps.maven_local_root", lambda: tmp_path)
     monkeypatch.setattr("lgm_core.ops_deps._ensure_mavenlocal_init_script",
                         lambda: None)
-    ctx = Ctx(config=SimpleNamespace(sync_password=PWD),
+    ctx = Ctx(config=SimpleNamespace(sync_password=PWD, deps_automation="auto",
+                                     machine_role="home"),
               client=_QueueClient(_ITEMS, zip_bytes=_zip_bytes()))
     res = op_apply(ctx, {"repo": "r", "id": "cccc3333", "dry_run": True})
     assert res["response_id"] == _ITEMS[2]["id"]
@@ -236,7 +240,8 @@ def test_apply_unknown_id_raises(monkeypatch, tmp_path):
     monkeypatch.setattr("lgm_core.ops_deps.maven_local_root", lambda: tmp_path)
     monkeypatch.setattr("lgm_core.ops_deps._ensure_mavenlocal_init_script",
                         lambda: None)
-    ctx = Ctx(config=SimpleNamespace(sync_password=PWD),
+    ctx = Ctx(config=SimpleNamespace(sync_password=PWD, deps_automation="auto",
+                                     machine_role="home"),
               client=_QueueClient(_ITEMS, zip_bytes=_zip_bytes()))
     with pytest.raises(LgmError) as ei:
         op_apply(ctx, {"repo": "r", "id": "dddd", "dry_run": True})
@@ -263,6 +268,123 @@ def test_new_params_are_optional():
         params = {p.name: p for p in get_op(op_name).params}
         assert params[param_name].required is False
         assert params[param_name].default == ""
+
+
+# ── deps automation gate (init-script install / global yarn mirror) ─────────
+
+def _gate_ctx(monkeypatch, tmp_path, role, mode, calls):
+    monkeypatch.setattr("lgm_core.ops_deps.maven_local_root", lambda: tmp_path)
+    monkeypatch.setattr("lgm_core.ops_deps._ensure_mavenlocal_init_script",
+                        lambda: calls.append("init-script"))
+    config = SimpleNamespace(sync_password=PWD, deps_automation=mode,
+                             machine_role=role)
+    return Ctx(config=config, client=_QueueClient(_ITEMS, zip_bytes=_zip_bytes()))
+
+
+def test_apply_work_role_auto_skips_init_script(monkeypatch, tmp_path):
+    calls = []
+    ctx = _gate_ctx(monkeypatch, tmp_path, "work", "auto", calls)
+    op_apply(ctx, {"repo": "r", "dry_run": True})
+    assert calls == []
+
+
+def test_apply_home_role_auto_installs_init_script(monkeypatch, tmp_path):
+    calls = []
+    ctx = _gate_ctx(monkeypatch, tmp_path, "home", "auto", calls)
+    op_apply(ctx, {"repo": "r", "dry_run": True})
+    assert calls == ["init-script"]
+
+
+def test_apply_mode_on_overrides_work_role(monkeypatch, tmp_path):
+    calls = []
+    ctx = _gate_ctx(monkeypatch, tmp_path, "work", "on", calls)
+    op_apply(ctx, {"repo": "r", "dry_run": True})
+    assert calls == ["init-script"]
+
+
+def test_apply_mode_off_skips_on_home(monkeypatch, tmp_path):
+    calls = []
+    ctx = _gate_ctx(monkeypatch, tmp_path, "home", "off", calls)
+    op_apply(ctx, {"repo": "r", "dry_run": True})
+    assert calls == []
+
+
+def test_apply_unknown_mode_fails_safe(monkeypatch, tmp_path):
+    calls = []
+    ctx = _gate_ctx(monkeypatch, tmp_path, "home", "bogus", calls)
+    op_apply(ctx, {"repo": "r", "dry_run": True})
+    assert calls == []
+
+
+class _AckQueueClient(_QueueClient):
+    def deps_ack(self, repo, item_id):
+        return {"acked": item_id}
+
+
+def _yarn_gate_ctx(monkeypatch, tmp_path, role, mode, calls):
+    monkeypatch.setattr("lgm_core.ops_deps.maven_local_root",
+                        lambda: tmp_path / "m2")
+    monkeypatch.setattr("lgm_core.ops_deps._ensure_mavenlocal_init_script",
+                        lambda: None)
+    monkeypatch.setattr("lgm_core.ops_deps.npm_offline_mirror",
+                        lambda: tmp_path / "npm-mirror")
+    monkeypatch.setattr("lgm_core.ops_deps._yarn_offline_mirror",
+                        lambda: tmp_path / "yarn-mirror")
+    monkeypatch.setattr("lgm_core.ops_deps._build_yarn_mirror",
+                        lambda src, dst: 0)
+    monkeypatch.setattr("lgm_core.ops_deps._set_global_yarn_mirror",
+                        lambda mirror: calls.append(str(mirror)))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "yarn.lock").write_text("# lock\n")
+    config = SimpleNamespace(sync_password=PWD, deps_automation=mode,
+                             machine_role=role)
+    ctx = Ctx(config=config,
+              client=_AckQueueClient(_ITEMS, zip_bytes=_zip_bytes()))
+    return ctx, proj
+
+
+def test_apply_work_role_auto_skips_yarn_global_mirror(monkeypatch, tmp_path):
+    calls = []
+    ctx, proj = _yarn_gate_ctx(monkeypatch, tmp_path, "work", "auto", calls)
+    res = op_apply(ctx, {"repo": "r", "project": str(proj), "yarn": True})
+    assert calls == []
+    assert res["yarn"]["count"] == 0
+
+
+def test_apply_home_role_auto_writes_yarn_global_mirror(monkeypatch, tmp_path):
+    calls = []
+    ctx, proj = _yarn_gate_ctx(monkeypatch, tmp_path, "home", "auto", calls)
+    res = op_apply(ctx, {"repo": "r", "project": str(proj), "yarn": True})
+    assert calls == [str(tmp_path / "yarn-mirror")]
+    assert res["yarn"]["count"] == 0
+
+
+def test_deps_automation_enabled_truth_table():
+    assert deps_automation_enabled("auto", "home") is True
+    assert deps_automation_enabled("auto", "work") is False
+    assert deps_automation_enabled("on", "home") is True
+    assert deps_automation_enabled("on", "work") is True
+    assert deps_automation_enabled("off", "home") is False
+    assert deps_automation_enabled("off", "work") is False
+    assert deps_automation_enabled("bogus", "home") is False
+    assert deps_automation_enabled("", "home") is False
+
+
+def test_config_from_env_reads_deps_automation_and_role(monkeypatch, tmp_path):
+    monkeypatch.setenv("LGM_DEPS_AUTOMATION", " OFF ")
+    monkeypatch.setenv("LGM_MACHINE_ROLE", "Work")
+    config = Config.from_env(env_path=tmp_path / "missing.env")
+    assert config.deps_automation == "off"
+    assert config.machine_role == "work"
+
+
+def test_config_from_env_deps_automation_defaults(monkeypatch, tmp_path):
+    monkeypatch.delenv("LGM_DEPS_AUTOMATION", raising=False)
+    monkeypatch.delenv("LGM_MACHINE_ROLE", raising=False)
+    config = Config.from_env(env_path=tmp_path / "missing.env")
+    assert config.deps_automation == "auto"
+    assert config.machine_role == "home"
 
 
 if __name__ == "__main__":

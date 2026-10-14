@@ -77,6 +77,8 @@ class Config:
     insecure_tls: bool = False
     pin_sha256: str = ""
     pin_file: str = ""
+    deps_automation: str = "auto"
+    machine_role: str = "home"
     # Extra env values needed by gradle/npm scanning (GRADLE_USER_HOME, etc.)
     env: dict = field(default_factory=dict, repr=False)
 
@@ -91,6 +93,8 @@ class Config:
         insecure_tls: bool | None = None,
         pin_sha256: str = "",
         pin_file: str = "",
+        deps_automation: str = "",
+        machine_role: str = "",
         env_path: Path | None = None,
     ) -> "Config":
         """Build a Config from .env → process env → explicit overrides.
@@ -121,6 +125,12 @@ class Config:
             insecure_tls=insecure_tls,
             pin_sha256=_resolve("LGM_TLS_PIN_SHA256", pin_sha256),
             pin_file=_resolve("LGM_TLS_PIN_FILE", pin_file),
+            deps_automation=(
+                _resolve("LGM_DEPS_AUTOMATION", deps_automation) or "auto"
+            ).strip().lower(),
+            machine_role=(
+                _resolve("LGM_MACHINE_ROLE", machine_role) or "home"
+            ).strip().lower(),
             env=local_env,
         )
 

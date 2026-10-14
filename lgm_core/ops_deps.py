@@ -31,6 +31,22 @@ from _lgm_npm import (  # type: ignore
 
 # ── Existing commands (converted to return dicts) ───────────────────────────
 
+def deps_automation_enabled(mode: str, role: str) -> bool:
+    """Tri-state deps-automation gate: on -> always, auto -> home only, else off."""
+    if mode == "on":
+        return True
+    if mode == "auto":
+        return role == "home"
+    return False
+
+
+def _deps_automation_on(ctx: Ctx) -> bool:
+    return deps_automation_enabled(
+        getattr(ctx.config, "deps_automation", "auto"),
+        getattr(ctx.config, "machine_role", "home"),
+    )
+
+
 def op_scan(ctx: Ctx, args: dict) -> dict:
     """Show what's in the local gradle cache."""
     gradle_home = args.get("gradle_home", "")
@@ -257,7 +273,8 @@ def op_apply(ctx: Ctx, args: dict) -> dict:
 
     target = maven_local_root()
     target.mkdir(parents=True, exist_ok=True)
-    _ensure_mavenlocal_init_script()
+    if _deps_automation_on(ctx):
+        _ensure_mavenlocal_init_script()
 
     if dry_run:
         with zipfile.ZipFile(io.BytesIO(plaintext)) as zf:
@@ -368,7 +385,8 @@ def op_apply(ctx: Ctx, args: dict) -> dict:
         if proj and (proj / "yarn.lock").is_file():
             ymir = _yarn_offline_mirror()
             cnt = _build_yarn_mirror(npm_offline_mirror(), ymir)
-            _set_global_yarn_mirror(ymir)
+            if _deps_automation_on(ctx):
+                _set_global_yarn_mirror(ymir)
             result["yarn"] = {"count": cnt, "mirror": str(ymir)}
             if yarn_install:
                 yarn_bin = os.environ.get("LGM_YARN", "yarn")
