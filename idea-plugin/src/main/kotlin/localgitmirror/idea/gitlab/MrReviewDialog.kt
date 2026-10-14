@@ -9,6 +9,7 @@ import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.testFramework.LightVirtualFile
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
@@ -545,25 +546,43 @@ class MrReviewDialog private constructor(
   }
 
   private fun openAnchor(file: String, line: Int?) {
+    // Anchors point at lines of the MR source branch; the working tree may be on another branch.
+    branchFileText(file)?.let { branchText ->
+      val vf = LightVirtualFile(file.substringAfterLast('/'), branchText).apply { isWritable = false }
+      FileEditorManager.getInstance(project).openFile(vf, true)
+      if (line != null) OpenFileDescriptor(project, vf, line - 1, 0).navigate(true)
+      return
+    }
     val base = project.basePath ?: return
     val vf = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(base, file)) ?: return
     FileEditorManager.getInstance(project).openFile(vf, true)
     if (line != null) OpenFileDescriptor(project, vf, line - 1, 0).navigate(true)
   }
 
+  private fun branchFileText(file: String): String? {
+    val branch = row.sourceBranch.takeIf { it.isNotBlank() } ?: return null
+    val base = project.basePath ?: return null
+    return runCatching {
+      val proc = ProcessBuilder("git", "-C", base, "show", "$branch:$file").start()
+      val text = proc.inputStream.readBytes().toString(Charsets.UTF_8)
+      if (proc.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) && proc.exitValue() == 0) text else null
+    }.getOrNull()
+  }
+
   private fun codeSnippet(d: GitLabApi.MrDiscussion): JComponent? {
     val file = d.anchorFile ?: return null
     val line = d.anchorLine ?: return null
-    val base = project.basePath ?: return null
-    val f = File(base, file)
-    if (!f.isFile) {
+    val lines = branchFileText(file)?.lines()
+      ?: project.basePath?.let { base ->
+        runCatching { File(base, file).takeIf { it.isFile }?.readLines(Charsets.UTF_8) }.getOrNull()
+      }
+    if (lines == null) {
       return JLabel(LocalGitMirrorBundle.message("mrview.codeMissing")).apply {
         font = JBUI.Fonts.smallFont()
         foreground = UIUtil.getContextHelpForeground()
         alignmentX = JLabel.LEFT_ALIGNMENT
       }
     }
-    val lines = runCatching { f.readLines(Charsets.UTF_8) }.getOrNull() ?: return null
     val start = (line - 2).coerceAtLeast(1)
     val end = (line + 2).coerceAtMost(lines.size)
     val sb = StringBuilder()

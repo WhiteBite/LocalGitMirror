@@ -36,7 +36,7 @@ internal fun LocalGitMirrorPanel.startExchangePolling() {
   if (isWork) return
   exchangePollAlarm.addRequest({
     if (project.isDisposed) return@addRequest
-    if (tabsPane?.selectedIndex == 1) {
+    if (tabsPane?.selectedIndex == 2) {
       refreshExchangeInBackground()
       startExchangePolling()
     }

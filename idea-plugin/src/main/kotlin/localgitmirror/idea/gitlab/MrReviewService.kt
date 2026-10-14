@@ -187,10 +187,25 @@ class MrReviewService(private val project: Project) {
       }
     }
     val itemErrors = mutableListOf<String>()
-    val rows = newestPerIid(noteItems).mapNotNull { (item, path) ->
+    val postboxRows = newestPerIid(noteItems).mapNotNull { (item, path) ->
       cachedRow(item, path, settings, repo, itemErrors)?.copy(notesSentAt = formatTs(item.mtime))
     }
+    val rows = postboxRows + localMrRows(baseDir, postboxRows.map { it.iid }.toSet())
     return CacheData(rows, status, pendingIids, localReplyIids(baseDir), errorIids, itemErrors.joinToString("; ").take(300).ifBlank { null })
+  }
+
+  // Postbox notes expire after 7 days; local .mr-notes copies keep the MR visible and reviewable.
+  private fun localMrRows(baseDir: String, skipIids: Set<Int>): List<MrRowItem> {
+    val files = File(baseDir, ".mr-notes")
+      .listFiles { f -> f.isFile && Regex("^mr-!\\d+\\.md$").matches(f.name) }
+      ?: return emptyList()
+    return files.mapNotNull { f ->
+      val iid = Regex("^mr-!(\\d+)\\.md$").find(f.name)?.groupValues?.getOrNull(1)?.toIntOrNull()
+        ?: return@mapNotNull null
+      if (iid in skipIids) return@mapNotNull null
+      val md = runCatching { f.readText(Charsets.UTF_8) }.getOrNull() ?: return@mapNotNull null
+      runCatching { parseMrMarkdown(iid, md).copy(notesSentAt = formatTs(f.lastModified() / 1000)) }.getOrNull()
+    }
   }
 
   private fun cachedPlain(item: MirrorPostboxApi.FileSyncItem, settings: MirrorSettingsService.State, repo: String): String? {

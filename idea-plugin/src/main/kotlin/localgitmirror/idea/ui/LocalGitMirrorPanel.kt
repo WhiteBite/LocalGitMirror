@@ -367,6 +367,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     val progressRow = progress.buildProgressRow()
 
     val tabs = JBTabbedPane()
+    tabs.addTab(LocalGitMirrorBundle.message("tab.review"), buildReviewTab())
     tabs.addTab(LocalGitMirrorBundle.message("tab.branches"), buildBranchesTab())
     tabs.addTab(LocalGitMirrorBundle.message("tab.exchange"), buildExchangeTab())
     tabs.addTab(LocalGitMirrorBundle.message("tab.deps"), buildDepsTab())
@@ -411,15 +412,16 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   private fun onTabChanged(index: Int) {
     if (project.isDisposed || ApplicationManager.getApplication().isDisposeInProgress) return
     when (index) {
-      0 -> project.getService(localgitmirror.idea.gitlab.MrReviewAutoService::class.java).triggerWorkCycle()
-      1 -> {
+      0 -> reloadReview()
+      1 -> project.getService(localgitmirror.idea.gitlab.MrReviewAutoService::class.java).triggerWorkCycle()
+      2 -> {
         refreshExchangeInBackground()
         startExchangePolling()
         ensureExchangePush()
       }
-      2 -> refreshDepsInBackground()
+      3 -> refreshDepsInBackground()
     }
-    if (index != 1) stopExchangePolling()
+    if (index != 2) stopExchangePolling()
   }
 
   override fun dispose() {

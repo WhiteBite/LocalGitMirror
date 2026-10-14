@@ -500,11 +500,11 @@ internal fun LocalGitMirrorPanel.refreshStatus() {
 
   val actionable = if (isWork) pending else responses
   tabsPane?.let { tabs ->
-    if (tabs.tabCount > 0) {
-      setTabTitle(0, LocalGitMirrorBundle.message("tab.branches.count", branchCount))
+    if (tabs.tabCount > 1) {
+      setTabTitle(1, LocalGitMirrorBundle.message("tab.branches.count", branchCount))
     }
-    if (tabs.tabCount > 2) {
-      setTabTitle(2, if (actionable > 0)
+    if (tabs.tabCount > 3) {
+      setTabTitle(3, if (actionable > 0)
         LocalGitMirrorBundle.message("tab.deps.count", actionable)
       else
         LocalGitMirrorBundle.message("tab.deps"))

@@ -234,7 +234,11 @@ internal fun LocalGitMirrorPanel.reloadReview(notify: Boolean = true) {
 }
 
 internal fun LocalGitMirrorPanel.updateReviewTabTitle() {
-  // Review tab is not rendered (Phase 1): tab index 1 is Chat, so no title update here.
+  val attention = project.getService(MrReviewService::class.java).cachedRows().count { it.unresolved > 0 }
+  setTabTitle(0, if (attention > 0)
+    LocalGitMirrorBundle.message("tab.review.count", attention)
+  else
+    LocalGitMirrorBundle.message("tab.review"))
 }
 
 internal fun LocalGitMirrorPanel.saveAllUnresolved() {
