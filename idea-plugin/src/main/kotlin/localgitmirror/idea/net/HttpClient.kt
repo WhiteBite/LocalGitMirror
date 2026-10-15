@@ -79,7 +79,6 @@ object HttpClient {
     }
   }
 
-  // test seam; production reads the IntelliJ service
   internal var stateProvider: () -> MirrorSettingsService.State? = defaultStateProvider
 
   private fun loadTlsInput(callerInsecure: Boolean): TlsDecision.Input {

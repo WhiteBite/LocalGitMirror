@@ -114,7 +114,7 @@ internal object YarnMirror {
     val cap = 100
     val processed = mutableSetOf<String>()
 
-    // 1. Yarn offline mirror — direct stat by tarball name; the mirror is flat by construction.
+    // Yarn offline mirror — direct stat by tarball name; the mirror is flat by construction.
     val mirror = yarnOfflineMirror()
     if (mirror.isDirectory) {
       recoverFromMirrorDir(mirror, missing, presentIndex, out, processed, cap)
