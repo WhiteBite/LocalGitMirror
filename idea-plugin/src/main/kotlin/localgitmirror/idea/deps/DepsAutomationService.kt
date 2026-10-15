@@ -173,56 +173,51 @@ class DepsAutomationService(private val project: Project) : Disposable {
   }
 
   private fun processHomeResponse(id: String, s: MirrorSettingsService.State) {
-    val tmpResp = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
-    try {
-      val dl = MirrorDepsApi.depsDownload(
-        baseUrl = s.baseUrl,
-        apiKey = SecretsStore.mirrorApiKey,
-        repo = repoName,
-        insecureTls = s.mirrorInsecureTls,
-        id = id,
-        kind = MirrorDepsApi.DepsKind.RESPONSE,
-        outFile = tmpResp
-      )
-      if (dl.code !in 200..299 || dl.file == null) {
-        DepsDiagnostics.event("automation: response download failed")
-        return
-      }
+    val dl = MirrorDepsApi.depsDownloadBytes(
+      baseUrl = s.baseUrl,
+      apiKey = SecretsStore.mirrorApiKey,
+      repo = repoName,
+      insecureTls = s.mirrorInsecureTls,
+      id = id,
+      kind = MirrorDepsApi.DepsKind.RESPONSE
+    )
+    val responseBlob = dl.bytes
+    if (dl.code !in 200..299 || responseBlob == null) {
+      DepsDiagnostics.event("automation: response download failed")
+      return
+    }
 
-      if (s.autoApplyDeps) {
-        val result = DepsApplier.apply(project, s, syncPwd, tmpResp.readBytes(), null, dl.decrypted)
-        val history = service<OperationsHistoryService>()
-        if (result.success) {
-          // Ack the response on the server (one-shot: server deletes it).
-          runCatching {
-            MirrorDepsApi.depsAck(
-              baseUrl = s.baseUrl,
-              apiKey = SecretsStore.mirrorApiKey,
-              repo = repoName,
-              insecureTls = s.mirrorInsecureTls,
-              id = id
-            )
-          }
-          appliedIds.add(id)
-          notify(LocalGitMirrorBundle.message("auto.notify.applied", result.installed), NotificationType.INFORMATION)
-          DepsDiagnostics.event("automation: applied installed=${result.installed}")
-          history.add(LocalGitMirrorBundle.message("history.op.autoDepsApply"), true,
-            "installed=${result.installed} id=$id")
-        } else {
-          notify(LocalGitMirrorBundle.message("auto.notify.applyFailed", result.message), NotificationType.ERROR)
-          DepsDiagnostics.event("automation: apply failed")
-          history.add(LocalGitMirrorBundle.message("history.op.autoDepsApply"), false,
-            "err=${result.message.take(300)} id=$id")
+    if (s.autoApplyDeps) {
+      val result = DepsApplier.apply(project, s, syncPwd, responseBlob, null, dl.decrypted)
+      val history = service<OperationsHistoryService>()
+      if (result.success) {
+        // Ack the response on the server (one-shot: server deletes it).
+        runCatching {
+          MirrorDepsApi.depsAck(
+            baseUrl = s.baseUrl,
+            apiKey = SecretsStore.mirrorApiKey,
+            repo = repoName,
+            insecureTls = s.mirrorInsecureTls,
+            id = id
+          )
         }
+        appliedIds.add(id)
+        notify(LocalGitMirrorBundle.message("auto.notify.applied", result.installed), NotificationType.INFORMATION)
+        DepsDiagnostics.event("automation: applied installed=${result.installed}")
+        history.add(LocalGitMirrorBundle.message("history.op.autoDepsApply"), true,
+          "installed=${result.installed} id=$id")
       } else {
-        // Don't auto-apply: notify once per id
-        if (notifiedResponseIds.add(id)) {
-          notify(LocalGitMirrorBundle.message("auto.notify.responseReceived"), NotificationType.INFORMATION)
-          DepsDiagnostics.event("automation: response received (autoApply off)")
-        }
+        notify(LocalGitMirrorBundle.message("auto.notify.applyFailed", result.message), NotificationType.ERROR)
+        DepsDiagnostics.event("automation: apply failed")
+        history.add(LocalGitMirrorBundle.message("history.op.autoDepsApply"), false,
+          "err=${result.message.take(300)} id=$id")
       }
-    } finally {
-      runCatching { tmpResp.delete() }
+    } else {
+      // Don't auto-apply: notify once per id
+      if (notifiedResponseIds.add(id)) {
+        notify(LocalGitMirrorBundle.message("auto.notify.responseReceived"), NotificationType.INFORMATION)
+        DepsDiagnostics.event("automation: response received (autoApply off)")
+      }
     }
   }
 
@@ -352,47 +347,40 @@ class DepsAutomationService(private val project: Project) : Disposable {
   }
 
   private fun processWorkRequest(id: String, s: MirrorSettingsService.State) {
-    val tmpManifest = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
-    try {
-      val dl = MirrorDepsApi.depsDownload(
-        baseUrl = s.baseUrl,
-        apiKey = SecretsStore.mirrorApiKey,
-        repo = repoName,
-        insecureTls = s.mirrorInsecureTls,
-        id = id,
-        kind = MirrorDepsApi.DepsKind.MANIFEST,
-        outFile = tmpManifest
-      )
-      if (dl.code !in 200..299 || dl.file == null) {
-        DepsDiagnostics.event("automation: manifest download failed")
-        return
-      }
+    val dl = MirrorDepsApi.depsDownloadBytes(
+      baseUrl = s.baseUrl,
+      apiKey = SecretsStore.mirrorApiKey,
+      repo = repoName,
+      insecureTls = s.mirrorInsecureTls,
+      id = id,
+      kind = MirrorDepsApi.DepsKind.MANIFEST
+    )
+    val manifestBlob = dl.bytes
+    if (dl.code !in 200..299 || manifestBlob == null) {
+      DepsDiagnostics.event("automation: manifest download failed")
+      return
+    }
 
-      val manifestBlob = tmpManifest.readBytes()
-      val result = DepsResponder.respond(project, s, syncPwd, repoName, id, manifestBlob, null, dl.decrypted)
-      val history = service<OperationsHistoryService>()
+    val result = DepsResponder.respond(project, s, syncPwd, repoName, id, manifestBlob, null, dl.decrypted)
+    val history = service<OperationsHistoryService>()
 
-      if (result.success) {
-        notify(LocalGitMirrorBundle.message("auto.notify.sent", result.sentCount), NotificationType.INFORMATION)
-        DepsDiagnostics.event("automation: responded shipped=${result.sentCount} bytes=${result.bytes}")
-        history.add(LocalGitMirrorBundle.message("history.op.autoDepsRespond"), true,
-          "sent=${result.sentCount} id=$id")
+    if (result.success) {
+      notify(LocalGitMirrorBundle.message("auto.notify.sent", result.sentCount), NotificationType.INFORMATION)
+      DepsDiagnostics.event("automation: responded shipped=${result.sentCount} bytes=${result.bytes}")
+      history.add(LocalGitMirrorBundle.message("history.op.autoDepsRespond"), true,
+        "sent=${result.sentCount} id=$id")
+    } else {
+      // "0 found" is expected on WORK when the cache lacks artifacts: log only, no balloon
+      if (result.sentCount == 0 && result.notFoundCount > 0) {
+        DepsDiagnostics.event("automation: respond 0 found (notFound=${result.notFoundCount})")
+        history.add(LocalGitMirrorBundle.message("history.op.autoDepsRespond"), false,
+          "sent=0 notFound=${result.notFoundCount} id=$id")
       } else {
-        // Don't spam error balloons for "0 found" — that's expected on WORK
-        // when the cache doesn't have the requested artifacts. Log only.
-        if (result.sentCount == 0 && result.notFoundCount > 0) {
-          DepsDiagnostics.event("automation: respond 0 found (notFound=${result.notFoundCount})")
-          history.add(LocalGitMirrorBundle.message("history.op.autoDepsRespond"), false,
-            "sent=0 notFound=${result.notFoundCount} id=$id")
-        } else {
-          notify(LocalGitMirrorBundle.message("auto.notify.respondFailed", result.message), NotificationType.ERROR)
-          DepsDiagnostics.event("automation: respond failed")
-          history.add(LocalGitMirrorBundle.message("history.op.autoDepsRespond"), false,
-            "err=${result.message.take(300)} id=$id")
-        }
+        notify(LocalGitMirrorBundle.message("auto.notify.respondFailed", result.message), NotificationType.ERROR)
+        DepsDiagnostics.event("automation: respond failed")
+        history.add(LocalGitMirrorBundle.message("history.op.autoDepsRespond"), false,
+          "err=${result.message.take(300)} id=$id")
       }
-    } finally {
-      runCatching { tmpManifest.delete() }
     }
   }
 

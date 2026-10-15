@@ -130,6 +130,68 @@ object MirrorDepsApi {
 
   enum class DepsKind { MANIFEST, RESPONSE }
 
+  data class DepsBytes(val code: Int, val bytes: ByteArray?, val decrypted: Boolean, val message: String)
+
+  private class BodyTooLarge(val maxBytes: Long) : RuntimeException()
+
+  /** In-RAM variant of [depsDownload] with a running size cap; oversize bodies abort the stream and fail with TOO_LARGE. */
+  fun depsDownloadBytes(
+    baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,
+    id: String, kind: DepsKind,
+    maxBytes: Long = 64L * 1024 * 1024,
+    onProgress: ((read: Long, total: Long) -> Unit)? = null
+  ): DepsBytes {
+    val pathBase = if (kind == DepsKind.MANIFEST) "/api/documents/queue-item" else "/api/documents/ready-item"
+    val aad = if (kind == DepsKind.MANIFEST) HybridCrypto.RELAY_AAD_DEPS_REQ else HybridCrypto.RELAY_AAD_DEPS_RESP
+    val session = MirrorCrypto.pinnedServerPub()?.let { HybridCrypto.Session.create(it) }
+    return try {
+      val r = MirrorTransport.rid(repo)
+      val url = URL(
+        "${baseUrl.trimEnd('/')}$pathBase?rid=${java.net.URLEncoder.encode(r, "UTF-8")}" +
+          "&id=${java.net.URLEncoder.encode(id, "UTF-8")}"
+      )
+      val conn = HttpClient.open(url, insecureTls)
+      conn.requestMethod = "GET"
+      conn.connectTimeout = 60_000
+      conn.readTimeout = 600_000
+      if (apiKey.isNotBlank()) conn.setRequestProperty("Authorization", "Bearer $apiKey")
+      session?.let { conn.setRequestProperty("X-LGM-Epk", it.epkB64) }
+      val code = conn.responseCode
+      if (code !in 200..299) {
+        return DepsBytes(code, null, false, HttpClient.readBody(conn).take(500))
+      }
+      val total = conn.contentLengthLong
+      val bytes = conn.inputStream.use { input ->
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(64 * 1024)
+        var read = 0L
+        var lastReport = 0L
+        while (true) {
+          val n = input.read(buf)
+          if (n < 0) break
+          read += n
+          if (read > maxBytes) throw BodyTooLarge(maxBytes)
+          out.write(buf, 0, n)
+          if (onProgress != null && read - lastReport >= 200 * 1024) {
+            onProgress(read, total)
+            lastReport = read
+          }
+        }
+        onProgress?.invoke(read, total)
+        out.toByteArray()
+      }
+      if (session != null) DepsBytes(code, session.openRelay(bytes, aad), true, "OK")
+      else DepsBytes(code, bytes, false, "OK")
+    } catch (e: BodyTooLarge) {
+      DepsBytes(0, null, false, "TOO_LARGE: body exceeds maxBytes=${e.maxBytes}; use depsDownload (file variant)")
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t)
+      DepsBytes(0, null, false, "${e.type}: ${e.message}")
+    } finally {
+      session?.wipe()
+    }
+  }
+
   /** Work side: upload encrypted archive in response to a pending manifest. */
   fun depsRespond(
     baseUrl: String, apiKey: String, repo: String, insecureTls: Boolean,

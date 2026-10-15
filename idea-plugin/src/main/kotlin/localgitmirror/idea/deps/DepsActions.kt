@@ -160,72 +160,63 @@ class RespondDepsAction : AnAction() {
 
         val req = pending.items.first()
         indicator.text = LocalGitMirrorBundle.message("deps.progress.downloadRequest", req.id.take(8))
-        val tmpManifest = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
-        try {
-          val dl = MirrorDepsApi.depsDownload(
-            baseUrl = settings.baseUrl,
-            apiKey = SecretsStore.mirrorApiKey,
-            repo = repo,
-            insecureTls = settings.mirrorInsecureTls,
-            id = req.id,
-            kind = MirrorDepsApi.DepsKind.MANIFEST,
-            outFile = tmpManifest
-          )
-          if (dl.code !in 200..299 || dl.file == null) {
-            notify(project, LocalGitMirrorBundle.message("deps.notify.requestDownloadFailed", dl.message), NotificationType.ERROR)
-            return
-          }
+        val dl = MirrorDepsApi.depsDownloadBytes(
+          baseUrl = settings.baseUrl,
+          apiKey = SecretsStore.mirrorApiKey,
+          repo = repo,
+          insecureTls = settings.mirrorInsecureTls,
+          id = req.id,
+          kind = MirrorDepsApi.DepsKind.MANIFEST
+        )
+        val manifestBlob = dl.bytes
+        if (dl.code !in 200..299 || manifestBlob == null) {
+          notify(project, LocalGitMirrorBundle.message("deps.notify.requestDownloadFailed", dl.message), NotificationType.ERROR)
+          return
+        }
 
-          val manifestBlob = tmpManifest.readBytes()
+        val result = DepsResponder.respond(project, settings, syncPwd, repo, req.id, manifestBlob, indicator, dl.decrypted)
 
-          val result = DepsResponder.respond(project, settings, syncPwd, repo, req.id, manifestBlob, indicator, dl.decrypted)
+        if (result.success) {
+          notify(project, result.message, NotificationType.INFORMATION)
+          history.add("Deps respond", true,
+            "request=${req.id} shipped=${result.sentCount} notFound=${result.notFoundCount} size=${humanBytes(result.bytes)}")
+        } else {
+          // The "0 found" case: detailed history logging is deliberately the caller's job (UI concern)
+          if (result.sentCount == 0 && result.notFoundCount > 0) {
+            val scanned = DepsScanner.candidateCacheRoots()
+            val gradleEnv = System.getenv("GRADLE_USER_HOME") ?: "(не задана)"
+            val workProjectDir = project.basePath?.let { File(it) }
+            val gradleReported = workProjectDir?.let {
+              try { GradleResolver.discoverGradleUserHome(it) } catch (_: Throwable) { null }
+            } ?: "(не определён)"
 
-          if (result.success) {
-            notify(project, result.message, NotificationType.INFORMATION)
-            history.add("Deps respond", true,
-              "request=${req.id} shipped=${result.sentCount} notFound=${result.notFoundCount} size=${humanBytes(result.bytes)}")
-          } else {
-            // The "0 found" case: do the detailed history logging that the core
-            // deliberately leaves to the caller (UI concern).
-            if (result.sentCount == 0 && result.notFoundCount > 0) {
-              val scanned = DepsScanner.candidateCacheRoots()
-              val gradleEnv = System.getenv("GRADLE_USER_HOME") ?: "(не задана)"
-              val workProjectDir = project.basePath?.let { File(it) }
-              val gradleReported = workProjectDir?.let {
-                try { GradleResolver.discoverGradleUserHome(it) } catch (_: Throwable) { null }
-              } ?: "(не определён)"
-
-              history.add("Deps respond", false,
-                LocalGitMirrorBundle.message("deps.history.zeroFound", result.notFoundCount, gradleEnv, gradleReported))
-              history.add("Deps: кеши", false,
-                LocalGitMirrorBundle.message("deps.history.scanned", scanned.size))
-              scanned.forEach { root ->
-                val exists = root.isDirectory
-                val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
-                val mark = if (exists) LocalGitMirrorBundle.message("deps.history.cacheOk", groups)
-                           else LocalGitMirrorBundle.message("deps.history.cacheMissing")
-                history.add("Deps: кеш-путь", exists, "$mark — ${root.absolutePath}")
-              }
-
-              // Re-scan for the notification message (same as original code)
-              val scanReport = scanned.joinToString("\n") { root ->
-                val exists = root.isDirectory
-                val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
-                "  • ${root.absolutePath} — " +
-                  (if (exists) LocalGitMirrorBundle.message("deps.history.cacheReportOk", groups)
-                   else LocalGitMirrorBundle.message("deps.history.cacheReportMissing"))
-              }
-              val msg = LocalGitMirrorBundle.message(
-                "deps.notify.zeroFound",
-                result.notFoundCount, scanReport, gradleEnv)
-              notify(project, msg, NotificationType.WARNING)
-            } else {
-              notify(project, result.message, NotificationType.ERROR)
-              history.add("Deps respond", false, result.message)
+            history.add("Deps respond", false,
+              LocalGitMirrorBundle.message("deps.history.zeroFound", result.notFoundCount, gradleEnv, gradleReported))
+            history.add("Deps: кеши", false,
+              LocalGitMirrorBundle.message("deps.history.scanned", scanned.size))
+            scanned.forEach { root ->
+              val exists = root.isDirectory
+              val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
+              val mark = if (exists) LocalGitMirrorBundle.message("deps.history.cacheOk", groups)
+                         else LocalGitMirrorBundle.message("deps.history.cacheMissing")
+              history.add("Deps: кеш-путь", exists, "$mark — ${root.absolutePath}")
             }
+
+            val scanReport = scanned.joinToString("\n") { root ->
+              val exists = root.isDirectory
+              val groups = if (exists) (root.listFiles { f -> f.isDirectory }?.size ?: 0) else 0
+              "  • ${root.absolutePath} — " +
+                (if (exists) LocalGitMirrorBundle.message("deps.history.cacheReportOk", groups)
+                 else LocalGitMirrorBundle.message("deps.history.cacheReportMissing"))
+            }
+            val msg = LocalGitMirrorBundle.message(
+              "deps.notify.zeroFound",
+              result.notFoundCount, scanReport, gradleEnv)
+            notify(project, msg, NotificationType.WARNING)
+          } else {
+            notify(project, result.message, NotificationType.ERROR)
+            history.add("Deps respond", false, result.message)
           }
-        } finally {
-          runCatching { tmpManifest.delete() }
         }
       }
     })
@@ -300,110 +291,102 @@ class ApplyDepsAction : AnAction() {
         }
         if (confirmed != Messages.YES) return
 
-        val tmpResp = File.createTempFile("tmp-", ".bin").apply { deleteOnExit() }
-        try {
-          indicator.text = LocalGitMirrorBundle.message("deps.progress.downloading", humanBytes(resp.size))
-          indicator.isIndeterminate = false
-          val dl = MirrorDepsApi.depsDownload(
-            baseUrl = settings.baseUrl,
-            apiKey = SecretsStore.mirrorApiKey,
-            repo = repo,
-            insecureTls = settings.mirrorInsecureTls,
-            id = resp.id,
-            kind = MirrorDepsApi.DepsKind.RESPONSE,
-            outFile = tmpResp,
-            onProgress = { read, total ->
-              if (total > 0) {
-                indicator.fraction = (read.toDouble() / total).coerceIn(0.0, 0.99)
-                indicator.text = LocalGitMirrorBundle.message("deps.progress.downloadProgress", humanBytes(read), humanBytes(total))
-              }
-            }
-          )
-          if (dl.code !in 200..299 || dl.file == null) {
-            notify(project, LocalGitMirrorBundle.message("deps.notify.responseDownloadFailed", dl.message), NotificationType.ERROR)
-            return
-          }
-
-          val responseBlob = tmpResp.readBytes()
-
-          val result = DepsApplier.apply(project, settings, syncPwd, responseBlob, indicator, dl.decrypted)
-
-          if (!result.success) {
-            notify(project, result.message, NotificationType.ERROR)
-            history.add("Deps apply", false, "decrypt/unpack failed: ${result.message}")
-            return
-          }
-
-          // a failed ack leaves the item on the server but must not mask the successful local apply
-          val ack = MirrorDepsApi.depsAck(
-            baseUrl = settings.baseUrl,
-            apiKey = SecretsStore.mirrorApiKey,
-            repo = repo,
-            insecureTls = settings.mirrorInsecureTls,
-            id = resp.id
-          )
-          if (ack.code !in 200..299) {
-            history.add("Deps apply", true,
-              "ack failed (HTTP ${ack.code}): response ${resp.id} left on server")
-            notify(project, LocalGitMirrorBundle.message("deps.notify.ackFailed", ack.code), NotificationType.WARNING)
-          }
-
-          // Offer to run npm/yarn install if the core suggests it (action only;
-          // the automation service skips this dialog).
-          var finalMsg = result.message
-          if (result.suggestYarnInstall) {
-            val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
-              Messages.showYesNoDialog(
-                project,
-                LocalGitMirrorBundle.message("deps.dialog.yarnMessage", result.lockMsg),
-                LocalGitMirrorBundle.message("deps.dialog.yarnTitle"),
-                LocalGitMirrorBundle.message("deps.dialog.run"), LocalGitMirrorBundle.message("deps.dialog.later"), null
-              )
-            }
-            if (runIt == Messages.YES) {
-              indicator.text = LocalGitMirrorBundle.message("deps.progress.yarnInstall")
-              val code = runCatching {
-                val isWin = System.getProperty("os.name").lowercase().contains("win")
-                val cmd = (if (isWin) listOf("cmd", "/c", "yarn") else listOf("yarn")) +
-                  listOf("install", "--offline", "--pure-lockfile", "--non-interactive")
-                runPackageManager(cmd, project.basePath?.let { File(it) }, indicator)
-              }.getOrElse { -1 }
-              finalMsg += if (code == 0) " " + LocalGitMirrorBundle.message("deps.yarnInstall.ok")
-                          else " " + LocalGitMirrorBundle.message("deps.yarnInstall.code", code)
-            } else {
-              finalMsg += " " + LocalGitMirrorBundle.message("deps.yarnInstall.hint")
-            }
-          } else if (result.suggestNpmInstall) {
-            val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
-              Messages.showYesNoDialog(
-                project,
-                LocalGitMirrorBundle.message("deps.dialog.npmMessage", result.lockMsg),
-                LocalGitMirrorBundle.message("deps.dialog.npmTitle"),
-                LocalGitMirrorBundle.message("deps.dialog.run"), LocalGitMirrorBundle.message("deps.dialog.later"), null
-              )
-            }
-            if (runIt == Messages.YES) {
-              indicator.text = LocalGitMirrorBundle.message("deps.progress.npmInstall")
-              val code = runCatching {
-                val isWin = System.getProperty("os.name").lowercase().contains("win")
-                val cmd = (if (isWin) listOf("cmd", "/c", "npm") else listOf("npm")) +
-                  listOf("install", "--prefer-offline", "--registry",
-                         "https://registry.npmjs.org", "--no-audit", "--no-fund")
-                runPackageManager(cmd, project.basePath?.let { File(it) }, indicator)
-              }.getOrElse { -1 }
-              finalMsg += if (code == 0) " " + LocalGitMirrorBundle.message("deps.npmInstall.ok")
-                          else " " + LocalGitMirrorBundle.message("deps.npmInstall.code", code)
-            } else {
-              finalMsg += " " + LocalGitMirrorBundle.message("deps.npmInstall.hint")
+        indicator.text = LocalGitMirrorBundle.message("deps.progress.downloading", humanBytes(resp.size))
+        indicator.isIndeterminate = false
+        val dl = MirrorDepsApi.depsDownloadBytes(
+          baseUrl = settings.baseUrl,
+          apiKey = SecretsStore.mirrorApiKey,
+          repo = repo,
+          insecureTls = settings.mirrorInsecureTls,
+          id = resp.id,
+          kind = MirrorDepsApi.DepsKind.RESPONSE,
+          onProgress = { read, total ->
+            if (total > 0) {
+              indicator.fraction = (read.toDouble() / total).coerceIn(0.0, 0.99)
+              indicator.text = LocalGitMirrorBundle.message("deps.progress.downloadProgress", humanBytes(read), humanBytes(total))
             }
           }
-
-          notify(project, finalMsg, NotificationType.INFORMATION)
-          history.add("Deps apply", true,
-            "installed=${result.installed} skipped=${result.skipped} invalid=${result.invalid} size=${humanBytes(result.bytes)}")
-        } finally {
-          runCatching { tmpResp.delete() }
+        )
+        val responseBlob = dl.bytes
+        if (dl.code !in 200..299 || responseBlob == null) {
+          notify(project, LocalGitMirrorBundle.message("deps.notify.responseDownloadFailed", dl.message), NotificationType.ERROR)
+          return
         }
+
+        val result = DepsApplier.apply(project, settings, syncPwd, responseBlob, indicator, dl.decrypted)
+
+        if (!result.success) {
+          notify(project, result.message, NotificationType.ERROR)
+          history.add("Deps apply", false, "decrypt/unpack failed: ${result.message}")
+          return
+        }
+
+        // a failed ack leaves the item on the server but must not mask the successful local apply
+        val ack = MirrorDepsApi.depsAck(
+          baseUrl = settings.baseUrl,
+          apiKey = SecretsStore.mirrorApiKey,
+          repo = repo,
+          insecureTls = settings.mirrorInsecureTls,
+          id = resp.id
+        )
+        if (ack.code !in 200..299) {
+          history.add("Deps apply", true,
+            "ack failed (HTTP ${ack.code}): response ${resp.id} left on server")
+          notify(project, LocalGitMirrorBundle.message("deps.notify.ackFailed", ack.code), NotificationType.WARNING)
+        }
+
+        // Offer npm/yarn install when the core suggests it; the automation service skips this dialog
+        var finalMsg = result.message
+        if (result.suggestYarnInstall) {
+          val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
+            Messages.showYesNoDialog(
+              project,
+              LocalGitMirrorBundle.message("deps.dialog.yarnMessage", result.lockMsg),
+              LocalGitMirrorBundle.message("deps.dialog.yarnTitle"),
+              LocalGitMirrorBundle.message("deps.dialog.run"), LocalGitMirrorBundle.message("deps.dialog.later"), null
+            )
+          }
+          if (runIt == Messages.YES) {
+            indicator.text = LocalGitMirrorBundle.message("deps.progress.yarnInstall")
+            val code = runCatching {
+              val isWin = System.getProperty("os.name").lowercase().contains("win")
+              val cmd = (if (isWin) listOf("cmd", "/c", "yarn") else listOf("yarn")) +
+                listOf("install", "--offline", "--pure-lockfile", "--non-interactive")
+              runPackageManager(cmd, project.basePath?.let { File(it) }, indicator)
+            }.getOrElse { -1 }
+            finalMsg += if (code == 0) " " + LocalGitMirrorBundle.message("deps.yarnInstall.ok")
+                        else " " + LocalGitMirrorBundle.message("deps.yarnInstall.code", code)
+          } else {
+            finalMsg += " " + LocalGitMirrorBundle.message("deps.yarnInstall.hint")
+          }
+        } else if (result.suggestNpmInstall) {
+          val runIt = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Int> {
+            Messages.showYesNoDialog(
+              project,
+              LocalGitMirrorBundle.message("deps.dialog.npmMessage", result.lockMsg),
+              LocalGitMirrorBundle.message("deps.dialog.npmTitle"),
+              LocalGitMirrorBundle.message("deps.dialog.run"), LocalGitMirrorBundle.message("deps.dialog.later"), null
+            )
+          }
+          if (runIt == Messages.YES) {
+            indicator.text = LocalGitMirrorBundle.message("deps.progress.npmInstall")
+            val code = runCatching {
+              val isWin = System.getProperty("os.name").lowercase().contains("win")
+              val cmd = (if (isWin) listOf("cmd", "/c", "npm") else listOf("npm")) +
+                listOf("install", "--prefer-offline", "--registry",
+                       "https://registry.npmjs.org", "--no-audit", "--no-fund")
+              runPackageManager(cmd, project.basePath?.let { File(it) }, indicator)
+            }.getOrElse { -1 }
+            finalMsg += if (code == 0) " " + LocalGitMirrorBundle.message("deps.npmInstall.ok")
+                        else " " + LocalGitMirrorBundle.message("deps.npmInstall.code", code)
+          } else {
+            finalMsg += " " + LocalGitMirrorBundle.message("deps.npmInstall.hint")
+          }
+        }
+
+        notify(project, finalMsg, NotificationType.INFORMATION)
+        history.add("Deps apply", true,
+          "installed=${result.installed} skipped=${result.skipped} invalid=${result.invalid} size=${humanBytes(result.bytes)}")
       }
     })
   }
