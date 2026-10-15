@@ -114,6 +114,7 @@ _PARAM_TYPE_MAP = {
     "str": "string",
     "int": "integer",
     "bool": "boolean",
+    "list": "array",
 }
 
 

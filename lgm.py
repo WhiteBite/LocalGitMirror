@@ -76,6 +76,14 @@ def _build_parser() -> argparse.ArgumentParser:
                     required=param.required,
                     help=param.help,
                 )
+            elif param.type == "list":
+                sp.add_argument(
+                    flag,
+                    action="append",
+                    default=argparse.SUPPRESS,
+                    required=param.required,
+                    help=param.help,
+                )
             else:  # str
                 sp.add_argument(
                     flag,

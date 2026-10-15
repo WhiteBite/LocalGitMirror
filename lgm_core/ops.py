@@ -384,7 +384,7 @@ REGISTRY: list[Op] = [
         name="mr_projects_scan",
         summary="Register local GitLab checkouts found under a root directory for mr_sync_all.",
         params=[
-            Param("root", "str", "", "Directory containing project checkouts", required=True),
+            Param("root", "list", "", "One or more directories/checkouts to register (repeatable)", required=False),
         ],
         run=op_mr_projects_scan,
         needs_client=False,

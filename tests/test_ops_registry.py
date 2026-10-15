@@ -26,7 +26,7 @@ def test_all_ops_have_summary():
 
 
 def test_param_types_valid():
-    valid_types = {"str", "int", "bool"}
+    valid_types = {"str", "int", "bool", "list"}
     for op in REGISTRY:
         for param in op.params:
             assert param.type in valid_types, (

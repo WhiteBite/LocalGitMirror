@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 
@@ -71,13 +72,17 @@ def _should_skip(stored: dict | None, current_hash: str, now: float) -> bool:
 
 
 def op_mr_projects_scan(ctx: Ctx, args: dict) -> dict:
-    """Register local GitLab checkouts found under --root into the sync registry."""
-    root = (args.get("root") or "").strip()
-    if not root:
-        raise LgmError("config", "--root is required (directory with project checkouts)")
-    root_dir = Path(root).resolve()
-    if not root_dir.is_dir():
-        raise LgmError("config", f"root not found: {root_dir}")
+    """Register local GitLab checkouts into the sync registry.
+
+    Each path in --root is either a git checkout itself (registers directly)
+    or a directory that is searched recursively for checkouts. Repeatable:
+    paths on different drives/folders accumulate.
+    """
+    raw = args.get("root") or ""
+    roots = raw if isinstance(raw, list) else [raw]
+    roots = [r.strip() for r in roots if r and r.strip()]
+    if not roots:
+        raise LgmError("config", "--root is required (git checkout or directory with checkouts)")
 
     gitlab_url = cfg("GITLAB_URL").rstrip("/")
     if not gitlab_url:
@@ -88,30 +93,45 @@ def op_mr_projects_scan(ctx: Ctx, args: dict) -> dict:
     by_path = {e.get("path", "").lower(): i for i, e in enumerate(entries)}
     added: list[str] = []
     updated: list[str] = []
+    scanned: list[str] = []
 
-    for child in sorted(root_dir.iterdir()):
-        if not (child / ".git").exists():
-            continue
-        gitlab_path = gitlab_project_for(child)
+    def _register(path: Path) -> None:
+        if not (path / ".git").is_dir():
+            return
+        gitlab_path = gitlab_project_for(path)
         if not gitlab_path:
-            continue
+            return
         repo = gitlab_path.rsplit("/", 1)[-1].strip()
         if not repo:
-            continue
-        entry = {"repo": repo, "path": str(child), "gitlab": gitlab_path}
-        key = str(child).lower()
-        i = by_path.get(key)
+            return
+        nonlocal_scanned_entry = str(path).lower()
+        entry = {"repo": repo, "path": str(path), "gitlab": gitlab_path}
+        i = by_path.get(nonlocal_scanned_entry)
         if i is None:
             entries.append(entry)
-            by_path[key] = len(entries) - 1
+            by_path[nonlocal_scanned_entry] = len(entries) - 1
             added.append(repo)
         elif entries[i] != entry:
             entries[i] = entry
             updated.append(repo)
 
+    _SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__",
+                  "build", "target", ".gradle", ".idea", "dist", ".hg",
+                  ".svn", ".git-annex"}
+
+    for r in roots:
+        root_dir = Path(r).resolve()
+        if not root_dir.is_dir():
+            continue
+        scanned.append(str(root_dir))
+        _register(root_dir)  # the path may itself be a checkout
+        for dirpath, dirnames, _ in os.walk(root_dir):
+            dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+            _register(Path(dirpath))
+
     reg["projects"] = entries
     _save_registry(reg)
-    return {"success": True, "root": str(root_dir),
+    return {"success": True, "roots": scanned, "scanned_dirs": len(scanned),
             "added": added, "updated": updated, "total": len(entries),
             "projects": entries}
 
