@@ -127,23 +127,10 @@ internal object YarnMirror {
     val cap = 100
     val processed = mutableSetOf<String>()
 
-    // 1. Yarn offline mirror — scan by filename.
+    // 1. Yarn offline mirror — direct stat by tarball name; the mirror is flat by construction.
     val mirror = yarnOfflineMirror()
     if (mirror.isDirectory) {
-      val byFilename = HashMap<String, File>()
-      mirror.walkTopDown().filter { it.isFile && it.extension == "tgz" }.forEach {
-        byFilename[it.name] = it
-      }
-      for (coord in missing) {
-        if (out.size >= cap) break
-        if (coord.key in processed) continue
-        val fullName = if (coord.group.isNotEmpty()) "${coord.group}/${coord.name}" else coord.name
-        val tgz = byFilename[yarnTarballName(fullName, coord.version)] ?: continue
-        if (!isAlreadyAtDome(coord, tgz.name, presentIndex)) {
-          out.add(DepFileEntry(coord, tgz.absolutePath, NpmCache.mirrorRelativePath(coord), tgz.length()))
-        }
-        processed.add(coord.key)
-      }
+      recoverFromMirrorDir(mirror, missing, presentIndex, out, processed, cap)
     }
 
     // 2. Yarn global cache (extracted) — repack via npm pack.
@@ -160,6 +147,28 @@ internal object YarnMirror {
 
     DepsDiagnostics.event("npm collect: yarn recovered=${out.size}")
     return out
+  }
+
+  /** Top-level-only stat lookup in the flat offline mirror; internal for tests. */
+  internal fun recoverFromMirrorDir(
+    mirror: File,
+    missing: List<DepCoordinate>,
+    presentIndex: Map<String, Set<String>>,
+    out: MutableList<DepFileEntry>,
+    processed: MutableSet<String>,
+    cap: Int
+  ) {
+    for (coord in missing) {
+      if (out.size >= cap) break
+      if (coord.key in processed) continue
+      val fullName = if (coord.group.isNotEmpty()) "${coord.group}/${coord.name}" else coord.name
+      val tgz = File(mirror, yarnTarballName(fullName, coord.version))
+      if (!tgz.isFile) continue
+      if (!isAlreadyAtDome(coord, tgz.name, presentIndex)) {
+        out.add(DepFileEntry(coord, tgz.absolutePath, NpmCache.mirrorRelativePath(coord), tgz.length()))
+      }
+      processed.add(coord.key)
+    }
   }
 
   /** Walk the yarn v6 cache, match package.json name+version, repack matches. */

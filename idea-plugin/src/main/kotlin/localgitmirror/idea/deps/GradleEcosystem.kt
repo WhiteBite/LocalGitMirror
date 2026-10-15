@@ -104,71 +104,69 @@ object GradleEcosystem : DepsEcosystem {
     presentIndex: Map<String, Set<String>>,
     onMissingLocally: (DepCoordinate) -> Unit
   ): List<DepFileEntry> {
-    val want = coordinates.filter { it.ecosystem == id }
-      .associateBy { "${it.group}:${it.name}:${it.version}" }
-    if (want.isEmpty()) return emptyList()
+    if (coordinates.none { it.ecosystem == id }) return emptyList()
+    val roots = collectCacheRoots()
+    DepsDiagnostics.event(
+      "gradle collect: roots=[${roots.joinToString(", ") { it.absolutePath }}] " +
+        "wanted=${coordinates.count { it.ecosystem == id }} presentCoords=${presentIndex.size}"
+    )
+    return collectFromRoots(coordinates, roots, presentIndex, onMissingLocally)
+  }
 
-    // Scan ALL candidate gradle caches (env GRADLE_USER_HOME, IDE setting,
-    // default ~/.gradle, plus a gradle-reported home if a project hint was set).
-    // The IDE may have built into a different gradle-home than our env inherited,
-    // so we must look in every one — not just cacheRoot().
+  // Extra root from the gradle-reported home goes first, mirroring scanAllCandidates.
+  internal fun collectCacheRoots(): List<File> {
     val extraRoots = collectProjectDir?.let { dir ->
       GradleResolver.discoverGradleUserHome(dir)?.let {
         listOf(File(it, "caches/modules-2/files-2.1"))
       }
     } ?: emptyList()
+    return DepsScanner.resolvedCandidateRoots(extraRoots)
+  }
 
-    val allArtifacts = DepsScanner.scanAllCandidates(extraRoots = extraRoots)
-    val byGnv = allArtifacts.groupBy { "${it.group}:${it.name}:${it.version}" }
-
-    val scannedRoots = DepsScanner.candidateCacheRoots()
-      .filter { it.isDirectory }.joinToString(", ") { it.absolutePath }
-    DepsDiagnostics.event(
-      "gradle collect: scanned cache(s)=[$scannedRoots] totalArtifacts=${allArtifacts.size} " +
-        "wanted=${want.size} presentCoords=${presentIndex.size}"
-    )
+  // Targeted per-coordinate lookups instead of a full cache walk (EDR exfil heuristics).
+  internal fun collectFromRoots(
+    coordinates: List<DepCoordinate>,
+    roots: List<File>,
+    presentIndex: Map<String, Set<String>>,
+    onMissingLocally: (DepCoordinate) -> Unit
+  ): List<DepFileEntry> {
+    val want = coordinates.filter { it.ecosystem == id }
+      .associateBy { "${it.group}:${it.name}:${it.version}" }
+    if (want.isEmpty()) return emptyList()
 
     val out = mutableListOf<DepFileEntry>()
     for ((gnv, coord) in want) {
-      val arts = byGnv[gnv]
-      if (arts.isNullOrEmpty()) {
+      val arts = GradleTargetedResolver.resolve(roots, coord.group, coord.name, coord.version).map {
+        DepsScanner.Artifact(
+          coord.group, coord.name, coord.version,
+          sha1 = it.sha1, fileName = it.file.name,
+          absolutePath = it.file.absolutePath, size = it.file.length()
+        )
+      }
+      if (arts.isEmpty()) {
         onMissingLocally(coord)
         continue
       }
-      // 1. Trim docs/sources/tests + dedup multiple sha-dirs per kind.
-      // 2. Subtract files the dome already has at the exact same content
-      //    address (sha1 + fileName) — gradle's sha1 dir name IS the sha1 of
-      //    the file's bytes, so identical addresses ↔ identical bytes.
+      // gradle's sha1 dir name IS the sha1 of the file's bytes: identical address = identical content.
       val shipable = pickShipableArtifacts(arts)
       val alreadyAtDome = presentIndex[gnv].orEmpty()
       val toShip = if (alreadyAtDome.isEmpty()) shipable else shipable.filter {
         ("${it.sha1}/${it.fileName}") !in alreadyAtDome
       }
       if (toShip.isEmpty()) {
-        // Two reasons we end up here:
-        //   a) nothing matched at all → genuinely missing locally (rare; should
-        //      have been caught by `arts.isNullOrEmpty()` above)
-        //   b) the dome already has every file we'd otherwise ship → this is
-        //      the desired outcome, not an error. Don't warn.
+        // Dome already holding everything we'd ship is the desired outcome, not a miss.
         if (shipable.isEmpty()) onMissingLocally(coord)
         continue
       }
       for (art in toShip) {
-        // Bundle entries use the maven-local layout so the dome can drop the
-        // file straight into ~/.m2/repository/ and have it resolved by
-        // mavenLocal() — independent of any gradle-internal metadata.
+        // maven-local layout lets the dome resolve via mavenLocal() without gradle-internal metadata.
         val rel = MavenLocalScanner.mavenLocalRelativePath(art.group, art.name, art.version, art.fileName)
         out.add(DepFileEntry(coord, art.absolutePath, rel, art.size))
       }
     }
 
-    // Parent-pom closure: every shipped .pom may declare a <parent> whose own
-    // pom must also reach the dome, or mavenLocal() resolution fails with
-    // "Could not find <parent>". The work machine's cache holds the full chain
-    // (gradle downloaded it during its successful build), including PRIVATE
-    // parents that Maven Central doesn't have. Walk it so the dome receives a
-    // self-contained set.
-    val addedParents = expandParentPomClosure(out, byGnv)
+    // Private parent poms must ship too, or mavenLocal() fails with "Could not find <parent>".
+    val addedParents = TargetedParentClosure.expand(out, roots)
     if (addedParents > 0) {
       DepsDiagnostics.event("gradle collect: added $addedParents parent pom(s) to complete the chain")
     }
@@ -185,38 +183,6 @@ object GradleEcosystem : DepsEcosystem {
     val n = tag("artifactId") ?: return null
     val v = tag("version") ?: return null
     return if (g.isNotBlank() && n.isNotBlank() && v.isNotBlank()) Triple(g, n, v) else null
-  }
-
-  /**
-   * Walk every shipped .pom for `<parent>` coords and append the parent's pom
-   * (recursively) from the work cache. Parent artifacts are pom-only, so we
-   * ship just the .pom. Parents absent from the cache are skipped — they're
-   * public and the dome resolves them from Maven Central. Mutates [out];
-   * returns the count of parent poms added.
-   */
-  private fun expandParentPomClosure(
-    out: MutableList<DepFileEntry>,
-    byGnv: Map<String, List<DepsScanner.Artifact>>
-  ): Int {
-    val shippedRel = out.mapTo(HashSet()) { it.relativePath }
-    val queue = ArrayDeque(out.filter { it.relativePath.endsWith(".pom", true) }.map { it.absolutePath })
-    val visited = HashSet(queue)
-    var added = 0
-    while (queue.isNotEmpty()) {
-      val pomText = runCatching { File(queue.removeFirst()).readText() }.getOrNull() ?: continue
-      val (g, n, v) = parentCoordOfPom(pomText) ?: continue
-      val arts = byGnv["$g:$n:$v"] ?: continue
-      for (a in pickShipableArtifacts(arts)) {
-        if (!a.fileName.endsWith(".pom", true)) continue
-        val rel = MavenLocalScanner.mavenLocalRelativePath(a.group, a.name, a.version, a.fileName)
-        if (shippedRel.add(rel)) {
-          out.add(DepFileEntry(DepCoordinate(id, a.group, a.name, a.version), a.absolutePath, rel, a.size))
-          added++
-        }
-        if (visited.add(a.absolutePath)) queue.addLast(a.absolutePath)
-      }
-    }
-    return added
   }
 
   /**

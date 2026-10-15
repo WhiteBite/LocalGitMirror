@@ -140,6 +140,10 @@ object DepsScanner {
     return out
   }
 
+  /** Ordered roots for targeted lookups: the same assembly scanAllCandidates walks. */
+  internal fun resolvedCandidateRoots(extraRoots: List<File>): List<File> =
+    (extraRoots + candidateCacheRoots()).filter { it.isDirectory }.distinctBy { it.canonicalPath }
+
   /**
    * Scan EVERY candidate gradle cache and merge results, deduplicated by key.
    * This is what `collect`/`resolveMissing` should use: the artifact may live in

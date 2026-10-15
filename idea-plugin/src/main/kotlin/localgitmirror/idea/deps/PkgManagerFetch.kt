@@ -101,9 +101,13 @@ object PkgManagerFetch {
     val extraRoots = GradleResolver.discoverGradleUserHome(projectDir)?.let {
       listOf(File(it, "caches/modules-2/files-2.1"))
     } ?: emptyList()
-    val allCached = DepsScanner.scanAllCandidates(extraRoots = extraRoots) + MavenLocalScanner.scan()
-    val cachedKeys = allCached.map { "${it.group}:${it.name}:${it.version}" }.toSet()
-    return coords.count { "${it.group}:${it.name}:${it.version}" in cachedKeys }
+    val roots = DepsScanner.resolvedCandidateRoots(extraRoots)
+    val m2Root = MavenLocalScanner.cacheRoot()
+    // Count only: a coord is recovered when any of its files sits in a gradle cache or in m2.
+    return coords.count { c ->
+      GradleTargetedResolver.resolve(roots, c.group, c.name, c.version).isNotEmpty() ||
+        MavenLocalTargeted.resolve(m2Root, c.group, c.name, c.version).isNotEmpty()
+    }
   }
 
   private fun buildGradleInitScript(coords: List<DepCoordinate>): String {
