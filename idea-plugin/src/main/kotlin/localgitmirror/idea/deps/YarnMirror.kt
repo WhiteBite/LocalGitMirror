@@ -76,19 +76,6 @@ internal object YarnMirror {
     return n
   }
 
-  fun writeYarnrc(project: File, mirror: File) {
-    val yarnrc = File(project, ".yarnrc")
-    val existing = if (yarnrc.isFile) yarnrc.readText() else ""
-    val keep = existing.lines().filterNot {
-      it.trim().startsWith("yarn-offline-mirror") || it.trim().startsWith("registry ")
-    }.toMutableList()
-    val mp = mirror.absolutePath.replace("\\", "/")
-    keep.add("yarn-offline-mirror \"$mp\"")
-    keep.add("yarn-offline-mirror-pruning false")
-    keep.add("registry \"https://registry.npmjs.org\"")
-    yarnrc.writeText(keep.joinToString("\n").trim('\n') + "\n")
-  }
-
   /** Write the offline-mirror into the GLOBAL ~/.yarnrc (outside any repo) so it
    *  survives branch switches and never dirties a project. No registry is set
    *  (that could affect other projects); `yarn install --offline` needs none.

@@ -482,10 +482,17 @@ object DepsApplier {
       )
     }
 
+    // The two global writes follow the automation gate; project-level steps always run.
+    val globalSideEffects = DepsAutomationGate.enabled(
+      settings.depsAutomationMode, RoleDetector.detect(settings) == MachineRole.HOME)
+    if (!globalSideEffects) DepsDiagnostics.event("apply: global side effects skipped (depsAutomationMode)")
+
     // Ensure ~/.gradle/init.d/lgm-mavenlocal-fallback.gradle exists so
     // mavenLocal() is automatically declared on every gradle build.
-    runCatching { GradleEcosystem.ensureMavenLocalInitScript() }
-      .onFailure { DepsDiagnostics.event("apply: init-script write failed: ${it.message}") }
+    if (globalSideEffects) {
+      runCatching { GradleEcosystem.ensureMavenLocalInitScript() }
+        .onFailure { DepsDiagnostics.event("apply: init-script write failed: ${it.message}") }
+    }
 
     // Best-effort per-ecosystem post-install (e.g. npm cache add).
     val postStatus = StringBuilder()
@@ -518,7 +525,7 @@ object DepsApplier {
     if (isYarnProj && applyProj != null) {
       val ymir = NpmEcosystem.yarnOfflineMirror()
       val cnt = runCatching { NpmEcosystem.buildYarnMirror(NpmEcosystem.cacheRoot(), ymir) }.getOrDefault(0)
-      runCatching { NpmEcosystem.setGlobalYarnMirror(ymir) }
+      if (globalSideEffects) runCatching { NpmEcosystem.setGlobalYarnMirror(ymir) }
       lockMsg = LocalGitMirrorBundle.message("deps.apply.yarnMirror", cnt)
       suggestYarn = true
     } else if (lockBytes != null && applyProj != null && File(applyProj, "package.json").isFile) {
