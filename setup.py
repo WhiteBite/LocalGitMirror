@@ -55,7 +55,17 @@ def write_env(install_dir: Path, url: str, key: str, password: str) -> None:
     if npm_src.is_file():
         shutil.copy2(npm_src, install_dir / "_lgm_npm.py")
     env = install_dir / ".env"
-    env.write_text(f"BASE_URL={url}\nAPI_KEY={key}\nSYNC_PASSWORD={password}\n", encoding="utf-8")
+    managed = {"BASE_URL", "API_KEY", "SYNC_PASSWORD"}
+    lines: list[str] = []
+    if env.is_file():
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line.partition("=")[0].strip() in managed:
+                continue
+            lines.append(line)
+    lines.append(f"BASE_URL={url}")
+    lines.append(f"API_KEY={key}")
+    lines.append(f"SYNC_PASSWORD={password}")
+    env.write_text("\n".join(lines) + "\n", encoding="utf-8")
     print(f"[ok] Tools installed: {install_dir}")
     print(f"[ok] .env written: {env}")
 
