@@ -7,6 +7,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.UIUtil
+import localgitmirror.idea.actions.GitLabMrSender
 import localgitmirror.idea.deps.MachineRole
 import localgitmirror.idea.deps.RoleDetector
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
@@ -62,6 +63,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
     val conf = GitLabConfig.resolve(project)
     if (!GitLabConfig.hasApi(conf)) return
     pollNotesSync()
+    autoSendBranches()
     val service = MrReplyPushService(project)
     if (settings.autoPushReplies) {
       val reports = service.pushOnce()
@@ -102,6 +104,23 @@ class MrReviewAutoService(private val project: Project) : Disposable {
           .createNotification(content, type)
           .notify(project)
       }
+    }
+  }
+
+  private fun autoSendBranches() {
+    if (!settings.autoMrBranches) return
+    ApplicationManager.getApplication().executeOnPooledThread {
+      if (disposed || project.isDisposed) return@executeOnPooledThread
+      val baseDir = project.basePath ?: return@executeOnPooledThread
+      if (!File(baseDir).exists()) return@executeOnPooledThread
+      val conf = GitLabConfig.resolve(project)
+      if (!GitLabConfig.hasApi(conf)) return@executeOnPooledThread
+      val rows = runCatching {
+        project.getService(MrReviewService::class.java).fetchFromGitLab(conf)
+      }.getOrNull() ?: return@executeOnPooledThread
+      val targets = GitLabMrSender.mrTargetsFrom(rows)
+      if (targets.isEmpty()) return@executeOnPooledThread
+      GitLabMrSender.sendAll(project, targets, quiet = true)
     }
   }
 

@@ -85,6 +85,8 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     // WORK: push agent review replies from the postbox to GitLab without a
     // manual action; HOME: auto-write incoming MR notes into .mr-notes/.
     var autoMrReview: Boolean = true,
+    // WORK: notes cycle also sends open-MR branches the mirror lacks; dirty worktree skips silently
+    var autoMrBranches: Boolean = true,
     // WORK: post approved replies without opening the review dialog; off =
     // the poller only notifies that replies await approval in the Review tab.
     var autoPushReplies: Boolean = false,

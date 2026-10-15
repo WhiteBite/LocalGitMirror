@@ -5,6 +5,7 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.gitlab.MrReviewService
 import localgitmirror.idea.gitlab.MrSendPlanner
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorSyncApi
@@ -18,23 +19,23 @@ import java.io.File
 /** Shared tail of the MR transfer: fetch source branches from origin, then send. Must run on a background thread. */
 object GitLabMrSender {
 
-  fun precheck(project: Project): Boolean {
+  fun precheck(project: Project, notifyIssues: Boolean = true): Boolean {
     val settings = service<MirrorSettingsService>().state
     val baseDir = project.basePath
     if (baseDir.isNullOrBlank()) {
-      notify(project, LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
+      if (notifyIssues) notify(project, LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
       return false
     }
     if (settings.baseUrl.isBlank()) {
-      notify(project, LocalGitMirrorBundle.message("action.syncBranch.urlMissing"), NotificationType.WARNING)
+      if (notifyIssues) notify(project, LocalGitMirrorBundle.message("action.syncBranch.urlMissing"), NotificationType.WARNING)
       return false
     }
     if (SecretsStore.syncPassword.isBlank()) {
-      notify(project, LocalGitMirrorBundle.message("action.syncBranch.syncPasswordMissing"), NotificationType.WARNING)
+      if (notifyIssues) notify(project, LocalGitMirrorBundle.message("action.syncBranch.syncPasswordMissing"), NotificationType.WARNING)
       return false
     }
     if (!GitLocal.isCleanWorkTree(project, File(baseDir))) {
-      notify(project, LocalGitMirrorBundle.message("notify.worktree.dirty"), NotificationType.WARNING)
+      if (notifyIssues) notify(project, LocalGitMirrorBundle.message("notify.worktree.dirty"), NotificationType.WARNING)
       return false
     }
     return true
@@ -87,9 +88,9 @@ object GitLabMrSender {
     reportSyncOutcome(project, settings, syncRes, branch, iid, history)
   }
 
-  fun sendAll(project: Project, targets: List<Pair<String, Int?>>) {
+  fun sendAll(project: Project, targets: List<Pair<String, Int?>>, quiet: Boolean = false) {
     if (targets.isEmpty()) return
-    if (!precheck(project)) return
+    if (!precheck(project, notifyIssues = !quiet)) return
     val projectDir = File(project.basePath!!)
     val settings = service<MirrorSettingsService>().state
     val syncFacade = project.getService(SyncFacadeService::class.java)
@@ -111,7 +112,7 @@ object GitLabMrSender {
     val plan = planMrSend(project, projectDir, settings, syncFacade, remote, branches)
 
     val repoInfo = syncFacade.describeRepoTarget(projectDir, settings)
-    notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
+    if (!quiet) notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
 
     val planned = branches.filter { it !in plan.skipped }
     val unresolvable = materializeRemoteBranches(project, projectDir, remote, planned)
@@ -146,7 +147,7 @@ object GitLabMrSender {
         }
       }
       result != null && settings.offlineGenerateOnly -> {
-        notify(
+        if (!quiet) notify(
           project,
           "[trace=${syncRes.traceId}] Offline mode: dump generated for repo '${syncRes.repo ?: "?"}' at ${syncRes.dump?.absolutePath ?: result.details}",
           NotificationType.INFORMATION
@@ -175,8 +176,12 @@ object GitLabMrSender {
       else ->
         LocalGitMirrorBundle.message("gitlab.notify.batchPartialSkipped", sent, targets.size, skipped, failures.joinToString("\n"))
     }
-    notify(project, summary, if (failures.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING)
+    val silent = quiet && sent == 0 && failures.isEmpty() && result?.ok != false
+    if (!silent) notify(project, summary, if (failures.isEmpty()) NotificationType.INFORMATION else NotificationType.WARNING)
   }
+
+  internal fun mrTargetsFrom(rows: List<MrReviewService.MrRowItem>): List<Pair<String, Int?>> =
+    rows.filter { it.sourceBranch.isNotBlank() }.map { it.sourceBranch to it.iid }
 
   internal fun sendBatch(
     branches: List<String>,

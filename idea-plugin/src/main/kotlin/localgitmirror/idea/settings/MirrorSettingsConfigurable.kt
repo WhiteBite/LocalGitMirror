@@ -216,6 +216,11 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
         }
 
         row {
+          checkBox(LocalGitMirrorBundle.message("auto.mrBranches"))
+            .bindSelected(state::autoMrBranches)
+        }
+
+        row {
           checkBox(LocalGitMirrorBundle.message("auto.autoPushReplies"))
             .bindSelected(state::autoPushReplies)
         }
