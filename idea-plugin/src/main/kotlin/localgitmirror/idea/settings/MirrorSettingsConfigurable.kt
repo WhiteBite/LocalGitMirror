@@ -109,6 +109,18 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
             pinField?.text = ""
           }
         }
+
+        row {
+          checkBox(LocalGitMirrorBundle.message("settings.insecureTls"))
+            .bindSelected(state::mirrorInsecureTls)
+            .comment(LocalGitMirrorBundle.message("settings.insecureTls.comment"))
+        }
+
+        row {
+          checkBox(LocalGitMirrorBundle.message("settings.gitlabInsecureTls"))
+            .bindSelected(state::gitlabInsecureTls)
+            .comment(LocalGitMirrorBundle.message("settings.gitlabInsecureTls.comment"))
+        }
       }
 
       // Advanced settings (collapsed by default)
@@ -174,6 +186,15 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
               else -> "auto"
             } }
           )
+        }
+
+        row(LocalGitMirrorBundle.message("auto.depsAutomation")) {
+          comboBox(listOf("auto", "on", "off"))
+            .bindItem(
+              { state.depsAutomationMode },
+              { selected -> state.depsAutomationMode = selected ?: "auto" }
+            )
+            .comment(LocalGitMirrorBundle.message("auto.depsAutomation.comment"))
         }
 
         row {
