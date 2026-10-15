@@ -92,7 +92,7 @@ class _FakeClient:
 
     def sync_send(self, repo, bundle):
         self.sent_bundles.append(bundle)
-        return {"e": "ok"}
+        return {"success": True, "repo": repo}
 
 
 def _run(monkeypatch, tmp_path, fake_git, fake_client, args):

@@ -195,6 +195,11 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
                 skipped.extend(sent)
                 sent = []
             if sent:
+                # negotiate creates the mirror-side repo when missing
+                try:
+                    c.sync_negotiate(repo, [], probe=False)
+                except LgmError:
+                    pass
                 send_branches(ctx, repo, str(proj), sent, exclude_shas)
             res["branches_sent"] = sent
             res["branches_skipped"] = skipped
@@ -271,7 +276,8 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
         1 for r in results for m in r.get("mrs", []) if m.get("notes") == "uploaded")
     notes_unchanged = sum(
         1 for r in results for m in r.get("mrs", []) if m.get("notes") == "unchanged")
-    errors = [f"{r['repo']}: {r['error']}" for r in results if r.get("error")]
+    errors = [f"{r['repo']}: {r.get('error') or r.get('branches_error')}"
+              for r in results if r.get("error") or r.get("branches_error")]
     return {"success": not errors, "dry_run": dry_run, "repos": results,
             "summary": {
                 "repos": len(results),

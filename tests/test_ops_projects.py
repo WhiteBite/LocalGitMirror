@@ -273,6 +273,8 @@ def _prepare_sync(tmp_path, monkeypatch):
         return {"bundle_size": 10}
 
     monkeypatch.setattr(opmod, "send_branches", fake_send_branches)
+    ctx = _ctx()
+    ctx.client.sync_negotiate = lambda repo, commits, probe=False: {"known": []}
     opmod._save_registry({"projects": [
         {"repo": "doctransformer", "path": str(proj),
          "gitlab": "dev/onyx/doctransformer"}]})
@@ -350,6 +352,45 @@ def test_mr_sync_all_reports_gitlab_failure_per_repo(tmp_path, monkeypatch):
     res = opmod.op_mr_sync_all(ctx, {})
     assert res["success"] is False
     assert "GitLab unreachable" in res["repos"][0]["error"]
+
+
+def test_send_branches_raises_on_rejected_upload(tmp_path, monkeypatch):
+    from lgm_core.ops_git import send_branches
+    proj = _make_project(tmp_path)
+    ctx = _ctx()
+
+    def fake_sync_send(repo, bundle_bytes, local_branches=None):
+        return {"success": False, "message": f"Repository '{repo}' not found", "repo": repo}
+
+    ctx.client.sync_send = fake_sync_send
+    with pytest.raises(LgmError) as ei:
+        send_branches(ctx, "onyx-search", str(proj), ["master"])
+    assert "not found" in ei.value.message
+
+
+def test_mr_sync_all_negotiates_repo_before_send(tmp_path, monkeypatch):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    negotiated = []
+    ctx.client.sync_negotiate = lambda repo, commits, probe=False: (
+        negotiated.append((repo, probe)), {"known": [], "created": True})[1]
+
+    res = opmod.op_mr_sync_all(ctx, {})
+    assert res["success"] is True
+    assert negotiated == [("doctransformer", False)]
+    assert sent_calls == [("doctransformer", ["llm-core"])]
+
+
+def test_mr_sync_all_surfaces_branch_failure_in_summary(tmp_path, monkeypatch):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+
+    def failing(ctx, repo, project, branches, excludes, dry_run=False):
+        raise LgmError("network", "Repository 'doctransformer' not found")
+
+    monkeypatch.setattr(opmod, "send_branches", failing)
+    res = opmod.op_mr_sync_all(ctx, {})
+    assert res["success"] is False
+    assert res["repos"][0].get("branches_error") == "Repository 'doctransformer' not found"
+    assert any("doctransformer" in e for e in res["summary"]["errors"])
 
 
 

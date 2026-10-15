@@ -336,11 +336,14 @@ class MirrorClient:
         if local_branches:
             params["local_branches"] = local_branches
         e = encrypt_envelope(params, self.sync_password)
-        return self._post_multipart(
+        resp = self._post_multipart(
             "/api/documents/upload",
             fields={"e": e},
             files={"attachment": ("cache.bin", encrypted)},
         )
+        if "e" in resp:
+            return decrypt_envelope(resp["e"], self.sync_password)
+        return resp
 
     def sync_pull(self, repo: str, branch: str = "",
                   since: str = "", haves: str = "") -> dict:

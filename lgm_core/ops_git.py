@@ -199,6 +199,9 @@ def send_branches(ctx: Ctx, repo: str, project: str, branches: list[str],
                 "dry_run": True}
 
     res = c.sync_send(repo, bundle_bytes)
+    if not res.get("success"):
+        raise LgmError(
+            "network", str(res.get("message") or "mirror rejected the bundle"))
     return {"repo": repo, "branch": label,
             "bundle_size": len(bundle_bytes), "excluded_bases": len(excludes),
             "response": res}
