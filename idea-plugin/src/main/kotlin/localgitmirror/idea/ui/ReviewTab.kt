@@ -188,7 +188,7 @@ internal fun LocalGitMirrorPanel.refreshReview() {
                    it.sourceBranch.lowercase().contains(filter)
                  }
   val signature = visible.joinToString(";") {
-    "${it.iid}:${it.unresolved}:${it.replyState}:${it.replyPosted}:${it.replyFailed}:${it.notesSentAt}:${it.title}:${it.source}"
+    "${it.iid}:${it.unresolved}:${it.replyState}:${it.replyPosted}:${it.replyFailed}:${it.notesSentAt}:${it.title}:${it.source}:${it.state}"
   }
   if (signature != reviewRowsSignature) {
     reviewRowsSignature = signature
@@ -208,7 +208,7 @@ internal fun LocalGitMirrorPanel.refreshReview() {
   mrReviewErrorLabel.text = err?.let { LocalGitMirrorBundle.message("review.error.cache", it) } ?: ""
   mrReviewErrorLabel.isVisible = err != null
 
-  val attention = rows.count { it.unresolved > 0 }
+  val attention = rows.count { it.unresolved > 0 && it.state != "closed" }
   mrReviewStatus.text = if (attention > 0)
     LocalGitMirrorBundle.message("review.status.attention", attention, rows.size)
   else
@@ -234,7 +234,7 @@ internal fun LocalGitMirrorPanel.reloadReview(notify: Boolean = true) {
 }
 
 internal fun LocalGitMirrorPanel.updateReviewTabTitle() {
-  val attention = project.getService(MrReviewService::class.java).cachedRows().count { it.unresolved > 0 }
+  val attention = project.getService(MrReviewService::class.java).cachedRows().count { it.unresolved > 0 && it.state != "closed" }
   setTabTitle(0, if (attention > 0)
     LocalGitMirrorBundle.message("tab.review.count", attention)
   else
@@ -281,9 +281,13 @@ internal class MrReviewListCellRenderer : ColoredListCellRenderer<MrReviewServic
     append("!${value.iid}", badgeAttr)
     val countAttr = SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN,
       if (value.unresolved > 0) amber else green)
-    val countText = if (value.unresolved > 0) "${value.unresolved}\u26a0"
-                    else "\u2713 ${value.totalThreads}"
-    append("  $countText", countAttr)
+    val countText = when {
+      value.state == "closed" -> LocalGitMirrorBundle.message("review.state.closed")
+      value.unresolved > 0 -> "${value.unresolved}\u26a0"
+      else -> "\u2713 ${value.totalThreads}"
+    }
+    append("  $countText", if (value.state == "closed")
+      SimpleTextAttributes.GRAYED_ATTRIBUTES else countAttr)
     val notesText = value.notesSentAt
       ?.let { LocalGitMirrorBundle.message("review.notes.sent", it) }
       ?: LocalGitMirrorBundle.message("review.notes.notsent")

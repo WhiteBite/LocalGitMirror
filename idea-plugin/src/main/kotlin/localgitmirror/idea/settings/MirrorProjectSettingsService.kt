@@ -30,10 +30,15 @@ class MirrorProjectSettingsService : PersistentStateComponent<MirrorProjectSetti
     var mrReplyLedger: MutableList<String> = mutableListOf(),
     // Reply keys already shipped to the work postbox (home role).
     var mrHomeSent: MutableList<String> = mutableListOf(),
-    // mr-notes content hash per MR iid — MrNotesSync re-uploads only on change.
+    // mr-notes content hash per MR iid - MrNotesSync re-uploads only on change.
     var mrNotesHash: MutableMap<String, String> = mutableMapOf(),
     // "yyyy-MM-dd HH:mm" of the last mr-notes upload per MR iid.
-    var mrNotesSentAt: MutableMap<String, String> = mutableMapOf()
+    var mrNotesSentAt: MutableMap<String, String> = mutableMapOf(),
+    // Last known title/branch per open MR iid, carried into the closed marker.
+    var mrTitles: MutableMap<String, String> = mutableMapOf(),
+    var mrBranches: MutableMap<String, String> = mutableMapOf(),
+    // "yyyy-MM-dd HH:mm" of the last closed-marker upload per MR iid.
+    var mrClosedSentAt: MutableMap<String, String> = mutableMapOf()
   )
 
   private var state = State()

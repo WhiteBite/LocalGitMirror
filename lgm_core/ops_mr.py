@@ -13,6 +13,9 @@ from .ops_git import send_branches
 _MRN_TITLE = re.compile(r"^# MR !(\d+) — (.*)$")
 _MRN_BRANCH = re.compile(r"^- \*\*Ветка:\*\* `([^`]+)`")
 _MRN_UPDATED = re.compile(r"^- \*\*Обновлено:\*\* (\S+)")
+_MRN_DETECTED = re.compile(r"^- \*\*Обнаружено:\*\* (\S+)")
+_MR_NOTES_FILE = re.compile(r"mr-!(\d+)\.md$")
+_MR_CLOSED_FILE = re.compile(r"mr-!(\d+)\.closed\.md$")
 _NOTES_THREAD_ID = re.compile(r"^\*\*ID треда:\*\* `([^`]+)`")
 _NOTES_ANCHOR = re.compile(r"^\*\*Место:\*\* `([^`]+):(\d+)`")
 _REPLY_THREAD = re.compile(r"^##\s+thread\s+(\S+)\s*$", re.MULTILINE)
@@ -126,6 +129,9 @@ def _parse_mr_notes_head(markdown: str) -> dict:
         b = _MRN_BRANCH.match(line)
         if b:
             branch = b.group(1)
+        d = _MRN_DETECTED.match(line)
+        if d:
+            updated = d.group(1)
         u = _MRN_UPDATED.match(line)
         if u:
             updated = u.group(1)
@@ -133,6 +139,22 @@ def _parse_mr_notes_head(markdown: str) -> dict:
             unresolved += 1
     return {"iid": iid, "title": title, "source_branch": branch,
             "unresolved": unresolved, "updated": updated}
+
+
+def _closed_marker_iids(items: list) -> dict:
+    """Newest mr-notes/mr-!N.closed.md postbox item per iid."""
+    markers: dict[int, dict] = {}
+    for i in items:
+        eff = i.get("path") or ""
+        if not eff.startswith("mr-notes/"):
+            continue
+        m = _MR_CLOSED_FILE.search(eff)
+        if not m:
+            continue
+        iid = int(m.group(1))
+        if iid not in markers or (i.get("mtime") or 0) > (markers[iid].get("mtime") or 0):
+            markers[iid] = i
+    return markers
 
 
 def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
@@ -152,20 +174,26 @@ def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
         except LgmError as e:
             errors.append({"repo": name, "error": e.message})
             continue
+        items = lst.get("items") or []
         newest: dict[int, dict] = {}
-        for i in (lst.get("items") or []):
+        for i in items:
             eff = i.get("path") or ""
             if not eff.startswith("mr-notes/"):
                 continue
-            m = re.search(r"mr-!(\d+)\.md$", eff)
+            m = _MR_NOTES_FILE.search(eff)
             if not m:
                 continue
             iid = int(m.group(1))
             if iid not in newest or (i.get("mtime") or 0) > (newest[iid].get("mtime") or 0):
                 newest[iid] = i
-        for iid, item in sorted(newest.items()):
+        markers = _closed_marker_iids(items)
+        for iid in sorted(set(newest) | set(markers)):
+            marker = markers.get(iid)
+            src = marker or newest.get(iid)
+            if src is None:
+                continue
             try:
-                plain = c.file_sync_fetch(name, item["id"]).decode("utf-8")
+                plain = c.file_sync_fetch(name, src["id"]).decode("utf-8")
             except Exception:
                 continue
             head = _parse_mr_notes_head(plain)
@@ -176,8 +204,9 @@ def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
                 "title": head["title"],
                 "source_branch": head["source_branch"],
                 "updated_at": head["updated"],
-                "unresolved": head["unresolved"],
+                "unresolved": 0 if marker else head["unresolved"],
                 "source": "cache",
+                "state": "closed" if marker else "open",
                 "repo": name,
             })
     return {"items": out, "errors": errors}
@@ -196,6 +225,7 @@ def op_mr_list(ctx: Ctx, args: dict) -> dict:
                 "source_branch": m.get("source_branch", ""),
                 "updated_at": m.get("updated_at", ""),
                 "source": "gitlab",
+                "state": "open",
             }
             for m in c.gitlab_list_mrs()
         ]
@@ -404,7 +434,7 @@ def op_mr_notes(ctx: Ctx, args: dict) -> dict:
         eff = i.get("path") or ""
         if not eff.startswith("mr-notes/"):
             continue
-        m = re.search(r"mr-!(\d+)\.md$", eff)
+        m = _MR_NOTES_FILE.search(eff)
         if not m:
             continue
         n = int(m.group(1))
@@ -412,13 +442,20 @@ def op_mr_notes(ctx: Ctx, args: dict) -> dict:
             continue
         if n not in newest or (i.get("mtime") or 0) > (newest[n].get("mtime") or 0):
             newest[n] = i
+    markers = _closed_marker_iids(lst.get("items") or [])
+    if iid:
+        markers = {k: v for k, v in markers.items() if k == iid}
     notes = []
-    for n, i in sorted(newest.items()):
+    for n in sorted(set(newest) | set(markers)):
+        src = newest.get(n) or markers[n]
         try:
-            plain = c.file_sync_fetch(repo, i["id"])
-            notes.append({"iid": n, "path": i["path"], "markdown": plain.decode("utf-8")})
+            plain = c.file_sync_fetch(repo, src["id"])
+            entry = {"iid": n, "path": src["path"], "markdown": plain.decode("utf-8")}
         except Exception:
-            notes.append({"iid": n, "path": i["path"], "error": "fetch/decrypt failed (v3 relay)"})
+            entry = {"iid": n, "path": src["path"], "error": "fetch/decrypt failed (v3 relay)"}
+        if n in markers:
+            entry["state"] = "closed"
+        notes.append(entry)
     return {"success": True, "repo": repo, "count": len(notes), "notes": notes}
 
 

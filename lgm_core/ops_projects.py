@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import time
+from datetime import datetime
 from pathlib import Path
 
 from .client import LgmError
@@ -65,6 +66,28 @@ def _should_skip(stored: dict | None, current_hash: str, now: float) -> bool:
     if not isinstance(stored, dict) or stored.get("hash") != current_hash:
         return False
     sent_at = stored.get("sent_at") or 0
+    try:
+        return float(sent_at) > now - _RESYNC_SECONDS
+    except (TypeError, ValueError):
+        return False
+
+
+_CLOSED_MARKER_HEAD = "<!-- lgm-mr-closed v1 -->"
+
+
+def _render_closed_marker(iid: int, title: str, branch: str) -> str:
+    detected = datetime.now().astimezone().isoformat(timespec="seconds")
+    return (f"{_CLOSED_MARKER_HEAD}\n"
+            f"# MR !{iid} — {title or f'MR !{iid}'}\n"
+            f"- **Ветка:** `{branch}`\n"
+            f"- **Статус:** закрыт или влит (нет в списке открытых)\n"
+            f"- **Обнаружено:** {detected}\n")
+
+
+def _should_skip_closure(stored: dict | None, now: float) -> bool:
+    if not isinstance(stored, dict) or not stored.get("closed"):
+        return False
+    sent_at = stored.get("closed_sent_at") or 0
     try:
         return float(sent_at) > now - _RESYNC_SECONDS
     except (TypeError, ValueError):
@@ -164,12 +187,18 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
         return res
     res["open_mrs"] = len(mrs)
 
+    repo_state = state.setdefault(repo, {})
+    open_iids = {int(m["iid"]) for m in mrs if m.get("iid")}
+    known_iids = {int(k) for k in repo_state if str(k).isdigit()}
+    closed_iids = sorted(known_iids - open_iids)
+
     if dry_run:
         res["mrs"] = [
             {"iid": m.get("iid"), "title": m.get("title", ""),
              "branch": m.get("source_branch", ""), "notes": "dry-run"}
             for m in mrs
         ]
+        res["closed"] = [{"iid": i, "marker": "dry-run"} for i in closed_iids]
         return res
 
     branches = [m.get("source_branch") or "" for m in mrs]
@@ -211,6 +240,10 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
         item = {"iid": iid, "title": m.get("title", ""),
                 "branch": m.get("source_branch", "")}
         res["mrs"].append(item)
+        seen = repo_state.setdefault(str(iid), {})
+        seen["seen_at"] = now
+        seen["title"] = m.get("title", "")
+        seen["branch"] = m.get("source_branch") or ""
         try:
             raw = c.gitlab_list_discussions(iid, project=gitlab)
         except LgmError as e:
@@ -232,7 +265,6 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
             discussions, project_dir=proj, branch=m.get("source_branch") or "",
         )
         h = hashlib.sha256(md.encode("utf-8")).hexdigest()
-        repo_state = state.setdefault(repo, {})
         if _should_skip(repo_state.get(str(iid)), h, now):
             item["notes"] = "unchanged"
             continue
@@ -242,9 +274,37 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
         except LgmError as e:
             item["notes"] = f"failed: {e.message}"
             continue
-        repo_state[str(iid)] = {"hash": h, "sent_at": now}
+        seen["hash"] = h
+        seen["sent_at"] = now
         item["notes"] = "uploaded"
+
+    res["closed"] = _mark_closed(c, repo, repo_state, closed_iids, now)
     return res
+
+
+def _mark_closed(c, repo: str, repo_state: dict, closed_iids: list[int],
+                 now: float) -> list[dict]:
+    """Upload mr-notes/mr-!N.closed.md for MRs that left the open list."""
+    out: list[dict] = []
+    for iid in closed_iids:
+        entry = repo_state.get(str(iid)) or {}
+        if _should_skip_closure(entry, now):
+            out.append({"iid": iid, "marker": "unchanged"})
+            continue
+        md = _render_closed_marker(iid, entry.get("title", ""), entry.get("branch", ""))
+        try:
+            data = md.encode("utf-8")
+            c.file_sync_send(repo, f"mr-notes/mr-!{iid}.closed.md", len(data), data)
+        except LgmError as e:
+            out.append({"iid": iid, "marker": f"failed: {e.message}"})
+            continue
+        entry.pop("hash", None)
+        entry.pop("sent_at", None)
+        entry["closed"] = True
+        entry["closed_sent_at"] = now
+        repo_state[str(iid)] = entry
+        out.append({"iid": iid, "marker": "uploaded"})
+    return out
 
 
 def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
@@ -278,6 +338,8 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
         1 for r in results for m in r.get("mrs", []) if m.get("notes") == "unchanged")
     errors = [f"{r['repo']}: {r.get('error') or r.get('branches_error')}"
               for r in results if r.get("error") or r.get("branches_error")]
+    closed_marked = sum(
+        1 for r in results for m in (r.get("closed") or []) if m.get("marker") == "uploaded")
     return {"success": not errors, "dry_run": dry_run, "repos": results,
             "summary": {
                 "repos": len(results),
@@ -286,5 +348,6 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
                 "branches_skipped": _count("branches_skipped"),
                 "notes_uploaded": notes_uploaded,
                 "notes_unchanged": notes_unchanged,
+                "closed_marked": closed_marked,
                 "errors": errors,
             }}

@@ -35,6 +35,7 @@ class MrReviewService(private val project: Project) {
     val replyPosted: Int = 0,
     val replyFailed: Int = 0,
     val notesSentAt: String? = null,
+    val state: String = "open",
   )
 
   data class StatusReport(val posted: Int, val failed: Int)
@@ -164,8 +165,16 @@ class MrReviewService(private val project: Project) {
     val pendingIids = mutableSetOf<Int>()
     val errorIids = mutableSetOf<Int>()
     val noteItems = mutableListOf<Pair<MirrorPostboxApi.FileSyncItem, String>>()
+    val closedMarkers = mutableMapOf<Int, MrClosedMarker.Data>()
     for (item in listResult.items) {
       val path = item.path
+      val closedIid = MrClosedMarker.iidOf(path)
+      if (closedIid != null) {
+        cachedPlain(item, settings, repo)?.let { md ->
+          MrClosedMarker.parse(md)?.let { closedMarkers[closedIid] = it }
+        }
+        continue
+      }
       val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
       when {
         path.startsWith("mr-replies-status/") -> {
@@ -189,13 +198,22 @@ class MrReviewService(private val project: Project) {
     val itemErrors = mutableListOf<String>()
     val postboxRows = newestPerIid(noteItems).mapNotNull { (item, path) ->
       cachedRow(item, path, settings, repo, itemErrors)?.copy(notesSentAt = formatTs(item.mtime))
+    }.map { row -> if (closedMarkers.containsKey(row.iid)) row.copy(state = "closed") else row }
+    val noteIids = postboxRows.map { it.iid }.toSet()
+    val markerRows = closedMarkers.filterKeys { it !in noteIids }.map { (iid, d) ->
+      MrRowItem(
+        iid = iid, title = d.title, sourceBranch = d.branch, updatedAt = d.detected,
+        unresolved = 0, totalThreads = 0, discussions = emptyList(),
+        source = Source.CACHE, receivedMarkdown = null, state = "closed",
+      )
     }
-    val rows = postboxRows + localMrRows(baseDir, postboxRows.map { it.iid }.toSet())
+    val rows = postboxRows + markerRows +
+      localMrRows(baseDir, (postboxRows + markerRows).map { it.iid }.toSet(), closedMarkers.keys)
     return CacheData(rows, status, pendingIids, localReplyIids(baseDir), errorIids, itemErrors.joinToString("; ").take(300).ifBlank { null })
   }
 
   // Postbox notes expire after 7 days; local .mr-notes copies keep the MR visible and reviewable.
-  private fun localMrRows(baseDir: String, skipIids: Set<Int>): List<MrRowItem> {
+  private fun localMrRows(baseDir: String, skipIids: Set<Int>, closedIids: Set<Int>): List<MrRowItem> {
     val files = File(baseDir, ".mr-notes")
       .listFiles { f -> f.isFile && Regex("^mr-!\\d+\\.md$").matches(f.name) }
       ?: return emptyList()
@@ -204,7 +222,10 @@ class MrReviewService(private val project: Project) {
         ?: return@mapNotNull null
       if (iid in skipIids) return@mapNotNull null
       val md = runCatching { f.readText(Charsets.UTF_8) }.getOrNull() ?: return@mapNotNull null
-      runCatching { parseMrMarkdown(iid, md).copy(notesSentAt = formatTs(f.lastModified() / 1000)) }.getOrNull()
+      runCatching {
+        val row = parseMrMarkdown(iid, md).copy(notesSentAt = formatTs(f.lastModified() / 1000))
+        if (iid in closedIids) row.copy(state = "closed") else row
+      }.getOrNull()
     }
   }
 

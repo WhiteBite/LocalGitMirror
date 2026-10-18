@@ -393,6 +393,85 @@ def test_mr_sync_all_surfaces_branch_failure_in_summary(tmp_path, monkeypatch):
     assert any("doctransformer" in e for e in res["summary"]["errors"])
 
 
+def _seed_known_mr(opmod, tmp_path, iid: int, title: str, branch: str, sent_at: float):
+    opmod._save_state({"doctransformer": {
+        str(iid): {"hash": "x", "sent_at": sent_at, "title": title, "branch": branch}}})
+
+
+def test_mr_sync_all_marks_closed_mr_with_marker(tmp_path, monkeypatch):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    _seed_known_mr(opmod, tmp_path, 99, "Old MR", "old-branch", 1.0)
+
+    res = opmod.op_mr_sync_all(ctx, {})
+    assert res["success"] is True
+    assert res["summary"]["closed_marked"] == 1
+    marker = [p for (r, p, _) in uploaded if p == "mr-notes/mr-!99.closed.md"]
+    assert marker, f"marker not uploaded, uploaded={[p for (_, p, _) in uploaded]}"
+    body = next(d for (r, p, d) in uploaded if p == "mr-notes/mr-!99.closed.md").decode("utf-8")
+    assert body.startswith("<!-- lgm-mr-closed v1 -->")
+    assert "# MR !99 — Old MR" in body
+    assert "**Ветка:** `old-branch`" in body
+    st = opmod._load_state()["doctransformer"]["99"]
+    assert st.get("closed") is True and st.get("closed_sent_at")
+
+
+def test_mr_sync_all_skips_closed_marker_within_ttl(tmp_path, monkeypatch):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    import time as _t
+    opmod._save_state({"doctransformer": {
+        "99": {"closed": True, "closed_sent_at": _t.time(), "title": "Old MR", "branch": "old-branch"}}})
+
+    res = opmod.op_mr_sync_all(ctx, {})
+    assert [p for (_, p, _) in uploaded if p.endswith(".closed.md")] == []
+    assert res["summary"]["closed_marked"] == 0
+
+
+def test_mr_list_from_postbox_marks_closed_entries(tmp_path, monkeypatch):
+    import lgm_core.ops_mr as mrmod
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    notes_md = _raw_notes_markdown(24, "Llm-core", "llm-core")
+    closed_md = ("<!-- lgm-mr-closed v1 -->\n# MR !99 — Old MR\n"
+                 "- **Ветка:** `old-branch`\n- **Обнаружено:** 2026-10-15T10:00:00+03:00\n")
+    store = {
+        "a": ("mr-notes/mr-!24.md", notes_md.encode("utf-8")),
+        "b": ("mr-notes/mr-!99.closed.md", closed_md.encode("utf-8")),
+    }
+    ctx.client.file_sync_list = lambda repo: {"items": [
+        {"id": k, "path": p, "mtime": 10.0 + i} for i, (k, (p, _)) in enumerate(store.items())]}
+    ctx.client.file_sync_fetch = lambda repo, item_id, *a, **k: store[item_id][1]
+    ctx.client.gitlab_list_mrs = lambda project="": (_ for _ in ()).throw(LgmError("config", "no gitlab"))
+
+    res = mrmod.op_mr_list(ctx, {"repo": "doctransformer"})
+    by_iid = {i["iid"]: i for i in res["items"]}
+    assert by_iid[24]["state"] == "open"
+    assert by_iid[99]["state"] == "closed"
+    assert by_iid[99]["title"] == "Old MR"
+    assert by_iid[99]["source_branch"] == "old-branch"
+
+
+def test_mr_notes_exposes_closed_state(tmp_path, monkeypatch):
+    import lgm_core.ops_mr as mrmod
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    notes_md = _raw_notes_markdown(24, "Llm-core", "llm-core")
+    closed_md = "<!-- lgm-mr-closed v1 -->\n# MR !24 — Llm-core\n- **Ветка:** `llm-core`\n"
+    store = {
+        "n": ("mr-notes/mr-!24.md", notes_md.encode("utf-8")),
+        "c": ("mr-notes/mr-!24.closed.md", closed_md.encode("utf-8")),
+    }
+    ctx.client.file_sync_list = lambda repo: {"items": [
+        {"id": k, "path": p, "mtime": 1.0} for k, (p, _) in store.items()]}
+    ctx.client.file_sync_fetch = lambda repo, item_id, *a, **k: store[item_id][1]
+
+    res = mrmod.op_mr_notes(ctx, {"repo": "doctransformer", "iid": 24})
+    assert res["notes"][0]["state"] == "closed"
+
+
+def _raw_notes_markdown(iid: int, title: str, branch: str) -> str:
+    return (f"# MR !{iid} — {title}\n\n- **Ветка:** `{branch}`\n"
+            f"- **Статус:** открыт · 0 нерешённых из 0 тредов\n"
+            f"- **Обновлено:** 2026-10-13T13:57:34.729Z · **Источник:** GitLab MR !{iid}\n")
+
+
 
 def _mock_gitlab_env(monkeypatch, **overrides):
     from lgm_core import config as config_mod

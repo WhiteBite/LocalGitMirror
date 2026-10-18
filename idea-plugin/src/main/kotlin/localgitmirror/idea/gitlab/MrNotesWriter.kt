@@ -162,6 +162,11 @@ object MrNotesWriter {
 
     file.writeText(markdown, Charsets.UTF_8)
 
+    if (row.state == "closed") {
+      val marker = MrClosedMarker.render(row.iid, row.title, row.sourceBranch, row.updatedAt)
+      File(dir, "mr-!${row.iid}.closed.md").writeText(marker, Charsets.UTF_8)
+    }
+
     val rel = ".mr-notes/mr-!${row.iid}.md"
     service<OperationsHistoryService>().add(
       LocalGitMirrorBundle.message("mrnotes.history.save"), true, "mr=!${row.iid} path=$rel"
@@ -179,7 +184,8 @@ object MrNotesWriter {
     val now = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
     val baseDirName = File(base).name
     val total = rows.size
-    val needAttention = rows.count { it.unresolved > 0 }
+    val needAttention = rows.count { it.unresolved > 0 && it.state != "closed" }
+    val closedCount = rows.count { it.state == "closed" }
 
     val sorted = rows.sortedWith(
       compareByDescending<MrReviewService.MrRowItem> { it.unresolved }.thenBy { it.iid }
@@ -193,14 +199,18 @@ object MrNotesWriter {
     sb.appendLine("> Для каждого MR есть отдельный файл с тредами, кодом и статусом.")
     sb.appendLine("> Приоритет — треды со статусом «НЕ РЕШЕНО»: их нужно починить.")
     sb.appendLine()
-    sb.appendLine("Обновлено: $now · проект `$baseDirName` · всего MR: $total · требуют внимания: $needAttention")
+    sb.appendLine("Обновлено: $now · проект `$baseDirName` · всего MR: $total · требуют внимания: $needAttention · закрыто/влито: $closedCount")
     sb.appendLine()
-    sb.appendLine("| MR | Заголовок | Ветка | Нерешённых | Файл |")
-    sb.appendLine("|----|-----------|-------|:----------:|------|")
+    sb.appendLine("| MR | Заголовок | Ветка | Статус | Файл |")
+    sb.appendLine("|----|-----------|-------|--------|------|")
     for (row in sorted) {
       val link = "[!${row.iid}](./mr-!${row.iid}.md)"
-      val unresolvedCell = if (row.unresolved > 0) "**${row.unresolved}** ⚠" else "0 ✓"
-      sb.appendLine("| $link | ${row.title} | `${row.sourceBranch}` | $unresolvedCell | `mr-!${row.iid}.md` |")
+      val statusCell = when {
+        row.state == "closed" -> "закрыт/влит"
+        row.unresolved > 0 -> "**${row.unresolved}** ⚠"
+        else -> "0 ✓"
+      }
+      sb.appendLine("| $link | ${row.title} | `${row.sourceBranch}` | $statusCell | `mr-!${row.iid}.md` |")
     }
     sb.appendLine()
     sb.appendLine("## Как использовать (для агента)")
