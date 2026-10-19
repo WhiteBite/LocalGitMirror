@@ -5,14 +5,20 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
-import localgitmirror.idea.actions.PullFromMirrorAction
+import localgitmirror.idea.actions.PullLogic
+import localgitmirror.idea.git.GitDirCache
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
+import localgitmirror.idea.sync.SyncStateStore
+import localgitmirror.idea.workkit.BundleCrypto
 import java.io.File
+import java.util.UUID
 import javax.swing.JFileChooser
 
 /** Pull selected branches (multi-select support). Falls back to single-branch picker if nothing selected. */
@@ -45,36 +51,25 @@ internal fun LocalGitMirrorPanel.sendSelectedBranches() {
   syncMultipleBranches(selected.map { it.name })
 }
 
-/** Pull multiple branches in sequence. */
+/** Pull multiple branches in sequence, one honest outcome per branch. */
 internal fun LocalGitMirrorPanel.pullMultipleBranches(branches: List<String>) {
   if (isSyncing) {
-    notify("Операция уже выполняется", NotificationType.WARNING)
+    notify(LocalGitMirrorBundle.message("pull.notify.alreadyRunning"), NotificationType.WARNING)
     return
   }
+  val dir = baseDir() ?: run {
+    notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
+    return
+  }
+  val settings = service<MirrorSettingsService>().state
+  val repo = syncFacade.resolveRepo(dir, settings).sanitized.ifBlank { project.name }
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Стягивание ${branches.size} веток", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.multi.pullTask", branches.size), true) {
     override fun run(indicator: ProgressIndicator) {
-      for ((index, branch) in branches.withIndex()) {
-        indicator.checkCanceled()
-        indicator.fraction = index.toDouble() / branches.size
-        indicator.text = "Стягивание $branch (${index + 1}/${branches.size})"
-
-        try {
-          PullFromMirrorAction(preselectedBranch = branch).actionPerformed(
-            com.intellij.openapi.actionSystem.AnActionEvent.createFromDataContext(
-              "MultiPull", null,
-              com.intellij.openapi.actionSystem.DataContext { dataId ->
-                if (com.intellij.openapi.actionSystem.CommonDataKeys.PROJECT.`is`(dataId)) project else null
-              }
-            )
-          )
-        } catch (e: Exception) {
-          notify("Ошибка стягивания $branch: ${e.message}", NotificationType.ERROR)
-        }
-      }
-
-      notify("Стянуто ${branches.size} веток: ${branches.joinToString(", ")}", NotificationType.INFORMATION)
+      val outcomes = pullBranchesFromMirror(project, dir, settings, repo, branches, indicator)
+      val summary = multiBranchSummary(LocalGitMirrorBundle.message("panel.multi.pullTitle"), repo, outcomes)
+      notify(summary.message, summary.kind.notificationType())
     }
 
     override fun onSuccess() {
@@ -84,7 +79,7 @@ internal fun LocalGitMirrorPanel.pullMultipleBranches(branches: List<String>) {
 
     override fun onThrowable(error: Throwable) {
       isSyncing = false
-      notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      notify(LocalGitMirrorBundle.message("panel.multi.opError", error.message ?: ""), NotificationType.ERROR)
     }
   })
 }
@@ -92,29 +87,29 @@ internal fun LocalGitMirrorPanel.pullMultipleBranches(branches: List<String>) {
 /** Sync a specific branch to Mirror. */
 internal fun LocalGitMirrorPanel.syncBranch(branchName: String) {
   if (isSyncing) {
-    notify("Операция уже выполняется", NotificationType.WARNING)
+    notify(LocalGitMirrorBundle.message("pull.notify.alreadyRunning"), NotificationType.WARNING)
     return
   }
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Отправка $branchName", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("action.syncBranch.progress", branchName), true) {
     override fun run(indicator: ProgressIndicator) {
       val dir = baseDir() ?: run {
-        notify("Проект не найден", NotificationType.ERROR)
+        notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
         return
       }
       val settings = service<MirrorSettingsService>().state
 
-      indicator.text = "Отправка $branchName"
+      indicator.text = LocalGitMirrorBundle.message("panel.multi.sendProgress", branchName)
       try {
         val result = syncFacade.runFullSync(dir, settings, additionalBranches = listOf(branchName))
         if (!result.step.ok) {
-          notify("Ошибка отправки $branchName: ${result.step.message}", NotificationType.ERROR)
+          notify(LocalGitMirrorBundle.message("panel.multi.sendBranchFail", branchName, result.step.message), NotificationType.ERROR)
         } else {
-          notify("Ветка $branchName отправлена", NotificationType.INFORMATION)
+          notify(LocalGitMirrorBundle.message("notify.send.branch.ok", branchName), NotificationType.INFORMATION)
         }
       } catch (e: Exception) {
-        notify("Ошибка отправки $branchName: ${e.message}", NotificationType.ERROR)
+        notify(LocalGitMirrorBundle.message("panel.multi.sendBranchFail", branchName, e.message ?: ""), NotificationType.ERROR)
       }
     }
 
@@ -125,7 +120,7 @@ internal fun LocalGitMirrorPanel.syncBranch(branchName: String) {
 
     override fun onThrowable(error: Throwable) {
       isSyncing = false
-      notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      notify(LocalGitMirrorBundle.message("panel.multi.opError", error.message ?: ""), NotificationType.ERROR)
     }
   })
 }
@@ -134,7 +129,7 @@ internal fun LocalGitMirrorPanel.syncBranch(branchName: String) {
 internal fun LocalGitMirrorPanel.syncSelectedBranches() {
   val selected = branchList.selectedValuesList
   if (selected.isEmpty()) {
-    notify("Выберите ветки для отправки", NotificationType.WARNING)
+    notify(LocalGitMirrorBundle.message("panel.multi.selectBranchesToSend"), NotificationType.WARNING)
     return
   }
   val branchNames = selected.map { it.name }
@@ -149,30 +144,29 @@ internal fun LocalGitMirrorPanel.syncSelectedBranches() {
 /** Send multiple branches as one sync: single bundle, single upload. */
 internal fun LocalGitMirrorPanel.syncMultipleBranches(branches: List<String>) {
   if (isSyncing) {
-    notify("Операция уже выполняется", NotificationType.WARNING)
+    notify(LocalGitMirrorBundle.message("pull.notify.alreadyRunning"), NotificationType.WARNING)
     return
   }
+  val dir = baseDir() ?: run {
+    notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
+    return
+  }
+  val settings = service<MirrorSettingsService>().state
+  val repo = syncFacade.resolveRepo(dir, settings).sanitized.ifBlank { project.name }
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Отправка ${branches.size} веток", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.multi.sendTask", branches.size), true) {
     override fun run(indicator: ProgressIndicator) {
-      val dir = baseDir() ?: run {
-        notify("Проект не найден", NotificationType.ERROR)
-        return
-      }
-      val settings = service<MirrorSettingsService>().state
-
-      indicator.text = "Отправка ${branches.size} веток: ${branches.joinToString(", ")}"
-      try {
+      indicator.text = LocalGitMirrorBundle.message("panel.multi.sendProgressMany", branches.size, branches.joinToString(", "))
+      val outcomes = try {
         val result = syncFacade.runFullSync(dir, settings, additionalBranches = branches)
-        if (!result.step.ok) {
-          notify("Ошибка отправки ${branches.size} веток: ${result.step.message}", NotificationType.ERROR)
-        } else {
-          notify("Отправлено ${branches.size} веток: ${branches.joinToString(", ")}", NotificationType.INFORMATION)
-        }
+        val error = if (result.step.ok) null else result.step.message
+        branches.map { MultiBranchOutcome(it, result.step.ok, error) }
       } catch (e: Exception) {
-        notify("Ошибка отправки ${branches.size} веток: ${e.message}", NotificationType.ERROR)
+        branches.map { MultiBranchOutcome(it, false, e.message) }
       }
+      val summary = multiBranchSummary(LocalGitMirrorBundle.message("panel.multi.sendTitle"), repo, outcomes)
+      notify(summary.message, summary.kind.notificationType())
     }
 
     override fun onSuccess() {
@@ -182,7 +176,7 @@ internal fun LocalGitMirrorPanel.syncMultipleBranches(branches: List<String>) {
 
     override fun onThrowable(error: Throwable) {
       isSyncing = false
-      notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      notify(LocalGitMirrorBundle.message("panel.multi.opError", error.message ?: ""), NotificationType.ERROR)
     }
   })
 }
@@ -190,13 +184,13 @@ internal fun LocalGitMirrorPanel.syncMultipleBranches(branches: List<String>) {
 /** Export bundle for offline transfer. */
 internal fun LocalGitMirrorPanel.exportBundle() {
   val dir = baseDir() ?: run {
-    notify("Проект не найден", NotificationType.ERROR)
+    notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
     return
   }
 
   val selected = branchList.selectedValuesList
   if (selected.isEmpty()) {
-    notify("Выберите ветки для экспорта", NotificationType.WARNING)
+    notify(LocalGitMirrorBundle.message("panel.bundle.exportNone"), NotificationType.WARNING)
     return
   }
 
@@ -204,7 +198,7 @@ internal fun LocalGitMirrorPanel.exportBundle() {
 
   // Ask user where to save
   val fileChooser = JFileChooser().apply {
-    dialogTitle = "Сохранить bundle файл"
+    dialogTitle = LocalGitMirrorBundle.message("panel.bundle.saveTitle")
     selectedFile = File("${project.name}-${branchNames.joinToString("-")}.bundle")
     fileFilter = javax.swing.filechooser.FileNameExtensionFilter("Git Bundle", "bundle")
   }
@@ -216,9 +210,9 @@ internal fun LocalGitMirrorPanel.exportBundle() {
   val targetFile = fileChooser.selectedFile
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Экспорт bundle", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.bundle.exportTask"), true) {
     override fun run(indicator: ProgressIndicator) {
-      indicator.text = "Создание bundle для ${branchNames.joinToString(", ")}"
+      indicator.text = LocalGitMirrorBundle.message("panel.bundle.exportProgress", branchNames.joinToString(", "))
 
       try {
         // Use git bundle create
@@ -234,16 +228,16 @@ internal fun LocalGitMirrorPanel.exportBundle() {
         val stderr = proc.errorStream.bufferedReader().readText()
 
         if (exitCode != 0) {
-          notify("Ошибка экспорта: $stderr", NotificationType.ERROR)
+          notify(LocalGitMirrorBundle.message("panel.bundle.exportFail", stderr), NotificationType.ERROR)
           historyService.add(LocalGitMirrorBundle.message("history.op.exportBundle"), false,
             "branches=${branchNames.joinToString(",")} err=${stderr.take(300)}")
         } else {
-          notify("Bundle сохранён: ${targetFile.absolutePath}\nРазмер: ${targetFile.length() / 1024} KB", NotificationType.INFORMATION)
+          notify(LocalGitMirrorBundle.message("panel.bundle.exportOk", targetFile.absolutePath, targetFile.length() / 1024), NotificationType.INFORMATION)
           historyService.add(LocalGitMirrorBundle.message("history.op.exportBundle"), true,
             "branches=${branchNames.joinToString(",")} size=${targetFile.length() / 1024}KB -> ${targetFile.absolutePath}")
         }
       } catch (e: Exception) {
-        notify("Ошибка экспорта: ${e.message}", NotificationType.ERROR)
+        notify(LocalGitMirrorBundle.message("panel.bundle.exportFail", e.message ?: ""), NotificationType.ERROR)
         historyService.add(LocalGitMirrorBundle.message("history.op.exportBundle"), false,
           "branches=${branchNames.joinToString(",")} err=${e.message?.take(300)}")
       }
@@ -255,7 +249,7 @@ internal fun LocalGitMirrorPanel.exportBundle() {
 
     override fun onThrowable(error: Throwable) {
       isSyncing = false
-      notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      notify(LocalGitMirrorBundle.message("panel.multi.opError", error.message ?: ""), NotificationType.ERROR)
     }
   })
 }
@@ -263,13 +257,13 @@ internal fun LocalGitMirrorPanel.exportBundle() {
 /** Import bundle file. */
 internal fun LocalGitMirrorPanel.importBundle() {
   val dir = baseDir() ?: run {
-    notify("Проект не найден", NotificationType.ERROR)
+    notify(LocalGitMirrorBundle.message("notify.projectDir.missing"), NotificationType.ERROR)
     return
   }
 
   // Ask user to select bundle file
   val fileChooser = JFileChooser().apply {
-    dialogTitle = "Выберите bundle файл"
+    dialogTitle = LocalGitMirrorBundle.message("panel.bundle.importTitle")
     fileFilter = javax.swing.filechooser.FileNameExtensionFilter("Git Bundle", "bundle")
   }
 
@@ -280,9 +274,9 @@ internal fun LocalGitMirrorPanel.importBundle() {
   val bundleFile = fileChooser.selectedFile
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Импорт bundle", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.bundle.importTask"), true) {
     override fun run(indicator: ProgressIndicator) {
-      indicator.text = "Импорт ${bundleFile.name}"
+      indicator.text = LocalGitMirrorBundle.message("panel.bundle.importProgress", bundleFile.name)
 
       try {
         // Use git bundle verify first
@@ -295,7 +289,7 @@ internal fun LocalGitMirrorPanel.importBundle() {
         val verifyOutput = verifyProc.inputStream.bufferedReader().readText()
 
         if (verifyExit != 0) {
-          notify("Bundle невалиден: $verifyOutput", NotificationType.ERROR)
+          notify(LocalGitMirrorBundle.message("panel.bundle.invalid", verifyOutput), NotificationType.ERROR)
           historyService.add(LocalGitMirrorBundle.message("history.op.importBundle"), false,
             "file=${bundleFile.name} verify failed: ${verifyOutput.take(300)}")
           return
@@ -316,16 +310,16 @@ internal fun LocalGitMirrorPanel.importBundle() {
         val fetchStderr = fetchProc.errorStream.bufferedReader().readText()
 
         if (fetchExit != 0) {
-          notify("Ошибка импорта: $fetchStderr", NotificationType.ERROR)
+          notify(LocalGitMirrorBundle.message("panel.bundle.importFail", fetchStderr), NotificationType.ERROR)
           historyService.add(LocalGitMirrorBundle.message("history.op.importBundle"), false,
             "file=${bundleFile.name} fetch err=${fetchStderr.take(300)}")
         } else {
-          notify("Импортировано ${branches.size} веток: ${branches.joinToString(", ")}", NotificationType.INFORMATION)
+          notify(LocalGitMirrorBundle.message("panel.bundle.importOk", branches.size, branches.joinToString(", ")), NotificationType.INFORMATION)
           historyService.add(LocalGitMirrorBundle.message("history.op.importBundle"), true,
             "file=${bundleFile.name} branches=${branches.joinToString(",")}")
         }
       } catch (e: Exception) {
-        notify("Ошибка импорта: ${e.message}", NotificationType.ERROR)
+        notify(LocalGitMirrorBundle.message("panel.bundle.importFail", e.message ?: ""), NotificationType.ERROR)
         historyService.add(LocalGitMirrorBundle.message("history.op.importBundle"), false,
           "file=${bundleFile.name} err=${e.message?.take(300)}")
       }
@@ -338,7 +332,7 @@ internal fun LocalGitMirrorPanel.importBundle() {
 
     override fun onThrowable(error: Throwable) {
       isSyncing = false
-      notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      notify(LocalGitMirrorBundle.message("panel.multi.opError", error.message ?: ""), NotificationType.ERROR)
     }
   })
 }
@@ -347,7 +341,7 @@ internal fun LocalGitMirrorPanel.importBundle() {
 internal fun LocalGitMirrorPanel.deleteSelectedBranches() {
   val selected = branchList.selectedValuesList
   if (selected.isEmpty()) {
-    notify("Выберите ветки для удаления", NotificationType.WARNING)
+    notify(LocalGitMirrorBundle.message("panel.delete.selectBranches"), NotificationType.WARNING)
     return
   }
 
@@ -355,17 +349,17 @@ internal fun LocalGitMirrorPanel.deleteSelectedBranches() {
   val currentBranch = GitLocal.currentBranch(project, baseDir() ?: return)
 
   // Don't allow deleting current branch
-  if (branchNames.contains(currentBranch)) {
-    notify("Нельзя удалить текущую ветку '$currentBranch'", NotificationType.WARNING)
+  if (currentBranch != null && branchNames.contains(currentBranch)) {
+    notify(LocalGitMirrorBundle.message("panel.delete.currentBranch", currentBranch), NotificationType.WARNING)
     return
   }
 
   val confirm = Messages.showYesNoDialog(
     project,
-    "Удалить ${branchNames.size} веток локально и на Cache?\n\n${branchNames.joinToString("\n")}",
-    "Подтверждение удаления",
-    "Удалить",
-    "Отмена",
+    LocalGitMirrorBundle.message("panel.delete.confirmMessage", branchNames.size, branchNames.joinToString("\n")),
+    LocalGitMirrorBundle.message("panel.delete.confirmTitle"),
+    LocalGitMirrorBundle.message("panel.delete.confirmYes"),
+    LocalGitMirrorBundle.message("panel.delete.confirmNo"),
     Messages.getWarningIcon()
   )
 
@@ -376,19 +370,19 @@ internal fun LocalGitMirrorPanel.deleteSelectedBranches() {
   val repo = syncFacade.resolveRepo(dir, settings).sanitized
 
   isSyncing = true
-  ProgressManager.getInstance().run(object : Task.Backgroundable(project, "DocCache: Удаление веток", true) {
+  ProgressManager.getInstance().run(object : Task.Backgroundable(project, LocalGitMirrorBundle.message("panel.delete.task"), true) {
     override fun run(indicator: ProgressIndicator) {
       val deleted = mutableListOf<String>()
       val errors = mutableListOf<String>()
 
       for (branch in branchNames) {
         indicator.checkCanceled()
-        indicator.text = "Удаление $branch"
+        indicator.text = LocalGitMirrorBundle.message("panel.delete.progress", branch)
 
         // Delete locally
         val localResult = GitLocal.deleteLocalBranch(project, dir, branch, force = true)
         if (!localResult.ok()) {
-          errors.add("$branch (локально): ${localResult.stderr}")
+          errors.add(LocalGitMirrorBundle.message("panel.delete.localFail", branch, localResult.stderr))
         }
 
         // Delete on Mirror
@@ -401,7 +395,7 @@ internal fun LocalGitMirrorPanel.deleteSelectedBranches() {
           insecureTls = settings.mirrorInsecureTls
         )
         if (mirrorResult.code !in 200..299) {
-          errors.add("$branch (Cache): ${mirrorResult.body.take(100)}")
+          errors.add(LocalGitMirrorBundle.message("panel.delete.mirrorFail", branch, mirrorResult.body.take(100)))
         }
 
         if (localResult.ok() || mirrorResult.code in 200..299) {
@@ -410,10 +404,10 @@ internal fun LocalGitMirrorPanel.deleteSelectedBranches() {
       }
 
       if (deleted.isNotEmpty()) {
-        notify("Удалено ${deleted.size} веток: ${deleted.joinToString(", ")}", NotificationType.INFORMATION)
+        notify(LocalGitMirrorBundle.message("panel.delete.ok", deleted.size, deleted.joinToString(", ")), NotificationType.INFORMATION)
       }
       if (errors.isNotEmpty()) {
-        notify("Ошибки: ${errors.joinToString("; ")}", NotificationType.WARNING)
+        notify(LocalGitMirrorBundle.message("panel.delete.errors", errors.joinToString("; ")), NotificationType.WARNING)
       }
     }
 
@@ -424,7 +418,207 @@ internal fun LocalGitMirrorPanel.deleteSelectedBranches() {
 
     override fun onThrowable(error: Throwable) {
       isSyncing = false
-      notify("Ошибка: ${error.message}", NotificationType.ERROR)
+      notify(LocalGitMirrorBundle.message("panel.multi.opError", error.message ?: ""), NotificationType.ERROR)
     }
   })
+}
+
+internal enum class MultiBranchSummaryKind { SUCCESS, PARTIAL, FAILED }
+
+internal data class MultiBranchOutcome(val branch: String, val ok: Boolean, val error: String? = null)
+
+internal data class MultiBranchSummary(val kind: MultiBranchSummaryKind, val message: String)
+
+internal fun multiBranchSummary(opTitle: String, repo: String, outcomes: List<MultiBranchOutcome>): MultiBranchSummary {
+  val failed = outcomes.filter { !it.ok }
+  val failureList = failed.joinToString("; ") { o ->
+    if (o.error.isNullOrBlank()) o.branch else "${o.branch}: ${o.error}"
+  }
+  return when {
+    failed.isEmpty() -> MultiBranchSummary(
+      MultiBranchSummaryKind.SUCCESS,
+      LocalGitMirrorBundle.message("panel.multi.ok", opTitle, outcomes.size, repo, outcomes.joinToString(", ") { it.branch })
+    )
+    failed.size == outcomes.size -> MultiBranchSummary(
+      MultiBranchSummaryKind.FAILED,
+      LocalGitMirrorBundle.message("panel.multi.failed", opTitle, outcomes.size, repo, failureList)
+    )
+    else -> MultiBranchSummary(
+      MultiBranchSummaryKind.PARTIAL,
+      LocalGitMirrorBundle.message("panel.multi.partial", opTitle, outcomes.size - failed.size, outcomes.size, repo, failureList)
+    )
+  }
+}
+
+internal fun MultiBranchSummaryKind.notificationType(): NotificationType = when (this) {
+  MultiBranchSummaryKind.SUCCESS -> NotificationType.INFORMATION
+  MultiBranchSummaryKind.PARTIAL -> NotificationType.WARNING
+  MultiBranchSummaryKind.FAILED -> NotificationType.ERROR
+}
+
+private fun pullBranchesFromMirror(
+  project: Project,
+  dir: File,
+  settings: MirrorSettingsService.State,
+  repo: String,
+  branches: List<String>,
+  indicator: ProgressIndicator
+): List<MultiBranchOutcome> {
+  if (!GitLocal.isCleanWorkTree(project, dir)) {
+    val err = LocalGitMirrorBundle.message("notify.worktree.dirty")
+    return branches.map { MultiBranchOutcome(it, false, err) }
+  }
+  if (settings.baseUrl.isBlank()) {
+    val err = LocalGitMirrorBundle.message("pull.notify.urlMissing")
+    return branches.map { MultiBranchOutcome(it, false, err) }
+  }
+  if (SecretsStore.syncPassword.isBlank() && !MirrorCrypto.isV3Pinned()) {
+    val err = LocalGitMirrorBundle.message("pull.notify.passwordMissing")
+    return branches.map { MultiBranchOutcome(it, false, err) }
+  }
+
+  val refs = MirrorSyncApi.getRefs(
+    baseUrl = settings.baseUrl,
+    apiKey = SecretsStore.mirrorApiKey,
+    repo = repo,
+    syncPassword = SecretsStore.syncPassword,
+    insecureTls = settings.mirrorInsecureTls
+  )
+  if (refs.code !in 200..299 || refs.refs == null) {
+    val err = LocalGitMirrorBundle.message("pull.notify.refsFailed", refs.code, refs.message)
+    return branches.map { MultiBranchOutcome(it, false, err) }
+  }
+  val remoteRefs = refs.refs.orEmpty().mapValues { it.value.sha }
+
+  val outcomes = branches.mapIndexed { index, branch ->
+    indicator.checkCanceled()
+    indicator.fraction = index.toDouble() / branches.size
+    indicator.text = LocalGitMirrorBundle.message("panel.multi.pullProgress", branch, index + 1, branches.size)
+    pullOneBranchFromMirror(project, dir, settings, repo, branch, remoteRefs)
+  }
+  if (outcomes.any { it.ok }) {
+    refs.head?.let { SyncStateStore.writeLastPulledHead(dir, it) }
+  }
+  return outcomes
+}
+
+private fun pullOneBranchFromMirror(
+  project: Project,
+  dir: File,
+  settings: MirrorSettingsService.State,
+  repo: String,
+  branch: String,
+  remoteRefs: Map<String, String>
+): MultiBranchOutcome {
+  val targetHash = remoteRefs[branch]
+    ?: return MultiBranchOutcome(branch, false, LocalGitMirrorBundle.message("pull.notify.branchNotFound", branch))
+
+  val hasObject = GitLocal.run(project, dir, 30, "cat-file", "-e", targetHash).ok()
+  val localTip = GitLocal.run(project, dir, 30, "rev-parse", "--verify", branch)
+    .let { if (it.ok()) it.stdout.trim() else null }
+  if (hasObject && localTip == targetHash) return MultiBranchOutcome(branch, true)
+
+  try {
+    if (!hasObject) {
+      val fetchError = fetchBranchBundle(project, dir, settings, repo, branch, remoteRefs)
+      if (fetchError != null) return MultiBranchOutcome(branch, false, fetchError)
+      if (!GitLocal.run(project, dir, 30, "cat-file", "-e", targetHash).ok()) {
+        return MultiBranchOutcome(branch, false, LocalGitMirrorBundle.message("pull.notify.objectsMissing", branch))
+      }
+    }
+
+    val localBranches = GitLocal.listBranches(project, dir).toSet()
+    PullLogic.applyBranch(
+      branchName = branch,
+      newHash = targetHash,
+      localBranches = localBranches,
+      revParse = { ref -> GitLocal.run(project, dir, 30, "rev-parse", ref).stdout.trim() },
+      isAncestor = { a, d -> GitLocal.run(project, dir, 30, "merge-base", "--is-ancestor", a, d).ok() },
+      updateRef = { ref, hash -> GitLocal.run(project, dir, 30, "update-ref", "refs/heads/$ref", hash) },
+      createBranch = { ref, hash -> GitLocal.run(project, dir, 30, "branch", ref, hash) },
+      createSuffixedBranch = { base, hash -> createSuffixedBranch(project, dir, base, hash) }
+    )
+
+    GitLocal.run(project, dir, 30, "for-each-ref", "--format=%(refname)", "refs/fetched/").stdout
+      .lines().filter { it.isNotBlank() }
+      .forEach { GitLocal.run(project, dir, 30, "update-ref", "-d", it.trim()) }
+
+    if (GitLocal.currentBranch(project, dir) == branch && GitLocal.isCleanWorkTree(project, dir)) {
+      // tree was only verified clean at start; edits made during the pull must survive
+      GitLocal.run(project, dir, 60, "reset", "--hard", "HEAD")
+    }
+    return MultiBranchOutcome(branch, true)
+  } catch (t: Throwable) {
+    if (localTip != null) {
+      GitLocal.run(project, dir, 30, "update-ref", "refs/heads/$branch", localTip)
+    }
+    return MultiBranchOutcome(branch, false, t.message ?: t::class.java.simpleName)
+  }
+}
+
+private fun fetchBranchBundle(
+  project: Project,
+  dir: File,
+  settings: MirrorSettingsService.State,
+  repo: String,
+  branch: String,
+  remoteRefs: Map<String, String>
+): String? {
+  val gitDir = GitDirCache.gitDir(dir)
+  val cacheDir = File(gitDir, ".cache").also { if (!it.exists()) it.mkdirs() }
+  val dumpOut = File(cacheDir, ".tmp_${UUID.randomUUID().toString().take(8)}")
+  val tmpBundle = File(cacheDir, ".bundle_${UUID.randomUUID().toString().take(8)}")
+  try {
+    val since = PullLogic.findSinceHash(dir, remoteRefs)
+    var dl = MirrorSyncApi.exportDump(
+      baseUrl = settings.baseUrl,
+      apiKey = SecretsStore.mirrorApiKey,
+      repo = repo,
+      since = since,
+      syncPassword = SecretsStore.syncPassword,
+      insecureTls = settings.mirrorInsecureTls,
+      outFile = dumpOut,
+      branch = branch
+    )
+    if (dl.code == 204) {
+      dl = MirrorSyncApi.exportDump(
+        baseUrl = settings.baseUrl,
+        apiKey = SecretsStore.mirrorApiKey,
+        repo = repo,
+        since = null,
+        syncPassword = SecretsStore.syncPassword,
+        insecureTls = settings.mirrorInsecureTls,
+        outFile = dumpOut,
+        branch = branch
+      )
+    }
+    val file = dl.file
+    if (dl.code == 204 || dl.code !in 200..299 || file == null) {
+      return LocalGitMirrorBundle.message("pull.notify.serverNoObjects", dl.code)
+    }
+    // v3 delivers a raw bundle, legacy mode a password-encrypted dump
+    val raw = file.readBytes()
+    val bundleBytes = if (PullLogic.looksLikeGitBundle(raw)) raw
+    else BundleCrypto.decryptDumpBytes(raw, SecretsStore.syncPassword)
+    tmpBundle.writeBytes(bundleBytes)
+    val fetch = GitLocal.run(project, dir, 300, "fetch", tmpBundle.absolutePath, "+refs/heads/*:refs/fetched/mirror/*")
+    if (!fetch.ok()) {
+      return LocalGitMirrorBundle.message(
+        "pull.notify.bundleUnpackFailed",
+        fetch.stderr.ifBlank { fetch.stdout }.take(500)
+      )
+    }
+    return null
+  } finally {
+    runCatching { dumpOut.delete() }
+    runCatching { tmpBundle.delete() }
+  }
+}
+
+private fun createSuffixedBranch(project: Project, dir: File, baseName: String, hash: String): String {
+  for (i in 1..99) {
+    val name = "$baseName-local-$i"
+    if (GitLocal.run(project, dir, 30, "branch", name, hash).ok()) return name
+  }
+  return "$baseName-local"
 }
