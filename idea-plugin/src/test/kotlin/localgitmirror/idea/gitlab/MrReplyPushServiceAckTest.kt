@@ -1,5 +1,6 @@
 package localgitmirror.idea.gitlab
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -56,5 +57,31 @@ class MrReplyPushServiceAckTest {
   @Test
   fun `resolve retry success on already-posted replies acks`() {
     assertTrue(MrReplyPushService.shouldAck(report(posted = 0, dupSkipped = 3), fileReplies, fileReplies))
+  }
+
+  @Test
+  fun `partial approval with failures records posted subset and keeps file outstanding`() {
+    val five = fileReplies + listOf(
+      MrReplies.Reply(MrReplies.Kind.NEW_GENERAL, "", "", 0, false, "d"),
+      MrReplies.Reply(MrReplies.Kind.NEW_GENERAL, "", "", 0, false, "e"),
+    )
+    val approved = five.take(5)
+    val outcomes = mapOf(
+      approved[0] to MrReplyPushService.Outcome.POSTED,
+      approved[1] to MrReplyPushService.Outcome.POSTED,
+      approved[2] to MrReplyPushService.Outcome.POSTED,
+      approved[3] to MrReplyPushService.Outcome.FAILED,
+      approved[4] to MrReplyPushService.Outcome.FAILED,
+    )
+    val r = report(posted = 3, failed = 2).copy(outcomes = outcomes)
+    assertFalse(MrReplyPushService.shouldAck(r, approved, five))
+    assertEquals(3, r.outcomes.values.count { it == MrReplyPushService.Outcome.POSTED })
+    assertEquals(2, r.outcomes.values.count { it == MrReplyPushService.Outcome.FAILED })
+  }
+
+  @Test
+  fun `retry pass where remaining replies post acks despite earlier failures`() {
+    val outcomes = fileReplies.associateWith { MrReplyPushService.Outcome.POSTED }
+    assertTrue(MrReplyPushService.shouldAck(report(posted = 3).copy(outcomes = outcomes), fileReplies, fileReplies))
   }
 }

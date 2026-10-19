@@ -26,10 +26,13 @@ import java.util.concurrent.atomic.AtomicBoolean
  * marker; before posting, existing discussion notes and the per-project
  * ledger are scanned for it, so retries (crash mid-batch, lost HTTP response,
  * re-click) never duplicate comments. The postbox item is acked (deleted)
- * only when the entire file was pushed without failures; partial approvals never ack.
+ * once every reply in the file reached a terminal outcome (posted, duplicate,
+ * dead thread); replies still retryable keep the file outstanding.
  * Anchored replies duplicating a live unresolved thread (±3 lines) are skipped.
  */
 class MrReplyPushService(private val project: Project) {
+
+  enum class Outcome { POSTED, DUP, DEAD, FAILED }
 
   data class FileReport(
     val path: String,
@@ -40,6 +43,7 @@ class MrReplyPushService(private val project: Project) {
     val details: List<String>,
     val parseErrors: Int = 0,
     val quiet: Boolean = false,
+    val outcomes: Map<MrReplies.Reply, Outcome> = emptyMap(),
   ) {
     val clean: Boolean get() = failed == 0 && parseErrors == 0
   }
@@ -246,6 +250,7 @@ class MrReplyPushService(private val project: Project) {
     var dupSkipped = 0
     var skipped = 0
     var failed = 0
+    val outcomes = LinkedHashMap<MrReplies.Reply, Outcome>()
     val details = mutableListOf<String>()
     parsed.errors.forEach { details.add("parse: $it") }
 
@@ -260,15 +265,18 @@ class MrReplyPushService(private val project: Project) {
       when (resolveDecision(seenMarkers.contains(marker), reply.resolve && thread != null, thread?.resolved ?: true)) {
         ResolveAction.SKIP -> {
           dupSkipped++
+          outcomes[reply] = Outcome.DUP
           details.add("$label: duplicate, already in GitLab")
         }
         ResolveAction.RESOLVE_ONLY -> {
           val res = GitLabApi.resolveDiscussion(conf, iid, reply.threadId)
           if (res.ok()) {
             dupSkipped++
+            outcomes[reply] = Outcome.DUP
             details.add("$label: duplicate, thread ${reply.threadId} resolved")
           } else {
             failed++
+            outcomes[reply] = Outcome.FAILED
             details.add("$label: duplicate, resolve ${reply.threadId} failed HTTP ${res.code}")
           }
         }
@@ -280,6 +288,7 @@ class MrReplyPushService(private val project: Project) {
             MrReplies.Kind.THREAD -> {
               if (thread == null) {
                 skipped++
+                outcomes[reply] = Outcome.DEAD
                 details.add("$label: thread ${reply.threadId} no longer exists")
                 continue
               }
@@ -296,6 +305,7 @@ class MrReplyPushService(private val project: Project) {
               val clash = anchorClash(reply, discussions.discussions)
               if (clash != null) {
                 skipped++
+                outcomes[reply] = Outcome.DEAD
                 details.add("$label: unresolved thread ${clash.id} already at ${reply.file}:${clash.anchorLine} — reply into it, don't duplicate")
                 continue
               }
@@ -313,23 +323,26 @@ class MrReplyPushService(private val project: Project) {
           }
           if (result.ok()) {
             posted++
+            outcomes[reply] = Outcome.POSTED
             seenMarkers.add(marker)
             ledger.add(marker)
             while (ledger.size > LEDGER_CAP) ledger.removeAt(0)
             if (fallbackNote.isNotEmpty()) details.add("$label: $fallbackNote, posted as general note")
           } else if (reply.kind == MrReplies.Kind.THREAD && result.code == 404) {
             skipped++
+            outcomes[reply] = Outcome.DEAD
             details.add("$label: thread ${reply.threadId} no longer exists")
           } else {
             failed++
+            outcomes[reply] = Outcome.FAILED
             details.add("$label: HTTP ${result.code} ${result.message}")
           }
         }
       }
     }
 
-    val report = FileReport(path, posted, dupSkipped, skipped, failed, details, parsed.errors.size)
-    if (shouldAck(report, parsed.replies, pending.parsed.replies)) {
+    val report = FileReport(path, posted, dupSkipped, skipped, failed, details, parsed.errors.size, outcomes = outcomes)
+    if (shouldAck(report, parsed.replies, pending.parsed.replies, seenMarkers, iid)) {
       pending.siblings.forEach { s ->
         MirrorPostboxApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, s.id)
       }
@@ -394,12 +407,26 @@ class MrReplyPushService(private val project: Project) {
           d.anchorLine != null && kotlin.math.abs(d.anchorLine!! - reply.line) <= ANCHOR_WINDOW
       }
 
-    /** A pass may ack (delete) the postbox item only when it is clean and pushed every parsed reply; thread-gone skips leave replies dead and do not block the ack. */
+    /** A pass may ack (delete) the postbox item only when every file reply is terminal: posted/dup this pass, dead, or already in the ledger from an earlier pass. */
     internal fun shouldAck(
       report: FileReport,
       pushed: List<MrReplies.Reply>,
       fileReplies: List<MrReplies.Reply>,
-    ): Boolean = report.clean && pushed == fileReplies
+      seenMarkers: Set<String> = emptySet(),
+      iid: Int = 0,
+    ): Boolean {
+      if (report.parseErrors > 0) return false
+      val terminal = pushed.toSet().filterTo(HashSet()) { r ->
+        when (report.outcomes[r]) {
+          Outcome.POSTED, Outcome.DUP, Outcome.DEAD -> true
+          else -> false
+        } || seenMarkers.contains(marker(iid, r))
+      }
+      val retryable = fileReplies.filterNot { it in terminal }
+      if (retryable.isEmpty()) return true
+      // no per-reply ledger yet: a clean full-file pass still acks; partial approval must not
+      return report.clean && pushed == fileReplies
+    }
 
     fun marker(iid: Int, reply: MrReplies.Reply): String {
       val key = when (reply.kind) {
