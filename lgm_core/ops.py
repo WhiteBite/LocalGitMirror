@@ -59,6 +59,7 @@ from .ops_vault import (
 from .ops_git import (
     op_status, op_repos, op_branches, send_branch, send_branches, op_send,
     op_pull, op_deps_request, op_vault_status, op_branch_delete, op_prune,
+    op_preview_pull, op_has_commits,
     _GUIDE, op_guide, op_update,
 )
 from .ops_mr import (
@@ -205,6 +206,26 @@ REGISTRY: list[Op] = [
         run=op_pull,
     ),
     Op(
+        name="preview_pull",
+        summary="Lightweight incoming-commits check: asks the mirror whether a pull would bring anything (no bundle transfer).",
+        params=[
+            Param("repo", "str", "", "Repository name", required=True),
+            Param("since", "str", "", "Local SHA to compare against (default: HEAD of --project)"),
+            Param("project", "str", "", "Local git project root; its HEAD becomes --since when --since is empty"),
+        ],
+        run=op_preview_pull,
+    ),
+    Op(
+        name="has_commits",
+        summary="Ask the mirror which of the given commits it already holds (inspect before send).",
+        params=[
+            Param("repo", "str", "", "Repository name", required=True),
+            Param("commits", "str", "", "Comma-separated SHAs to check (default: local branch tips from --project)"),
+            Param("project", "str", "", "Local git project root; its branch tips become --commits when --commits is empty"),
+        ],
+        run=op_has_commits,
+    ),
+    Op(
         name="deps_request",
         summary="Post a pre-built encrypted manifest file to /api/documents/submit.",
         params=[
@@ -233,12 +254,12 @@ REGISTRY: list[Op] = [
         summary="List (dry-run) or delete merged/stale branches on the mirror.",
         params=[
             Param("repo", "str", "", "Repository name", required=True),
-            Param("bases", "str", "master,develop,plan_fix",
-                  "Comma-separated base branches (a branch merged into any base is prunable)"),
+            Param("bases", "str", "",
+                  "Comma-separated base branches (a branch merged into any base is prunable); required unless --older-days is set"),
             Param("older_days", "int", 0,
                   "Also prune branches older than N days by committerdate (0=off)"),
             Param("keep", "str", "",
-                  "Comma-separated branches to always keep (default: master,develop,plan_fix)"),
+                  "Comma-separated branches to always keep (HEAD is always protected)"),
             Param("apply", "bool", False,
                   "Actually delete candidates (default: dry-run listing)"),
         ],
@@ -262,6 +283,8 @@ REGISTRY: list[Op] = [
             Param("branch", "str", "", "MR source branch(es), comma-separated (used when no iid given)"),
             Param("project", "str", "", "Local git root to fetch into", required=True),
             Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("dry_run", "bool", False,
+                  "Print the send plan without fetching, moving refs or uploading"),
         ],
         run=op_mr_send,
     ),
@@ -393,7 +416,7 @@ REGISTRY: list[Op] = [
         name="mr_projects_scan",
         summary="Register local GitLab checkouts found under a root directory for mr_sync_all.",
         params=[
-            Param("root", "list", "", "One or more directories/checkouts to register (repeatable)", required=False),
+            Param("root", "list", "", "One or more directories/checkouts to register (repeatable)", required=True),
         ],
         run=op_mr_projects_scan,
         needs_client=False,

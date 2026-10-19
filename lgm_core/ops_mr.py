@@ -82,7 +82,8 @@ def _note_and_marker_items(c: MirrorClient, repo: str, iid: int) -> tuple | None
 def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: bool) -> dict:
     """Reject replies for a closed MR or ones duplicating the live review: a '## new'
     anchor colliding with an unresolved thread (±ANCHOR_WINDOW lines, same file) or a
-    '## thread' id absent from the notes. Fail-open when the notes are unavailable."""
+    '## thread' id absent from the notes. Fail-closed when the notes are unavailable:
+    thread ids cannot be verified, so the reply is refused unless force."""
     thread_refs = _REPLY_THREAD.findall(content)
     anchors = [(m.group(1), int(m.group(2))) for m in _REPLY_ANCHORED.finditer(content)]
     found = _note_and_marker_items(c, repo, iid)
@@ -95,11 +96,20 @@ def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: b
     if not thread_refs and not anchors:
         return {"status": "not-needed"}
     if found is None or found[0] is None:
-        return {"status": "notes-unavailable"}
+        if force:
+            return {"status": "forced"}
+        return {"status": "rejected",
+                "error": f"mr-notes for MR !{iid} are unavailable (expired or not "
+                         f"transferred) — cannot verify thread ids; "
+                         f"force=true to override"}
     try:
         notes = c.file_sync_fetch(repo, found[0]["id"]).decode("utf-8")
     except Exception:
-        return {"status": "notes-unavailable"}
+        if force:
+            return {"status": "forced"}
+        return {"status": "rejected",
+                "error": f"mr-notes for MR !{iid} could not be fetched — cannot "
+                         f"verify thread ids; force=true to override"}
     threads = _parse_notes_threads(notes)
     collisions = _anchor_collisions(anchors, threads["unresolved"])
     unknown = [t for t in thread_refs if t not in threads["ids"]]
@@ -369,12 +379,14 @@ def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[str]:
     return diverged
 
 
-def _local_tip(proj: Path, branch: str) -> str:
+def _local_tip(proj: Path, branch: str, missing_ok: bool = False) -> str:
     proc = subprocess.run(
         ["git", "-C", str(proj), "rev-parse", f"refs/heads/{branch}"],
         capture_output=True, text=True, timeout=30,
     )
     if proc.returncode != 0:
+        if missing_ok:
+            return ""
         raise LgmError("git", f"cannot resolve refs/heads/{branch}")
     return proc.stdout.strip()
 
@@ -429,6 +441,8 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
       - branches whose tip the mirror already has are skipped entirely;
       - all remaining branches go into ONE bundle, so their shared history is
         packed once, with mirror tips as ^exclusions (only new commits travel).
+    --dry-run skips every git mutation and the upload: the plan (sent/skipped
+    per branch, from local tips vs mirror tips) is returned instead.
     """
     c = _client(ctx)
     repo = args.get("repo", "")
@@ -446,11 +460,29 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
     if not targets:
         raise LgmError("config", "--iid, --iids, --all-open or --branch is required")
 
+    mirror_refs = _mirror_refs_safe(c, repo)
+
+    if args.get("dry_run", False):
+        sent: list[dict] = []
+        skipped: list[dict] = []
+        for t in targets:
+            tip = _local_tip(proj, t["branch"], missing_ok=True)
+            mirror_sha = (mirror_refs.get(t["branch"]) or {}).get("sha", "")
+            t["tip"] = tip
+            if mirror_sha and tip and mirror_sha == tip:
+                skipped.append(t)
+            else:
+                sent.append(t)
+        return {"repo": repo, "project": str(proj), "dry_run": True,
+                "sent": sent, "skipped": skipped, "warnings": [],
+                "message": (f"dry-run: would send {len(sent)} branch(es), "
+                            f"skip {len(skipped)}; no refs moved, nothing "
+                            f"uploaded (plan uses local tips, origin not fetched)")}
+
     diverged = _fetch_mr_branches(proj, [t["branch"] for t in targets])
     warnings = [f"{b}: {_DIVERGED_WARNING}" for b in diverged]
     blocked = set(diverged)
 
-    mirror_refs = _mirror_refs_safe(c, repo)
     sent: list[dict] = []
     skipped: list[dict] = []
     for t in targets:

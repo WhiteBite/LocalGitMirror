@@ -36,7 +36,7 @@ def test_prune_param_defaults():
     op = get_op("prune")
     params = {p.name: p for p in op.params}
     assert params["repo"].required is True
-    assert params["bases"].default == "master,develop,plan_fix"
+    assert params["bases"].default == ""
     assert params["older_days"].type == "int"
     assert params["older_days"].default == 0
     assert params["keep"].default == ""

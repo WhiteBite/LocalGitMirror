@@ -322,6 +322,72 @@ def op_pull(ctx: Ctx, args: dict) -> dict:
                 "fetch_stderr": fetch_proc.stderr.strip()[:500] if fetch_proc.stderr else ""}
 
 
+def _local_head(proj: Path) -> str:
+    """HEAD sha of a local repo; empty when it is not a git repo."""
+    proc = subprocess.run(
+        ["git", "-C", str(proj), "rev-parse", "HEAD"],
+        capture_output=True, text=True, timeout=60,
+    )
+    return proc.stdout.strip() if proc.returncode == 0 else ""
+
+
+def _local_branch_tips(proj: Path) -> list[str]:
+    """All local branch tips (refs/heads/*) of a repo; empty when not a repo."""
+    proc = subprocess.run(
+        ["git", "-C", str(proj), "for-each-ref", "--format=%(objectname)",
+         "refs/heads/"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if proc.returncode != 0:
+        return []
+    return [s for s in proc.stdout.split() if len(s) == 40]
+
+
+def op_preview_pull(ctx: Ctx, args: dict) -> dict:
+    """Ask the mirror whether a pull would bring anything (no bundle transfer).
+
+    ``since`` defaults to the HEAD of ``--project`` so the common
+    inspect-before-pull flow needs no manual sha.
+    """
+    c = _client(ctx)
+    repo = args.get("repo", "")
+    if not repo:
+        raise LgmError("config", "--repo is required")
+    since = (args.get("since") or "").strip()
+    project = (args.get("project") or "").strip()
+    if not since and project:
+        proj = Path(project).resolve()
+        if not proj.is_dir():
+            raise LgmError("config", f"project not found: {proj}")
+        since = _local_head(proj)
+    result = c.sync_preview_pull(repo, since=since)
+    result["since"] = since
+    return result
+
+
+def op_has_commits(ctx: Ctx, args: dict) -> dict:
+    """Ask the mirror which of the given commits it already holds.
+
+    ``commits`` defaults to the local branch tips of ``--project`` — the
+    inspect-before-send question "what does the mirror still lack".
+    """
+    c = _client(ctx)
+    repo = args.get("repo", "")
+    if not repo:
+        raise LgmError("config", "--repo is required")
+    commits = [s.strip() for s in (args.get("commits") or "").split(",")
+               if s.strip()]
+    project = (args.get("project") or "").strip()
+    if not commits and project:
+        proj = Path(project).resolve()
+        if not proj.is_dir():
+            raise LgmError("config", f"project not found: {proj}")
+        commits = _local_branch_tips(proj)
+    if not commits:
+        raise LgmError("config", "--commits or --project is required (no commits to check)")
+    return c.sync_has_commits(repo, commits)
+
+
 def op_deps_request(ctx: Ctx, args: dict) -> dict:
     """Post a pre-built encrypted manifest file to /api/documents/submit."""
     c = _client(ctx)
@@ -378,6 +444,8 @@ def op_prune(ctx: Ctx, args: dict) -> dict:
     """List (dry-run) or delete merged/stale branches on the mirror.
 
     Dry-run by default: without --apply the server only reports candidates.
+    Bases are never defaulted client-side: merged-based pruning needs an
+    explicit --bases, otherwise --older-days must select the candidates.
     """
     c = _client(ctx)
     repo = args.get("repo", "")
@@ -389,6 +457,11 @@ def op_prune(ctx: Ctx, args: dict) -> dict:
         older_days = int(args.get("older_days", 0) or 0)
     except (TypeError, ValueError):
         raise LgmError("config", "--older-days must be an integer") from None
+    if not bases and not older_days:
+        raise LgmError(
+            "config",
+            "--bases is required (comma-separated base branches a branch may "
+            "be merged into), or pass --older-days for age-based pruning")
     apply = bool(args.get("apply", False))
     return c.prune_branches(repo, bases=bases, older_days=older_days,
                             keep=keep, apply=apply)

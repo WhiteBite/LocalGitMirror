@@ -318,10 +318,19 @@ def test_mr_replies_send_force_overrides_precheck():
     assert client.sent is not None
 
 
-def test_mr_replies_send_precheck_failopen_without_notes():
-    res = _send(_StubClient(items=[]), "## new Foo.java:75\nfix")
+def test_mr_replies_send_precheck_failclosed_without_notes():
+    client = _StubClient(items=[])
+    res = _send(client, "## new Foo.java:75\nfix")
+    assert res["success"] is False
+    assert res["precheck"]["status"] == "rejected"
+    assert client.sent is None
+
+
+def test_mr_replies_send_force_overrides_missing_notes():
+    client = _StubClient(items=[])
+    res = _send(client, "## new Foo.java:75\nfix", force=True)
     assert res["success"] is True
-    assert res["precheck"]["status"] == "notes-unavailable"
+    assert client.sent is not None
 
 
 def test_mr_replies_send_rejects_replies_for_closed_mr():
