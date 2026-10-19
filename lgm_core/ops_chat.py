@@ -136,6 +136,19 @@ def op_file_get(ctx: Ctx, args: dict) -> dict:
             "message": f"Downloaded {len(data)} bytes. Pass --save to write to disk."}
 
 
+def op_file_ack(ctx: Ctx, args: dict) -> dict:
+    """Delete one postbox item on the mirror by id (ack)."""
+    repo = args.get("repo", "")
+    item_id = args.get("id", "")
+    if not repo:
+        raise LgmError("config", "--repo is required")
+    if not item_id:
+        raise LgmError("config", "--id is required")
+    c = _client(ctx)
+    res = c.file_sync_ack(repo, item_id)
+    return {"success": True, "repo": repo, "id": item_id, "result": res}
+
+
 def op_config_get(ctx: Ctx, args: dict) -> dict:
     """Read server settings (all, or a specific section)."""
     section = args.get("section", "")

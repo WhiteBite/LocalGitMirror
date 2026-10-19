@@ -64,12 +64,12 @@ from .ops_git import (
 from .ops_mr import (
     _MRN_TITLE, _MRN_BRANCH, _parse_mr_notes_head, _mr_list_from_postbox,
     op_mr_list, _resolve_mr_targets, _fetch_mr_branches, _local_tip,
-    _mirror_refs_safe, _existing_shas, _new_commit_count, op_mr_send,
+    _mirror_refs_safe, _existing_shas, op_mr_send,
     op_mr_notes, op_mr_replies_send, op_mr_replies_status,
 )
 from .ops_chat import (
     op_chat_send, op_chat_list,
-    op_file_send, op_file_list, op_file_get,
+    op_file_send, op_file_list, op_file_get, op_file_ack,
     op_config_get, op_config_set,
 )
 from .ops_projects import (
@@ -361,6 +361,15 @@ REGISTRY: list[Op] = [
             Param("save", "str", "", "Local path to save the file to"),
         ],
         run=op_file_get,
+    ),
+    Op(
+        name="file_ack",
+        summary="Delete one postbox item on the mirror by id (ack).",
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("id", "str", "", "File ID from file_list", required=True),
+        ],
+        run=op_file_ack,
     ),
     Op(
         name="config_get",

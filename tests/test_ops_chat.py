@@ -274,6 +274,39 @@ def test_file_get_requires_repo_and_id():
         op_file_get(_ctx(), {"repo": "r"})
 
 
+def test_file_ack_calls_client_ack():
+    from lgm_core.ops import op_file_ack
+    ctx = _ctx()
+    captured = {}
+
+    def fake_ack(repo, item_id):
+        captured.update(repo=repo, item_id=item_id)
+        return {"success": True, "deleted": True}
+
+    ctx.client.file_sync_ack = fake_ack
+
+    res = op_file_ack(ctx, {"repo": "r", "id": "abc"})
+    assert captured["repo"] == "r"
+    assert captured["item_id"] == "abc"
+    assert res["success"] is True
+    assert res["repo"] == "r"
+    assert res["id"] == "abc"
+    assert res["result"] == {"success": True, "deleted": True}
+
+
+def test_file_ack_propagates_lgm_error():
+    from lgm_core.ops import op_file_ack
+    ctx = _ctx()
+
+    def boom(repo, item_id):
+        raise LgmError("http", "server gone")
+
+    ctx.client.file_sync_ack = boom
+    with pytest.raises(LgmError) as ei:
+        op_file_ack(ctx, {"repo": "r", "id": "abc"})
+    assert "server gone" in ei.value.message
+
+
 _SETTINGS = {
     "general": {"storage_path": "storage", "retention_days": 7},
     "git": {"git_port": 8444},
