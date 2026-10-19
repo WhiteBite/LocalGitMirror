@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 
 from app.core.bundle_crypto import encrypt_bundle_bytes
 from app.core.envelope_crypto import encrypt_envelope
@@ -22,6 +22,14 @@ router = APIRouter(prefix="/api/plugin", tags=["plugin"])
 
 _PLUGIN_NAME_RE = re.compile(r"^localgitmirror-idea-plugin-(\d+)\.(\d+)\.(\d+)\.zip$")
 _BUILD_LOCK = threading.Lock()
+_BUILD_THREAD: Optional[threading.Thread] = None
+_BUILD_ERROR: Optional[str] = None
+_BUILD_THREAD_NAME = "lgm-plugin-build"
+
+_PLAINTEXT_REFUSAL = {
+    "code": "enc_required",
+    "message": "Unencrypted plugin download is disabled; the sync password is required (request ?enc=1).",
+}
 
 
 def _repo_root() -> Path:
@@ -83,49 +91,72 @@ def _gradle_command() -> Optional[list[str]]:
     return [executable] if executable else None
 
 
-def _ensure_current_zip() -> tuple[Optional[Path], Optional[str]]:
-    """Build a stale/missing ZIP on demand instead of serving an old plugin."""
+def _build_in_flight() -> bool:
+    thread = _BUILD_THREAD
+    return thread is not None and thread.is_alive()
+
+
+def _start_background_build() -> None:
+    """Single-flight: at most one gradle buildPlugin thread at a time."""
+    global _BUILD_THREAD, _BUILD_ERROR
+    with _BUILD_LOCK:
+        if _build_in_flight():
+            return
+        _BUILD_ERROR = None
+        _BUILD_THREAD = threading.Thread(target=_background_build, daemon=True, name=_BUILD_THREAD_NAME)
+        _BUILD_THREAD.start()
+
+
+def _background_build() -> None:
+    global _BUILD_ERROR
+    gradle = _gradle_command()
+    if gradle is None:
+        _BUILD_ERROR = "Plugin ZIP is stale and Gradle is unavailable on the Mirror server."
+        return
+    try:
+        result = subprocess.run(
+            [*gradle, "buildPlugin", "--no-daemon"],
+            cwd=_repo_root() / "idea-plugin",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired:
+        _BUILD_ERROR = "Plugin build timed out after 15 minutes."
+        return
+    except OSError as error:
+        _BUILD_ERROR = f"Plugin build could not start: {error}"
+        return
+
+    latest = _newest_zip()
+    expected = _expected_version()
+    if result.returncode != 0 or latest is None or (expected is not None and _version_key(latest) < expected):
+        output = (result.stderr or result.stdout).strip().replace("\n", " ")[-300:]
+        _BUILD_ERROR = f"Plugin build failed: {output or 'no ZIP produced'}"
+        return
+    _BUILD_ERROR = None
+
+
+def _ensure_current_zip() -> tuple[Optional[Path], bool]:
+    """Newest existing ZIP plus whether a refresh build is in flight.
+
+    A stale or missing archive starts one background build; the request never
+    waits for gradle (a 15-minute build must not live inside a GET).
+    """
     latest = _newest_zip()
     expected = _expected_version()
     if expected is None or (latest is not None and _version_key(latest) >= expected):
-        return latest, None
-
-    with _BUILD_LOCK:
-        latest = _newest_zip()
-        if latest is not None and _version_key(latest) >= expected:
-            return latest, None
-
-        gradle = _gradle_command()
-        if gradle is None:
-            return None, "Plugin ZIP is stale and Gradle is unavailable on the Mirror server."
-        try:
-            result = subprocess.run(
-                [*gradle, "buildPlugin", "--no-daemon"],
-                cwd=_repo_root() / "idea-plugin",
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=900,
-            )
-        except subprocess.TimeoutExpired:
-            return None, "Plugin build timed out after 15 minutes."
-        except OSError as error:
-            return None, f"Plugin build could not start: {error}"
-
-        latest = _newest_zip()
-        if result.returncode != 0 or latest is None or _version_key(latest) < expected:
-            output = (result.stderr or result.stdout).strip().replace("\n", " ")[-300:]
-            return None, f"Plugin build failed: {output or 'no ZIP produced'}"
-        return latest, None
+        return latest, False
+    _start_background_build()
+    return latest, _build_in_flight()
 
 
 def _current_zip() -> Path:
-    archive, error = _ensure_current_zip()
-    if error:
-        raise HTTPException(status_code=503, detail=error)
+    archive, _building = _ensure_current_zip()
     if archive is None:
-        raise HTTPException(status_code=404, detail="Not Found")
+        raise HTTPException(status_code=404, detail="Plugin archive not built yet")
     return archive
 
 
@@ -160,20 +191,29 @@ def plugin_info(enc: bool = Query(False)):
 
     ``?enc=1`` hides the metadata (filename reveals the tool name) behind the
     standard envelope — the work network is hostile, the mirror is trusted.
+    Plaintext (``enc=0`` or no flag) is refused: the sync password is
+    required. A stale or missing archive is reported via ``building`` while
+    one background rebuild runs.
     """
-    archive = _current_zip()
-    stat = archive.stat()
-    metadata = {
-        "available": True,
-        "version": _parse_version(archive.name),
-        "filename": archive.name,
-        "size": stat.st_size,
-        "built_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
-        "sha256": _sha256(archive),
-    }
-    if enc:
-        return {"e": encrypt_envelope(metadata, _enc_password())}
-    return metadata
+    if not enc:
+        raise HTTPException(status_code=400, detail=_PLAINTEXT_REFUSAL)
+    password = _enc_password()
+    archive, building = _ensure_current_zip()
+    metadata: dict = {"available": archive is not None, "building": building}
+    if archive is not None:
+        stat = archive.stat()
+        metadata.update(
+            {
+                "version": _parse_version(archive.name),
+                "filename": archive.name,
+                "size": stat.st_size,
+                "built_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                "sha256": _sha256(archive),
+            }
+        )
+    if _BUILD_ERROR:
+        metadata["build_error"] = _BUILD_ERROR
+    return {"e": encrypt_envelope(metadata, password)}
 
 
 @router.get("/latest")
@@ -182,10 +222,15 @@ def plugin_latest(enc: bool = Query(False)):
 
     ``?enc=1`` ships the archive as a bundle-format ciphertext (pure noise on
     the wire; the raw ZIP would expose the plugin's bytecode to traffic
-    inspection). Clients detect a legacy plain response by the PK magic.
+    inspection). Plaintext (``enc=0`` or no flag) is refused: the sync
+    password is required. The newest existing ZIP is served while a rebuild
+    runs in the background.
     """
-    archive = _current_zip()
-    if enc:
-        blob = encrypt_bundle_bytes(archive.read_bytes(), _enc_password())
-        return Response(content=blob, media_type="application/octet-stream")
-    return FileResponse(path=str(archive), media_type="application/zip", filename=archive.name)
+    if not enc:
+        raise HTTPException(status_code=400, detail=_PLAINTEXT_REFUSAL)
+    password = _enc_password()
+    archive, _building = _ensure_current_zip()
+    if archive is None:
+        raise HTTPException(status_code=404, detail="Plugin archive not built yet")
+    blob = encrypt_bundle_bytes(archive.read_bytes(), password)
+    return Response(content=blob, media_type="application/octet-stream")

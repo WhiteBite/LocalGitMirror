@@ -20,12 +20,13 @@ def test_plugin_info_returns_metadata_and_sha256(tmp_path, monkeypatch):
     zip_path.write_bytes(b"fake-zip-content")
     monkeypatch.setenv("LGM_PLUGIN_DIST", str(tmp_path))
     monkeypatch.setenv("API_KEY", "plugin-info-test-key")
+    monkeypatch.setenv("SYNC_PASSWORD", "pw")
 
     client = TestClient(app)  # no context manager: skips lifespan/ports
-    r = client.get("/api/plugin/info", headers=AUTH)
+    r = client.get("/api/plugin/info", params={"enc": "1"}, headers=AUTH)
 
     assert r.status_code == 200, r.text
-    data = r.json()
+    data = _decrypt_info(r)
     assert data["available"] is True
     assert data["filename"] == zip_path.name
     assert data["size"] == len(b"fake-zip-content")
@@ -39,12 +40,14 @@ def test_plugin_latest_streams_the_archive(tmp_path, monkeypatch):
     zip_path.write_bytes(payload)
     monkeypatch.setenv("LGM_PLUGIN_DIST", str(tmp_path))
     monkeypatch.setenv("API_KEY", "plugin-info-test-key")
+    monkeypatch.setenv("SYNC_PASSWORD", "pw")
 
     client = TestClient(app)
-    r = client.get("/api/plugin/latest", headers=AUTH)
+    r = client.get("/api/plugin/latest", params={"enc": "1"}, headers=AUTH)
 
     assert r.status_code == 200
-    assert r.content == payload
+    from app.core.bundle_crypto import decrypt_dump_bytes
+    assert decrypt_dump_bytes(r.content, "pw") == payload
 
 
 def _enc_env(monkeypatch, tmp_path, payload: bytes):
@@ -55,6 +58,11 @@ def _enc_env(monkeypatch, tmp_path, payload: bytes):
     monkeypatch.setenv("API_KEY", "plugin-info-test-key")
 
 
+def _decrypt_info(response):
+    from app.core.envelope_crypto import decrypt_envelope
+    return decrypt_envelope(response.json()["e"], "pw")
+
+
 def test_plugin_info_enc_hides_metadata(tmp_path, monkeypatch):
     _enc_env(monkeypatch, tmp_path, b"fake-zip-content")
     r = TestClient(app).get("/api/plugin/info", params={"enc": "1"}, headers=AUTH)
@@ -62,8 +70,7 @@ def test_plugin_info_enc_hides_metadata(tmp_path, monkeypatch):
     data = r.json()
     assert set(data) == {"e"}  # no filename/version leaks in the JSON
 
-    from app.core.envelope_crypto import decrypt_envelope
-    meta = decrypt_envelope(data["e"], "pw")
+    meta = _decrypt_info(r)
     assert meta["filename"] == "localgitmirror-idea-plugin-0.999.0.zip"
     assert meta["version"] == "0.999.0"
     assert len(meta["sha256"]) == 64
@@ -89,3 +96,47 @@ def test_plugin_enc_requires_password(tmp_path, monkeypatch):
     monkeypatch.setenv("API_KEY", "plugin-info-test-key")
     r = TestClient(app).get("/api/plugin/latest", params={"enc": "1"}, headers=AUTH)
     assert r.status_code == 503
+
+
+def test_plugin_info_enc0_refused_typed(tmp_path, monkeypatch):
+    zip_path = tmp_path / "localgitmirror-idea-plugin-0.999.0.zip"
+    zip_path.write_bytes(b"fake-zip-content")
+    monkeypatch.setenv("LGM_PLUGIN_DIST", str(tmp_path))
+    monkeypatch.setenv("API_KEY", "plugin-info-test-key")
+
+    r = TestClient(app).get("/api/plugin/info", params={"enc": "0"}, headers=AUTH)
+
+    assert r.status_code == 400, r.text
+    detail = r.json()["detail"]
+    assert detail["code"] == "enc_required"
+    assert "sync password" in detail["message"].lower()
+    assert "localgitmirror" not in r.text  # metadata must not leak either
+
+
+def test_plugin_info_without_enc_flag_refused_typed(tmp_path, monkeypatch):
+    zip_path = tmp_path / "localgitmirror-idea-plugin-0.999.0.zip"
+    zip_path.write_bytes(b"fake-zip-content")
+    monkeypatch.setenv("LGM_PLUGIN_DIST", str(tmp_path))
+    monkeypatch.setenv("API_KEY", "plugin-info-test-key")
+
+    r = TestClient(app).get("/api/plugin/info", headers=AUTH)
+
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "enc_required"
+
+
+def test_plugin_latest_enc0_refused_enc1_still_ships_archive(tmp_path, monkeypatch):
+    payload = b"PK\x03\x04" + b"\x00" * 64
+    _enc_env(monkeypatch, tmp_path, payload)
+    client = TestClient(app)
+
+    plain = client.get("/api/plugin/latest", params={"enc": "0"}, headers=AUTH)
+
+    assert plain.status_code == 400, plain.text
+    assert plain.json()["detail"]["code"] == "enc_required"
+    assert plain.content[:2] != b"PK"  # never the raw archive bytes
+
+    sealed = client.get("/api/plugin/latest", params={"enc": "1"}, headers=AUTH)
+    assert sealed.status_code == 200
+    from app.core.bundle_crypto import decrypt_dump_bytes
+    assert decrypt_dump_bytes(sealed.content, "pw") == payload
