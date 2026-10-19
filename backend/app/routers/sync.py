@@ -107,6 +107,13 @@ class NegotiateRequest(BaseModel):
 _SAFE_BRANCH = re.compile(r"^[^\x00-\x1f\x7f ~^:?*\[\\]+$")
 
 
+def _tip_date(info: dict) -> datetime:
+    try:
+        return datetime.fromisoformat(info.get("updated") or "")
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+
 def _collect_sync_refs(workspace: Path, bare: Path):
     """Merged branch tips for a repo: workspace + bare for-each-ref (entry with
     the newer committerdate wins, bare on tie), HEAD sha (workspace first, bare
@@ -132,12 +139,6 @@ def _collect_sync_refs(workspace: Path, bare: Path):
                     updated = parts[2].strip() if len(parts) > 2 else ""
                     out[name] = {"sha": sha, "updated": updated}
         return out
-
-    def _tip_date(info: dict) -> datetime:
-        try:
-            return datetime.fromisoformat(info.get("updated") or "")
-        except ValueError:
-            return datetime.min.replace(tzinfo=timezone.utc)
 
     # bare only advances on incoming sends, so a newer workspace tip is the truth
     refs: dict = _collect_refs(workspace)
@@ -286,31 +287,42 @@ def sync_apply_known(request: EnvelopeRequest):
                 {"repo": repo, "branches": missing_branches}
             )
 
+        rejected_branches = []
         if bare.exists() and pushable:
             for branch_name, branch_hash in pushable.items():
                 _git(workspace, "update-ref", f"refs/lgm/ak/{branch_name}", branch_hash)
-            refspecs = [f"refs/lgm/ak/{b}:refs/heads/{b}" for b in pushable]
-            push = _git(workspace, "push", "--force", str(bare), *refspecs)
-            failed_branches = []
-            if push.returncode == 0:
-                pushed_branches = list(pushable)
-            else:
-                for branch_name in pushable:
-                    marker = f"refs/lgm/ak/{branch_name} ->"
-                    status = ""
-                    for line in (push.stderr or "").splitlines():
-                        if marker in line:
-                            status = line.split(marker, 1)[0].strip()
-                            break
-                    if status[:1] in ("*", "+") or ".." in status:
-                        pushed_branches.append(branch_name)
-                    else:
-                        failed_branches.append(branch_name)
-            if failed_branches and system_logger:
+            ff_refspecs = []
+            for branch_name, branch_hash in pushable.items():
+                tip_proc = _git(bare, "rev-parse", "--verify", "-q", f"refs/heads/{branch_name}")
+                tip = (tip_proc.stdout or "").strip()
+                if tip and tip != branch_hash:
+                    ff = _git(workspace, "merge-base", "--is-ancestor", tip, branch_hash)
+                    if ff.returncode != 0:
+                        rejected_branches.append(branch_name)
+                        continue
+                ff_refspecs.append(f"refs/lgm/ak/{branch_name}:refs/heads/{branch_name}")
+            if ff_refspecs:
+                push = _git(workspace, "push", "--force", str(bare), *ff_refspecs)
+                if push.returncode == 0:
+                    pushed_branches = [b for b in pushable if b not in rejected_branches]
+                else:
+                    for branch_name, branch_hash in pushable.items():
+                        if branch_name in rejected_branches:
+                            continue
+                        landed = _git(bare, "rev-parse", "--verify", f"refs/heads/{branch_name}")
+                        if landed.returncode == 0 and (landed.stdout or "").strip() == branch_hash:
+                            pushed_branches.append(branch_name)
+                        else:
+                            rejected_branches.append(branch_name)
+                    if system_logger:
+                        system_logger.warning(
+                            "apply-known: push failed",
+                            {"repo": repo, "error": _redact_git_text(push.stderr)}
+                        )
+            if rejected_branches and system_logger:
                 system_logger.warning(
-                    "apply-known: failed to push branch",
-                    {"repo": repo, "branches": failed_branches,
-                     "error": _redact_git_text(push.stderr)}
+                    "apply-known: refused non-fast-forward branch update",
+                    {"repo": repo, "branches": rejected_branches}
                 )
 
         for branch_name, branch_hash in pushable.items():
@@ -336,6 +348,12 @@ def sync_apply_known(request: EnvelopeRequest):
             "branches": pushed_branches,
             "message": f"Applied known commit ({len(pushed_branches)} branch(es): {', '.join(pushed_branches)})",
         }
+        if rejected_branches:
+            result["rejected_branches"] = rejected_branches
+            result["message"] += (
+                f"; rejected {len(rejected_branches)} non-fast-forward branch(es): "
+                f"{', '.join(rejected_branches)}"
+            )
 
         try:
             threading.Thread(
@@ -411,7 +429,11 @@ async def sync_upload_and_apply(
                     break
                 sink.write(chunk)
 
+        bundle_ctx = _hybrid_bundle_ctx.get()
+
         def _apply() -> dict:
+            # re-bind: worker threads don't always inherit the request context
+            _hybrid_bundle_ctx.set(bundle_ctx)
             return _apply_dump_to_repo_and_sync_bare(
                 dump_path=dump_path, repo_name=repo_name, dump_filename=dump_path.name
             )
@@ -556,16 +578,34 @@ def delete_ref(request: EnvelopeRequest):
                 "Switch HEAD to another branch first."
             )
 
+    # a checked-out workspace branch survives branch -D; deleting bare alone would re-advertise a zombie
+    if workspace.exists():
+        ws_check = _git(workspace, "rev-parse", "--verify", f"refs/heads/{branch}")
+        if ws_check.returncode == 0:
+            if _attached_branch(workspace) == branch:
+                return {"e": encrypt_envelope({
+                    "success": False,
+                    "repo": repo_name,
+                    "branch": branch,
+                    "code": "workspace_branch_checked_out",
+                    "message": f"Branch '{branch}' is checked out in the mirror workspace. "
+                               "Switch the workspace to another branch, then retry the delete.",
+                }, password)}
+            ws_del = _git(workspace, "branch", "-D", branch)
+            if ws_del.returncode != 0:
+                return {"e": encrypt_envelope({
+                    "success": False,
+                    "repo": repo_name,
+                    "branch": branch,
+                    "code": "workspace_delete_failed",
+                    "message": (ws_del.stderr or "").strip()
+                               or "Failed to delete the branch in the mirror workspace",
+                }, password)}
+
     # Delete from bare repo
     del_bare = _git(bare, "update-ref", "-d", f"refs/heads/{branch}")
     if del_bare.returncode != 0:
         raise HTTPException(500, f"Failed to delete branch from bare repo: {del_bare.stderr}")
-
-    # Best-effort: delete from workspace too (may not have it)
-    if workspace.exists():
-        ws_check = _git(workspace, "rev-parse", "--verify", f"refs/heads/{branch}")
-        if ws_check.returncode == 0:
-            _git(workspace, "branch", "-D", branch)
 
     if system_logger:
         system_logger.info("branch deleted", {"repo": repo_name})
@@ -688,14 +728,38 @@ def prune_branches(request: EnvelopeRequest):
     ]
 
     pruned: list = []
+    failed: list = []
     if apply and candidates:
         for branch in candidates:
+            # same rule as delete-ref: never leave bare deleted + workspace alive
+            if workspace.exists():
+                ws_check = _git(workspace, "rev-parse", "--verify", f"refs/heads/{branch}")
+                if ws_check.returncode == 0:
+                    if _attached_branch(workspace) == branch:
+                        failed.append({
+                            "branch": branch,
+                            "code": "workspace_branch_checked_out",
+                            "message": f"Branch '{branch}' is checked out in the mirror workspace",
+                        })
+                        continue
+                    ws_del = _git(workspace, "branch", "-D", branch)
+                    if ws_del.returncode != 0:
+                        failed.append({
+                            "branch": branch,
+                            "code": "workspace_delete_failed",
+                            "message": (ws_del.stderr or "").strip()
+                                       or "Failed to delete the branch in the mirror workspace",
+                        })
+                        continue
             del_result = _git(bare, "update-ref", "-d", f"refs/heads/{branch}")
             if del_result.returncode == 0:
                 pruned.append(branch)
-                # Best-effort: also remove from workspace.
-                if workspace.exists():
-                    _git(workspace, "branch", "-D", branch)
+            else:
+                failed.append({
+                    "branch": branch,
+                    "code": "bare_delete_failed",
+                    "message": (del_result.stderr or "").strip(),
+                })
 
     if system_logger:
         system_logger.info("prune-branches", {
@@ -703,6 +767,7 @@ def prune_branches(request: EnvelopeRequest):
             "apply": apply,
             "candidates": len(candidates),
             "pruned": len(pruned),
+            "failed": len(failed),
             "protected": len(protected),
         })
 
@@ -710,6 +775,8 @@ def prune_branches(request: EnvelopeRequest):
         message = "Refusing to prune: it would leave no branches in the bare repo"
     elif apply:
         message = f"Pruned {len(pruned)} branch(es)" if pruned else "Nothing to prune"
+        if failed:
+            message += f" ({len(failed)} failed)"
     else:
         message = f"{len(candidates)} candidate(s) for pruning (dry-run)"
 
@@ -719,6 +786,7 @@ def prune_branches(request: EnvelopeRequest):
         "apply": apply,
         "candidates": candidates,
         "pruned": pruned,
+        "failed": failed,
         "protected": protected,
         "message": message,
     }, password)}
@@ -884,32 +952,44 @@ def sync_preview_pull(request: EnvelopeRequest):
                          "hasUpdates": False, "reason": "repo-not-found"})
 
     workspace = repo_manager._get_workspace_path(repo_name)
+    bare = repo_manager._get_bare_path(repo_name)
     if not workspace.exists():
         return _respond({"success": True, "repo": repo_name, "remoteHead": None,
                          "hasUpdates": False, "reason": "workspace-not-found"})
 
-    head_proc = _git(workspace, "rev-parse", "HEAD")
-    if head_proc.returncode != 0:
+    # pushes land in bare while the workspace lags; only the merged view tells the truth
+    refs, head, _head_branch = _collect_sync_refs(workspace, bare)
+
+    tip = head
+    tip_date = datetime.min.replace(tzinfo=timezone.utc)
+    for info in refs.values():
+        d = _tip_date(info)
+        if d > tip_date:
+            tip_date = d
+            tip = info["sha"]
+
+    if not tip:
         return _respond({"success": True, "repo": repo_name, "remoteHead": None,
                          "hasUpdates": False, "reason": "no-commits"})
 
-    head = (head_proc.stdout or "").strip()
     since = (params.get("since") or "").strip()
 
     if not since:
-        return _respond({"success": True, "repo": repo_name, "remoteHead": head,
+        return _respond({"success": True, "repo": repo_name, "remoteHead": tip,
                          "hasUpdates": True, "reason": "full-sync-needed"})
 
-    if since == head:
-        return _respond({"success": True, "repo": repo_name, "remoteHead": head,
+    if since == tip:
+        return _respond({"success": True, "repo": repo_name, "remoteHead": tip,
                          "hasUpdates": False, "reason": "no-new-commits"})
 
     check_since = _git(workspace, "cat-file", "-e", f"{since}^{{commit}}")
+    if check_since.returncode != 0 and bare.exists():
+        check_since = _git(bare, "cat-file", "-e", f"{since}^{{commit}}")
     if check_since.returncode != 0:
-        return _respond({"success": True, "repo": repo_name, "remoteHead": head,
+        return _respond({"success": True, "repo": repo_name, "remoteHead": tip,
                          "hasUpdates": True, "reason": "since-not-found"})
 
-    return _respond({"success": True, "repo": repo_name, "remoteHead": head,
+    return _respond({"success": True, "repo": repo_name, "remoteHead": tip,
                      "hasUpdates": True, "reason": "ahead"})
 
 

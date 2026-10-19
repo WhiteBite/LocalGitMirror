@@ -171,7 +171,7 @@ def test_delete_ref_unknown_repo_404(tmp_path, monkeypatch):
 
 def test_delete_ref_then_list_no_longer_shows_it(tmp_path, monkeypatch):
     """End-to-end: the deleted branch disappears from /documents/list."""
-    client, repo, bare, _, _ = _make_repo_with_branches(tmp_path, ["master", "feature", "old"], monkeypatch)
+    client, repo, bare, _, rm = _make_repo_with_branches(tmp_path, ["master", "feature", "old"], monkeypatch)
     _run_git(bare, "symbolic-ref", "HEAD", "refs/heads/master")
 
     before = parse_envelope(
@@ -189,3 +189,78 @@ def test_delete_ref_then_list_no_longer_shows_it(tmp_path, monkeypatch):
     )["refs"]
     assert "old" not in after
     assert set(after.keys()) == {"master", "feature"}
+
+
+
+def test_delete_ref_checked_out_branch_is_typed_refusal_not_silent_success(tmp_path, monkeypatch):
+    """Deleting the workspace's checked-out branch must be a typed error, and
+    nothing may be deleted: a bare-only delete would leave a zombie that
+    /documents/list re-advertises from the workspace side."""
+    client, repo, bare, _, rm = _make_repo_with_branches(tmp_path, ["master", "feature"], monkeypatch)
+    _run_git(bare, "symbolic-ref", "HEAD", "refs/heads/master")
+
+    ws = rm._get_workspace_path(repo)
+    ws_default = _run_git(ws, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    _run_git(ws, "fetch", str(bare), "+refs/heads/feature:refs/heads/feature")
+    _run_git(ws, "checkout", "feature")
+
+    res = envelope_post(client, "/api/documents/delete-ref",
+                        {"repo": repo, "branch": "feature"}, PASSWORD)
+    assert res.status_code == 200, res.text
+    inner = parse_envelope(res.json(), PASSWORD)
+    assert inner["success"] is False, (
+        f"checked-out workspace branch cannot be deleted; must be a typed failure: {inner}"
+    )
+    assert inner["code"] == "workspace_branch_checked_out", inner
+    assert "feature" in _bare_branches(bare), (
+        "refusing the delete must leave the bare branch intact (no zombie half-state)"
+    )
+
+    # after switching the workspace away the retry must fully delete the ref
+    _run_git(ws, "checkout", ws_default)
+    res2 = envelope_post(client, "/api/documents/delete-ref",
+                         {"repo": repo, "branch": "feature"}, PASSWORD)
+    assert res2.status_code == 200, res2.text
+    inner2 = parse_envelope(res2.json(), PASSWORD)
+    assert inner2["success"] is True, inner2
+    assert "feature" not in _bare_branches(bare)
+
+    refs = parse_envelope(
+        envelope_post(client, "/api/documents/list", {"repo": repo}, PASSWORD).json(),
+        PASSWORD,
+    )["refs"]
+    assert "feature" not in refs, "a deleted branch must not be re-advertised"
+
+
+
+def test_prune_checked_out_workspace_branch_is_not_silently_pruned(tmp_path, monkeypatch):
+    """Prune must not report a branch as pruned when the workspace still has it
+    checked out: the bare-side delete would leave a zombie that list
+    re-advertises and apply-known can resurrect."""
+    client, repo, bare, work, rm = _make_repo_with_branches(tmp_path, ["master", "stale"], monkeypatch)
+    _run_git(bare, "symbolic-ref", "HEAD", "refs/heads/master")
+
+    # Merge stale into master so it is a prune candidate with bases=[master].
+    _run_git(work, "checkout", "master")
+    _run_git(work, "merge", "--no-ff", "-m", "merge stale", "stale")
+    _run_git(work, "push", "--force", str(bare), "refs/heads/master:refs/heads/master")
+
+    ws = rm._get_workspace_path(repo)
+    _run_git(ws, "fetch", str(bare), "+refs/heads/stale:refs/heads/stale")
+    _run_git(ws, "checkout", "stale")
+
+    res = envelope_post(client, "/api/documents/prune-branches", {
+        "repo": repo, "bases": ["master"], "apply": True,
+    }, PASSWORD)
+    assert res.status_code == 200, res.text
+    inner = parse_envelope(res.json(), PASSWORD)
+
+    assert "stale" not in inner.get("pruned", []), (
+        f"checked-out workspace branch must not be reported pruned: {inner}"
+    )
+    failures = {f.get("branch"): f.get("code") for f in inner.get("failed", [])}
+    assert failures.get("stale") == "workspace_branch_checked_out", inner
+    assert "stale" in _bare_branches(bare), (
+        "the bare branch must survive when the workspace delete is impossible"
+    )
+

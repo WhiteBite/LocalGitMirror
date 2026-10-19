@@ -66,6 +66,31 @@ def test_same_branch_reports_newer_workspace_tip(tmp_path: Path):
     )
 
 
+def test_same_branch_reports_newer_bare_tip(tmp_path: Path):
+    """A work machine pushed a newer tip to bare while the workspace lags:
+    the merged view must report the bare tip (the rule /documents/preview
+    relies on to avoid "no new commits" lies)."""
+    workspace, bare, c0, _c1 = _build_repos(tmp_path)
+
+    scratch = tmp_path / "scratch"
+    _run_git(tmp_path, "clone", str(bare), str(scratch))
+    _run_git(scratch, "config", "user.email", "w@test.com")
+    _run_git(scratch, "config", "user.name", "Worker")
+    (scratch / "b.txt").write_text("bare-newer\n")
+    _run_git(scratch, "add", ".")
+    _run_git(scratch, "commit", "-m", "bare newer",
+             env={"GIT_COMMITTER_DATE": "2026-07-01T00:00:00+00:00",
+                  "GIT_AUTHOR_DATE": "2026-07-01T00:00:00+00:00"})
+    c2 = _run_git(scratch, "rev-parse", "HEAD")
+    _run_git(scratch, "push", "origin", "HEAD")
+
+    refs, _head, _head_branch = _collect_sync_refs(workspace, bare)
+
+    assert refs["master"]["sha"] == c2, (
+        f"newer bare tip must win over stale workspace tip {c0}"
+    )
+
+
 def test_branch_only_in_bare_is_reported(tmp_path: Path):
     workspace, bare, c0, _c1 = _build_repos(tmp_path)
     _run_git(bare, "branch", "bare_only", c0)
