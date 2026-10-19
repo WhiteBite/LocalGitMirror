@@ -51,7 +51,7 @@ def get_status():
             pass
 
     return {
-        "git_running": True,
+        "git_running": bool(git_handler and git_handler.is_running),
         "git_port": config.get("git_port", 8444),
         "web_port": config.get("web_port", 443),
         "local_ip": SystemMonitor.get_local_ip(),

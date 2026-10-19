@@ -74,66 +74,6 @@ def ensure_post_receive_hook(repo_name: str, storage_path: Path):
             pass
 
 
-def on_repo_receive(repo_name: str):
-    """Callback when git push is received"""
-    global repo_manager, git_workspace
-    import threading
-    import time
-    import subprocess
-
-    from app.core import GitWorkspace
-
-    console.print(f"[cyan][>>] Push detected for: {repo_name}[/cyan]")
-
-    if repo_manager:
-        # Auto-checkout to the latest branch pushed
-        def run_sync(mgr, name):
-            time.sleep(0.5)
-            workspace = mgr._get_workspace_path(name)
-
-            if not workspace.exists():
-                return
-
-            try:
-                # 1. Detect which branch was just updated in the bare repo
-                bare_path = mgr._get_bare_path(name)
-                proc = subprocess.run(
-                    [
-                        "git",
-                        "for-each-ref",
-                        "--sort=-committerdate",
-                        "--format=%(refname:short)",
-                        "--count=1",
-                        "refs/heads/",
-                    ],
-                    cwd=str(bare_path),
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                latest_branch = proc.stdout.strip()
-
-                if not latest_branch:
-                    latest_branch = "main"
-
-                console.print(f"[cyan][i] Latest branch on {name}: {latest_branch}[/cyan]")
-
-                # 2. Perform sync and checkout to that branch
-                result = mgr.sync_workspace(name, branch=latest_branch)
-
-                if result["success"]:
-                    console.print(f"[green][v] Auto-switched {name} to: {latest_branch}[/green]")
-                    # Update global workspace reference
-                    global git_workspace
-                    bare = mgr._get_bare_path(name)
-                    git_workspace = GitWorkspace(workspace, bare)
-            except Exception as e:
-                console.print(f"[red][!] Auto-switch failed: {e}[/red]")
-
-        threading.Thread(target=run_sync, args=(repo_manager, repo_name), daemon=True).start()
-
-
 def _install_quiet_disconnect_handler() -> None:
     """Windows proactor loop noise filter.
 
@@ -183,7 +123,7 @@ async def lifespan(app: FastAPI):
         settings_manager = SettingsManager(actual_storage_path)
 
     system_logger = get_logger(actual_storage_path)
-    git_handler = GitHandler(actual_storage_path, port=CONFIG["git_port"], on_receive=on_repo_receive)
+    git_handler = GitHandler(actual_storage_path, port=CONFIG["git_port"])
     repo_manager = RepoManager(actual_storage_path)
     repo_manager.ensure_receive_hooks()
     shared_manager = SharedManager(actual_storage_path)
@@ -280,13 +220,6 @@ async def lifespan(app: FastAPI):
             for item in bare_dir.iterdir():
                 if item.is_dir() and item.name.endswith(".git"):
                     ensure_post_receive_hook(item.name, bare_dir)
-
-    # Auto-start git server
-    try:
-        git_handler.start()
-        console.print(f"[green]Git сервер запущен на порту {CONFIG['git_port']}[/green]")
-    except Exception as e:
-        console.print(f"[red][!] Не удалось запустить Git сервер: {e}[/red]")
 
     console.print("[bold green]Server is ready![/bold green]")
     console.print(f"[blue]Storage: {actual_storage_path.absolute()}[/blue]")

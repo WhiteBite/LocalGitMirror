@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
+from dulwich.errors import NotGitRepository
 from dulwich.repo import Repo
 from dulwich.server import TCPGitServer, ReceivePackHandler, UploadPackHandler
 from rich.console import Console
@@ -99,9 +100,7 @@ class MultiRepoBackend:
         ws_old = self.storage_path / name
         if ws_old.exists():
             return Repo(str(ws_old))
-        # Nothing found - create a bare repo in the new location
-        bare_new.mkdir(parents=True, exist_ok=True)
-        return Repo.init_bare(str(bare_new))
+        raise NotGitRepository(f"No git repository was found for {path_str!r}")
 
 
 class GitHandler:

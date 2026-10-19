@@ -132,6 +132,17 @@ def test_mirror_hybrid_key_is_wired(real_app: TestClient):
     assert buffer_mod.relay_key is deps_mod.relay_key
 
 
+def test_status_reports_honest_daemon_state(real_app: TestClient):
+    """git_running must mirror the real daemon, which must not auto-start."""
+    handler = sys.modules["app.main"].git_handler
+    assert handler is not None
+    assert handler.is_running is False, "git daemon must not auto-start with the app"
+
+    resp = real_app.get("/api/status", headers=AUTH)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["git_running"] is False
+
+
 def test_health_endpoint(real_app: TestClient):
     """API health must work too — sanity check the app is fully alive."""
     resp = real_app.get("/api/health", headers=AUTH)

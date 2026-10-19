@@ -156,14 +156,6 @@ def init_git_http(app, storage_path: Path):
     backend = WindowsSafeBackend(root_dir)
     git_wsgi_app = make_wsgi_chain(backend)
 
-    on_receive = None
-    try:
-        from app.main import on_repo_receive
-
-        on_receive = on_repo_receive
-    except ImportError:
-        pass
-
-    wrapped_app = WSGIFixMiddleware(git_wsgi_app, on_receive_callback=on_receive)
+    wrapped_app = WSGIFixMiddleware(git_wsgi_app)
     authed_app = BasicAuthMiddleware(wrapped_app)
     app.mount("/git", WSGIMiddleware(authed_app))
