@@ -16,3 +16,24 @@ internal object DepsAutomationGate {
     else -> false
   }
 }
+
+/**
+ * Poller-side gate state: the poller thread runs from project open even while
+ * the gate is closed, and the one-time initialization (Gradle sync hook,
+ * initial missing check, vault sync) runs exactly once — on the first pass
+ * where the gate is open, possibly long after project open.
+ */
+internal class DepsAutomationGateTracker {
+  enum class Action { IDLE, INITIALIZE, POLL }
+
+  private var initialized = false
+
+  fun pass(gateOpen: Boolean): Action = when {
+    !gateOpen -> Action.IDLE
+    !initialized -> {
+      initialized = true
+      Action.INITIALIZE
+    }
+    else -> Action.POLL
+  }
+}

@@ -12,12 +12,15 @@ import localgitmirror.idea.deps.ApplyDepsAction
 import localgitmirror.idea.deps.MachineRole
 import localgitmirror.idea.deps.RespondDepsAction
 import localgitmirror.idea.deps.RoleDetector
+import localgitmirror.idea.diagnostics.AutomationFailureDeduper
+import localgitmirror.idea.diagnostics.failureSignature
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.mirror.MirrorDepsApi
 import localgitmirror.idea.mirror.MirrorSyncApi
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.SyncLogger
 import java.awt.event.WindowAdapter
@@ -45,6 +48,15 @@ fun shouldNotifyPending(count: Int, lastNotified: Long, nowMillis: Long, cooldow
 fun shouldNotifyPullAvailable(remoteHash: String, localHash: String, remoteIsAncestorOfLocal: Boolean): Boolean =
   !remoteHash.equals(localHash, ignoreCase = true) && !remoteIsAncestorOfLocal
 
+/** One startup/focus check outcome: a healthy pass re-arms the previous failure, a failure surfaces once per signature. */
+internal fun checkOutcomeDiagnostic(deduper: AutomationFailureDeduper, failure: Throwable?): String? {
+  if (failure == null) {
+    deduper.recovered()
+    return null
+  }
+  return deduper.failure(failureSignature(failure))
+}
+
 /** Daemon-threaded runner so background network work never blocks IDE shutdown. */
 private fun runDaemon(name: String, block: () -> Unit) {
   Thread(block, name).apply { isDaemon = true }.start()
@@ -56,6 +68,9 @@ class PullCheckStartupActivity : ProjectActivity {
     // Minimum seconds between checks (avoid spam on rapid alt-tabs)
     private const val COOLDOWN_SEC = 900L
   }
+
+  private val updateCheckDeduper = AutomationFailureDeduper()
+  private val depsCheckDeduper = AutomationFailureDeduper()
 
   /**
    * Called once per project open. Must return QUICKLY — IntelliJ holds a
@@ -81,8 +96,12 @@ class PullCheckStartupActivity : ProjectActivity {
 
     // Startup check on a DAEMON thread — never block the startup activity / EDT.
     runDaemon("doccache-startup-check") {
-      try { checkForUpdates(project, dir, settings, repoName) } catch (_: Exception) {}
-      try { checkForDeps(project, dir, settings, repoName) } catch (_: Exception) {}
+      runGuardedCheck(project, updateCheckDeduper, "update", "startup.check.update.fail") {
+        checkForUpdates(project, dir, settings, repoName)
+      }
+      runGuardedCheck(project, depsCheckDeduper, "deps", "startup.check.deps.fail") {
+        checkForDeps(project, dir, settings, repoName)
+      }
     }
 
     // Register window focus listener. We use invokeLater but we do NOT await it —
@@ -112,8 +131,10 @@ class PullCheckStartupActivity : ProjectActivity {
 
           runDaemon("doccache-focus-check") {
             if (project.isDisposed) return@runDaemon
-            try { checkForUpdates(project, dir, s, repo) } catch (_: Exception) {}
-            try {
+            runGuardedCheck(project, updateCheckDeduper, "update", "startup.check.update.fail") {
+              checkForUpdates(project, dir, s, repo)
+            }
+            runGuardedCheck(project, depsCheckDeduper, "deps", "startup.check.deps.fail") {
               val nowMs = System.currentTimeMillis()
               checkForDepsWithCooldown(
                 project, dir, s, repo,
@@ -125,7 +146,7 @@ class PullCheckStartupActivity : ProjectActivity {
                 if (newPendingMs > 0) lastDepsNotifyPendingMs = newPendingMs
                 if (newResponsesMs > 0) lastDepsNotifyResponsesMs = newResponsesMs
               }
-            } catch (_: Exception) {}
+            }
           }
         }
       }
@@ -140,6 +161,31 @@ class PullCheckStartupActivity : ProjectActivity {
     }
     // execute() returns here immediately. The ChildScope is released.
     // All work continues on daemon threads or in the window listener.
+  }
+
+  private fun runGuardedCheck(
+    project: Project,
+    deduper: AutomationFailureDeduper,
+    check: String,
+    failMessageKey: String,
+    block: () -> Unit
+  ) {
+    val failure: Throwable? = try {
+      block()
+      null
+    } catch (t: Exception) {
+      t
+    }
+    val signature = checkOutcomeDiagnostic(deduper, failure)
+    if (signature == null) return
+    service<OperationsHistoryService>().add(
+      LocalGitMirrorBundle.message("history.op.autoStartupCheck"), false,
+      "err=$check: $signature"
+    )
+    NotificationGroupManager.getInstance()
+      .getNotificationGroup("DocCache")
+      .createNotification(LocalGitMirrorBundle.message(failMessageKey, signature), NotificationType.WARNING)
+      .notify(project)
   }
 
   @Suppress("HttpCallOnEdt")

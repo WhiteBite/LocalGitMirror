@@ -10,10 +10,25 @@ import com.intellij.util.ui.UIUtil
 import localgitmirror.idea.actions.GitLabMrSender
 import localgitmirror.idea.deps.MachineRole
 import localgitmirror.idea.deps.RoleDetector
+import localgitmirror.idea.diagnostics.AutomationFailureDeduper
+import localgitmirror.idea.diagnostics.failureSignature
+import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.OperationsHistoryService
 import java.io.File
 import java.util.concurrent.ThreadLocalRandom
+
+private const val AUTO_SEND_DIRTY = "worktree dirty"
+
+/** Auto MR branch send skip decision: a dirty tree surfaces once per dirty period, a clean pass re-arms it. */
+internal fun autoSendSkipDiagnostic(deduper: AutomationFailureDeduper, worktreeClean: Boolean): String? {
+  if (worktreeClean) {
+    deduper.recovered()
+    return null
+  }
+  return deduper.failure(AUTO_SEND_DIRTY)
+}
 
 /** MR review loop driver. HOME: jittered 60s background poll; WORK: no background traffic (stealth) — [triggerWorkCycle] only. */
 class MrReviewAutoService(private val project: Project) : Disposable {
@@ -27,6 +42,9 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   private var lastPendingSignature = ""
   private var lastNotesSignature = ""
   private var lastHomeErrorSignature = ""
+  private val homeCycleDeduper = AutomationFailureDeduper()
+  private val workCycleDeduper = AutomationFailureDeduper()
+  private val autoSendSkipDeduper = AutomationFailureDeduper()
 
   fun start() {
     if (started) return
@@ -44,7 +62,9 @@ class MrReviewAutoService(private val project: Project) : Disposable {
           if (RoleDetector.detect(settings) != MachineRole.WORK) {
             pollHome()
           }
-        } catch (_: Throwable) {
+          homeCycleDeduper.recovered()
+        } catch (t: Throwable) {
+          reportCycleFailure(homeCycleDeduper, t)
         }
       }
     }, "DocCache-MrReviewAuto").apply { isDaemon = true }.start()
@@ -55,8 +75,20 @@ class MrReviewAutoService(private val project: Project) : Disposable {
     if (RoleDetector.detect(settings) != MachineRole.WORK) return
     try {
       pollWork()
-    } catch (_: Throwable) {
+      workCycleDeduper.recovered()
+    } catch (t: Throwable) {
+      reportCycleFailure(workCycleDeduper, t)
     }
+  }
+
+  private fun reportCycleFailure(deduper: AutomationFailureDeduper, t: Throwable) {
+    val signature = failureSignature(t)
+    if (deduper.failure(signature) == null) return
+    service<OperationsHistoryService>().add(
+      LocalGitMirrorBundle.message("history.op.autoMrReview"), false,
+      "err=$signature"
+    )
+    notify(LocalGitMirrorBundle.message("mrreview.auto.cycle.fail", signature), NotificationType.WARNING)
   }
 
   private fun pollWork() {
@@ -121,6 +153,15 @@ class MrReviewAutoService(private val project: Project) : Disposable {
       if (res.code !in 200..299) return@executeOnPooledThread
       val targets = GitLabMrSender.mrTargetsFromMrs(res.mrs)
       if (targets.isEmpty()) return@executeOnPooledThread
+      val skip = autoSendSkipDiagnostic(autoSendSkipDeduper, GitLocal.isCleanWorkTree(project, File(baseDir)))
+      if (skip != null) {
+        service<OperationsHistoryService>().add(
+          LocalGitMirrorBundle.message("history.op.autoMrReview"), false,
+          "err=auto MR branch send skipped: $skip"
+        )
+        notify(LocalGitMirrorBundle.message("mrreview.auto.branchSkip.dirty"), NotificationType.WARNING)
+        return@executeOnPooledThread
+      }
       GitLabMrSender.sendAll(project, targets, quiet = true)
     }
   }

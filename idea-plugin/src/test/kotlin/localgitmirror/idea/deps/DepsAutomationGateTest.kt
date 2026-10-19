@@ -1,6 +1,7 @@
 package localgitmirror.idea.deps
 
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -56,5 +57,29 @@ class DepsAutomationGateTest {
     assertTrue(DepsAutomationGate.enabled("AUTO", roleIsHome = true))
     assertTrue(DepsAutomationGate.enabled("On", roleIsHome = false))
     assertFalse(DepsAutomationGate.enabled("OFF", roleIsHome = true))
+  }
+
+  @Test
+  fun `tracker stays idle while the gate is closed at project open`() {
+    val tracker = DepsAutomationGateTracker()
+    assertEquals(DepsAutomationGateTracker.Action.IDLE, tracker.pass(false))
+    assertEquals(DepsAutomationGateTracker.Action.IDLE, tracker.pass(false))
+  }
+
+  @Test
+  fun `tracker initializes the poller on the first pass after the gate reopens`() {
+    val tracker = DepsAutomationGateTracker()
+    assertEquals(DepsAutomationGateTracker.Action.IDLE, tracker.pass(false))
+    assertEquals(DepsAutomationGateTracker.Action.INITIALIZE, tracker.pass(true))
+    assertEquals(DepsAutomationGateTracker.Action.POLL, tracker.pass(true))
+  }
+
+  @Test
+  fun `tracker initializes exactly once across gate transitions`() {
+    val tracker = DepsAutomationGateTracker()
+    assertEquals(DepsAutomationGateTracker.Action.INITIALIZE, tracker.pass(true))
+    assertEquals(DepsAutomationGateTracker.Action.POLL, tracker.pass(true))
+    assertEquals(DepsAutomationGateTracker.Action.IDLE, tracker.pass(false))
+    assertEquals(DepsAutomationGateTracker.Action.POLL, tracker.pass(true))
   }
 }

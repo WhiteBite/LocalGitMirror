@@ -16,6 +16,8 @@ import localgitmirror.idea.settings.SecretsStore
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
+private const val GATE_RECHECK_MS = 60_000L
+
 /**
  * Project-level service that automates corporate-dependency transfer.
  *
@@ -68,6 +70,8 @@ class DepsAutomationService(private val project: Project) : Disposable {
     baseIdleSec = { settings.depsPollSec }
   )
 
+  private val gateTracker = DepsAutomationGateTracker()
+
   /**
    * Called from UI actions (Request/Respond/Apply) and internal events
    * (auto-request sent, Gradle sync failure) to switch the poller into the
@@ -79,23 +83,12 @@ class DepsAutomationService(private val project: Project) : Disposable {
 
   /** Idempotent; each poller pass re-reads role and settings, so later toggles apply without a restart. */
   fun start() {
-    // master gate; started stays false when disabled so a later settings flip can still enable
-    if (!DepsAutomationGate.enabled(settings.depsAutomationMode, role == MachineRole.HOME)) {
-      DepsDiagnostics.event("automation: disabled by depsAutomationMode")
-      return
-    }
     if (started) return
     started = true
 
     DepsDiagnostics.event("automation: started")
 
-    registerGradleSyncHook()
-
     startPoller()
-
-    scheduleInitialMissingCheck(20_000L)
-
-    scheduleVaultCacheSync(40_000L)
   }
 
   /** Repo name resolved lazily: settings may be incomplete when [start] runs. */
@@ -117,6 +110,19 @@ class DepsAutomationService(private val project: Project) : Disposable {
     pollerThread = Thread({
       while (!disposed && !Thread.currentThread().isInterrupted) {
         try {
+          when (gateTracker.pass(DepsAutomationGate.enabled(settings.depsAutomationMode, role == MachineRole.HOME))) {
+            DepsAutomationGateTracker.Action.IDLE -> {
+              Thread.sleep(GATE_RECHECK_MS)
+              continue
+            }
+            DepsAutomationGateTracker.Action.INITIALIZE -> {
+              DepsDiagnostics.event("automation: gate open - initializing")
+              registerGradleSyncHook()
+              scheduleInitialMissingCheck(20_000L)
+              scheduleVaultCacheSync(40_000L)
+            }
+            DepsAutomationGateTracker.Action.POLL -> Unit
+          }
           Thread.sleep(scheduler.nextSleepMs())
           if (disposed) break
           val s = settings
