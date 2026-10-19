@@ -15,6 +15,7 @@ import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.LocalFileSystem
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.workkit.WorkKit
@@ -61,7 +62,7 @@ class ApplyLocalDumpAction : AnAction() {
       LocalGitMirrorBundle.message("action.applyLocal.dialogTitle"),
       null,
       arrayOf("new-branch", "ff-only"),
-      "new-branch",
+      service<MirrorSettingsService>().state.effectivePullBackMode(),
       null
     )?.trim()?.lowercase().orEmpty()
     if (mode.isBlank()) return

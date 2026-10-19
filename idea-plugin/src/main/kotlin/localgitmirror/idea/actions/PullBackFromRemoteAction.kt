@@ -12,6 +12,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
+import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import java.io.File
 
@@ -50,7 +51,7 @@ class PullBackFromRemoteAction : AnAction() {
       LocalGitMirrorBundle.message("action.pullBack.dialogTitle"),
       null,
       arrayOf("new-branch", "ff-only"),
-      "new-branch",
+      service<MirrorSettingsService>().state.effectivePullBackMode(),
       null
     )?.trim()?.lowercase().orEmpty()
 

@@ -11,9 +11,6 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
   data class State(
     var baseUrl: String = "https://localhost",
 
-    // ui language: auto | en | ru
-    var uiLanguage: String = "auto",
-
     var mirrorInsecureTls: Boolean = false,
 
     // empty serverCertSha256 = TOFU: first pinned connect stores the observed hash
@@ -94,7 +91,11 @@ class MirrorSettingsService : PersistentStateComponent<MirrorSettingsService.Sta
     // (5 min) for stealth; the poller applies +/-30% jitter, a 15-min fast
     // window after local events, and exponential backoff up to 4x on idle.
     var depsPollSec: Int = 300
-  )
+  ) {
+    // config lines may carry arbitrary values; the dialogs only offer these two
+    fun effectivePullBackMode(): String =
+      if (pullBackDefaultMode.trim().lowercase() == "ff-only") "ff-only" else "new-branch"
+  }
 
   private var state = State()
 

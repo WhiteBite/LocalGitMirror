@@ -39,7 +39,7 @@ internal fun LocalGitMirrorPanel.pullBack() {
   val mode = Messages.showEditableChooseDialog(
     LocalGitMirrorBundle.message("dialog.pullBack.mode"),
     LocalGitMirrorBundle.message("dialog.pullBack.localBranchTitle"),
-    null, arrayOf("new-branch", "ff-only"), "new-branch", null
+    null, arrayOf("new-branch", "ff-only"), s.effectivePullBackMode(), null
   )?.trim()?.lowercase().orEmpty()
 
   isSyncing = true

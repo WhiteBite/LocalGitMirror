@@ -2,6 +2,7 @@ package localgitmirror.idea.settings
 
 import com.intellij.openapi.components.service
 import com.intellij.openapi.options.Configurable
+import com.intellij.openapi.options.ConfigurationException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.openapi.ui.Messages
@@ -11,6 +12,7 @@ import localgitmirror.idea.mirror.HttpResult
 import localgitmirror.idea.mirror.MirrorAuthApi
 import localgitmirror.idea.net.LanDiscovery
 import javax.swing.JComponent
+import javax.swing.JTextField
 import javax.swing.SwingUtilities
 
 class MirrorSettingsConfigurable(private val project: Project) : Configurable {
@@ -22,12 +24,13 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
   // Live component refs: test/discover buttons must read what is typed, not the
   // not-yet-applied persistent state.
-  private var urlField: javax.swing.JTextField? = null
+  private var urlField: JTextField? = null
   private var apiKeyField: javax.swing.JPasswordField? = null
   private var syncPasswordField: javax.swing.JPasswordField? = null
-  private var gitlabUrlField: javax.swing.JTextField? = null
+  private var gitlabUrlField: JTextField? = null
   private var gitlabTokenField: javax.swing.JPasswordField? = null
-  private var pinField: javax.swing.JTextField? = null
+  private var pinField: JTextField? = null
+  private var pollSecField: JTextField? = null
   private var syncPwdEcho: Char = 0.toChar()
 
   // SecretsStore-backed fields — managed manually (not in PersistentStateComponent)
@@ -44,29 +47,29 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
     val panel = panel {
       // Minimal settings: URL + API Key + Password
-      group("Сервер") {
-        row("URL") {
+      group(LocalGitMirrorBundle.message("settings.mirror.title")) {
+        row(LocalGitMirrorBundle.message("settings.mirror.baseUrl")) {
           textField()
             .bindText(state::baseUrl)
             .resizableColumn()
-            .comment("e.g. https://192.168.1.50")
+            .comment(LocalGitMirrorBundle.message("settings.mirror.baseUrl.comment"))
             .applyToComponent { urlField = this }
-          button("Найти") { onDiscoverClicked() }
+          button(LocalGitMirrorBundle.message("settings.discover")) { onDiscoverClicked() }
             .gap(RightGap.SMALL)
-          button("Проверить") { onTestClicked() }
+          button(LocalGitMirrorBundle.message("settings.test")) { onTestClicked() }
         }
 
-        row("API Key") {
+        row(LocalGitMirrorBundle.message("settings.mirror.apiKey")) {
           passwordField()
             .bindText(::mirrorApiKeyLocal)
-            .comment("из Plugin Connection Info на сервере")
+            .comment(LocalGitMirrorBundle.message("settings.mirror.apiKey.hint"))
             .applyToComponent { apiKeyField = this }
         }
 
-        row("Пароль синхронизации") {
+        row(LocalGitMirrorBundle.message("settings.mirror.syncPassword")) {
           passwordField()
             .bindText(::syncPasswordLocal)
-            .comment("Пароль для шифрования данных при передаче")
+            .comment(LocalGitMirrorBundle.message("settings.mirror.syncPassword.comment"))
             .applyToComponent { syncPasswordField = this }
           if (localgitmirror.idea.deps.RoleDetector.detect(state) == localgitmirror.idea.deps.MachineRole.HOME) {
             val eye = javax.swing.JButton(com.intellij.icons.AllIcons.Actions.Show).apply {
@@ -91,20 +94,20 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
         }
 
         row {
-          checkBox("Pin server TLS certificate")
+          checkBox(LocalGitMirrorBundle.message("settings.tlsPin"))
             .bindSelected(state::tlsPinEnabled)
         }
 
-        row("Fingerprint") {
+        row(LocalGitMirrorBundle.message("settings.tlsPin.fingerprint")) {
           textField()
             .bindText(state::serverCertSha256)
             .resizableColumn()
-            .comment("SHA-256 сертификата сервера; запоминается при первом подключении (TOFU)")
+            .comment(LocalGitMirrorBundle.message("settings.tlsPin.fingerprint.comment"))
             .applyToComponent {
               isEditable = false
               pinField = this
             }
-          button("Clear pin") {
+          button(LocalGitMirrorBundle.message("settings.tlsPin.clear")) {
             state.serverCertSha256 = ""
             pinField?.text = ""
           }
@@ -124,12 +127,12 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
       }
 
       // Advanced settings (collapsed by default)
-      collapsibleGroup("Дополнительно", false) {
-        row("Repo Override") {
+      collapsibleGroup(LocalGitMirrorBundle.message("settings.advanced.title"), false) {
+        row(LocalGitMirrorBundle.message("settings.repoOverride.label")) {
           textField()
             .bindText(projectState::repoOverride)
             .resizableColumn()
-            .comment("Переопределение имени репозитория на сервере (если папка называется иначе)")
+            .comment(LocalGitMirrorBundle.message("settings.repoOverride.comment"))
         }
       }
 
@@ -229,6 +232,27 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           textField()
             .bindIntText(state::depsPollSec)
             .comment(LocalGitMirrorBundle.message("auto.pollSec.comment"))
+            .applyToComponent { pollSecField = this }
+        }
+      }
+
+      // Dependency transfer: Nexus fallback + diagnostics
+      collapsibleGroup(LocalGitMirrorBundle.message("settings.deps.title"), false) {
+        row(LocalGitMirrorBundle.message("settings.deps.nexusUrl")) {
+          textField()
+            .bindText(state::nexusBaseUrl)
+            .resizableColumn()
+            .comment(LocalGitMirrorBundle.message("settings.deps.nexusUrl.comment"))
+        }
+
+        row {
+          checkBox(LocalGitMirrorBundle.message("settings.deps.diagnostics"))
+            .bindSelected(state::depsDiagnosticsEnabled)
+        }
+
+        row {
+          checkBox(LocalGitMirrorBundle.message("settings.deps.diagnostics.verbose"))
+            .bindSelected(state::depsDiagnosticsVerbose)
         }
       }
     }
@@ -248,6 +272,16 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
 
   override fun apply() {
     val panel = dialogPanel ?: return
+    val errors = validateMirrorSettings(
+      urlField?.text ?: state.baseUrl,
+      pollSecField?.text ?: state.depsPollSec.toString()
+    )
+    if (errors.isNotEmpty()) {
+      val text = errors.joinToString("\n") {
+        LocalGitMirrorBundle.message(it.messageKey, *it.args.toTypedArray())
+      }
+      throw ConfigurationException(text)
+    }
     val previousUrl = state.baseUrl
     panel.apply()
     SecretsStore.mirrorApiKey = mirrorApiKeyLocal
@@ -293,8 +327,8 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           servers.isEmpty() -> {
             Messages.showInfoMessage(
               dialogPanel,
-              "Серверы не найдены в локальной сети",
-              "Поиск сервера"
+              LocalGitMirrorBundle.message("settings.discover.none"),
+              LocalGitMirrorBundle.message("settings.discover.title")
             )
           }
           servers.size == 1 -> {
@@ -304,8 +338,8 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           else -> {
             val options = servers.map { "${it.toUrl()} (${it.ip})" }.toTypedArray()
             val chosen = Messages.showEditableChooseDialog(
-              "Найдено несколько серверов. Выберите:",
-              "Поиск сервера",
+              LocalGitMirrorBundle.message("settings.discover.multiple"),
+              LocalGitMirrorBundle.message("settings.discover.title"),
               null, options, options.first(), null
             )
             if (chosen != null) {
@@ -325,7 +359,11 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
   private fun onTestClicked() {
     val urlToTest = resolveUrl(urlField?.text ?: state.baseUrl)
     if (urlToTest.isBlank()) {
-      Messages.showInfoMessage(dialogPanel, "Укажите URL сервера", "Проверка подключения")
+      Messages.showInfoMessage(
+        dialogPanel,
+        LocalGitMirrorBundle.message("settings.test.urlMissing"),
+        LocalGitMirrorBundle.message("settings.test.title")
+      )
       return
     }
     val apiKeyToTest = apiKeyField?.text?.takeIf { it.isNotBlank() } ?: mirrorApiKeyLocal
@@ -338,14 +376,26 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
         if (pingResult.code !in 200..299) {
           Messages.showErrorDialog(
             dialogPanel,
-            "Не удалось подключиться: HTTP ${pingResult.code}\n${pingResult.body.take(200)}",
-            "Проверка подключения"
+            LocalGitMirrorBundle.message("settings.test.fail", pingResult.code, testFailReason(pingResult.code)),
+            LocalGitMirrorBundle.message("settings.test.title")
           )
         } else {
-          Messages.showInfoMessage(dialogPanel, "Подключение успешно", "Проверка подключения")
+          Messages.showInfoMessage(
+            dialogPanel,
+            LocalGitMirrorBundle.message("settings.test.ok"),
+            LocalGitMirrorBundle.message("settings.test.title")
+          )
         }
       }
     }, "Cache-Test").apply { isDaemon = true }.start()
+  }
+
+  private fun testFailReason(code: Int): String = when (code) {
+    0 -> LocalGitMirrorBundle.message("settings.test.reason.network")
+    401, 403 -> LocalGitMirrorBundle.message("settings.test.reason.auth")
+    404 -> LocalGitMirrorBundle.message("settings.test.reason.notFound")
+    in 500..599 -> LocalGitMirrorBundle.message("settings.test.reason.server")
+    else -> LocalGitMirrorBundle.message("settings.test.reason.other")
   }
 
   private fun onGitLabTestClicked() {
@@ -367,11 +417,7 @@ class MirrorSettingsConfigurable(private val project: Project) : Configurable {
           result.code in 200..299 -> LocalGitMirrorBundle.message(
             "settings.gitlab.test.ok", conf.url, conf.project, result.projectName ?: ""
           )
-          result.code == 401 -> {
-            val base = LocalGitMirrorBundle.message("settings.gitlab.test.badToken", conf.url)
-            val body = result.message.take(200)
-            if (body.isBlank()) base else "$base\n$body"
-          }
+          result.code == 401 -> LocalGitMirrorBundle.message("settings.gitlab.test.badToken", conf.url)
           result.code == 404 -> LocalGitMirrorBundle.message("settings.gitlab.test.badProject", conf.url, conf.project)
           else -> LocalGitMirrorBundle.message("settings.gitlab.test.fail", result.code, result.message)
         }
