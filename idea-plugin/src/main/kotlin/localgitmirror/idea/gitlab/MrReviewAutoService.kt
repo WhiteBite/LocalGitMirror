@@ -71,8 +71,10 @@ class MrReviewAutoService(private val project: Project) : Disposable {
       val signature = reports.joinToString(";") { "${it.posted}/${it.dupSkipped}/${it.skipped}/${it.failed}/${it.parseErrors}/${it.details.joinToString()}" }
       if (signature == lastPushSignature) return
       lastPushSignature = signature
+      val visible = reports.filter { !it.quiet }
+      if (visible.isEmpty()) return
       UIUtil.invokeLaterIfNeeded {
-        if (!project.isDisposed) service.notifySummary(reports)
+        if (!project.isDisposed) service.notifySummary(visible)
       }
       return
     }
@@ -115,10 +117,9 @@ class MrReviewAutoService(private val project: Project) : Disposable {
       if (!File(baseDir).exists()) return@executeOnPooledThread
       val conf = GitLabConfig.resolve(project)
       if (!GitLabConfig.hasApi(conf)) return@executeOnPooledThread
-      val rows = runCatching {
-        project.getService(MrReviewService::class.java).fetchFromGitLab(conf)
-      }.getOrNull() ?: return@executeOnPooledThread
-      val targets = GitLabMrSender.mrTargetsFrom(rows)
+      val res = runCatching { GitLabApi.listOpenMrs(conf) }.getOrNull() ?: return@executeOnPooledThread
+      if (res.code !in 200..299) return@executeOnPooledThread
+      val targets = GitLabMrSender.mrTargetsFromMrs(res.mrs)
       if (targets.isEmpty()) return@executeOnPooledThread
       GitLabMrSender.sendAll(project, targets, quiet = true)
     }

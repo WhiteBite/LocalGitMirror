@@ -32,53 +32,92 @@ object MrNotesSync {
     if (!GitLabConfig.hasApi(conf)) {
       return Report(emptyList(), 0, listOf("GitLab URL/project/token not configured"))
     }
-    val rows = project.getService(MrReviewService::class.java)
-      .fetchFromGitLab(conf)
-      .filter { onlyIids == null || it.iid in onlyIids }
+    val mrsResult = GitLabApi.listOpenMrs(conf)
+    if (mrsResult.code !in 200..299) {
+      return Report(emptyList(), 0, listOf(mrsResult.message.ifBlank { "GitLab API error ${mrsResult.code}" }))
+    }
     val state = project.service<MirrorProjectSettingsService>().state
     val now = LocalDateTime.now()
+    val openIids = mrsResult.mrs.map { it.iid }.toSet()
     val uploaded = mutableListOf<Int>()
     val failures = mutableListOf<String>()
     var unchanged = 0
-    val openIids = rows.map { it.iid }.toSet()
-    for (row in rows) {
-      val key = row.iid.toString()
-      state.mrTitles[key] = row.title
-      state.mrBranches[key] = row.sourceBranch
+    for (mr in mrsResult.mrs) {
+      if (onlyIids != null && mr.iid !in onlyIids) continue
+      val key = mr.iid.toString()
+      state.mrTitles[key] = mr.title
+      state.mrBranches[key] = mr.sourceBranch
       if (state.mrClosedSentAt.containsKey(key)) state.mrClosedSentAt.remove(key)
-      if (row.discussions.isEmpty()) continue
-      val markdown = MrNotesWriter.renderMarkdown(
-        project, row.iid, row.title, row.sourceBranch, row.updatedAt,
-        row.unresolved, row.totalThreads, row.discussions,
-      )
-      val hash = sha256Hex(markdown)
-      if (shouldSkipUpload(state.mrNotesHash[key], hash, state.mrNotesSentAt[key], now)) {
+      if (shouldSkipMr(state.mrUpdatedAt[key], mr.updatedAt, state.mrNotesSentAt[key], now)) {
         unchanged++
         continue
       }
-      when (val res = MrRepliesTransport.uploadResult(project, "mr-notes/mr-!${row.iid}.md", markdown)) {
+      val discussions = GitLabApi.listMrDiscussions(conf, mr.iid).discussions
+      if (discussions.isEmpty()) continue
+      val unresolved = discussions.count { d -> !d.resolved && d.notes.any { !it.system } }
+      val markdown = MrNotesWriter.renderMarkdown(
+        project, mr.iid, mr.title, mr.sourceBranch, mr.updatedAt,
+        unresolved, discussions.size, discussions,
+      )
+      val hash = sha256Hex(markdown)
+      if (shouldSkipUpload(state.mrNotesHash[key], hash, state.mrNotesSentAt[key], now)) {
+        state.mrUpdatedAt[key] = mr.updatedAt
+        unchanged++
+        continue
+      }
+      when (val res = MrRepliesTransport.uploadResult(project, "mr-notes/mr-!${mr.iid}.md", markdown)) {
         is MrUploadResult.Ok -> {
           state.mrNotesHash[key] = hash
           state.mrNotesSentAt[key] = now.format(TS_FORMAT)
-          uploaded.add(row.iid)
+          state.mrUpdatedAt[key] = mr.updatedAt
+          uploaded.add(mr.iid)
         }
-        is MrUploadResult.Failed -> failures.add("!${row.iid}: ${res.reason}")
+        is MrUploadResult.Failed -> failures.add("!${mr.iid}: ${res.reason}")
       }
     }
-    val closedMarked = markClosed(project, openIids, state, now, failures)
+    val closed = closedCandidates(
+      state.mrNotesHash.keys.mapNotNull { it.toIntOrNull() }.toSet(), openIids, onlyIids != null,
+    )
+    val closedMarked = markClosed(project, closed, state, now, failures)
+    for (iid in evictStaleClosed(state.mrClosedSentAt, now)) {
+      state.mrTitles.remove(iid)
+      state.mrBranches.remove(iid)
+      state.mrUpdatedAt.remove(iid)
+    }
     return Report(uploaded, unchanged, failures, closedMarked)
+  }
+
+  /** Closure is decided only on a full sync: a filtered run knows nothing about MRs outside its selection. */
+  internal fun closedCandidates(tracked: Set<Int>, openIids: Set<Int>, filtered: Boolean): List<Int> =
+    if (filtered) emptyList() else tracked.filter { it !in openIids }.sorted()
+
+  /** An unchanged MR whose last note upload is still inside the postbox TTL budget does not need a discussions refetch. */
+  internal fun shouldSkipMr(prevUpdatedAt: String?, currentUpdatedAt: String, lastNoteSentAt: String?, now: LocalDateTime): Boolean {
+    if (prevUpdatedAt.isNullOrBlank() || prevUpdatedAt != currentUpdatedAt) return false
+    val at = lastNoteSentAt?.let { runCatching { LocalDateTime.parse(it, TS_FORMAT) }.getOrNull() } ?: return false
+    return at.isAfter(now.minusDays(RESYNC_DAYS))
+  }
+
+  /** Closed-marker state outliving the postbox TTL is dead weight; malformed stamps stay (fail-safe). */
+  internal fun evictStaleClosed(map: MutableMap<String, String>, now: LocalDateTime): List<String> {
+    val cutoff = now.minusDays(RESYNC_DAYS + 1)
+    val stale = map.entries
+      .filter { (_, stamp) ->
+        runCatching { LocalDateTime.parse(stamp, TS_FORMAT) }.getOrNull()?.isBefore(cutoff) == true
+      }
+      .map { it.key }
+    stale.forEach { map.remove(it) }
+    return stale
   }
 
   private fun markClosed(
     project: Project,
-    openIids: Set<Int>,
+    closed: List<Int>,
     state: MirrorProjectSettingsService.State,
     now: LocalDateTime,
     failures: MutableList<String>,
   ): List<Int> {
     val marked = mutableListOf<Int>()
-    val closed = state.mrNotesHash.keys.mapNotNull { it.toIntOrNull() }
-      .filter { it !in openIids }.sorted()
     for (iid in closed) {
       val key = iid.toString()
       if (shouldSkipClosure(state.mrClosedSentAt[key], now)) continue

@@ -1,7 +1,6 @@
 package localgitmirror.idea.gitlab
 
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -18,7 +17,6 @@ class MrSendPlannerTest {
     val localTips: Map<String, String>,
     val existingShas: Set<String>,
     val branches: List<String>,
-    val newCommitCount: Int,
     val sent: List<String>,
     val skipped: List<String>,
     val excludeShas: List<String>,
@@ -48,7 +46,6 @@ class MrSendPlannerTest {
         },
         existingShas = o.getValue("existing_shas").jsonArray.map { it.jsonPrimitive.content }.toSet(),
         branches = o.getValue("branches").jsonArray.map { it.jsonPrimitive.content },
-        newCommitCount = o.getValue("new_commit_count").jsonPrimitive.int,
         sent = exp.getValue("sent").jsonArray.map { it.jsonPrimitive.content },
         skipped = exp.getValue("skipped").jsonArray.map { it.jsonPrimitive.content },
         excludeShas = exp.getValue("exclude_shas").jsonArray.map { it.jsonPrimitive.content },
@@ -59,7 +56,7 @@ class MrSendPlannerTest {
   fun `shared fixture scenarios match the python mr_send contract`() {
     for (s in scenarios()) {
       val plan = MrSendPlanner.planSend(
-        s.mirrorRefs, s.localTips, s.existingShas, s.branches, s.newCommitCount,
+        s.mirrorRefs, s.localTips, s.existingShas, s.branches,
       )
       assertEquals(s.sent, plan.sent, "[${s.name}] sent")
       assertEquals(s.skipped, plan.skipped, "[${s.name}] skipped")
@@ -70,7 +67,7 @@ class MrSendPlannerTest {
   @Test
   fun `branch without a local tip fails resolution`() {
     assertFailsWith<IllegalArgumentException> {
-      MrSendPlanner.planSend(emptyMap(), emptyMap(), emptySet(), listOf("b1"), 1)
+      MrSendPlanner.planSend(emptyMap(), emptyMap(), emptySet(), listOf("b1"))
     }
   }
 }

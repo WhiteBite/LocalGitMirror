@@ -37,6 +37,8 @@ class MirrorProjectSettingsService : PersistentStateComponent<MirrorProjectSetti
     // Last known title/branch per open MR iid, carried into the closed marker.
     var mrTitles: MutableMap<String, String> = mutableMapOf(),
     var mrBranches: MutableMap<String, String> = mutableMapOf(),
+    // Last seen GitLab updated_at per MR iid - unchanged MRs skip the discussions refetch.
+    var mrUpdatedAt: MutableMap<String, String> = mutableMapOf(),
     // "yyyy-MM-dd HH:mm" of the last closed-marker upload per MR iid.
     var mrClosedSentAt: MutableMap<String, String> = mutableMapOf()
   )

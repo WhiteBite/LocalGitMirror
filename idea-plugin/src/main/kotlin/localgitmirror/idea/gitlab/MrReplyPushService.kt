@@ -14,6 +14,7 @@ import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Work-machine side of the review loop: downloads the agent's reply files
@@ -38,6 +39,7 @@ class MrReplyPushService(private val project: Project) {
     val failed: Int,
     val details: List<String>,
     val parseErrors: Int = 0,
+    val quiet: Boolean = false,
   ) {
     val clean: Boolean get() = failed == 0 && parseErrors == 0
   }
@@ -61,7 +63,8 @@ class MrReplyPushService(private val project: Project) {
       UIUtil.invokeLaterIfNeeded {
         if (project.isDisposed) return@invokeLaterIfNeeded
         onDone?.invoke(reports)
-        notifySummary(reports)
+        val visible = reports.filter { !it.quiet }
+        if (visible.isNotEmpty()) notifySummary(visible)
       }
     }
   }
@@ -127,15 +130,20 @@ class MrReplyPushService(private val project: Project) {
 
   /** Post only the approved sections of a pending item; acks the MR's postbox entries only when the approval covers every parsed reply. */
   internal fun pushApproved(pending: PendingReplies, approved: List<MrReplies.Reply>): FileReport {
-    val settings = service<MirrorSettingsService>().state
-    val conf = GitLabConfig.resolve(project)
-    if (!GitLabConfig.hasApi(conf)) {
-      return FileReport(pending.path, 0, 0, 0, 1, listOf("GitLab URL/project/token not configured"))
+    if (!PUSH_GATE.tryEnter()) return busyReport(pending.path)
+    try {
+      val settings = service<MirrorSettingsService>().state
+      val conf = GitLabConfig.resolve(project)
+      if (!GitLabConfig.hasApi(conf)) {
+        return FileReport(pending.path, 0, 0, 0, 1, listOf("GitLab URL/project/token not configured"))
+      }
+      val repo = resolveRepo(settings)
+        ?: return FileReport(pending.path, 0, 0, 0, 1, listOf("repo not resolved"))
+      val filtered = pending.parsed.copy(replies = approved)
+      return pushParsed(pending, filtered, conf, settings, repo)
+    } finally {
+      PUSH_GATE.exit()
     }
-    val repo = resolveRepo(settings)
-      ?: return FileReport(pending.path, 0, 0, 0, 1, listOf("repo not resolved"))
-    val filtered = pending.parsed.copy(replies = approved)
-    return pushParsed(pending, filtered, conf, settings, repo)
   }
 
   private fun resolveRepo(settings: MirrorSettingsService.State): String? {
@@ -177,26 +185,38 @@ class MrReplyPushService(private val project: Project) {
   }
 
   private fun pushAll(): List<FileReport> {
-    val settings = service<MirrorSettingsService>().state
-    val conf = GitLabConfig.resolve(project)
-    if (!GitLabConfig.hasApi(conf)) {
-      return listOf(FileReport("(gitlab)", 0, 0, 0, 1, listOf("GitLab URL/project/token not configured")))
-    }
-    val repo = resolveRepo(settings) ?: return listOf(FileReport("(repo)", 0, 0, 0, 1, listOf("repo not resolved")))
-    return when (val pending = fetchPendingReplies()) {
-      is PendingRepliesResult.Unavailable ->
-        listOf(FileReport("(postbox)", 0, 0, 0, 1, listOf("list mr-replies: ${pending.reason}")))
-      is PendingRepliesResult.Available -> {
-        val reports = mutableListOf<FileReport>()
-        for (s in pending.skipped) {
-          reports.add(FileReport(s.path, 0, 0, 1, 0, listOf(s.reason)))
-        }
-        for (p in pending.items) {
-          reports.add(pushParsed(p, p.parsed, conf, settings, repo))
-        }
-        reports
+    if (!PUSH_GATE.tryEnter()) return listOf(busyReport("(busy)"))
+    try {
+      val settings = service<MirrorSettingsService>().state
+      val conf = GitLabConfig.resolve(project)
+      if (!GitLabConfig.hasApi(conf)) {
+        return listOf(FileReport("(gitlab)", 0, 0, 0, 1, listOf("GitLab URL/project/token not configured")))
       }
+      val repo = resolveRepo(settings) ?: return listOf(FileReport("(repo)", 0, 0, 0, 1, listOf("repo not resolved")))
+      return when (val pending = fetchPendingReplies()) {
+        is PendingRepliesResult.Unavailable ->
+          listOf(FileReport("(postbox)", 0, 0, 0, 1, listOf("list mr-replies: ${pending.reason}")))
+        is PendingRepliesResult.Available -> {
+          val reports = mutableListOf<FileReport>()
+          for (s in pending.skipped) {
+            reports.add(markQuiet(FileReport(s.path, 0, 0, 1, 0, listOf(s.reason))))
+          }
+          for (p in pending.items) {
+            reports.add(pushParsed(p, p.parsed, conf, settings, repo))
+          }
+          reports
+        }
+      }
+    } finally {
+      PUSH_GATE.exit()
     }
+  }
+
+  private fun busyReport(path: String) = FileReport(path, 0, 0, 0, 0, listOf("push already in progress"))
+
+  private fun markQuiet(report: FileReport): FileReport {
+    val signature = "${report.posted}/${report.dupSkipped}/${report.skipped}/${report.failed}/${report.parseErrors}/${report.details.joinToString("|")}"
+    return if (REPORT_DEDUP.isNew(report.path, signature)) report else report.copy(quiet = true)
   }
 
   private fun pushParsed(
@@ -232,58 +252,79 @@ class MrReplyPushService(private val project: Project) {
     for ((idx, reply) in parsed.replies.withIndex()) {
       val label = "reply ${idx + 1}"
       val marker = marker(iid, reply)
-      if (seenMarkers.contains(marker)) {
-        dupSkipped++
-        details.add("$label: duplicate, already in GitLab")
-        continue
+      val thread = if (reply.kind == MrReplies.Kind.THREAD) {
+        discussions.discussions.firstOrNull { it.id == reply.threadId }
+      } else {
+        null
       }
-      val body = "$marker\n\n${reply.body}"
-      val result: GitLabApi.WriteResult
-      var fallbackNote = ""
-      when (reply.kind) {
-        MrReplies.Kind.THREAD -> {
-          if (discussions.discussions.none { it.id == reply.threadId }) {
+      when (resolveDecision(seenMarkers.contains(marker), reply.resolve && thread != null, thread?.resolved ?: true)) {
+        ResolveAction.SKIP -> {
+          dupSkipped++
+          details.add("$label: duplicate, already in GitLab")
+        }
+        ResolveAction.RESOLVE_ONLY -> {
+          val res = GitLabApi.resolveDiscussion(conf, iid, reply.threadId)
+          if (res.ok()) {
+            dupSkipped++
+            details.add("$label: duplicate, thread ${reply.threadId} resolved")
+          } else {
+            failed++
+            details.add("$label: duplicate, resolve ${reply.threadId} failed HTTP ${res.code}")
+          }
+        }
+        ResolveAction.POST -> {
+          val body = "$marker\n\n${reply.body}"
+          val result: GitLabApi.WriteResult
+          var fallbackNote = ""
+          when (reply.kind) {
+            MrReplies.Kind.THREAD -> {
+              if (thread == null) {
+                skipped++
+                details.add("$label: thread ${reply.threadId} no longer exists")
+                continue
+              }
+              result = GitLabApi.postThreadNote(conf, iid, reply.threadId, body)
+              if (result.ok() && reply.resolve) {
+                val res = GitLabApi.resolveDiscussion(conf, iid, reply.threadId)
+                if (!res.ok()) {
+                  failed++
+                  details.add("$label: posted, resolve failed HTTP ${res.code}")
+                }
+              }
+            }
+            MrReplies.Kind.NEW_ANCHORED -> {
+              val clash = anchorClash(reply, discussions.discussions)
+              if (clash != null) {
+                skipped++
+                details.add("$label: unresolved thread ${clash.id} already at ${reply.file}:${clash.anchorLine} — reply into it, don't duplicate")
+                continue
+              }
+              val anchored = GitLabApi.postNewDiscussion(conf, iid, body, diffRefs, GitLabApi.DiffPosition(reply.file, reply.line))
+              if (anchored.ok()) {
+                result = anchored
+              } else if (anchored.code in setOf(400, 422)) {
+                fallbackNote = "line not in MR diff"
+                result = GitLabApi.postMrNote(conf, iid, "`${reply.file}:${reply.line}`:\n\n$body")
+              } else {
+                result = anchored
+              }
+            }
+            MrReplies.Kind.NEW_GENERAL -> result = GitLabApi.postMrNote(conf, iid, body)
+          }
+          if (result.ok()) {
+            posted++
+            seenMarkers.add(marker)
+            ledger.add(marker)
+            while (ledger.size > LEDGER_CAP) ledger.removeAt(0)
+            if (fallbackNote.isNotEmpty()) details.add("$label: $fallbackNote, posted as general note")
+          } else if (reply.kind == MrReplies.Kind.THREAD && result.code == 404) {
             skipped++
             details.add("$label: thread ${reply.threadId} no longer exists")
-            continue
-          }
-          result = GitLabApi.postThreadNote(conf, iid, reply.threadId, body)
-          if (result.ok() && reply.resolve) {
-            val res = GitLabApi.resolveDiscussion(conf, iid, reply.threadId)
-            if (!res.ok()) details.add("$label: posted, resolve failed HTTP ${res.code}")
-          }
-        }
-        MrReplies.Kind.NEW_ANCHORED -> {
-          val clash = anchorClash(reply, discussions.discussions)
-          if (clash != null) {
-            skipped++
-            details.add("$label: unresolved thread ${clash.id} already at ${reply.file}:${clash.anchorLine} — reply into it, don't duplicate")
-            continue
-          }
-          val anchored = GitLabApi.postNewDiscussion(conf, iid, body, diffRefs, GitLabApi.DiffPosition(reply.file, reply.line))
-          if (anchored.ok()) {
-            result = anchored
-          } else if (anchored.code in setOf(400, 422)) {
-            fallbackNote = "line not in MR diff"
-            result = GitLabApi.postMrNote(conf, iid, "`${reply.file}:${reply.line}`:\n\n$body")
           } else {
-            result = anchored
+            failed++
+            details.add("$label: HTTP ${result.code} ${result.message}")
           }
         }
-        MrReplies.Kind.NEW_GENERAL -> result = GitLabApi.postMrNote(conf, iid, body)
-      }
-      if (result.ok()) {
-        posted++
-        seenMarkers.add(marker)
-        ledger.add(marker)
-        while (ledger.size > LEDGER_CAP) ledger.removeAt(0)
-        if (fallbackNote.isNotEmpty()) details.add("$label: $fallbackNote, posted as general note")
-      } else if (reply.kind == MrReplies.Kind.THREAD && result.code == 404) {
-        skipped++
-        details.add("$label: thread ${reply.threadId} no longer exists")
-      } else {
-        failed++
-        details.add("$label: HTTP ${result.code} ${result.message}")
       }
     }
 
@@ -299,7 +340,7 @@ class MrReplyPushService(private val project: Project) {
         details.add("status report upload failed: ${status.reason}")
       }
     }
-    return report
+    return markQuiet(report)
   }
 
   private fun renderStatus(iid: Int, r: FileReport): String {
@@ -341,6 +382,10 @@ class MrReplyPushService(private val project: Project) {
     private const val LEDGER_CAP = 500
     private const val ANCHOR_WINDOW = 3
 
+    // Shared so every ad-hoc MrReplyPushService(project) instance is mutually exclusive.
+    private val PUSH_GATE = SingleFlight()
+    private val REPORT_DEDUP = ReportDedup()
+
     /** A new anchored reply within [ANCHOR_WINDOW] lines of a live unresolved thread on the same file duplicates it; answer that thread instead. */
     internal fun anchorClash(reply: MrReplies.Reply, discussions: List<GitLabApi.MrDiscussion>): GitLabApi.MrDiscussion? =
       discussions.firstOrNull { d ->
@@ -368,4 +413,30 @@ class MrReplyPushService(private val project: Project) {
       return "<!-- lgm:$hex -->"
     }
   }
+}
+
+internal class SingleFlight {
+  private val held = AtomicBoolean(false)
+  fun tryEnter(): Boolean = held.compareAndSet(false, true)
+  fun exit() {
+    held.set(false)
+  }
+}
+
+internal enum class ResolveAction { POST, RESOLVE_ONLY, SKIP }
+
+internal fun resolveDecision(markerSeen: Boolean, wantsResolve: Boolean, threadResolved: Boolean): ResolveAction = when {
+  !markerSeen -> ResolveAction.POST
+  threadResolved -> ResolveAction.SKIP
+  wantsResolve -> ResolveAction.RESOLVE_ONLY
+  else -> ResolveAction.SKIP
+}
+
+internal class ReportDedup(private val cap: Int = 200) {
+  private val seen = object : LinkedHashMap<String, String>() {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > cap
+  }
+
+  @Synchronized
+  fun isNew(key: String, signature: String): Boolean = seen.put(key, signature) != signature
 }

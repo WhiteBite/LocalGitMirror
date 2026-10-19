@@ -5,6 +5,7 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import localgitmirror.idea.git.GitLocal
+import localgitmirror.idea.gitlab.GitLabApi
 import localgitmirror.idea.gitlab.MrReviewService
 import localgitmirror.idea.gitlab.MrSendPlanner
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
@@ -115,8 +116,9 @@ object GitLabMrSender {
     if (!quiet) notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
 
     val planned = branches.filter { it !in plan.skipped }
-    val unresolvable = materializeRemoteBranches(project, projectDir, remote, planned)
-    val unresolvableSet = unresolvable.toSet()
+    val materialized = materializeRemoteBranches(project, projectDir, remote, planned)
+    val unresolvableSet = materialized.unresolved.toSet()
+    val divergentSet = materialized.divergent.toSet()
 
     val failures = mutableListOf<String>()
     for ((branch, iid) in targets.filter { it.first in unresolvableSet }) {
@@ -124,13 +126,18 @@ object GitLabMrSender {
         "branch=$branch iid=$iid err=tip not found locally or on $remote")
       failures.add("${targetLabel(branch, iid)}: branch tip not found")
     }
+    for ((branch, iid) in targets.filter { it.first in divergentSet }) {
+      history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
+        "branch=$branch iid=$iid err=local branch diverged from $remote - not sent")
+      failures.add("${targetLabel(branch, iid)}: local branch diverged from $remote — not sent; align it with a pull")
+    }
 
-    val sendable = planned.filter { it !in unresolvableSet }
+    val sendable = planned.filter { it !in unresolvableSet && it !in divergentSet }
     val (toSend, syncRes) = sendBatch(sendable, plan) {
       syncFacade.runFullSync(projectDir, settings, additionalBranches = it)
     }
     val attempted = targets.filter { it.first in toSend.toSet() }
-    val skipped = targets.size - attempted.size - targets.count { it.first in unresolvableSet }
+    val skipped = targets.size - attempted.size - targets.count { it.first in unresolvableSet } - targets.count { it.first in divergentSet }
 
     val result = syncRes?.step
     when {
@@ -183,6 +190,9 @@ object GitLabMrSender {
   internal fun mrTargetsFrom(rows: List<MrReviewService.MrRowItem>): List<Pair<String, Int?>> =
     rows.filter { it.sourceBranch.isNotBlank() }.map { it.sourceBranch to it.iid }
 
+  internal fun mrTargetsFromMrs(mrs: List<GitLabApi.MrInfo>): List<Pair<String, Int?>> =
+    mrs.filter { it.sourceBranch.isNotBlank() }.map { it.sourceBranch to it.iid }
+
   internal fun sendBatch(
     branches: List<String>,
     plan: MrSendPlanner.Plan,
@@ -198,11 +208,18 @@ object GitLabMrSender {
     projectDir: File,
     remote: String,
     branches: List<String>,
-  ): List<String> = materializeRemoteRefs(
+  ): MaterializeResult = materializeRemoteRefs(
     branches,
     { GitLocal.branchHash(project, projectDir, it) },
     { remoteTip(project, projectDir, remote, it) },
     { branch, tip -> GitLocal.run(project, projectDir, 30, "branch", branch, tip).ok() },
+    { local, tip -> GitLocal.run(project, projectDir, 30, "merge-base", "--is-ancestor", local, tip).ok() },
+    { branch, tip -> GitLocal.run(project, projectDir, 30, "update-ref", "refs/heads/$branch", tip).ok() },
+  )
+
+  internal data class MaterializeResult(
+    val unresolved: List<String>,
+    val divergent: List<String>,
   )
 
   internal fun materializeRemoteRefs(
@@ -210,14 +227,22 @@ object GitLabMrSender {
     branchHash: (String) -> String?,
     remoteTip: (String) -> String?,
     createBranch: (String, String) -> Boolean,
-  ): List<String> {
+    isAncestor: (ancestor: String, descendant: String) -> Boolean,
+    updateRef: (branch: String, tip: String) -> Boolean,
+  ): MaterializeResult {
     val unresolved = mutableListOf<String>()
+    val divergent = mutableListOf<String>()
     for (branch in branches) {
-      if (branchHash(branch) != null) continue
+      val local = branchHash(branch)
       val tip = remoteTip(branch)
-      if (tip == null || !createBranch(branch, tip)) unresolved += branch
+      when {
+        local == null -> if (tip == null || !createBranch(branch, tip)) unresolved += branch
+        tip == null || local == tip -> Unit
+        isAncestor(local, tip) -> if (!updateRef(branch, tip)) divergent += branch
+        else -> divergent += branch
+      }
     }
-    return unresolved
+    return MaterializeResult(unresolved, divergent)
   }
 
   private fun planMrSend(
@@ -249,7 +274,7 @@ object GitLabMrSender {
   ): MrSendPlanner.Plan {
     val resolvable = branches.filter { it in localTips }
     val unresolvable = branches.filter { it !in localTips }
-    val plan = MrSendPlanner.planSend(mirrorRefs, localTips, emptySet(), resolvable, Int.MAX_VALUE)
+    val plan = MrSendPlanner.planSend(mirrorRefs, localTips, emptySet(), resolvable)
     return if (unresolvable.isEmpty()) plan else plan.copy(sent = plan.sent + unresolvable)
   }
 

@@ -12,11 +12,11 @@ class MrReplyPushServiceAckTest {
     MrReplies.Reply(MrReplies.Kind.NEW_GENERAL, "", "", 0, false, "c"),
   )
 
-  private fun report(failed: Int = 0, parseErrors: Int = 0, skipped: Int = 0) =
+  private fun report(posted: Int = 3, dupSkipped: Int = 0, failed: Int = 0, parseErrors: Int = 0, skipped: Int = 0) =
     MrReplyPushService.FileReport(
       path = "mr-replies/mr-!42.md",
-      posted = 3,
-      dupSkipped = 0,
+      posted = posted,
+      dupSkipped = dupSkipped,
       skipped = skipped,
       failed = failed,
       details = emptyList(),
@@ -46,5 +46,15 @@ class MrReplyPushServiceAckTest {
   @Test
   fun `thread-gone skips do not block the ack`() {
     assertTrue(MrReplyPushService.shouldAck(report(skipped = 2), fileReplies, fileReplies))
+  }
+
+  @Test
+  fun `resolve failure on an already-posted reply blocks the ack`() {
+    assertFalse(MrReplyPushService.shouldAck(report(posted = 0, failed = 1), fileReplies, fileReplies))
+  }
+
+  @Test
+  fun `resolve retry success on already-posted replies acks`() {
+    assertTrue(MrReplyPushService.shouldAck(report(posted = 0, dupSkipped = 3), fileReplies, fileReplies))
   }
 }

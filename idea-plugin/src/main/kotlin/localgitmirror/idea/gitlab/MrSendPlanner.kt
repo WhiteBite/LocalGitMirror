@@ -14,7 +14,6 @@ object MrSendPlanner {
     localTips: Map<String, String>,
     existingShas: Set<String>,
     branches: List<String>,
-    newCommitCount: Int,
   ): Plan {
     val sent = mutableListOf<String>()
     val skipped = mutableListOf<String>()
@@ -23,16 +22,11 @@ object MrSendPlanner {
       val mirrorSha = mirrorRefs[branch] ?: ""
       if (mirrorSha.isNotEmpty() && mirrorSha == tip) skipped.add(branch) else sent.add(branch)
     }
-    val excludes = if (sent.isEmpty()) emptyList()
-      else mirrorRefs.values.filter { it.isNotEmpty() }.distinct().filter { it in existingShas }
-    if (sent.isNotEmpty() && excludes.isNotEmpty() && newCommitCount == 0) {
-      skipped.addAll(sent)
-      sent.clear()
-    }
-    return Plan(
-      sent = sent.toList(),
-      skipped = skipped.toList(),
-      excludeShas = if (sent.isEmpty()) emptyList() else excludes,
-    )
+    if (sent.isEmpty()) return Plan(emptyList(), skipped.toList(), emptyList())
+    // sent tips stay out of the exclusions: excluding one makes git bundle refuse an empty pack
+    val sentTips = sent.mapTo(HashSet()) { localTips.getValue(it) }
+    val excludes = mirrorRefs.values.filter { it.isNotEmpty() }.distinct()
+      .filter { it in existingShas && it !in sentTips }
+    return Plan(sent.toList(), skipped.toList(), excludes)
   }
 }

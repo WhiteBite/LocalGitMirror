@@ -8,6 +8,7 @@ import java.io.File
 import java.nio.file.Path
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.TimeUnit
 
 object MrNotesWriter {
 
@@ -45,10 +46,10 @@ object MrNotesWriter {
     val systemNotes = discussions.flatMap { it.notes.filter { n -> n.system } }
 
     for ((idx, d) in unresolvedThreads.withIndex()) {
-      renderThread(sb, project, idx + 1, d, unresolved = true)
+      renderThread(sb, project, sourceBranch, idx + 1, d, unresolved = true)
     }
     for ((idx, d) in resolvedThreads.withIndex()) {
-      renderThread(sb, project, idx + 1, d, unresolved = false)
+      renderThread(sb, project, sourceBranch, idx + 1, d, unresolved = false)
     }
 
     if (systemNotes.isNotEmpty()) {
@@ -64,6 +65,7 @@ object MrNotesWriter {
   private fun renderThread(
     sb: StringBuilder,
     project: Project?,
+    sourceBranch: String,
     n: Int,
     d: GitLabApi.MrDiscussion,
     unresolved: Boolean,
@@ -97,7 +99,7 @@ object MrNotesWriter {
     sb.appendLine()
 
     if (anchorFile != null && project != null && anchorLine != null) {
-      renderCodeBlock(sb, project, anchorFile, anchorLine)
+      renderCodeBlock(sb, project, sourceBranch, anchorFile, anchorLine)
       sb.appendLine()
     }
 
@@ -118,31 +120,64 @@ object MrNotesWriter {
   private fun renderCodeBlock(
     sb: StringBuilder,
     project: Project,
+    sourceBranch: String,
     anchorFile: String,
     anchorLine: Int,
   ) {
     val base = project.basePath ?: return
-    val file = File(base, anchorFile)
-    if (!file.isFile) return
-
-    val ext = anchorFile.substringAfterLast('.', "")
-    val lines = try {
-      file.readLines(Charsets.UTF_8)
-    } catch (_: Throwable) {
-      return
+    val baseDir = File(base)
+    val lines = branchFileLines(baseDir, sourceBranch, anchorFile) ?: run {
+      val file = File(baseDir, anchorFile)
+      if (!file.isFile) return
+      try {
+        file.readLines(Charsets.UTF_8)
+      } catch (_: Throwable) {
+        return
+      }
     }
     if (lines.isEmpty()) return
 
+    val ext = anchorFile.substringAfterLast('.', "")
+    sb.appendLine("```$ext")
+    sb.append(renderCodeBlockLines(lines, anchorLine))
+    sb.appendLine("```")
+  }
+
+  internal fun branchFileLines(baseDir: File, branch: String, relPath: String): List<String>? {
+    if (branch.isBlank()) return null
+    return try {
+      val p = ProcessBuilder("git", "-C", baseDir.absolutePath, "show", "refs/heads/$branch:$relPath")
+        .directory(baseDir)
+        .redirectErrorStream(false)
+        .start()
+      var stdout = ByteArray(0)
+      val drainer = Thread { stdout = p.inputStream.readBytes() }.apply { isDaemon = true; start() }
+      p.errorStream.readBytes()
+      if (!p.waitFor(30, TimeUnit.SECONDS)) {
+        p.destroyForcibly()
+        null
+      } else if (p.exitValue() != 0) {
+        null
+      } else {
+        drainer.join(5000)
+        val content = String(stdout, Charsets.UTF_8)
+        if (content.isEmpty()) emptyList() else content.reader().readLines()
+      }
+    } catch (_: Throwable) {
+      null
+    }
+  }
+
+  internal fun renderCodeBlockLines(lines: List<String>, anchorLine: Int): String {
     val start = (anchorLine - 2).coerceAtLeast(1)
     val end = (anchorLine + 2).coerceAtMost(lines.size)
-
-    sb.appendLine("```$ext")
+    val sb = StringBuilder()
     for (i in start..end) {
       val text = lines.getOrNull(i - 1) ?: ""
       val prefix = if (i == anchorLine) ">" else " "
       sb.appendLine("$prefix$i: $text")
     }
-    sb.appendLine("```")
+    return sb.toString()
   }
 
   fun writeForAgent(project: Project, row: MrReviewService.MrRowItem): Path {
