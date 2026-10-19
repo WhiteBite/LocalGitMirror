@@ -8,6 +8,7 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.LightVirtualFile
 import com.intellij.ui.JBColor
@@ -691,15 +692,40 @@ class MrReviewDialog private constructor(
       notify(LocalGitMirrorBundle.message("mrview.send.noDrafts"), NotificationType.WARNING)
       return
     }
-    val md = MrReplies.render(row.iid, renderBranch(), remainder)
+    val decision = sendRemainderDecision(row.state, notesAvailable(), row.discussions, remainder, force = false)
+    var toSend = remainder
+    if (decision.blockReason != null) {
+      val blocked = if (decision.blockReason == MrSendBlockReason.CLOSED_MR)
+        LocalGitMirrorBundle.message("mrview.send.blocked.closed", row.iid)
+      else
+        LocalGitMirrorBundle.message("mrview.send.blocked.notes", row.iid)
+      val confirmed = Messages.showYesNoDialog(
+        project,
+        blocked,
+        LocalGitMirrorBundle.message("mrview.send.confirmTitle"),
+        Messages.getWarningIcon(),
+      )
+      if (confirmed != Messages.YES) return
+    } else if (decision.refusals.isNotEmpty()) {
+      toSend = decision.allowed
+      if (toSend.isEmpty()) {
+        notify(partialSendText(0, remainder.size, decision), NotificationType.WARNING)
+        return
+      }
+    }
+    val md = MrReplies.render(row.iid, renderBranch(), toSend)
     ApplicationManager.getApplication().executeOnPooledThread {
       val outcome = MrRepliesTransport.uploadMarkdownResult(project, row.iid, md)
       ApplicationManager.getApplication().invokeLater {
         if (project.isDisposed) return@invokeLater
         when (outcome) {
           is MrUploadResult.Ok -> {
-            notify(LocalGitMirrorBundle.message("mrview.sent", remainder.size), NotificationType.INFORMATION)
-            markSent(remainder, true)
+            if (decision.refusals.isEmpty()) {
+              notify(LocalGitMirrorBundle.message("mrview.sent", toSend.size), NotificationType.INFORMATION)
+            } else {
+              notify(partialSendText(toSend.size, remainder.size, decision), NotificationType.WARNING)
+            }
+            markSent(toSend, true)
           }
           is MrUploadResult.Failed -> notify(
             LocalGitMirrorBundle.message("mrreview.sent.fail", outcome.reason),
@@ -709,6 +735,22 @@ class MrReviewDialog private constructor(
       }
     }
   }
+
+  private fun notesAvailable(): Boolean =
+    row.source == MrReviewService.Source.GITLAB || row.receivedMarkdown != null
+
+  private fun partialSendText(sent: Int, total: Int, decision: MrSendGateDecision): String =
+    LocalGitMirrorBundle.message("mrview.send.partial", sent, total, decision.refusals.size) +
+      decision.refusals.joinToString("") { "\n- " + refusalText(it) }
+
+  private fun refusalText(refusal: MrSendRefusal): String =
+    if (refusal.reason == MrSendRefusalReason.UNKNOWN_THREAD)
+      LocalGitMirrorBundle.message("mrview.send.refused.unknownThread", refusal.threadId)
+    else
+      LocalGitMirrorBundle.message(
+        "mrview.send.refused.duplicateAnchor",
+        refusal.reply.file, refusal.reply.line, refusal.threadId, refusal.anchor,
+      )
 
   private fun publishSelected() {
     val selected = approvedReplies()
@@ -862,4 +904,52 @@ class MrReviewDialog private constructor(
       }
     }
   }
+}
+
+internal enum class MrSendBlockReason { CLOSED_MR, NOTES_UNAVAILABLE }
+
+internal enum class MrSendRefusalReason { UNKNOWN_THREAD, DUPLICATE_ANCHOR }
+
+internal data class MrSendRefusal(
+  val reply: MrReplies.Reply,
+  val reason: MrSendRefusalReason,
+  val threadId: String,
+  val anchor: String,
+)
+
+internal data class MrSendGateDecision(
+  val blockReason: MrSendBlockReason? = null,
+  val allowed: List<MrReplies.Reply> = emptyList(),
+  val refusals: List<MrSendRefusal> = emptyList(),
+)
+
+/** Refuses closed MRs, unknown thread ids and duplicate anchors; fail-closed without a thread inventory. */
+internal fun sendRemainderDecision(
+  mrState: String,
+  notesAvailable: Boolean,
+  discussions: List<GitLabApi.MrDiscussion>,
+  replies: List<MrReplies.Reply>,
+  force: Boolean,
+): MrSendGateDecision {
+  if (mrState == "closed" && !force) return MrSendGateDecision(blockReason = MrSendBlockReason.CLOSED_MR)
+  if (replies.none { it.kind == MrReplies.Kind.THREAD || it.kind == MrReplies.Kind.NEW_ANCHORED }) {
+    return MrSendGateDecision(allowed = replies)
+  }
+  if (!notesAvailable && !force) return MrSendGateDecision(blockReason = MrSendBlockReason.NOTES_UNAVAILABLE)
+  if (force) return MrSendGateDecision(allowed = replies)
+  val knownIds = discussions.mapTo(HashSet()) { it.id }
+  val allowed = mutableListOf<MrReplies.Reply>()
+  val refusals = mutableListOf<MrSendRefusal>()
+  for (r in replies) {
+    val refusal = when {
+      r.kind == MrReplies.Kind.THREAD && r.threadId !in knownIds ->
+        MrSendRefusal(r, MrSendRefusalReason.UNKNOWN_THREAD, r.threadId, "")
+      r.kind == MrReplies.Kind.NEW_ANCHORED -> MrReplyPushService.anchorClash(r, discussions)?.let { d ->
+        MrSendRefusal(r, MrSendRefusalReason.DUPLICATE_ANCHOR, d.id, "${d.anchorFile}:${d.anchorLine}")
+      }
+      else -> null
+    }
+    if (refusal == null) allowed.add(r) else refusals.add(refusal)
+  }
+  return MrSendGateDecision(allowed = allowed, refusals = refusals)
 }
