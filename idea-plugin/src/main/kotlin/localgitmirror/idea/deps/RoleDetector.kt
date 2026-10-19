@@ -12,8 +12,13 @@ import java.net.URL
  *    corporate deps and applies received responses.
  *  - WORK: the corporate machine. It responds to pending deps requests by
  *    shipping artifacts from its local cache.
+ *  - UNDETERMINED: detection failed (blank/unparseable baseUrl or a network
+ *    interface error). Role-specific behavior must stay off until the user
+ *    sets an explicit machineRole override.
  */
-enum class MachineRole { HOME, WORK }
+enum class MachineRole { HOME, WORK, UNDETERMINED }
+
+const val AUTO_ROLE_UNDETERMINED_KEY = "auto.role.undetermined"
 
 /**
  * Detects whether this machine is HOME (hosts the Mirror server) or WORK
@@ -29,8 +34,8 @@ enum class MachineRole { HOME, WORK }
  *     host string literally against each (string equality, no DNS) → match ⇒
  *     HOME else WORK. DNS is never used: a non-loopback hostname that isn't
  *     a literal local IP is treated as WORK.
- *  3. On ANY failure → WORK (safe default: never auto-request from a machine
- *     we can't identify as the dome).
+ *  3. On ANY failure → UNDETERMINED (never a silent WORK: role-gated behavior
+ *     stays off and the UI can explain instead of hiding the deps loop).
  *
  * The result is cached per session (per settings instance) so repeated calls
  * are cheap and consistent.
@@ -87,6 +92,7 @@ object RoleDetector {
     val role = detect(settings)
     val isManual = settings.machineRole.trim().lowercase() in setOf("home", "work")
     val key = when {
+      role == MachineRole.UNDETERMINED -> AUTO_ROLE_UNDETERMINED_KEY
       role == MachineRole.HOME && isManual -> "auto.role.home.manual"
       role == MachineRole.HOME -> "auto.role.home.auto"
       role == MachineRole.WORK && isManual -> "auto.role.work.manual"
@@ -98,12 +104,12 @@ object RoleDetector {
   /**
    * Auto-detect from the baseUrl: localhost → HOME; otherwise compare the
    * host string literally against local network interface addresses (no DNS).
-   * Falls back to WORK on any error.
+   * Falls back to UNDETERMINED on any error.
    */
   private fun detectFromUrl(baseUrl: String): MachineRole = runCatching {
-    if (baseUrl.isBlank()) return@runCatching MachineRole.WORK
+    if (baseUrl.isBlank()) return@runCatching MachineRole.UNDETERMINED
 
-    val host = parseHost(baseUrl) ?: return@runCatching MachineRole.WORK
+    val host = parseHost(baseUrl) ?: return@runCatching MachineRole.UNDETERMINED
     if (host.lowercase() in LOCAL_HOSTS) return@runCatching MachineRole.HOME
 
     // mDNS: <hostname>.local always refers to this machine
@@ -111,7 +117,7 @@ object RoleDetector {
     if (host.equals("$localHostname.local", ignoreCase = true)) return@runCatching MachineRole.HOME
 
     val localAddresses = mutableSetOf<String>()
-    val interfaces = NetworkInterface.getNetworkInterfaces() ?: return@runCatching MachineRole.WORK
+    val interfaces = NetworkInterface.getNetworkInterfaces() ?: return@runCatching MachineRole.UNDETERMINED
     for (ni in interfaces) {
       for (addr in ni.interfaceAddresses) {
         localAddresses.add(addr.address.hostAddress)
@@ -120,7 +126,7 @@ object RoleDetector {
 
     if (host in localAddresses) MachineRole.HOME
     else MachineRole.WORK
-  }.getOrElse { MachineRole.WORK }
+  }.getOrElse { MachineRole.UNDETERMINED }
 
   /**
    * Extract the hostname from a URL string. Returns null on failure.

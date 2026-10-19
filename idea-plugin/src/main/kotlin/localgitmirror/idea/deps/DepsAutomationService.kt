@@ -130,6 +130,7 @@ class DepsAutomationService(private val project: Project) : Disposable {
           when (role) {
             MachineRole.HOME -> pollHome()
             MachineRole.WORK -> pollWork()
+            MachineRole.UNDETERMINED -> Unit
           }
         } catch (_: InterruptedException) {
           break

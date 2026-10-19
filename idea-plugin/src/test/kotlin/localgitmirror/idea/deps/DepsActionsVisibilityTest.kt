@@ -3,7 +3,9 @@ package localgitmirror.idea.deps
 import localgitmirror.idea.startup.shouldNotifyPending
 import localgitmirror.idea.startup.shouldNotifyPullAvailable
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -95,6 +97,43 @@ class DepsActionsVisibilityTest {
     fun `deps transfer blocked without base url even when v3 pinned`() {
         assertFalse(depsTransferAllowed("", "pw", v3Pinned = true))
         assertFalse(depsTransferAllowed("", "", v3Pinned = true))
+    }
+
+    // ── depsPanelButtonPolicy ───────────────────────────────────────────────
+
+    @Test
+    fun `work role shows only respond enabled`() {
+        val p = depsPanelButtonPolicy(MachineRole.WORK)
+        assertTrue(p.respondVisible)
+        assertFalse(p.requestVisible)
+        assertFalse(p.applyVisible)
+        assertTrue(p.enabled)
+        assertNull(p.reasonKey)
+    }
+
+    @Test
+    fun `home role shows request and apply enabled`() {
+        val p = depsPanelButtonPolicy(MachineRole.HOME)
+        assertFalse(p.respondVisible)
+        assertTrue(p.requestVisible)
+        assertTrue(p.applyVisible)
+        assertTrue(p.enabled)
+        assertNull(p.reasonKey)
+    }
+
+    @Test
+    fun `undetermined role keeps all deps buttons visible but disabled`() {
+        val p = depsPanelButtonPolicy(MachineRole.UNDETERMINED)
+        assertTrue(p.respondVisible)
+        assertTrue(p.requestVisible)
+        assertTrue(p.applyVisible)
+        assertFalse(p.enabled)
+    }
+
+    @Test
+    fun `undetermined reason key is reported for bundle wiring`() {
+        assertEquals("panel.deps.roleUndetermined", PANEL_DEPS_ROLE_UNDETERMINED_KEY)
+        assertEquals(PANEL_DEPS_ROLE_UNDETERMINED_KEY, depsPanelButtonPolicy(MachineRole.UNDETERMINED).reasonKey)
     }
 
     // ── shouldNotifyPending ──────────────────────────────────────────────────

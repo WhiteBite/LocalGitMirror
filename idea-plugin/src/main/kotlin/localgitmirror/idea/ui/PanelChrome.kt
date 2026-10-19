@@ -30,6 +30,8 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import javax.swing.*
 
+private const val PANEL_STATUS_ROLE_UNDETERMINED_KEY = "panel.status.role.undetermined"
+
 internal fun LocalGitMirrorPanel.makeTabComponent(tabs: JBTabbedPane, index: Int): JComponent {
   val label = JBLabel(tabs.getTitleAt(index)).apply {
     font = JBUI.Fonts.smallFont()
@@ -456,10 +458,11 @@ internal fun LocalGitMirrorPanel.refreshStatus() {
     branchCount = GitLocal.listBranches(project, dir).size
   }
   stripConnected = connected
-  stripRole = LocalGitMirrorBundle.message(
-    if (machineRole == localgitmirror.idea.deps.MachineRole.WORK)
-      "panel.status.role.work" else "panel.status.role.home"
-  )
+  stripRole = when (machineRole) {
+    localgitmirror.idea.deps.MachineRole.WORK -> LocalGitMirrorBundle.message("panel.status.role.work")
+    localgitmirror.idea.deps.MachineRole.UNDETERMINED -> LocalGitMirrorBundle.message(PANEL_STATUS_ROLE_UNDETERMINED_KEY)
+    else -> LocalGitMirrorBundle.message("panel.status.role.home")
+  }
   stripRepo = repoRes?.sanitized ?: ""
   updateStatusStrip()
   statusDot.foreground = if (connected) JBColor(0x5FAD65, 0x5FAD65) else JBColor.GRAY
@@ -467,22 +470,31 @@ internal fun LocalGitMirrorPanel.refreshStatus() {
   val pending = localgitmirror.idea.deps.RespondDepsAction.lastKnownPendingCount.get()
   val responses = localgitmirror.idea.deps.ApplyDepsAction.lastKnownResponseCount.get()
   val isWork = machineRole == localgitmirror.idea.deps.MachineRole.WORK
+  val buttonPolicy = localgitmirror.idea.deps.depsPanelButtonPolicy(machineRole)
+  val roleReason = buttonPolicy.reasonKey?.let { LocalGitMirrorBundle.message(it) }
   respondButton?.text = if (pending > 0)
     LocalGitMirrorBundle.message("panel.deps.respond.count", pending)
   else
     LocalGitMirrorBundle.message("panel.deps.respond")
-  respondButton?.isVisible = isWork
-  requestDepsButton?.isVisible = !isWork
-  applyDepsButton?.isVisible = !isWork
+  respondButton?.isVisible = buttonPolicy.respondVisible
+  requestDepsButton?.isVisible = buttonPolicy.requestVisible
+  applyDepsButton?.isVisible = buttonPolicy.applyVisible
+  respondButton?.isEnabled = buttonPolicy.enabled
+  requestDepsButton?.isEnabled = buttonPolicy.enabled
+  applyDepsButton?.isEnabled = buttonPolicy.enabled
+  respondButton?.toolTipText = roleReason
+  requestDepsButton?.toolTipText = roleReason
+  applyDepsButton?.toolTipText = roleReason
   depsSectionLabel?.text = if (isWork)
     LocalGitMirrorBundle.message("panel.deps.requests")
   else
     LocalGitMirrorBundle.message("panel.deps.requests.home")
   depsList.emptyText.clear()
-  depsList.emptyText.text = if (isWork)
-    LocalGitMirrorBundle.message("panel.deps.empty")
-  else
-    LocalGitMirrorBundle.message("panel.deps.empty.home")
+  depsList.emptyText.text = when {
+    roleReason != null -> roleReason
+    isWork -> LocalGitMirrorBundle.message("panel.deps.empty")
+    else -> LocalGitMirrorBundle.message("panel.deps.empty.home")
+  }
   depsList.emptyText.appendLine(
     LocalGitMirrorBundle.message("panel.deps.empty.refresh"),
     SimpleTextAttributes.LINK_ATTRIBUTES
