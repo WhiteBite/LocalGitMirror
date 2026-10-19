@@ -1,3 +1,4 @@
+import subprocess
 import sys
 from pathlib import Path
 
@@ -294,8 +295,7 @@ def test_upload_apply_replaces_branch_on_unrelated_histories(monkeypatch, tmp_pa
     assert any("feature" in r for r in fetched_refs)
 
 
-def test_apply_dump_proceeds_despite_dirty_workspace(monkeypatch, tmp_path):
-    """Dirty workspace should NOT block upload — self-healing is best-effort."""
+def test_apply_dump_refuses_dirty_workspace_typed(monkeypatch, tmp_path):
     repo = "dirty_repo"
     workspace = tmp_path / repo
     bare = tmp_path / f"{repo}.git"
@@ -337,9 +337,64 @@ def test_apply_dump_proceeds_despite_dirty_workspace(monkeypatch, tmp_path):
         dump_filename=dump.name,
     )
 
-    # Upload proceeds past dirty check — fails at decrypt (fake dump), NOT at "Uncommitted changes"
     assert res["success"] is False
-    assert "Uncommitted changes" not in res["message"]
+    assert res["code"] == "workspace_dirty"
+    assert res["paths"] == ["README.md"]
+
+
+def _git_ok(cwd: Path, *args: str) -> None:
+    proc = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True)
+    assert proc.returncode == 0, f"git {' '.join(args)} failed: {proc.stderr}"
+
+
+def test_upload_and_apply_endpoint_returns_workspace_dirty_code(monkeypatch, tmp_path):
+    repo = "dirtyhome"
+    workspace = tmp_path / repo
+    bare = tmp_path / f"{repo}.git"
+    workspace.mkdir(parents=True, exist_ok=True)
+    bare.mkdir(parents=True, exist_ok=True)
+    _git_ok(workspace, "init")
+    _git_ok(workspace, "config", "user.email", "t@example.com")
+    _git_ok(workspace, "config", "user.name", "T")
+    (workspace / "f.txt").write_text("v1\n", encoding="utf-8")
+    _git_ok(workspace, "add", "f.txt")
+    _git_ok(workspace, "commit", "-m", "first")
+    (workspace / "f.txt").write_text("wip\n", encoding="utf-8")
+
+    class _RM:
+        def get_repos(self):
+            return [repo]
+
+        def _get_workspace_path(self, _repo):
+            return workspace
+
+        def _get_bare_path(self, _repo):
+            return bare
+
+    app = FastAPI()
+    app.include_router(api_router.router)
+    monkeypatch.setattr(api_router, "repo_manager", _RM(), raising=False)
+    monkeypatch.setattr(git_bundle, "repo_manager", _RM(), raising=False)
+    monkeypatch.setenv("SYNC_PASSWORD", "test-password")
+    client = TestClient(app)
+
+    response = envelope_form_post(
+        client, "/api/documents/upload", {"repo": repo}, "test-password",
+        files={
+            "attachment": (
+                f"dump_{repo}_20261019_1200.dmp",
+                MAGIC + b"stub-encrypted-content",
+                "application/octet-stream",
+            )
+        },
+    )
+
+    assert response.status_code == 200
+    payload = parse_envelope(response.json(), "test-password")
+    assert payload["success"] is False
+    assert payload["code"] == "workspace_dirty"
+    assert "f.txt" in payload["paths"]
+    assert (workspace / "f.txt").read_text(encoding="utf-8") == "wip\n"
 
 
 def test_apply_dump_bare_fetch_failure_after_unrelated_histories(monkeypatch, tmp_path):

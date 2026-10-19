@@ -95,10 +95,11 @@ def _pick_bundle_ref(workspace_path: Path, bundle_path: Path, preferred_branch: 
 
 
 def _ensure_clean_workspace(path: Path) -> Optional[dict]:
-    """Reset tracked changes so the workspace stays attachable. Never blocks upload.
+    """None when safe to apply; otherwise a typed workspace_dirty refusal.
 
-    Untracked files are user data (the workspace is the user's real checkout)
-    and are never deleted; `-uno` keeps them out of the dirty-check entirely.
+    The workspace is the user's real checkout, so tracked WIP must survive
+    every sync. Untracked files are user data too and stay out of the check
+    entirely (`-uno`).
     """
     status_proc = _git(path, "status", "--porcelain", "-uno")
     if status_proc.returncode != 0:
@@ -107,27 +108,19 @@ def _ensure_clean_workspace(path: Path) -> Optional[dict]:
             system_logger.warning("Cannot inspect workspace status, proceeding anyway", {"path": str(path)})
         return None
 
-    if not (status_proc.stdout or "").strip():
-        return None  # Clean
+    dirty = [line[3:] for line in (status_proc.stdout or "").splitlines() if line.strip()]
+    if not dirty:
+        return None
 
-    # Workspace is dirty, try to self-heal
     if system_logger:
-        system_logger.warning("Workspace dirty, attempting self-healing reset", {"path": str(path)})
+        system_logger.warning("Workspace has uncommitted tracked changes, refusing to apply", {"path": str(path), "paths": dirty})
 
-    # Try reset --hard HEAD first; if no commits yet, reset to empty tree
-    reset_proc = _git(path, "reset", "--hard", "HEAD")
-    if reset_proc.returncode != 0:
-        # No commits — remove all tracked/staged files
-        _git(path, "rm", "-rf", "--cached", ".")
-        _git(path, "checkout", "--", ".")
-
-    # Even if still dirty — log warning but DON'T block upload
-    status_proc = _git(path, "status", "--porcelain", "-uno")
-    if (status_proc.stdout or "").strip():
-        if system_logger:
-            system_logger.warning("Workspace still dirty after self-healing, proceeding anyway", {"path": str(path)})
-
-    return None  # Never block upload
+    return {
+        "code": "workspace_dirty",
+        "paths": dirty,
+        "message": f"Refusing to apply onto a dirty workspace: uncommitted tracked changes "
+                   f"in the local checkout ({', '.join(dirty)}). Commit or stash them, then retry.",
+    }
 
 
 def _attached_branch(path: Path) -> Optional[str]:
@@ -210,7 +203,9 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
         return {"success": False, "message": f"Workspace '{repo_name}' is not found"}
 
     with repo_lock(repo_name):
-        _ensure_clean_workspace(workspace_path)
+        dirty = _ensure_clean_workspace(workspace_path)
+        if dirty:
+            return {"success": False, "repo": repo_name, **dirty}
 
         hybrid_bundle_ctx = _hybrid_bundle_ctx.get()
         password = os.getenv("SYNC_PASSWORD", "")

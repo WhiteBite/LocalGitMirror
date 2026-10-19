@@ -240,7 +240,9 @@ def sync_apply_known(request: EnvelopeRequest):
         return {"e": encrypt_envelope({"success": False, "message": f"Workspace for '{repo}' not found", "repo": repo}, password)}
 
     with repo_lock(repo):
-        _ensure_clean_workspace(workspace)
+        dirty = _ensure_clean_workspace(workspace)
+        if dirty:
+            return {"e": encrypt_envelope({"success": False, "repo": repo, **dirty}, password)}
 
         # ── Collect all branch→hash mappings ──────────────────────
         branch_refs = {}  # branch_name -> commit_hash

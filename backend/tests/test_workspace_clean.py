@@ -1,7 +1,8 @@
 """Gate for the workspace data-loss class: the mirror workspace IS the home
-machine's working checkout, so self-healing and branch attach must never
-destroy untracked files there. A colliding incoming file must turn into a
-loud apply failure telling the user to park/commit the file and retry."""
+machine's working checkout, so the dirty-check and branch attach must never
+destroy user files there. Tracked dirt is a typed refusal; a colliding
+incoming file must turn into a loud apply failure telling the user to
+park/commit the file and retry."""
 
 import subprocess
 from pathlib import Path
@@ -50,37 +51,36 @@ def test_clean_workspace_is_untouched(tmp_path):
     assert (ws / "f.txt").read_text(encoding="utf-8") == "v1\n"
 
 
-def test_dirty_tracked_file_is_reverted(tmp_path):
+def test_dirty_tracked_file_is_refused_typed(tmp_path):
     ws = _build_repo(tmp_path / "ws")
     (ws / "f.txt").write_text("dirty\n", encoding="utf-8")
+
+    result = git_bundle._ensure_clean_workspace(ws)
+
+    assert result is not None
+    assert result["code"] == "workspace_dirty"
+    assert "f.txt" in result["paths"]
+    assert (ws / "f.txt").read_text(encoding="utf-8") == "dirty\n"
+
+
+def test_untracked_only_dirty_workspace_proceeds(tmp_path):
+    ws = _build_repo(tmp_path / "ws")
+    (ws / "notes.local").write_text("do not lose me\n", encoding="utf-8")
 
     assert git_bundle._ensure_clean_workspace(ws) is None
 
-    assert (ws / "f.txt").read_text(encoding="utf-8") == "v1\n"
-
-
-def test_untracked_file_survives_self_healing(tmp_path):
-    ws = _build_repo(tmp_path / "ws")
-    (ws / "f.txt").write_text("dirty\n", encoding="utf-8")
-    (ws / "notes.local").write_text("do not lose me\n", encoding="utf-8")
-
-    git_bundle._ensure_clean_workspace(ws)
-
-    assert (ws / "f.txt").read_text(encoding="utf-8") == "v1\n"
     assert (ws / "notes.local").read_text(encoding="utf-8") == "do not lose me\n"
 
 
-def test_ignored_file_survives_self_healing(tmp_path):
+def test_ignored_file_survives_dirty_check(tmp_path):
     ws = _build_repo(tmp_path / "ws")
     (ws / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
     _run_git(ws, "add", ".gitignore")
     _run_git(ws, "commit", "-m", "gitignore")
-    (ws / "f.txt").write_text("dirty\n", encoding="utf-8")
     (ws / "ignored.txt").write_text("local cache\n", encoding="utf-8")
 
-    git_bundle._ensure_clean_workspace(ws)
+    assert git_bundle._ensure_clean_workspace(ws) is None
 
-    assert (ws / "f.txt").read_text(encoding="utf-8") == "v1\n"
     assert (ws / "ignored.txt").read_text(encoding="utf-8") == "local cache\n"
 
 
