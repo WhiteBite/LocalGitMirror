@@ -33,6 +33,13 @@ _GLOBAL_FLAGS = [
 ]
 
 
+def harden_stdio() -> None:
+    """Reconfigure stdout/stderr as UTF-8 so legacy-codepage consoles (cp1251) don't crash on Unicode symbols."""
+    for s in (sys.stdout, sys.stderr):
+        if hasattr(s, "reconfigure"):
+            s.reconfigure(encoding="utf-8", errors="replace")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     """Build the argparse parser from the REGISTRY."""
     p = argparse.ArgumentParser(
@@ -135,6 +142,7 @@ def _extract_args(args: argparse.Namespace, op) -> dict:
 
 
 def main() -> int:
+    harden_stdio()
     parser = _build_parser()
     try:
         args = parser.parse_args()
