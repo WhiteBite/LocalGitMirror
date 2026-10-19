@@ -305,6 +305,20 @@ def test_file_ack_calls_client_ack():
     assert res["result"] == {"success": True, "deleted": True}
 
 
+def test_file_ack_refuses_when_the_mirror_deleted_nothing():
+    from lgm_core.ops import op_file_ack
+    ctx = _ctx()
+
+    def fake_ack(repo, item_id):
+        return {"success": True, "deleted": False}
+
+    ctx.client.file_sync_ack = fake_ack
+
+    with pytest.raises(LgmError) as ei:
+        op_file_ack(ctx, {"repo": "r", "id": "gone"})
+    assert "nothing was deleted" in str(ei.value)
+
+
 def test_file_ack_propagates_lgm_error():
     from lgm_core.ops import op_file_ack
     ctx = _ctx()

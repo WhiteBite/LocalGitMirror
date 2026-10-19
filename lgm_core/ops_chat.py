@@ -148,6 +148,8 @@ def op_file_ack(ctx: Ctx, args: dict) -> dict:
     res = c.file_sync_ack(repo, item_id)
     if res.get("success") is False:
         raise LgmError("server", f"mirror refused the ack: {str(res)[:300]}")
+    if res.get("deleted") is False:
+        raise LgmError("server", f"mirror holds no postbox item '{item_id}' in repo '{repo}': nothing was deleted")
     return {"success": True, "repo": repo, "id": item_id, "result": res}
 
 
