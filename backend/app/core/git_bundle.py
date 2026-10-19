@@ -95,8 +95,12 @@ def _pick_bundle_ref(workspace_path: Path, bundle_path: Path, preferred_branch: 
 
 
 def _ensure_clean_workspace(path: Path) -> Optional[dict]:
-    """Check if workspace is clean; if not, try to reset/clean. Never blocks upload."""
-    status_proc = _git(path, "status", "--porcelain")
+    """Reset tracked changes so the workspace stays attachable. Never blocks upload.
+
+    Untracked files are user data (the workspace is the user's real checkout)
+    and are never deleted; `-uno` keeps them out of the dirty-check entirely.
+    """
+    status_proc = _git(path, "status", "--porcelain", "-uno")
     if status_proc.returncode != 0:
         # Can't even check status — likely broken repo, but don't block upload
         if system_logger:
@@ -116,10 +120,9 @@ def _ensure_clean_workspace(path: Path) -> Optional[dict]:
         # No commits — remove all tracked/staged files
         _git(path, "rm", "-rf", "--cached", ".")
         _git(path, "checkout", "--", ".")
-    _git(path, "clean", "-fd")
 
     # Even if still dirty — log warning but DON'T block upload
-    status_proc = _git(path, "status", "--porcelain")
+    status_proc = _git(path, "status", "--porcelain", "-uno")
     if (status_proc.stdout or "").strip():
         if system_logger:
             system_logger.warning("Workspace still dirty after self-healing, proceeding anyway", {"path": str(path)})
@@ -152,14 +155,41 @@ def _cleanup_lgm_refs(path: Path, namespace: str = "refs/lgm/"):
             _git(path, "update-ref", "-d", refname)
 
 
+def _untracked_collisions(workspace: Path, target_hash: str) -> list[str]:
+    """Untracked, non-ignored paths that moving HEAD to *target_hash* would overwrite."""
+    untracked = _git(workspace, "ls-files", "--others", "--exclude-standard")
+    if untracked.returncode != 0 or not (untracked.stdout or "").strip():
+        return []
+    head = _git(workspace, "rev-parse", "--verify", "-q", "HEAD")
+    if head.returncode == 0:
+        written = _git(workspace, "diff", "--name-only", "--diff-filter=A", "HEAD", target_hash)
+    else:
+        written = _git(workspace, "ls-tree", "-r", "--name-only", target_hash)
+    if written.returncode != 0:
+        return []
+    added = set((written.stdout or "").splitlines())
+    return sorted(p for p in (untracked.stdout or "").splitlines() if p in added)
+
+
 def _attach_workspace(workspace: Path, preferred: str, target_hash: Optional[str]) -> subprocess.CompletedProcess:
     """Land HEAD on *preferred* without ever detaching it first.
 
     When the workspace is already on *preferred*, the caller must have skipped
     ref updates for it and passes its target hash so ref+tree move together via
     reset --hard. Otherwise checkout -f attaches (creating the branch if the
-    workspace somehow lost it).
+    workspace somehow lost it). Refuses (rc=1) when the move would overwrite
+    untracked files: reset --hard and checkout -f both delete them silently.
     """
+    if target_hash:
+        collisions = _untracked_collisions(workspace, target_hash)
+        if collisions:
+            return subprocess.CompletedProcess(
+                ["git", "checkout", "-f", preferred],
+                returncode=1,
+                stdout="",
+                stderr="The following untracked working tree files would be overwritten: "
+                       + ", ".join(collisions),
+            )
     current = _attached_branch(workspace)
     if current == preferred and target_hash:
         return _git(workspace, "reset", "--hard", target_hash)
@@ -328,10 +358,17 @@ def _apply_dump_to_repo_and_sync_bare(dump_path: Path, repo_name: str, dump_file
             attach = _attach_workspace(workspace_path, preferred_branch, incoming.get(preferred_branch))
             _cleanup_lgm_refs(workspace_path)
             if attach.returncode != 0 or not _attached_branch(workspace_path):
+                detail = _redact_git_text((attach.stderr or "").strip())
+                if "untracked" in detail.lower():
+                    return {
+                        "success": False,
+                        "message": f"Sync would overwrite untracked file(s) in the local checkout of "
+                                   f"'{repo_name}' ({detail}). Park or commit the conflicting file(s) "
+                                   f"in the checkout, then retry the send.",
+                    }
                 return {
                     "success": False,
-                    "message": f"Failed to attach workspace to '{preferred_branch}': "
-                               f"{_redact_git_text((attach.stderr or '').strip())}",
+                    "message": f"Failed to attach workspace to '{preferred_branch}': {detail}",
                 }
 
             log_proc = _git(workspace_path, "log", "-1", "--oneline")
