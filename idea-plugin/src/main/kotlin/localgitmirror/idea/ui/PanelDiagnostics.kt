@@ -393,6 +393,17 @@ internal fun LocalGitMirrorPanel.checkPluginUpdate() {
             historyService.add(LocalGitMirrorBundle.message("history.op.pluginDownload"), true, "up-to-date $pluginVersionText")
           }
 
+          is PluginUpdateLogic.Decision.Regressed -> {
+            notify(
+              LocalGitMirrorBundle.message(PluginUpdateLogic.REGRESSED_MESSAGE_KEY, decision.current, decision.remote),
+              NotificationType.WARNING
+            )
+            historyService.add(
+              LocalGitMirrorBundle.message("history.op.pluginDownload"), false,
+              "version regression: local=${decision.current} remote=${decision.remote}"
+            )
+          }
+
           is PluginUpdateLogic.Decision.Update -> {
             val confirmed = com.intellij.util.ui.UIUtil.invokeAndWaitIfNeeded<Boolean> {
               Messages.showYesNoDialog(

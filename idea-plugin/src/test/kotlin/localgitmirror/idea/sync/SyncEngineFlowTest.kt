@@ -173,9 +173,31 @@ class SyncEngineFlowTest {
       assertEquals(true, res.step.ok)
       assertEquals("No new changes to sync; skipped upload", res.step.message)
       assertNull(res.dump)
+      assertNull(res.http)
       assertEquals(0, mirror.uploadCalls)
-      assertEquals(1, state.updateCalls)
+      assertEquals(0, state.updateCalls)
       assertEquals(1, work.runBackupCalls)
+    } finally {
+      projectDir.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `no-op advances ledger only when mirror confirms head`() {
+    val mirror = FakeMirrorPort(hasCommitsKnown = setOf("abc1234"))
+    val git = FakeGitPort(head = "abc1234")
+    val work = FakeWorkKitPort(createDump = false, noChanges = true)
+    val state = FakeStatePort()
+    val resolver = fixedResolver("onyx-platform-v1")
+
+    val engine = SyncEngine(mirror = mirror, git = git, workKit = work, state = state, resolver = resolver)
+    val projectDir = createTempDir(prefix = "tmp-engine-noop-confirmed-")
+    try {
+      val res = engine.runFullSyncWithSnapshot(project = dummyProject(), projectDir = projectDir, snapshot = defaultSnapshot().copy(repoConfigured = "onyx-platform-v1"))
+      assertEquals(true, res.step.ok)
+      assertEquals("No new changes to sync; skipped upload", res.step.message)
+      assertEquals(1, mirror.hasCommitsCalls)
+      assertEquals(1, state.updateCalls)
     } finally {
       projectDir.deleteRecursively()
     }
@@ -284,11 +306,13 @@ class SyncEngineFlowTest {
     private val applyKnownResult: HttpResult = HttpResult(404, "missing"),
     private val negotiateCode: Int = 200,
     private val negotiateRefs: Map<String, MirrorSyncApi.RefInfo> = emptyMap(),
-    private val negotiateKnown: Set<String> = emptySet()
+    private val negotiateKnown: Set<String> = emptySet(),
+    private val hasCommitsKnown: Set<String> = emptySet()
   ) : MirrorPort {
     var applyKnownCalls: Int = 0
     var uploadCalls: Int = 0
     var negotiateCalls: Int = 0
+    var hasCommitsCalls: Int = 0
 
     override fun ensureRepoExists(baseUrl: String, apiKey: String, repo: String, syncPassword: String, insecureTls: Boolean, projectDir: File?): HttpResult {
       return HttpResult(200, "ok")
@@ -304,7 +328,9 @@ class SyncEngineFlowTest {
     }
 
     override fun hasCommits(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): HttpResult {
-      return HttpResult(200, """{"known":[]}""")
+      hasCommitsCalls += 1
+      val known = hasCommitsKnown.joinToString(",") { "\"$it\"" }
+      return HttpResult(200, """{"known":[$known]}""")
     }
 
     override fun negotiate(baseUrl: String, apiKey: String, repo: String, commits: List<String>, syncPassword: String, insecureTls: Boolean): MirrorSyncApi.NegotiateResult {

@@ -20,8 +20,16 @@ class PluginUpdateLogicTest {
   }
 
   @Test
-  fun lowerRemoteIsUpToDate() {
-    assertEquals(PluginUpdateLogic.Decision.UpToDate, PluginUpdateLogic.decide("0.741.0", "0.738.0"))
+  fun lowerRemoteIsRegressed() {
+    val d = PluginUpdateLogic.decide("0.741.0", "0.738.0")
+    assertTrue(d is PluginUpdateLogic.Decision.Regressed)
+    assertEquals("0.741.0", (d as PluginUpdateLogic.Decision.Regressed).current)
+    assertEquals("0.738.0", d.remote)
+  }
+
+  @Test
+  fun equalVersionsWithDifferentSegmentsAreUpToDate() {
+    assertEquals(PluginUpdateLogic.Decision.UpToDate, PluginUpdateLogic.decide("v0.741", "0.741.0"))
   }
 
   @Test

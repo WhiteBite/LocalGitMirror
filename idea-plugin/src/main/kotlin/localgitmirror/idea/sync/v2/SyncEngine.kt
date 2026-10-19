@@ -254,11 +254,15 @@ class SyncEngine(
       if (dumpGen.message == "No new changes to sync") {
         val branchName = git.currentBranch(project, projectDir).orEmpty()
         val headNow = git.headHash(project, projectDir)
-        if (!headNow.isNullOrBlank()) {
+        val mirrorConfirmed = headNow != null && mirrorKnowsHead(snapshot, repoName, headNow)
+        if (mirrorConfirmed && headNow != null) {
           state.updateAfterSend(projectDir, branchName, headNow)
         }
         val okNoop = StepResult(true, "No new changes to sync; skipped upload", dumpGen.details)
-        diag(projectDir, diagnostics, "generate-dump", SyncStepOutcome.SKIP, okNoop.message, mapOf("repo" to repoName, "branch" to branchName, "head" to (headNow ?: "")))
+        diag(
+          projectDir, diagnostics, "generate-dump", SyncStepOutcome.SKIP, okNoop.message,
+          mapOf("repo" to repoName, "branch" to branchName, "head" to (headNow ?: ""), "ledger" to if (mirrorConfirmed) "advanced" else "unchanged")
+        )
         return FullSyncResult(okNoop, null, null, repoName, traceId, diagnostics.steps)
       }
 
@@ -318,5 +322,11 @@ class SyncEngine(
   ): FullSyncResult {
     val snapshot = SettingsSnapshot.from(settings, SecretsStore.mirrorApiKey, SecretsStore.syncPassword)
     return runFullSyncWithSnapshot(project, projectDir, snapshot, additionalBranches)
+  }
+
+  private fun mirrorKnowsHead(snapshot: SettingsSnapshot, repo: String, head: String): Boolean {
+    val res = mirror.hasCommits(snapshot.baseUrl, snapshot.mirrorApiKey, repo, listOf(head), snapshot.syncPassword, snapshot.mirrorInsecureTls)
+    if (res.code !in 200..299) return false
+    return parseKnownCommitHashes(res.body).contains(head.lowercase())
   }
 }

@@ -2,18 +2,25 @@ package localgitmirror.idea.ui
 
 internal object PluginUpdateLogic {
 
+  const val REGRESSED_MESSAGE_KEY = "pluginupdate.regressed"
+
   sealed interface Decision {
     object Unknown : Decision
     object UpToDate : Decision
     data class Update(val current: String, val remote: String) : Decision
+    data class Regressed(val current: String, val remote: String) : Decision
   }
 
   fun decide(currentVersion: String?, remoteVersion: String?): Decision {
     val cur = currentVersion?.trim()?.removePrefix("v").orEmpty()
     val rem = remoteVersion?.trim()?.removePrefix("v").orEmpty()
     if (cur.isEmpty() || rem.isEmpty() || cur == "?") return Decision.Unknown
-    if (cur == rem) return Decision.UpToDate
-    return if (compareVersions(rem, cur) > 0) Decision.Update(cur, rem) else Decision.UpToDate
+    val cmp = compareVersions(rem, cur)
+    return when {
+      cmp > 0 -> Decision.Update(cur, rem)
+      cmp < 0 -> Decision.Regressed(cur, rem)
+      else -> Decision.UpToDate
+    }
   }
 
   fun compareVersions(a: String, b: String): Int {
