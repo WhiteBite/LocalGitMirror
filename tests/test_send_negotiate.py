@@ -1,6 +1,7 @@
 """op_send negotiates local commits against the mirror before bundling and
-excludes the known ones; op_pull auto-collects local haves when none given.
-Git and HTTP are faked at the seams."""
+excludes the known ones; negotiation fails CLOSED and a local tip that is not
+strictly ahead of the mirror tip is refused. op_pull auto-collects local haves
+when none given. Git and HTTP are faked at the seams."""
 import subprocess
 import sys
 from pathlib import Path
@@ -30,10 +31,12 @@ def _ctx() -> Ctx:
 class _FakeGit:
     """Dispatches the git subprocess calls op_send/op_pull make."""
 
-    def __init__(self, tips: dict, history: dict, all_history: list):
+    def __init__(self, tips: dict, history: dict, all_history: list,
+                 ancestors: set | None = None):
         self.tips = tips
         self.history = history
         self.all_history = all_history
+        self.ancestors = ancestors or set()
         self.bundle_cmds: list[list[str]] = []
         self.collect_cmds: list[list[str]] = []
 
@@ -50,7 +53,8 @@ class _FakeGit:
                                                stderr="fatal")
 
         if args[0] == "rev-parse":
-            branch = args[1].removeprefix("refs/heads/")
+            ref = next(a for a in args[1:] if a.startswith("refs/heads/"))
+            branch = ref.removeprefix("refs/heads/")
             return ok(self.tips[branch] + "\n") if branch in self.tips else fail()
         if args[0] == "rev-list":
             ref = args[-1]
@@ -59,6 +63,8 @@ class _FakeGit:
             key = ref.removeprefix("refs/heads/")
             return ok("".join(s + "\n" for s in self.history[key])) \
                 if key in self.history else fail()
+        if args[0] == "merge-base":
+            return ok() if (args[2], args[3]) in self.ancestors else fail(1)
         if args[0] == "for-each-ref":
             self.collect_cmds.append(args)
             return ok("".join(s + "\n" for s in self.tips.values()))
@@ -71,9 +77,11 @@ class _FakeGit:
 
 class _FakeClient:
     def __init__(self, known: list | None = None,
-                 negotiate_error: LgmError | None = None):
+                 negotiate_error: LgmError | None = None,
+                 refs: dict | None = None):
         self.known = known or []
         self.negotiate_error = negotiate_error
+        self.refs = refs or {}
         self.negotiate_calls: list[tuple[str, list[str], bool]] = []
         self.sent_bundles: list[bytes] = []
 
@@ -82,7 +90,7 @@ class _FakeClient:
         if self.negotiate_error is not None:
             raise self.negotiate_error
         return {"success": True, "repo": repo, "created": False,
-                "refs": {}, "head": "", "known": self.known}
+                "refs": self.refs, "head": "", "known": self.known}
 
     def sync_send(self, repo, bundle):
         self.sent_bundles.append(bundle)
@@ -96,7 +104,7 @@ def _patch_send(monkeypatch, ctx, fake_client):
 
 def test_send_excludes_mirror_known_shas(monkeypatch, tmp_path):
     git = _FakeGit(tips={"b1": T1}, history={"b1": [T1, C3]}, all_history=[])
-    client = _FakeClient(known=[T1])
+    client = _FakeClient(known=[C3])
     ctx = _ctx()
     _patch_send(monkeypatch, ctx, client)
     monkeypatch.setattr("lgm_core.ops_git.subprocess.run", git)
@@ -104,14 +112,14 @@ def test_send_excludes_mirror_known_shas(monkeypatch, tmp_path):
     res = op_send(ctx, {"repo": "r", "project": str(tmp_path), "branch": "b1"})
 
     assert client.negotiate_calls == [("r", [T1, C3], False)]
-    assert git.bundle_cmds[0][3:] == [f"refs/heads/{'b1'}", f"^{T1}"]
+    assert git.bundle_cmds[0][3:] == [f"refs/heads/{'b1'}", f"^{C3}"]
     assert res["excluded_bases"] == 1
     assert len(client.sent_bundles) == 1
 
 
 def test_send_dry_run_negotiates_and_reports_bases(monkeypatch, tmp_path):
-    git = _FakeGit(tips={"b1": T1}, history={"b1": [T1, C3]}, all_history=[])
-    client = _FakeClient(known=[T1, C3])
+    git = _FakeGit(tips={"b1": T1}, history={"b1": [T1, C3, C4]}, all_history=[])
+    client = _FakeClient(known=[C3, C4])
     ctx = _ctx()
     _patch_send(monkeypatch, ctx, client)
     monkeypatch.setattr("lgm_core.ops_git.subprocess.run", git)
@@ -119,7 +127,7 @@ def test_send_dry_run_negotiates_and_reports_bases(monkeypatch, tmp_path):
     res = op_send(ctx, {"repo": "r", "project": str(tmp_path),
                         "branch": "b1", "dry_run": True})
 
-    assert client.negotiate_calls == [("r", [T1, C3], True)]
+    assert client.negotiate_calls == [("r", [T1, C3, C4], True)]
     assert res["excluded_bases"] == 2
     assert client.sent_bundles == []
 
@@ -139,18 +147,52 @@ def test_send_without_branch_negotiates_all_history(monkeypatch, tmp_path):
     assert res["excluded_bases"] == 1
 
 
-def test_negotiation_failure_sends_full_bundle(monkeypatch, tmp_path):
+def test_negotiation_failure_fails_closed(monkeypatch, tmp_path):
     git = _FakeGit(tips={"b1": T1}, history={"b1": [T1, C3]}, all_history=[])
     client = _FakeClient(negotiate_error=LgmError("network", "mirror is dead"))
     ctx = _ctx()
     _patch_send(monkeypatch, ctx, client)
     monkeypatch.setattr("lgm_core.ops_git.subprocess.run", git)
 
+    with pytest.raises(LgmError) as excinfo:
+        op_send(ctx, {"repo": "r", "project": str(tmp_path), "branch": "b1"})
+
+    assert excinfo.value.code == "network"
+    assert "negotiation" in excinfo.value.message
+    assert "mirror is dead" in excinfo.value.message
+    assert client.sent_bundles == []
+    assert git.bundle_cmds == []
+
+
+def test_send_refuses_diverged_branch_not_ahead_of_mirror(monkeypatch, tmp_path):
+    git = _FakeGit(tips={"b1": T1}, history={"b1": [T1, C3]}, all_history=[],
+                   ancestors={(C3, T1)})
+    client = _FakeClient(known=[C3], refs={"b1": {"sha": T2}})
+    ctx = _ctx()
+    _patch_send(monkeypatch, ctx, client)
+    monkeypatch.setattr("lgm_core.ops_git.subprocess.run", git)
+
+    with pytest.raises(LgmError) as excinfo:
+        op_send(ctx, {"repo": "r", "project": str(tmp_path), "branch": "b1"})
+
+    assert excinfo.value.code == "config"
+    assert "not ahead" in excinfo.value.message
+    assert client.sent_bundles == []
+    assert git.bundle_cmds == []
+
+
+def test_send_allows_local_tip_descendant_of_mirror_tip(monkeypatch, tmp_path):
+    git = _FakeGit(tips={"b1": T2}, history={"b1": [T2, T1, C3]}, all_history=[],
+                   ancestors={(T1, T2)})
+    client = _FakeClient(known=[T1], refs={"b1": {"sha": T1}})
+    ctx = _ctx()
+    _patch_send(monkeypatch, ctx, client)
+    monkeypatch.setattr("lgm_core.ops_git.subprocess.run", git)
+
     res = op_send(ctx, {"repo": "r", "project": str(tmp_path), "branch": "b1"})
 
-    assert client.negotiate_calls == [("r", [T1, C3], False)]
-    assert git.bundle_cmds[0][3:] == ["refs/heads/b1"]
-    assert res["excluded_bases"] == 0
+    assert git.bundle_cmds[0][3:] == ["refs/heads/b1", f"^{T1}"]
+    assert res["excluded_bases"] == 1
     assert len(client.sent_bundles) == 1
 
 

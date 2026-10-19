@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 import tempfile
 import urllib.request
 import zipfile
 import io
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .client import LgmError
 from .crypto import decrypt_bundle
@@ -108,15 +110,16 @@ def op_branches(ctx: Ctx, args: dict) -> dict:
 _NEGOTIATE_CAP = 300
 
 
-def _negotiate_excludes(c, repo: str, proj: Path,
-                        branches: list[str],
-                        probe: bool = False) -> list[str]:
-    """Local commits the mirror reports as known, for ``^sha`` exclusions.
+def _negotiate(c, repo: str, proj: Path, branches: list[str],
+               probe: bool = False) -> tuple[list[str], dict]:
+    """Negotiate with the mirror: ``(exclude shas, mirror refs)``.
 
     Candidates: branch tips + recent history (``--all`` when no branch).
-    Returns ``[]`` on any negotiation failure so the caller sends a full
-    bundle; every returned sha exists locally by construction.
-    ``probe=True`` skips repo creation on the mirror (dry-run safe).
+    The excludes become ``^sha`` bundle prerequisites; the refs feed the
+    already-held guard in :func:`send_branch`. Fails CLOSED: a negotiation
+    error raises instead of silently sending a full bundle. Every returned
+    sha exists locally by construction. ``probe=True`` skips repo creation
+    on the mirror (dry-run safe).
     """
     candidates: list[str] = []
     for target in (branches or ["--all"]):
@@ -137,13 +140,36 @@ def _negotiate_excludes(c, repo: str, proj: Path,
     candidates = [s for s in dict.fromkeys(candidates)
                   if len(s) == 40][:_NEGOTIATE_CAP]
     if not candidates:
-        return []
+        return [], {}
     try:
         resp = c.sync_negotiate(repo, candidates, probe=probe)
-    except (LgmError, ValueError):
-        return []
+    except LgmError as e:
+        raise LgmError(
+            e.code,
+            f"send refused: negotiation with the mirror failed for repo "
+            f"'{repo}' ({e.message}); what the mirror already holds is "
+            "unknown, so a full bundle is not sent blind. Check the mirror "
+            "connection and retry.") from None
+    except ValueError as e:
+        raise LgmError(
+            "config",
+            f"send refused: negotiation with the mirror failed for repo "
+            f"'{repo}': {e}") from None
     known = set(resp.get("known") or [])
-    return [s for s in candidates if s in known]
+    excludes = [s for s in candidates if s in known]
+    refs = resp.get("refs")
+    return excludes, refs if isinstance(refs, dict) else {}
+
+
+def _is_strict_descendant(proj: Path, ancestor: str, descendant: str) -> bool:
+    """True when ``descendant`` has ``ancestor`` in its history and differs."""
+    if ancestor == descendant:
+        return False
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=str(proj), capture_output=True, text=True, timeout=60,
+    )
+    return proc.returncode == 0
 
 
 def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
@@ -151,12 +177,16 @@ def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
     """Bundle a branch (or --all) from a local git project and upload it.
 
     Negotiates with the mirror first: its known commits become ``^sha``
-    exclusions, so repeat sends carry only new commits.
+    exclusions, so repeat sends carry only new commits. Refuses when the
+    local tip is not strictly ahead of the mirror's tip for the branch.
     """
     branches = [branch] if branch else []
     proj = Path(project).resolve()
-    excludes = (_negotiate_excludes(_client(ctx), repo, proj, branches, probe=dry_run)
-                if proj.is_dir() else [])
+    excludes: list[str] = []
+    mirror_refs: dict = {}
+    if proj.is_dir():
+        excludes, mirror_refs = _negotiate(
+            _client(ctx), repo, proj, branches, probe=dry_run)
     if branch and proj.is_dir():
         proc = subprocess.run(
             ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
@@ -170,6 +200,14 @@ def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
                 f"mirror already holds '{branch}' at {tip}: nothing to send. "
                 "On the home host the mirror's workspace IS this checkout - "
                 "the other machine receives it with `pull`, not from your `send`.")
+        mirror_sha = (mirror_refs.get(branch) or {}).get("sha", "")
+        if tip and mirror_sha and not _is_strict_descendant(proj, mirror_sha, tip):
+            raise LgmError(
+                "config",
+                f"local branch '{branch}' at {tip} is not ahead of the "
+                f"mirror's '{branch}' at {mirror_sha}: the send would not "
+                "fast-forward the mirror. Pull the branch first (lgm pull) "
+                "or rebase onto the mirror tip, then send.")
     return send_branches(ctx, repo, project, branches, excludes, dry_run)
 
 
@@ -521,6 +559,95 @@ def _unwrap_tools_blob(blob: bytes, password: str) -> bytes:
     return blob if blob[:2] == b"PK" else decrypt_bundle(blob, password)
 
 
+_BACKUP_DIR = ".lgm_backup"
+
+
+def _contained_entry(entry: str) -> bool:
+    """Zip entries must resolve strictly inside the install root."""
+    if not entry or entry.startswith("/") or "\\" in entry or ":" in entry:
+        return False
+    return ".." not in PurePosixPath(entry).parts
+
+
+def _install_tools(zip_bytes: bytes, tools_root: Path,
+                   remote_version: str) -> dict:
+    """Verify a tools zip, then swap it in atomically per file.
+
+    Nothing in ``tools_root`` is touched until the zip passes the CRC and
+    consistency checks; a failure midway restores the previous files from
+    the single rollback copy in ``.lgm_backup``.
+    """
+    try:
+        z = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except zipfile.BadZipFile as e:
+        raise LgmError("network", f"tools download is not a valid zip "
+                                  f"archive: {e}") from None
+    with z:
+        bad = z.testzip()
+        if bad is not None:
+            raise LgmError("network", f"tools download failed its integrity "
+                                      f"check at '{bad}'; previous tools "
+                                      f"left untouched") from None
+        entries = [name for name in z.namelist() if not name.endswith("/")]
+        for name in entries:
+            if not _contained_entry(name):
+                raise LgmError("network", f"tools zip entry '{name}' escapes "
+                                          f"the install root; previous tools "
+                                          f"left untouched") from None
+        if remote_version and remote_version != "unknown" and "VERSION" in z.namelist():
+            zipped = z.read("VERSION").decode("utf-8", errors="replace").strip()
+            if zipped and zipped != remote_version:
+                raise LgmError("network", f"tools download is inconsistent: "
+                                          f"server header says version "
+                                          f"{remote_version}, zip payload "
+                                          f"says {zipped}; previous tools "
+                                          f"left untouched") from None
+        backup = tools_root / _BACKUP_DIR
+        # staging must share the tools volume: os.replace cannot cross volumes
+        with tempfile.TemporaryDirectory(prefix=".lgm_update_",
+                                          dir=tools_root) as staging:
+            for name in entries:
+                dest = Path(staging) / name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(z.read(name))
+            if backup.exists():
+                shutil.rmtree(backup)
+            backup.mkdir(parents=True)
+            for name in entries:
+                current = tools_root / name
+                if current.is_file():
+                    saved = backup / name
+                    saved.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(current, saved)
+            replaced: list[str] = []
+            try:
+                for name in entries:
+                    target = tools_root / name
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(Path(staging) / name, target)
+                    replaced.append(name)
+            except OSError as err:
+                for name in replaced:
+                    target = tools_root / name
+                    saved = backup / name
+                    if saved.is_file():
+                        shutil.copy2(saved, target)
+                    else:
+                        target.unlink(missing_ok=True)
+                raise LgmError("network", f"tools install failed midway "
+                                          f"({err}); rolled back to the "
+                                          f"previous version") from None
+    return {
+        "success": True,
+        "version": remote_version,
+        "files_updated": len(entries),
+        "tools_root": str(tools_root),
+        "message": f"Updated {len(entries)} files to version "
+                   f"{remote_version}. Previous version kept in "
+                   f"{_BACKUP_DIR}. Restart the CLI to use the new version.",
+    }
+
+
 def op_update(ctx: Ctx, args: dict) -> dict:
     """Download and install the latest CLI tools from the mirror."""
     c = _client(ctx)
@@ -533,28 +660,20 @@ def op_update(ctx: Ctx, args: dict) -> dict:
             "X-Session-ID": c.api_key,
         },
     )
-    try:
-        with c._open(req, timeout=60) as r:
-            blob = r.read()
-            remote_version = r.headers.get("X-LGM-Version", "unknown")
-    except Exception as e:
-        raise LgmError("network", f"tools download failed: {e}") from None
+    with tempfile.TemporaryDirectory(prefix="lgm-update-") as tmp:
+        blob_path = Path(tmp) / "tools.blob"
+        try:
+            with c._open(req, timeout=60) as r:
+                blob_path.write_bytes(r.read())
+                remote_version = r.headers.get("X-LGM-Version", "unknown")
+        except Exception as e:
+            raise LgmError("network", f"tools download failed: {e}") from None
+        try:
+            zip_bytes = _unwrap_tools_blob(blob_path.read_bytes(),
+                                           ctx.config.sync_password)
+        except Exception as e:
+            reason = str(e) or type(e).__name__
+            raise LgmError("network", f"tools download failed integrity "
+                                      f"check: {reason}") from None
 
-    zip_bytes = _unwrap_tools_blob(blob, ctx.config.sync_password)
-
-    z = zipfile.ZipFile(io.BytesIO(zip_bytes))
-    updated = []
-    for entry in z.namelist():
-        target = tools_root / entry
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(z.read(entry))
-        updated.append(entry)
-    z.close()
-
-    return {
-        "success": True,
-        "version": remote_version,
-        "files_updated": len(updated),
-        "tools_root": str(tools_root),
-        "message": f"Updated {len(updated)} files to version {remote_version}. Restart the CLI to use the new version.",
-    }
+    return _install_tools(zip_bytes, tools_root, remote_version)
