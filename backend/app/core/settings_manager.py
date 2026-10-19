@@ -1,10 +1,12 @@
 import json
+import threading
 from pathlib import Path
 from typing import Any, Dict
 
 
 class SettingsManager:
     def __init__(self, storage_path: Path):
+        self._lock = threading.Lock()
         _lgm = storage_path / ".lgm" / "settings.json"
         _old = storage_path / "settings.json"
         self.settings_path = _lgm if _lgm.exists() else (_old if _old.exists() else _lgm)
@@ -53,6 +55,16 @@ class SettingsManager:
             return True
         except Exception:
             return False
+
+    def update_sections(self, sections: Dict[str, Dict[str, Any]]) -> bool:
+        # lock: concurrent partial writes must merge, not read-modify-write race
+        with self._lock:
+            merged = json.loads(json.dumps(self.settings))
+            for name, values in sections.items():
+                current = merged.get(name)
+                base = current if isinstance(current, dict) else {}
+                merged[name] = {**base, **values}
+            return self.save_settings(merged)
 
     def get_all(self) -> Dict[str, Any]:
         return self.settings

@@ -1,7 +1,7 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -10,9 +10,12 @@ settings_manager = None
 
 
 class SettingsUpdate(BaseModel):
-    general: Dict[str, Any]
-    git: Dict[str, Any]
-    ui: Dict[str, Any]
+    # forbid extras: a typo'd section name must 422, not silently persist nothing
+    model_config = ConfigDict(extra="forbid")
+
+    general: Optional[Dict[str, Any]] = None
+    git: Optional[Dict[str, Any]] = None
+    ui: Optional[Dict[str, Any]] = None
 
 
 @router.get("")
@@ -27,13 +30,11 @@ async def save_settings(settings: SettingsUpdate):
     if not settings_manager:
         raise HTTPException(500, "Settings manager not initialized")
 
-    # Handle storage path change if requested
-    if "storage_path" in settings.general:
-        # Note: changing storage path requires backend restart or complex reloading
-        # For now we just save it, but we might want to validate it exists
-        pass
+    sections = settings.model_dump(exclude_none=True)
+    if not sections:
+        raise HTTPException(422, "No settings sections provided: send one or more of general, git, ui")
 
-    success = settings_manager.save_settings(settings.model_dump())
+    success = settings_manager.update_sections(sections)
     return {"success": success, "settings": settings_manager.get_all()}
 
 
