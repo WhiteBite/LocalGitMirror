@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 from rich.console import Console
 
+from app.core.git_bundle import _ensure_clean_workspace
 from app.core.logger import get_logger
 from app.core.path_safety import resolve_contained
 from app.core.settings_manager import SettingsManager
@@ -190,6 +191,11 @@ class RepoManager:
             workspace.mkdir(parents=True, exist_ok=True)
 
             if is_non_bare:
+                dirty = _ensure_clean_workspace(workspace)
+                if dirty:
+                    result.update(dirty)
+                    return result
+
                 branch_proc = subprocess.run(
                     ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(workspace), capture_output=True, text=True,
                     encoding="utf-8", errors="replace"
@@ -213,6 +219,11 @@ class RepoManager:
                     cwd=str(workspace),
                     check=True,
                 )
+
+            dirty = _ensure_clean_workspace(workspace)
+            if dirty:
+                result.update(dirty)
+                return result
 
             subprocess.run(
                 ["git", "fetch", "origin"],
