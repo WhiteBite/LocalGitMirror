@@ -2,16 +2,6 @@
   <div class="dashboard-view">
     <header class="view-header flex justify-between items-center">
       <h1>{{ t('dashboard.title') }}</h1>
-      <button 
-        @click="panicMode" 
-        v-tippy="{ content: t('dashboard.panic_tooltip'), placement: 'bottom' }"
-        class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded text-sm font-bold flex items-center gap-2 transition-all shadow-lg hover:shadow-red-900/50"
-      >
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-        </svg>
-        {{ t('dashboard.panic') }}
-      </button>
     </header>
 
     <div class="view-content">
@@ -32,7 +22,7 @@
           <div class="metric-info">
             <label>{{ t('dashboard.git_server') }}</label>
             <div class="value-row">
-              <span class="status-text text-success">{{ t('dashboard.status_active_https') }}</span>
+              <span class="status-text" :class="{ 'text-success': gitRunning, 'text-warning': !gitRunning }">{{ gitRunning ? t('dashboard.status_ready') : t('dashboard.status_not_running') }}</span>
             </div>
             <div class="sub-text warning">{{ t('dashboard.traffic_encrypted') }}</div>
           </div>
@@ -103,7 +93,7 @@
                    class="git-url-input"
                    @click="$event.target.select()"
                  />
-                 <button class="btn-icon" :title="t('dashboard.copy_command')" @click="copyGitCommand">
+                 <button class="btn-icon" :title="t('dashboard.copy_url')" @click="copyGitCommand">
                   <svg v-if="!copied" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                   <svg v-else viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
                 </button>
@@ -286,6 +276,7 @@ const currentRepo = computed(() => reposStore.currentRepo || 'default')
 const copied = ref(false)
 const lastActivity = ref('Никогда')
 const statusError = ref('')
+const gitRunning = ref(false)
 
 // Plugin download state
 const plugin = ref({ available: false, version: '', size: 0, built_at: '' })
@@ -325,9 +316,9 @@ async function fetchStatus() {
     }
     
     localIP.value = data.local_ip || window.location.hostname
-    // ПРИОРИТЕТ: берем порт Web UI из статуса бэкенда
     webPort.value = data.web_port || window.location.port || 443
     storagePath.value = data.storage_path || 'storage'
+    gitRunning.value = data.git_running === true
     
     if (data.last_sync_time) {
       lastActivity.value = new Date(data.last_sync_time).toLocaleString('ru-RU')
@@ -443,16 +434,6 @@ function copyFullConfig() {
   navigator.clipboard.writeText(connInfo.value.config_line || '')
   copiedField.value = 'full'
   setTimeout(() => copiedField.value = '', 3000)
-}
-
-async function panicMode() {
-  if (confirm(t('dashboard.panic_confirm'))) {
-    try {
-      await axios.post('/api/system/panic')
-    } catch (e) {}
-    window.close()
-    document.body.innerHTML = `<h1 style='color:red;text-align:center;margin-top:20%'>${t('dashboard.server_stopped')}</h1>`
-  }
 }
 </script>
 

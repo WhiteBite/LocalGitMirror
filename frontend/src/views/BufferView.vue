@@ -22,7 +22,11 @@
       <div v-if="bufferStore.error === 'no_password'" class="alert-card">
         {{ t('exchange.no_password') }}
       </div>
-      <div v-if="!filteredMessages.length" class="empty-state">{{ t('exchange.empty') }}</div>
+      <div v-if="!filteredMessages.length" class="empty-state">
+        <template v-if="bufferStore.error || postboxStore.error">{{ t('exchange.empty_error') }}</template>
+        <template v-else-if="loading">{{ t('exchange.empty_loading') }}</template>
+        <template v-else>{{ t('exchange.empty_idle') }}</template>
+      </div>
 
       <div
         v-for="msg in filteredMessages"

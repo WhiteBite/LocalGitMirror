@@ -35,7 +35,7 @@ export const useReposStore = defineStore('repos', () => {
     error.value = null
 
     try {
-      await axios.post('/api/repos/create', { name })
+      await axios.post('/api/documents/collection', { name })
       await fetchRepos() // Refresh list
     } catch (err) {
       error.value = err.response?.data?.detail || 'Failed to create repository'

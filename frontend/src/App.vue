@@ -88,7 +88,7 @@
       <div class="left">
           <div class="status-item" :class="{ ok: true }">
             <span class="dot"></span>
-            {{ t('app.cloud_access_active') }}
+            {{ t('app.server_local') }}
           </div>
         <div
           class="status-item interactive"
