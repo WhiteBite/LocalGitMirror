@@ -12,6 +12,20 @@ import localgitmirror.idea.workkit.BundleCrypto
 import localgitmirror.idea.workkit.EnvelopeCrypto
 
 object MirrorPluginApi {
+
+  const val SYNC_PASSWORD_REQUIRED_PREFIX = "sync-password-required:"
+
+  /** Server refuses enc=0 outright (typed 400 enc_required); every request must carry enc=1. */
+  internal fun pluginInfoQuery(): String = "?enc=1"
+
+  internal fun pluginDownloadQuery(): String = "?enc=1"
+
+  /** Null when the password is usable; otherwise a typed message for the UI to surface. */
+  internal fun requireSyncPassword(syncPassword: String, op: String): String? {
+    if (syncPassword.isNotBlank()) return null
+    return "$SYNC_PASSWORD_REQUIRED_PREFIX $op needs a sync password configured in DocCache settings; unencrypted plugin transfer is disabled on the server."
+  }
+
   data class PluginInfo(
     val code: Int,
     val available: Boolean,
@@ -25,13 +39,15 @@ object MirrorPluginApi {
   )
 
   /** Query metadata of the freshest plugin build on the server (auth-gated).
-    *  With a sync password the metadata travels inside the encrypted envelope —
-    *  the plain JSON would leak the tool's filename. Old servers answer plain
-    *  JSON to the same request (unknown query param), which we still parse. */
+    *  Metadata travels inside the encrypted envelope — the plain JSON would leak
+    *  the tool's filename. Old servers answer plain JSON to the same request
+    *  (unknown query param), which we still parse. */
   fun pluginInfo(baseUrl: String, apiKey: String, insecureTls: Boolean, syncPassword: String = ""): PluginInfo {
+    requireSyncPassword(syncPassword, "pluginInfo")?.let {
+      return PluginInfo(0, false, null, null, 0L, null, it)
+    }
     return try {
-      val enc = if (syncPassword.isNotBlank()) "?enc=1" else ""
-      val url = URL("${baseUrl.trimEnd('/')}/api/plugin/info$enc")
+      val url = URL("${baseUrl.trimEnd('/')}/api/plugin/info${pluginInfoQuery()}")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 15_000
@@ -75,9 +91,11 @@ object MirrorPluginApi {
     syncPassword: String = "",
     onProgress: ((read: Long, total: Long) -> Unit)? = null
   ): DownloadResult {
+    requireSyncPassword(syncPassword, "pluginDownload")?.let {
+      return DownloadResult(0, null, it)
+    }
     return try {
-      val enc = if (syncPassword.isNotBlank()) "?enc=1" else ""
-      val url = URL("${baseUrl.trimEnd('/')}/api/plugin/latest$enc")
+      val url = URL("${baseUrl.trimEnd('/')}/api/plugin/latest${pluginDownloadQuery()}")
       val conn = HttpClient.open(url, insecureTls)
       conn.requestMethod = "GET"
       conn.connectTimeout = 30_000
@@ -106,13 +124,11 @@ object MirrorPluginApi {
           onProgress?.invoke(read, total)
         }
       }
-      if (syncPassword.isNotBlank()) {
-        // PK magic = a legacy server ignored ?enc=1 and sent the plain zip.
-        val head = outFile.inputStream().use { it.readNBytes(2) }
-        val isPlainZip = head.size == 2 && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte()
-        if (!isPlainZip) {
-          outFile.writeBytes(BundleCrypto.decryptDumpBytes(outFile.readBytes(), syncPassword))
-        }
+      val head = outFile.inputStream().use { it.readNBytes(2) }
+      // PK magic = a legacy server ignored ?enc=1 and sent the plain zip.
+      val isPlainZip = head.size == 2 && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte()
+      if (!isPlainZip) {
+        outFile.writeBytes(BundleCrypto.decryptDumpBytes(outFile.readBytes(), syncPassword))
       }
       DownloadResult(code, outFile, "OK")
     } catch (t: Throwable) {
