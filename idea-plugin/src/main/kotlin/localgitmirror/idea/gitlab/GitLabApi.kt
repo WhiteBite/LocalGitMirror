@@ -176,29 +176,49 @@ object GitLabApi {
     }
   }
 
+  internal fun mrsPageUrl(base: String, project: String, page: Int): String =
+    "${base.trimEnd('/')}/api/v4/projects/${projectPathEncoded(project)}" +
+      "/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=50&page=$page"
+
+  internal fun nextPageOf(header: String?): Int? {
+    val v = header?.trim()?.toIntOrNull() ?: return null
+    return if (v > 0) v else null
+  }
+
+  internal fun shouldFetchPage(next: Int?, fetched: Int): Boolean =
+    next != null && fetched < 10
+
   /**
    * GET {url}/api/v4/projects/{project}/merge_requests?state=opened
-   * Newest-updated first, capped at 50 entries.
+   * Newest-updated first. Paginated via X-Next-Page, capped at 10 pages.
    */
   fun listOpenMrs(conf: GitLabConfig.GitLabConf): MrsResult {
     return try {
-      val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
-        "/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=50"
-      val conn = open(url, conf.token)
-      val code = conn.responseCode
-      val body = HttpClient.readBody(conn)
-      if (code !in 200..299) return MrsResult(code, emptyList(), body.take(300))
+      val mrs = mutableListOf<MrInfo>()
+      var code: Int
+      var page = 1
+      var fetched = 0
+      while (true) {
+        val conn = open(mrsPageUrl(conf.url, conf.project, page), conf.token)
+        code = conn.responseCode
+        val body = HttpClient.readBody(conn)
+        if (code !in 200..299) return MrsResult(code, emptyList(), body.take(300))
 
-      val arr = Json.parseToJsonElement(body).jsonArray
-      val mrs = arr.mapNotNull { el ->
-        val o = el.jsonObject
-        val iid = o["iid"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return@mapNotNull null
-        MrInfo(
-          iid = iid,
-          title = o["title"]?.jsonPrimitive?.contentOrNull ?: "",
-          sourceBranch = o["source_branch"]?.jsonPrimitive?.contentOrNull ?: "",
-          updatedAt = o["updated_at"]?.jsonPrimitive?.contentOrNull ?: ""
-        )
+        val arr = Json.parseToJsonElement(body).jsonArray
+        mrs += arr.mapNotNull { el ->
+          val o = el.jsonObject
+          val iid = o["iid"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return@mapNotNull null
+          MrInfo(
+            iid = iid,
+            title = o["title"]?.jsonPrimitive?.contentOrNull ?: "",
+            sourceBranch = o["source_branch"]?.jsonPrimitive?.contentOrNull ?: "",
+            updatedAt = o["updated_at"]?.jsonPrimitive?.contentOrNull ?: ""
+          )
+        }
+        fetched++
+        val next = nextPageOf(conn.getHeaderField("X-Next-Page"))
+        if (!shouldFetchPage(next, fetched)) break
+        page = next ?: break
       }
       MrsResult(code, mrs, "OK")
     } catch (t: Throwable) {
