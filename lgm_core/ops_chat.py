@@ -32,7 +32,7 @@ def op_chat_send(ctx: Ctx, args: dict) -> dict:
     ciphertext_b64 = base64.b64encode(encrypted).decode("ascii")
     res = c.buffer_send(ciphertext_b64, hint="chat:mcp")
     if "id" not in res:
-        return {"success": False, "message": str(res)[:300]}
+        raise LgmError("server", f"buffer send returned no id: {str(res)[:300]}")
     return {"success": True, "id": res["id"], "text": text[:200]}
 
 
@@ -89,8 +89,8 @@ def op_file_send(ctx: Ctx, args: dict) -> dict:
     c = _client(ctx)
     rel = p.name
     res = c.file_sync_send(repo, rel, len(data), data)
-    if not res.get("success"):
-        return {"success": False, "message": str(res)[:300]}
+    if res.get("success") is False:
+        raise LgmError("server", f"mirror refused the file: {str(res)[:300]}")
     return {"success": True, "id": res.get("id", ""), "file": rel, "size": len(data)}
 
 
@@ -146,6 +146,8 @@ def op_file_ack(ctx: Ctx, args: dict) -> dict:
         raise LgmError("config", "--id is required")
     c = _client(ctx)
     res = c.file_sync_ack(repo, item_id)
+    if res.get("success") is False:
+        raise LgmError("server", f"mirror refused the ack: {str(res)[:300]}")
     return {"success": True, "repo": repo, "id": item_id, "result": res}
 
 

@@ -111,6 +111,16 @@ def test_chat_send_encrypts_bundle_password_mode():
     assert isinstance(data["ts"], int)
 
 
+def test_chat_send_server_refusal_raises():
+    from lgm_core.ops import op_chat_send
+    ctx = _ctx("pw")
+    ctx.client.buffer_send = lambda *a, **k: {"error": "nope"}
+
+    with pytest.raises(LgmError) as ei:
+        op_chat_send(ctx, {"text": "hi"})
+    assert "nope" in ei.value.message
+
+
 def test_chat_list_filters_chat_items_and_decrypts():
     from lgm_core.ops import op_chat_list
     ctx = _ctx("pw")
@@ -217,8 +227,9 @@ def test_file_send_reports_server_failure(tmp_path):
     f.write_bytes(b"data")
     ctx.client.file_sync_send = lambda *a: {"success": False, "detail": "boom"}
 
-    res = op_file_send(ctx, {"path": str(f), "repo": "r"})
-    assert res["success"] is False
+    with pytest.raises(LgmError) as ei:
+        op_file_send(ctx, {"path": str(f), "repo": "r"})
+    assert "boom" in ei.value.message
 
 
 def test_file_list_requires_repo():
@@ -305,6 +316,25 @@ def test_file_ack_propagates_lgm_error():
     with pytest.raises(LgmError) as ei:
         op_file_ack(ctx, {"repo": "r", "id": "abc"})
     assert "server gone" in ei.value.message
+
+
+def test_file_ack_server_refusal_raises():
+    from lgm_core.ops import op_file_ack
+    ctx = _ctx()
+    ctx.client.file_sync_ack = lambda *a: {"success": False, "detail": "refused"}
+
+    with pytest.raises(LgmError) as ei:
+        op_file_ack(ctx, {"repo": "r", "id": "abc"})
+    assert "refused" in ei.value.message
+
+
+def test_file_ack_tolerates_response_without_success_flag():
+    from lgm_core.ops import op_file_ack
+    ctx = _ctx()
+    ctx.client.file_sync_ack = lambda *a: {}
+
+    res = op_file_ack(ctx, {"repo": "r", "id": "abc"})
+    assert res["success"] is True
 
 
 _SETTINGS = {

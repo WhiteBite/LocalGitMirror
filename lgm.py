@@ -10,6 +10,11 @@ Usage:
 Subcommands and their flags are generated from ``lgm_core.ops.REGISTRY``.
 Global flags: --base-url, --api-key, --password, --repo, --json.
 
+Exit codes: 0 success; 1 crash (unexpected exception); 2 usage error;
+3 config error; 4 network error; 5 the mirror or an op refused the
+operation.  Under --json every failure prints one error envelope to
+stdout: {"success": false, "error": {"kind": ..., "message": ...}}.
+
 Config is read from .env in the same directory as this script, or from
 --base-url / --password / --api-key flags. SYNC_PASSWORD and API_KEY from
 .env are used.  Set LGM_USE_ENV_<KEY>=1 to prefer the process env for a key.
@@ -54,7 +59,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--password", default=None,
                    help="Sync password (default from .env SYNC_PASSWORD)")
     p.add_argument("--repo", default=None,
-                   help="Repository name (default: onyx-platform; overridden by per-command --repo)")
+                   help="Repository name (global default for commands that take --repo)")
     p.add_argument("--json", action="store_true", default=False,
                    help="Output raw JSON instead of human-readable text")
 
@@ -141,6 +146,22 @@ def _extract_args(args: argparse.Namespace, op) -> dict:
     return out
 
 
+_EXIT_CRASH = 1
+_EXIT_BY_KIND = {"config": 3, "network": 4}
+_EXIT_REFUSED = 5
+
+
+def _print_error(args: argparse.Namespace, kind, message: str) -> int:
+    if getattr(args, "json", False):
+        envelope = {"success": False, "error": {"kind": kind, "message": message}}
+        print(json.dumps(envelope, ensure_ascii=False, indent=2))
+    else:
+        print(f"ERROR: [{kind}] {message}", file=sys.stderr)
+    if kind == "crash":
+        return _EXIT_CRASH
+    return _EXIT_BY_KIND.get(kind, _EXIT_REFUSED)
+
+
 def main() -> int:
     harden_stdio()
     parser = _build_parser()
@@ -162,14 +183,13 @@ def main() -> int:
     try:
         result = op.run(ctx, op_args)
     except LgmError as e:
-        print(f"ERROR: [{e.code}] {e.message}", file=sys.stderr)
-        return 1
-    except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+        return _print_error(args, e.code, e.message)
     except Exception as e:
-        print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr)
-        return 1
+        return _print_error(args, "crash", f"{type(e).__name__}: {e}")
+
+    if isinstance(result, dict) and result.get("success") is False:
+        detail = result.get("error") or result.get("message") or "operation reported success=false"
+        return _print_error(args, "op_failure", str(detail))
 
     if getattr(args, "json", False):
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

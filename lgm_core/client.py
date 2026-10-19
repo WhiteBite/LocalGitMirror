@@ -39,7 +39,15 @@ def repo_to_rid(repo_name: str) -> str:
 
 
 class LgmError(Exception):
-    """Structured error: ``code`` (int HTTP status or "network") + ``message``."""
+    """Structured error: ``code`` + ``message``.
+
+    ``code`` is an int HTTP status from the mirror, or a kind string:
+    "config" (bad input/env), "network" (unreachable), "git" / "gitlab"
+    (local tool or GitLab API failure), "server" (mirror answered but
+    refused).  lgm.py maps kinds to exit codes: config=3, network=4,
+    every other kind=5; 1 is reserved for non-LgmError crashes and 2
+    for argparse usage errors.
+    """
 
     def __init__(self, code, message: str):
         self.code = code
