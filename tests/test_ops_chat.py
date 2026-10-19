@@ -13,7 +13,7 @@ from lgm_core.client import LgmError, MirrorClient
 from lgm_core.config import Config
 from lgm_core.crypto import decrypt_bundle, encrypt_bundle
 from lgm_core.ops import REGISTRY, Ctx, get_op
-from lgm_core.ops_chat import _parse_value
+from lgm_core.ops_chat import _coerce_value
 
 
 def _ctx(sync_password: str = "pw") -> Ctx:
@@ -391,12 +391,16 @@ def test_config_set_unknown_section():
     assert "not found" in ei.value.message
 
 
-def test_config_set_posts_all_sections_with_update():
+def test_config_set_posts_only_the_touched_section():
     from lgm_core.ops import op_config_set
     ctx = _ctx()
-    captured = {}
+    captured = {"gets": []}
 
-    ctx.client._get_json = lambda path: dict(_SETTINGS)
+    def fake_get(path):
+        captured["gets"].append(path)
+        return dict(_SETTINGS)
+
+    ctx.client._get_json = fake_get
 
     def fake_post(path, body, content_type="application/json", timeout=None):
         captured["path"] = path
@@ -408,23 +412,66 @@ def test_config_set_posts_all_sections_with_update():
     res = op_config_set(ctx, {"section": "general", "key": "retention_days",
                               "value": "30"})
     assert res["success"] is True
-    assert res["value"] == 30
     assert captured["path"] == "/api/settings"
-    assert captured["body"]["general"]["retention_days"] == 30
-    assert captured["body"]["general"]["storage_path"] == "storage"
-    assert captured["body"]["git"] == {"git_port": 8444}
-    assert captured["body"]["ui"] == {"theme": "dark"}
+    # exact payload: only the touched section, only the touched key
+    assert captured["body"] == {"general": {"retention_days": "30"}}
+    # server merges per key; a stale client copy would clobber concurrent writes
+    assert captured["gets"] == []
+
+
+def test_config_set_numeric_looking_value_stays_string():
+    from lgm_core.ops import op_config_set
+    ctx = _ctx()
+    captured = {}
+    ctx.client._get_json = lambda path: dict(_SETTINGS)
+    ctx.client._post_json = lambda path, body, content_type="application/json", timeout=None: (
+        captured.update(body=json.loads(body.decode())) or {"success": True})
+
+    for raw in ("1.0", "007", "42", "true"):
+        res = op_config_set(ctx, {"section": "general", "key": "k", "value": raw})
+        assert res["value"] == raw
+        assert captured["body"] == {"general": {"k": raw}}
+
+
+def test_config_set_json_value_when_marked():
+    from lgm_core.ops import op_config_set
+    ctx = _ctx()
+    captured = {}
+    ctx.client._get_json = lambda path: dict(_SETTINGS)
+    ctx.client._post_json = lambda path, body, content_type="application/json", timeout=None: (
+        captured.update(body=json.loads(body.decode())) or {"success": True})
+
+    res = op_config_set(ctx, {"section": "general", "key": "k",
+                              "value": "json:{\"a\": 1}"})
+    assert res["value"] == {"a": 1}
+    assert captured["body"] == {"general": {"k": {"a": 1}}}
+
+
+def test_config_set_invalid_json_marker_raises():
+    from lgm_core.ops import op_config_set
+    ctx = _ctx()
+    ctx.client._get_json = lambda path: dict(_SETTINGS)
+    posted = []
+    ctx.client._post_json = lambda *a, **k: posted.append(a) or {"success": True}
+
+    with pytest.raises(LgmError) as ei:
+        op_config_set(ctx, {"section": "general", "key": "k", "value": "json:not-json"})
+    assert "json" in ei.value.message.lower()
+    assert posted == []
 
 
 @pytest.mark.parametrize("raw,expected", [
-    ("true", True),
-    ("false", False),
-    ("42", 42),
-    ("3.14", 3.14),
+    ("true", "true"),
+    ("false", "false"),
+    ("42", "42"),
+    ("007", "007"),
+    ("1.0", "1.0"),
     ("plain text", "plain text"),
-    ('{"a": 1}', {"a": 1}),
-    ("[1, 2]", [1, 2]),
+    ('{"a": 1}', '{"a": 1}'),
+    ("[1, 2]", "[1, 2]"),
     ("", ""),
+    ("json:{\"a\": 1}", {"a": 1}),
+    ("json:[1, 2]", [1, 2]),
 ])
-def test_parse_value(raw, expected):
-    assert _parse_value(raw) == expected
+def test_coerce_value(raw, expected):
+    assert _coerce_value(raw) == expected

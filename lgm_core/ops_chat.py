@@ -166,49 +166,35 @@ def op_config_get(ctx: Ctx, args: dict) -> dict:
 
 
 def op_config_set(ctx: Ctx, args: dict) -> dict:
-    """Update a server setting. section=key=value or JSON."""
+    """Update one server setting via a partial-section payload."""
     section = args.get("section", "")
     key = args.get("key", "")
     value = args.get("value", "")
     if not section or not key:
         raise LgmError("config", "--section and --key are required (use --value for the new value)")
+    if section not in _SECTIONS:
+        raise LgmError("config", f"section '{section}' not found. Available: {', '.join(_SECTIONS)}")
 
+    typed = _coerce_value(value)
     c = _client(ctx)
-    current = c._get_json("/api/settings")
-    if section not in current:
-        available = ", ".join(current.keys())
-        raise LgmError("config", f"section '{section}' not found. Available: {available}")
-
-    existing = dict(current.get(section) or {})
-    existing[key] = _parse_value(value)
-
-    body = {
-        "general": current.get("general", {}),
-        "git": current.get("git", {}),
-        "ui": current.get("ui", {}),
-    }
-    body[section] = existing
-
+    # partial payload only: sending other sections/keys would clobber concurrent writers
+    body = {section: {key: typed}}
     result = c._post_json("/api/settings", json.dumps(body).encode("utf-8"),
                           "application/json")
-    return {"success": result.get("success", False), "section": section, "key": key, "value": existing[key]}
+    return {"success": result.get("success", False), "section": section, "key": key, "value": typed}
 
 
-def _parse_value(raw: str):
-    raw = raw.strip()
-    if raw.lower() in ("true", "false"):
-        return raw.lower() == "true"
-    try:
-        return int(raw)
-    except ValueError:
-        pass
-    try:
-        return float(raw)
-    except ValueError:
-        pass
-    if raw.startswith("{") or raw.startswith("["):
+_SECTIONS = ("general", "git", "ui")
+_JSON_PREFIX = "json:"
+
+
+def _coerce_value(raw: str):
+    """Default is string; JSON only behind an explicit ``json:`` prefix."""
+    text = raw.strip()
+    if text.lower().startswith(_JSON_PREFIX):
+        payload = text[len(_JSON_PREFIX):]
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            pass
+            return json.loads(payload)
+        except json.JSONDecodeError as e:
+            raise LgmError("config", f"--value marked json: is not valid JSON: {e}") from None
     return raw
