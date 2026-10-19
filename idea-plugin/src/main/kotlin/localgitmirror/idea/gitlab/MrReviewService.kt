@@ -14,8 +14,10 @@ import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
 import java.time.Instant
+import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 class MrReviewService(private val project: Project) {
 
@@ -36,6 +38,7 @@ class MrReviewService(private val project: Project) {
     val replyFailed: Int = 0,
     val notesSentAt: String? = null,
     val state: String = "open",
+    val repo: String = "",
   )
 
   data class StatusReport(val posted: Int, val failed: Int)
@@ -54,6 +57,12 @@ class MrReviewService(private val project: Project) {
 
   @Volatile
   private var cacheError: String? = null
+
+  @Volatile
+  var lastRepo: String = ""
+
+  @Volatile
+  var lastGitLabProject: String = ""
 
   @Volatile
   var onCacheUpdated: ((List<MrRowItem>) -> Unit)? = null
@@ -95,6 +104,7 @@ class MrReviewService(private val project: Project) {
     val cache = runCatching { fetchCacheData() }
       .getOrElse { CacheData(emptyList(), emptyMap(), emptySet(), emptySet(), error = it.message ?: "cache error") }
     cacheError = cache.error
+    lastGitLabProject = if (GitLabConfig.hasApi(conf)) conf.project else ""
     if (!GitLabConfig.hasApi(conf)) {
       return decorate(cache.rows, cache)
     }
@@ -150,6 +160,8 @@ class MrReviewService(private val project: Project) {
       syncFacade.resolveRepo(File(baseDir), settings).sanitized
     }.getOrNull()?.takeIf { it.isNotBlank() } ?: return CacheData(emptyList(), emptyMap(), emptySet(), localReplyIids(baseDir))
 
+    lastRepo = repo
+
     val listResult = MirrorPostboxApi.fileSyncList(
       settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls
     )
@@ -164,15 +176,12 @@ class MrReviewService(private val project: Project) {
     val statusCandidates = mutableListOf<Triple<Int, MirrorPostboxApi.FileSyncItem, String>>()
     val pendingIids = mutableSetOf<Int>()
     val errorIids = mutableSetOf<Int>()
-    val noteItems = mutableListOf<Pair<MirrorPostboxApi.FileSyncItem, String>>()
-    val closedMarkers = mutableMapOf<Int, MrClosedMarker.Data>()
+    val noteItems = mutableListOf<MirrorPostboxApi.FileSyncItem>()
+    val markerItems = mutableListOf<MirrorPostboxApi.FileSyncItem>()
     for (item in listResult.items) {
       val path = item.path
-      val closedIid = MrClosedMarker.iidOf(path)
-      if (closedIid != null) {
-        cachedPlain(item, settings, repo)?.let { md ->
-          MrClosedMarker.parse(md)?.let { closedMarkers[closedIid] = it }
-        }
+      if (MrClosedMarker.iidOf(path) != null) {
+        markerItems.add(item)
         continue
       }
       val iid = Regex("mr-!(\\d+)\\.md$").find(path)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
@@ -182,7 +191,7 @@ class MrReviewService(private val project: Project) {
           if (md == null) errorIids.add(iid) else statusCandidates.add(Triple(iid, item, md))
         }
         path.startsWith("mr-replies/") -> pendingIids.add(iid)
-        path.startsWith("mr-notes/") -> noteItems.add(item to path)
+        path.startsWith("mr-notes/") -> noteItems.add(item)
       }
     }
     val status = mutableMapOf<Int, StatusReport>()
@@ -195,25 +204,44 @@ class MrReviewService(private val project: Project) {
         }
       }
     }
+    val newestNotes = newestByMtime(noteItems)
+    val newestMarkers = newestByMtime(markerItems)
+    val keptIds = (newestNotes.values + newestMarkers.values).mapTo(HashSet()) { it.id }
+    for (stale in noteItems + markerItems) {
+      if (stale.id !in keptIds) {
+        runCatching { MirrorPostboxApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, stale.id) }
+      }
+    }
+    val closedMarkers = mutableMapOf<Int, Pair<Long, MrClosedMarker.Data>>()
+    for ((iid, item) in newestMarkers) {
+      cachedPlain(item, settings, repo)?.let { md ->
+        MrClosedMarker.parse(md)?.let { closedMarkers[iid] = item.mtime to it }
+      }
+    }
     val itemErrors = mutableListOf<String>()
-    val postboxRows = newestPerIid(noteItems).mapNotNull { (item, path) ->
-      cachedRow(item, path, settings, repo, itemErrors)?.copy(notesSentAt = formatTs(item.mtime))
-    }.map { row -> if (closedMarkers.containsKey(row.iid)) row.copy(state = "closed") else row }
+    val postboxRows = newestNotes.values.mapNotNull { item ->
+      val row = cachedRow(item, item.path, settings, repo, itemErrors) ?: return@mapNotNull null
+      val marker = closedMarkers[row.iid]
+      val state = if (closedByMtime(item.mtime, marker?.first)) "closed" else row.state
+      row.copy(notesSentAt = formatTs(item.mtime), state = state, repo = repo)
+    }
     val noteIids = postboxRows.map { it.iid }.toSet()
-    val markerRows = closedMarkers.filterKeys { it !in noteIids }.map { (iid, d) ->
+    val markerRows = closedMarkers.filterKeys { it !in noteIids }.map { (iid, e) ->
+      val d = e.second
       MrRowItem(
         iid = iid, title = d.title, sourceBranch = d.branch, updatedAt = d.detected,
         unresolved = 0, totalThreads = 0, discussions = emptyList(),
         source = Source.CACHE, receivedMarkdown = null, state = "closed",
+        repo = repo,
       )
     }
     val rows = postboxRows + markerRows +
-      localMrRows(baseDir, (postboxRows + markerRows).map { it.iid }.toSet(), closedMarkers.keys)
+      localMrRows(baseDir, repo, (postboxRows + markerRows).map { it.iid }.toSet(), closedMarkers.keys)
     return CacheData(rows, status, pendingIids, localReplyIids(baseDir), errorIids, itemErrors.joinToString("; ").take(300).ifBlank { null })
   }
 
   // Postbox notes expire after 7 days; local .mr-notes copies keep the MR visible and reviewable.
-  private fun localMrRows(baseDir: String, skipIids: Set<Int>, closedIids: Set<Int>): List<MrRowItem> {
+  private fun localMrRows(baseDir: String, repo: String, skipIids: Set<Int>, closedIids: Set<Int>): List<MrRowItem> {
     val files = File(baseDir, ".mr-notes")
       .listFiles { f -> f.isFile && Regex("^mr-!\\d+\\.md$").matches(f.name) }
       ?: return emptyList()
@@ -223,7 +251,7 @@ class MrReviewService(private val project: Project) {
       if (iid in skipIids) return@mapNotNull null
       val md = runCatching { f.readText(Charsets.UTF_8) }.getOrNull() ?: return@mapNotNull null
       runCatching {
-        val row = parseMrMarkdown(iid, md).copy(notesSentAt = formatTs(f.lastModified() / 1000))
+        val row = parseMrMarkdown(iid, md).copy(notesSentAt = formatTs(f.lastModified() / 1000), repo = repo)
         if (iid in closedIids) row.copy(state = "closed") else row
       }.getOrNull()
     }
@@ -291,7 +319,7 @@ class MrReviewService(private val project: Project) {
     }
     if (mrsResult.mrs.isEmpty()) return emptyList()
 
-    return mrsResult.mrs.take(10).map { mr ->
+    return mrsResult.mrs.map { mr ->
       val discussions = GitLabApi.listMrDiscussions(conf, mr.iid).discussions
       val unresolved = discussions.count { d -> !d.resolved && d.notes.any { !it.system } }
       MrRowItem(
@@ -501,5 +529,62 @@ class MrReviewService(private val project: Project) {
         NotificationType.WARNING,
       )
       .notify(project)
+  }
+
+  companion object {
+    private val IidInPath = Regex("mr-!(\\d+)")
+
+    /** Newest postbox item per MR iid by mtime; equal mtimes keep the first listed. */
+    internal fun newestByMtime(items: List<MirrorPostboxApi.FileSyncItem>): Map<Int, MirrorPostboxApi.FileSyncItem> {
+      val byIid = LinkedHashMap<Int, MirrorPostboxApi.FileSyncItem>()
+      for (item in items) {
+        val iid = IidInPath.find(item.path)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: continue
+        val cur = byIid[iid]
+        if (cur == null || item.mtime > cur.mtime) byIid[iid] = item
+      }
+      return byIid
+    }
+
+    /** Closed only when the newest marker is at least as new as the newest note; the marker wins ties. */
+    internal fun closedByMtime(noteMtime: Long?, markerMtime: Long?): Boolean =
+      when {
+        markerMtime == null -> false
+        noteMtime == null -> true
+        else -> markerMtime >= noteMtime
+      }
+
+    /** Parses "yyyy-MM-dd HH:mm" or ISO-8601 and returns a relative age; empty for blank/malformed/future. */
+    internal fun formatAge(stamp: String?, now: LocalDateTime): String {
+      if (stamp.isNullOrBlank()) return ""
+      val then = parseStampToLocal(stamp) ?: return ""
+      if (then.isAfter(now)) return ""
+      val mins = ChronoUnit.MINUTES.between(then, now)
+      return when {
+        mins < 1 -> "<1m"
+        mins < 60 -> "${mins}m"
+        mins < 24 * 60 -> "${mins / 60}h"
+        else -> "${mins / 60 / 24}d"
+      }
+    }
+
+    private val isoStamp = Regex("""^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(\.\d+)?(Z|[+-]\d{2}:\d{2})?$""")
+
+    private fun parseStampToLocal(stamp: String): LocalDateTime? {
+      val trimmed = stamp.trim()
+      isoStamp.find(trimmed)?.let { m ->
+        return runCatching {
+          val instant = if (m.groupValues[4] != "") {
+            Instant.parse(trimmed)
+          } else {
+            LocalDateTime.parse("${m.groupValues[1]}T${m.groupValues[2]}")
+              .atZone(ZoneId.systemDefault()).toInstant()
+          }
+          LocalDateTime.ofInstant(instant, ZoneId.systemDefault())
+        }.getOrNull()
+      }
+      return runCatching {
+        LocalDateTime.parse(trimmed, DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+      }.getOrNull()
+    }
   }
 }

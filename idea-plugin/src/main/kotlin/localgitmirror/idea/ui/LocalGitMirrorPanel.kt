@@ -194,6 +194,11 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
     foreground = com.intellij.ui.JBColor(0xC62828, 0xEF5350)
     isVisible = false
   }
+  internal val mrReviewRepoLabel = JBLabel("").apply {
+    font = JBUI.Fonts.smallFont()
+    foreground = com.intellij.ui.JBColor(0x6F7277, 0x6F7277)
+    isVisible = false
+  }
   internal val mrReviewFilterField = SearchTextField(false).apply {
     textEditor.emptyText.text = LocalGitMirrorBundle.message("review.filter")
     textEditor.font = JBUI.Fonts.smallFont()
@@ -207,7 +212,7 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   internal val mrReviewList = JBList(mrReviewListModel).apply {
     font = JBUI.Fonts.smallFont()
     fixedCellHeight = JBUI.scale(24)
-    cellRenderer = MrReviewListCellRenderer()
+    cellRenderer = MrReviewListCellRenderer(project)
     selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
     emptyText.text = LocalGitMirrorBundle.message("review.empty")
     emptyText.appendLine(

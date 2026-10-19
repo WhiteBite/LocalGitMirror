@@ -6,6 +6,7 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
+import com.intellij.openapi.project.Project
 import com.intellij.ui.ColoredListCellRenderer
 import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleTextAttributes
@@ -22,6 +23,7 @@ import java.awt.BorderLayout
 import java.awt.FlowLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.time.LocalDateTime
 import javax.swing.BorderFactory
 import javax.swing.BoxLayout
 import javax.swing.JButton
@@ -65,6 +67,7 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
     add(mrReviewErrorLabel)
     add(searchRow)
     add(headerRow)
+    add(mrReviewRepoLabel)
   }
 
   val listScroll = JScrollPane(mrReviewList).apply {
@@ -216,6 +219,19 @@ internal fun LocalGitMirrorPanel.refreshReview() {
 
   updateReviewTabTitle()
 
+  val repo = service.lastRepo
+  val glProject = service.lastGitLabProject
+  mrReviewRepoLabel.text = buildString {
+    if (repo.isNotBlank()) {
+      append(LocalGitMirrorBundle.message("review.header.repo", repo))
+    }
+    if (glProject.isNotBlank()) {
+      if (isNotEmpty()) append("  ")
+      append(LocalGitMirrorBundle.message("review.header.gitlab", glProject))
+    }
+  }
+  mrReviewRepoLabel.isVisible = mrReviewRepoLabel.text?.isNotBlank() == true
+
   val hasGitlab = runCatching {
     val conf = localgitmirror.idea.gitlab.GitLabConfig.resolve(project)
     conf.url.isNotBlank() && conf.project.isNotBlank() &&
@@ -262,7 +278,7 @@ internal fun LocalGitMirrorPanel.saveMrForBranch(sel: BranchListItem) {
   notify(LocalGitMirrorBundle.message("review.save.ok", 1), NotificationType.INFORMATION)
 }
 
-internal class MrReviewListCellRenderer : ColoredListCellRenderer<MrReviewService.MrRowItem>() {
+internal class MrReviewListCellRenderer(private val project: Project) : ColoredListCellRenderer<MrReviewService.MrRowItem>() {
   override fun customizeCellRenderer(
     list: JList<out MrReviewService.MrRowItem>,
     value: MrReviewService.MrRowItem?,
@@ -279,6 +295,9 @@ internal class MrReviewListCellRenderer : ColoredListCellRenderer<MrReviewServic
     else
       SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, JBColor.GRAY)
     append("!${value.iid}", badgeAttr)
+    if (value.repo.isNotBlank()) {
+      append("  ${value.repo}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+    }
     val countAttr = SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN,
       if (value.unresolved > 0) amber else green)
     val countText = when {
@@ -288,9 +307,14 @@ internal class MrReviewListCellRenderer : ColoredListCellRenderer<MrReviewServic
     }
     append("  $countText", if (value.state == "closed")
       SimpleTextAttributes.GRAYED_ATTRIBUTES else countAttr)
-    val notesText = value.notesSentAt
-      ?.let { LocalGitMirrorBundle.message("review.notes.sent", it) }
-      ?: LocalGitMirrorBundle.message("review.notes.notsent")
+    val now = LocalDateTime.now()
+    val age = MrReviewService.formatAge(value.notesSentAt, now)
+    val notesText = if (age.isNotBlank())
+      LocalGitMirrorBundle.message("review.notes.age", age)
+    else
+      value.notesSentAt
+        ?.let { LocalGitMirrorBundle.message("review.notes.sent", it) }
+        ?: LocalGitMirrorBundle.message("review.notes.notsent")
     append("  \u00b7 $notesText", SimpleTextAttributes.GRAYED_ATTRIBUTES)
     if (value.replyState.isNotBlank()) {
       val count = if (value.replyState == "failed") value.replyFailed else value.replyPosted
@@ -312,5 +336,28 @@ internal class MrReviewListCellRenderer : ColoredListCellRenderer<MrReviewServic
       append("  [${LocalGitMirrorBundle.message("review.row.cache")}]", SimpleTextAttributes.GRAYED_ATTRIBUTES)
     }
     append("  ${value.sourceBranch}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+    toolTipText = buildTooltip(value)
+  }
+
+  private fun buildTooltip(value: MrReviewService.MrRowItem): String {
+    val glProject = runCatching { project.getService(MrReviewService::class.java)?.lastGitLabProject }.getOrNull()
+    return buildString {
+      if (value.repo.isNotBlank()) {
+        append("Cache: ").appendLine(value.repo)
+      }
+      if (!glProject.isNullOrBlank()) {
+        append("GitLab: ").appendLine(glProject)
+      }
+      append("!").append(value.iid).append(" ").append(value.title).append("\n")
+      append("Branch: ").appendLine(value.sourceBranch)
+      if (value.updatedAt.isNotBlank()) {
+        append("Updated: ").appendLine(value.updatedAt)
+      }
+      if (!value.notesSentAt.isNullOrBlank()) {
+        append("Notes: ").appendLine(value.notesSentAt)
+      }
+      append("Unresolved: ").append(value.unresolved).append("/").append(value.totalThreads).append("\n")
+      append("State: ").append(value.state)
+    }
   }
 }
