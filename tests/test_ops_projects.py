@@ -264,7 +264,7 @@ def _prepare_sync(tmp_path, monkeypatch):
     proj = _make_project(tmp_path)
     monkeypatch.setattr(opmod, "_REGISTRY_PATH", tmp_path / "reg.json")
     monkeypatch.setattr(opmod, "_STATE_PATH", tmp_path / "state.json")
-    monkeypatch.setattr(opmod, "_fetch_mr_branches", lambda proj, branches: None)
+    monkeypatch.setattr(opmod, "_fetch_mr_branches", lambda proj, branches: [])
     monkeypatch.setattr(opmod, "_mirror_refs_safe", lambda c, repo: {})
     sent_calls = []
 
@@ -426,6 +426,34 @@ def test_mr_sync_all_skips_closed_marker_within_ttl(tmp_path, monkeypatch):
     assert res["summary"]["closed_marked"] == 0
 
 
+def test_mr_sync_all_clears_closed_state_on_reopen(tmp_path, monkeypatch):
+    import time as _t
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    opmod._save_state({"doctransformer": {
+        "24": {"closed": True, "closed_sent_at": _t.time(),
+               "title": "Llm-core", "branch": "llm-core"}}})
+
+    res = opmod.op_mr_sync_all(ctx, {})
+    assert res["success"] is True
+    st = opmod._load_state()["doctransformer"]["24"]
+    assert "closed" not in st
+    assert "closed_sent_at" not in st
+
+
+def test_mr_sync_all_evicts_stale_closed_marker(tmp_path, monkeypatch):
+    import time as _t
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    opmod._save_state({"doctransformer": {
+        "99": {"closed": True, "closed_sent_at": _t.time() - 10 * 86400,
+               "title": "Old MR", "branch": "old-branch"}}})
+
+    res = opmod.op_mr_sync_all(ctx, {})
+    assert [p for (_, p, _) in uploaded if p.endswith(".closed.md")] == []
+    assert "99" not in opmod._load_state()["doctransformer"]
+    closed = res["repos"][0]["closed"]
+    assert {"iid": 99, "marker": "evicted"} in closed
+
+
 def test_mr_list_from_postbox_marks_closed_entries(tmp_path, monkeypatch):
     import lgm_core.ops_mr as mrmod
     opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
@@ -484,8 +512,8 @@ def _mock_gitlab_env(monkeypatch, **overrides):
 
 def _capture_url(monkeypatch, c) -> dict:
     captured = {}
-    monkeypatch.setattr(c, "_gitlab_get",
-                        lambda url, token: (captured.__setitem__("url", url), [])[1])
+    monkeypatch.setattr(c, "_gitlab_get_paged",
+                        lambda url, token: (captured.__setitem__("url", url), ([], ""))[1])
     return captured
 
 

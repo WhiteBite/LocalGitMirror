@@ -31,12 +31,10 @@ class _FakeGit:
     single `cat-file --batch-check` reports as present (exclusion candidates).
     """
 
-    def __init__(self, tips: dict, local_refs: set, known_shas: set,
-                 revlist_count: int = 5):
+    def __init__(self, tips: dict, local_refs: set, known_shas: set):
         self.tips = tips
         self.local_refs = local_refs
         self.known_shas = known_shas
-        self.revlist_count = revlist_count
         self.fetch_cmds: list[list[str]] = []
         self.bundle_cmds: list[list[str]] = []
         self.update_refs: list[str] = []
@@ -63,6 +61,9 @@ class _FakeGit:
             return fail()
         if args[:2] == ["rev-parse", "--verify"]:
             ref = args[2]
+            if ref.startswith("refs/remotes/origin/"):
+                branch = ref.removeprefix("refs/remotes/origin/")
+                return ok(self.tips[branch] + "\n") if branch in self.tips else fail()
             branch = ref.removeprefix("refs/heads/")
             return ok(self.tips[branch] + "\n") if branch in self.local_refs else fail()
         if args[0] == "rev-parse":
@@ -73,8 +74,6 @@ class _FakeGit:
             lines = [f"{s} commit 123" if s in self.known_shas else f"{s} missing"
                      for s in (input or "").splitlines()]
             return ok("\n".join(lines) + "\n")
-        if args[0] == "rev-list" and args[1] == "--count":
-            return ok(str(self.revlist_count))
         if args[0] == "bundle" and args[1] == "create":
             self.bundle_cmds.append(args[3:])
             Path(proj, ".git").mkdir(exist_ok=True)
@@ -247,18 +246,17 @@ def test_mirror_unreachable_raises(monkeypatch, tmp_path):
     assert ei.value.code == "network"
 
 
-def test_branch_fully_covered_by_other_mirror_refs_is_skipped(monkeypatch, tmp_path):
-    # tip differs from the mirror's ref of the same name, but every commit is
-    # reachable from another mirror ref (rev-list count 0) -> nothing to bundle
-    git = _FakeGit(tips={"b1": "t1"}, local_refs={"b1"}, known_shas={"m1"},
-                   revlist_count=0)
+def test_branch_covered_by_other_mirror_ref_is_still_sent(monkeypatch, tmp_path):
+    # every commit is reachable from another mirror ref, but b1's own mirror
+    # ref is stale: the bundle must still ship, it carries the ref update
+    git = _FakeGit(tips={"b1": "t1"}, local_refs={"b1"}, known_shas={"m1"})
     client = _FakeClient(mrs={41: "b1"},
                          mirror_refs={"b1": {"sha": "old1"}, "master": {"sha": "m1"}})
     res = _run(monkeypatch, tmp_path, git, client, {"iid": 41})
-    assert res["sent"] == []
-    assert [t["branch"] for t in res["skipped"]] == ["b1"]
-    assert "nothing new" in res["message"]
-    assert client.sent_bundles == [] and git.bundle_cmds == []
+    assert [t["branch"] for t in res["sent"]] == ["b1"]
+    assert res["skipped"] == []
+    assert git.bundle_cmds[0] == ["refs/heads/b1", "^m1"]
+    assert len(client.sent_bundles) == 1
 
 
 def test_iids_reject_garbage(monkeypatch, tmp_path):

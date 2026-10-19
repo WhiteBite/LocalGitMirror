@@ -59,40 +59,46 @@ def _anchor_collisions(anchors: list, unresolved: list) -> list:
     return out
 
 
-def _fetch_newest_notes(c: MirrorClient, repo: str, iid: int) -> str | None:
-    """Newest mr-notes/mr-!iid.md for the repo, or None (missing/unreachable)."""
+def _note_and_marker_items(c: MirrorClient, repo: str, iid: int) -> tuple | None:
+    """(newest note item, newest closed-marker item) for the iid; None when unreachable."""
     try:
         lst = c.file_sync_list(repo)
     except LgmError:
         return None
-    best = None
-    for i in (lst.get("items") or []):
+    items = lst.get("items") or []
+    note = None
+    for i in items:
         eff = i.get("path") or ""
         if not eff.startswith("mr-notes/"):
             continue
-        m = re.search(r"mr-!(\d+)\.md$", eff)
+        m = _MR_NOTES_FILE.search(eff)
         if not m or int(m.group(1)) != iid:
             continue
-        if best is None or (i.get("mtime") or 0) > (best.get("mtime") or 0):
-            best = i
-    if best is None:
-        return None
-    try:
-        return c.file_sync_fetch(repo, best["id"]).decode("utf-8")
-    except Exception:
-        return None
+        if note is None or (i.get("mtime") or 0) > (note.get("mtime") or 0):
+            note = i
+    return note, _closed_marker_iids(items).get(iid)
 
 
 def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: bool) -> dict:
-    """Reject replies that duplicate the live review: a '## new' anchor colliding
-    with an unresolved thread (±ANCHOR_WINDOW lines, same file) or a '## thread'
-    id absent from the notes. Fail-open when the notes are unavailable."""
+    """Reject replies for a closed MR or ones duplicating the live review: a '## new'
+    anchor colliding with an unresolved thread (±ANCHOR_WINDOW lines, same file) or a
+    '## thread' id absent from the notes. Fail-open when the notes are unavailable."""
     thread_refs = _REPLY_THREAD.findall(content)
     anchors = [(m.group(1), int(m.group(2))) for m in _REPLY_ANCHORED.finditer(content)]
+    found = _note_and_marker_items(c, repo, iid)
+    if found is not None and _closed_by_mtime(found[0], found[1]):
+        if force:
+            return {"status": "forced"}
+        return {"status": "rejected",
+                "error": f"MR !{iid} is closed/merged — replies are not sent; "
+                         f"the review is over"}
     if not thread_refs and not anchors:
         return {"status": "not-needed"}
-    notes = _fetch_newest_notes(c, repo, iid)
-    if notes is None:
+    if found is None or found[0] is None:
+        return {"status": "notes-unavailable"}
+    try:
+        notes = c.file_sync_fetch(repo, found[0]["id"]).decode("utf-8")
+    except Exception:
         return {"status": "notes-unavailable"}
     threads = _parse_notes_threads(notes)
     collisions = _anchor_collisions(anchors, threads["unresolved"])
@@ -139,6 +145,16 @@ def _parse_mr_notes_head(markdown: str) -> dict:
             unresolved += 1
     return {"iid": iid, "title": title, "source_branch": branch,
             "unresolved": unresolved, "updated": updated}
+
+
+def _closed_by_mtime(note: dict | None, marker: dict | None) -> bool:
+    """Closed iff a marker exists and is at least as new as the note (marker wins ties;
+    a marker without a note means the note expired). Parity with the Kotlin reader."""
+    if marker is None:
+        return False
+    if note is None:
+        return True
+    return (marker.get("mtime") or 0) >= (note.get("mtime") or 0)
 
 
 def _closed_marker_iids(items: list) -> dict:
@@ -189,7 +205,8 @@ def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
         markers = _closed_marker_iids(items)
         for iid in sorted(set(newest) | set(markers)):
             marker = markers.get(iid)
-            src = marker or newest.get(iid)
+            closed = _closed_by_mtime(newest.get(iid), marker)
+            src = marker if closed else newest.get(iid)
             if src is None:
                 continue
             try:
@@ -204,9 +221,9 @@ def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
                 "title": head["title"],
                 "source_branch": head["source_branch"],
                 "updated_at": head["updated"],
-                "unresolved": 0 if marker else head["unresolved"],
+                "unresolved": 0 if closed else head["unresolved"],
                 "source": "cache",
-                "state": "closed" if marker else "open",
+                "state": "closed" if closed else "open",
                 "repo": name,
             })
     return {"items": out, "errors": errors}
@@ -217,6 +234,7 @@ def op_mr_list(ctx: Ctx, args: dict) -> dict:
     c = _client(ctx)
     items: list[dict] = []
     errors: list[dict] = []
+    gitlab_down = False
     try:
         items = [
             {
@@ -232,7 +250,8 @@ def op_mr_list(ctx: Ctx, args: dict) -> dict:
     except LgmError as e:
         if e.code != "config":
             raise
-    if not items:
+        gitlab_down = True
+    if gitlab_down:
         fallback = _mr_list_from_postbox(c, ctx, args)
         items = fallback["items"]
         errors = fallback["errors"]
@@ -286,8 +305,15 @@ def _resolve_mr_targets(c: MirrorClient, args: dict,
     return targets
 
 
-def _fetch_mr_branches(proj: Path, branches: list[str]) -> None:
-    """Fetch all branches from origin in one call; ensure local refs exist."""
+_DIVERGED_WARNING = ("local branch diverged from origin — not sent; "
+                     "align it (pull) or send from a clean checkout")
+
+
+def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[str]:
+    """Fetch all branches from origin in one call, then align each local ref
+    to the origin tip: create it when missing, fast-forward when the local tip
+    is an ancestor. Local refs with own commits (ahead or diverged) are left
+    untouched and returned, so callers never ship a non-origin tip."""
     refspecs = [f"+refs/heads/{b}:refs/remotes/origin/{b}" for b in branches]
     fetch = subprocess.run(
         ["git", "-C", str(proj), "fetch", "origin", *refspecs],
@@ -295,16 +321,25 @@ def _fetch_mr_branches(proj: Path, branches: list[str]) -> None:
     )
     if fetch.returncode != 0:
         raise LgmError("git", fetch.stderr.strip() or "git fetch origin failed")
+    diverged: list[str] = []
     for b in branches:
-        # git fetch writes only remote-tracking refs; create the local ref for the bundle.
+        org = subprocess.run(
+            ["git", "-C", str(proj), "rev-parse", "--verify",
+             f"refs/remotes/origin/{b}"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if org.returncode != 0:
+            raise LgmError("git", f"branch '{b}' not found on origin after fetch")
+        origin_sha = org.stdout.strip()
         chk = subprocess.run(
             ["git", "-C", str(proj), "rev-parse", "--verify", f"refs/heads/{b}"],
             capture_output=True, text=True, timeout=30,
         )
         if chk.returncode != 0:
+            # git fetch writes only remote-tracking refs; create the local ref for the bundle.
             mk = subprocess.run(
                 ["git", "-C", str(proj), "update-ref",
-                 f"refs/heads/{b}", f"refs/remotes/origin/{b}"],
+                 f"refs/heads/{b}", origin_sha],
                 capture_output=True, text=True, timeout=30,
             )
             if mk.returncode != 0:
@@ -312,6 +347,26 @@ def _fetch_mr_branches(proj: Path, branches: list[str]) -> None:
                     "git",
                     mk.stderr.strip() or f"branch '{b}' not found after fetch",
                 )
+            continue
+        local_sha = chk.stdout.strip()
+        if local_sha == origin_sha:
+            continue
+        anc = subprocess.run(
+            ["git", "-C", str(proj), "merge-base", "--is-ancestor",
+             local_sha, origin_sha],
+            capture_output=True, text=True, timeout=30,
+        )
+        if anc.returncode != 0:
+            diverged.append(b)
+            continue
+        upd = subprocess.run(
+            ["git", "-C", str(proj), "update-ref", f"refs/heads/{b}", origin_sha],
+            capture_output=True, text=True, timeout=30,
+        )
+        if upd.returncode != 0:
+            raise LgmError(
+                "git", upd.stderr.strip() or f"cannot fast-forward branch '{b}'")
+    return diverged
 
 
 def _local_tip(proj: Path, branch: str) -> str:
@@ -356,15 +411,13 @@ def _existing_shas(proj: Path, shas: list[str]) -> list[str]:
     return out
 
 
-def _new_commit_count(proj: Path, branches: list[str], exclude_shas: list[str]) -> int:
-    """Commits in the sent branches that the exclusions do not cover."""
-    cmd = ["git", "-C", str(proj), "rev-list", "--count",
-           *(f"refs/heads/{b}" for b in branches)]
-    cmd += [f"^{s}" for s in exclude_shas]
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-    if proc.returncode != 0:
-        raise LgmError("git", proc.stderr.strip() or "git rev-list failed")
-    return int(proc.stdout.strip() or 0)
+def send_exclusions(mirror_tips: list[str], sent_tips: list[str],
+                    existing_locally: set[str]) -> list[str]:
+    """^exclusions for a send: mirror tips present locally, minus the sent tips
+    (excluding a sent tip makes git bundle refuse an empty pack)."""
+    sent = set(sent_tips)
+    return [s for s in dict.fromkeys(mirror_tips)
+            if s and s in existing_locally and s not in sent]
 
 
 def op_mr_send(ctx: Ctx, args: dict) -> dict:
@@ -393,12 +446,16 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
     if not targets:
         raise LgmError("config", "--iid, --iids, --all-open or --branch is required")
 
-    _fetch_mr_branches(proj, [t["branch"] for t in targets])
+    diverged = _fetch_mr_branches(proj, [t["branch"] for t in targets])
+    warnings = [f"{b}: {_DIVERGED_WARNING}" for b in diverged]
+    blocked = set(diverged)
 
     mirror_refs = _mirror_refs_safe(c, repo)
     sent: list[dict] = []
     skipped: list[dict] = []
     for t in targets:
+        if t["branch"] in blocked:
+            continue
         tip = _local_tip(proj, t["branch"])
         mirror_sha = (mirror_refs.get(t["branch"]) or {}).get("sha", "")
         t["tip"] = tip
@@ -407,20 +464,19 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
         else:
             sent.append(t)
 
-    exclude_shas = _existing_shas(
-        proj, [info.get("sha", "") for info in mirror_refs.values()]) if sent else []
-    if sent and exclude_shas and \
-            _new_commit_count(proj, [t["branch"] for t in sent], exclude_shas) == 0:
-        skipped.extend(sent)
-        sent = []
     if not sent:
         return {"repo": repo, "project": str(proj), "sent": [], "skipped": skipped,
+                "warnings": warnings,
                 "message": "nothing new: mirror already has all requested commits"}
 
+    mirror_shas = [info.get("sha", "") for info in mirror_refs.values()]
+    exclude_shas = send_exclusions(
+        mirror_shas, [t["tip"] for t in sent],
+        set(_existing_shas(proj, mirror_shas)))
     send_result = send_branches(ctx, repo, str(proj), [t["branch"] for t in sent],
                                 exclude_shas)
     return {"repo": repo, "project": str(proj), "sent": sent, "skipped": skipped,
-            "send": send_result}
+            "warnings": warnings, "send": send_result}
 
 
 def op_mr_notes(ctx: Ctx, args: dict) -> dict:
@@ -453,7 +509,7 @@ def op_mr_notes(ctx: Ctx, args: dict) -> dict:
             entry = {"iid": n, "path": src["path"], "markdown": plain.decode("utf-8")}
         except Exception:
             entry = {"iid": n, "path": src["path"], "error": "fetch/decrypt failed (v3 relay)"}
-        if n in markers:
+        if _closed_by_mtime(newest.get(n), markers.get(n)):
             entry["state"] = "closed"
         notes.append(entry)
     return {"success": True, "repo": repo, "count": len(notes), "notes": notes}

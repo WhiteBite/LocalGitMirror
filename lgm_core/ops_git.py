@@ -157,6 +157,19 @@ def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
     proj = Path(project).resolve()
     excludes = (_negotiate_excludes(_client(ctx), repo, proj, branches, probe=dry_run)
                 if proj.is_dir() else [])
+    if branch and proj.is_dir():
+        proc = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=str(proj), capture_output=True, text=True, timeout=60,
+        )
+        tip = proc.stdout.strip() if proc.returncode == 0 else ""
+        # tip excluded => the mirror already stores this checkout: the pack would be empty
+        if tip and tip in excludes:
+            raise LgmError(
+                "config",
+                f"mirror already holds '{branch}' at {tip}: nothing to send. "
+                "On the home host the mirror's workspace IS this checkout - "
+                "the other machine receives it with `pull`, not from your `send`.")
     return send_branches(ctx, repo, project, branches, excludes, dry_run)
 
 
@@ -189,7 +202,15 @@ def send_branches(ctx: Ctx, repo: str, project: str, branches: list[str],
         cmd += [f"^{s}" for s in excludes]
         proc = subprocess.run(cmd, cwd=str(proj), capture_output=True, text=True, timeout=300)
         if proc.returncode != 0:
-            raise LgmError("git", proc.stderr.strip() or "git bundle create failed")
+            stderr = proc.stderr.strip()
+            if "empty bundle" in stderr:
+                raise LgmError(
+                    "config",
+                    "mirror already holds every commit of the requested ref(s): "
+                    "nothing to send. On the home host the mirror's workspace IS "
+                    "this checkout - the other machine receives it with `pull`, "
+                    "not from your `send`.")
+            raise LgmError("git", stderr or "git bundle create failed")
         bundle_bytes = bundle_path.read_bytes()
 
     label = ",".join(branches) if branches else "all"

@@ -17,7 +17,7 @@ same commit; both suites must stay green.
 ## Invariants
 
 Grounded in `lgm_core/ops_mr.py` (`op_mr_send`, `_local_tip`, `_mirror_refs_safe`,
-`_existing_shas`, `_new_commit_count`, `send_branches` in `ops_git.py`) — the
+`_existing_shas`, `send_exclusions`, `send_branches` in `ops_git.py`) — the
 authoritative implementation — and mirrored by
 `idea-plugin/.../gitlab/MrSendPlanner.kt`:
 
@@ -26,20 +26,27 @@ authoritative implementation — and mirrored by
    in `sent` and is never bundled. A mirror ref with an empty or missing sha
    never skips anything. A branch missing from the local tips is an error
    (Python: `LgmError` from `_local_tip`; Kotlin: `IllegalArgumentException`).
+   This is the ONLY skip rule: a branch whose tip differs from its own mirror
+   ref is ALWAYS sent, even when every one of its commits already exists on the
+   mirror under a different ref — the bundle also carries the ref update, and
+   without it the mirror's ref for the branch would stay stale forever (the
+   next sync would see the same objects-covered state and skip again).
 2. **One bundle.** All branches that survive the skip check are packed into a
    SINGLE git bundle (`send_branches`), never one bundle per branch, so shared
    history is packed once.
 3. **Exclusions.** The bundle's `^`-prerequisites are the mirror tips that exist
    in the local object database (`git cat-file -e <sha>^{commit}`): deduplicated,
-   non-empty, in mirror-refs order. Mirror SHAs the local repo lacks ("ghost"
-   tips) are NOT excluded — `git bundle create` fails on an unknown `^sha`.
-   Exclusions are computed only when at least one branch is sent.
-4. **Nothing new.** If nothing survives — every branch tip-equal, or the
-   `git rev-list --count` of sent-branch commits not covered by the exclusions
-   is zero — the result is "nothing new": `sent` is empty, every requested
-   branch is `skipped` (tip-equal ones first, then the flipped ones, in request
-   order), and no bundle is uploaded. `exclude_shas` is empty whenever nothing
-   is sent.
+   non-empty, in mirror-refs order — MINUS the tips of the branches being sent
+   (`send_exclusions(mirror_tips, sent_tips, existing_locally)`). Two reasons:
+   mirror SHAs the local repo lacks ("ghost" tips) would make
+   `git bundle create` fail on an unknown `^sha`; and an exclusion equal to a
+   sent branch's own tip makes git refuse the bundle outright
+   ("Refusing to create empty bundle", exit 128) because every commit of that
+   branch is covered by the exclusion. Exclusions are computed only when at
+   least one branch is sent.
+4. **Nothing new.** Only when every requested branch is tip-equal is the result
+   "nothing new": `sent` is empty, every branch is `skipped` in request order,
+   and no bundle is uploaded. `exclude_shas` is empty whenever nothing is sent.
 
 ## Fixture schema
 
@@ -52,7 +59,6 @@ authoritative implementation — and mirrored by
 | `local_tips` | `{branch: sha}` | local `refs/heads` tips after the fetch |
 | `existing_shas` | `[sha]` | SHAs the local repo has (`cat-file -e` succeeds) |
 | `branches` | `[branch]` | requested branches, deduplicated, in order |
-| `new_commit_count` | int | `git rev-list --count` result; consulted only when something is sent AND exclusions exist |
 | `expected.sent` | `[branch]` | branches that must travel |
 | `expected.skipped` | `[branch]` | branches that must not |
 | `expected.exclude_shas` | `[sha]` | the bundle `^`-exclusions; empty when nothing is sent |
@@ -67,9 +73,10 @@ authoritative implementation — and mirrored by
 | `mixed-skip-and-send` | invariants 1+3 together; exclusions follow mirror-refs order |
 | `multi-branch-one-bundle-dedup-exclusions` | invariants 2+3; two mirror refs on one sha dedup to one exclusion |
 | `ghost-mirror-sha-not-excluded` | invariant 3 negative: unknown mirror sha is not an exclusion |
-| `zero-new-commits-is-nothing-new` | invariant 4: rev-list count 0 flips a tip-differing branch |
-| `zero-new-commits-flips-tip-differing-branch-too` | invariant 4: flip moves sent branches after tip-equal ones in `skipped` |
+| `zero-new-commits-stale-ref-is-sent` | invariant 1: objects exist on the mirror under another ref, the branch's own mirror ref is stale → the branch IS sent (ref update must ship) |
+| `zero-new-commits-sends-non-tip-equal-branches` | invariants 1+4: only the tip-equal branch is skipped |
 | `all-tips-equal-nothing-new` | invariant 4: every branch tip-equal |
+| `sent-tip-shared-with-other-mirror-ref-is-not-excluded` | invariant 3: the sent branch's own tip (shared with another mirror ref) never becomes an exclusion — git would refuse the empty pack |
 
 ## Runners
 
@@ -85,8 +92,7 @@ root, parses it with kotlinx-serialization, and asserts `MrSendPlanner.planSend`
 returns the same `sent`/`skipped`/`excludeShas`.
 
 `MrSendPlanner` is pure — no IDE, no git, no network. The caller supplies mirror
-refs, local tips, locally-present SHAs and the rev-list count, and gets the send
-decision. `GitLabMrSender` (the plugin's current MR flow: per-branch checkout +
+refs, local tips and locally-present SHAs, and gets the send decision. `GitLabMrSender` (the plugin's current MR flow: per-branch checkout +
 full sync, no mirror-tip dedup) does not call the planner yet; converging the
 plugin's send path onto the planner is a separate later step — this contract is
 the gate that keeps the two implementations from silently diverging in the

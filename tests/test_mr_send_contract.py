@@ -28,15 +28,12 @@ def _ctx(sync_password: str = "pw") -> Ctx:
 
 class _FakeGit:
     """Dispatches the git subprocess calls mr_send makes; field semantics
-    follow test_mr_send_multi.py (tips, local_refs, known_shas,
-    revlist_count)."""
+    follow test_mr_send_multi.py (tips, local_refs, known_shas)."""
 
-    def __init__(self, tips: dict, local_refs: set, known_shas: set,
-                 revlist_count: int = 5):
+    def __init__(self, tips: dict, local_refs: set, known_shas: set):
         self.tips = tips
         self.local_refs = local_refs
         self.known_shas = known_shas
-        self.revlist_count = revlist_count
         self.bundle_cmds: list[list[str]] = []
         self.batch_inputs: list[str] = []
 
@@ -57,7 +54,11 @@ class _FakeGit:
         if args[0] == "remote":
             return fail()
         if args[:2] == ["rev-parse", "--verify"]:
-            branch = args[2].removeprefix("refs/heads/")
+            ref = args[2]
+            if ref.startswith("refs/remotes/origin/"):
+                branch = ref.removeprefix("refs/remotes/origin/")
+                return ok(self.tips[branch] + "\n") if branch in self.tips else fail()
+            branch = ref.removeprefix("refs/heads/")
             return ok(self.tips[branch] + "\n") if branch in self.local_refs else fail()
         if args[0] == "rev-parse":
             branch = args[1].removeprefix("refs/heads/")
@@ -67,8 +68,6 @@ class _FakeGit:
             lines = [f"{s} commit 123" if s in self.known_shas else f"{s} missing"
                      for s in (input or "").splitlines()]
             return ok("\n".join(lines) + "\n")
-        if args[0] == "rev-list" and args[1] == "--count":
-            return ok(str(self.revlist_count))
         if args[0] == "bundle" and args[1] == "create":
             self.bundle_cmds.append(args[3:])
             Path(args[2]).write_bytes(b"fake-bundle")
@@ -110,7 +109,6 @@ def test_mr_send_matches_shared_fixture(monkeypatch, tmp_path, scenario):
         tips=dict(scenario["local_tips"]),
         local_refs=set(scenario["local_tips"]),
         known_shas=set(scenario["existing_shas"]),
-        revlist_count=scenario["new_commit_count"],
     )
     client = _FakeClient(mirror_refs=scenario["mirror_refs"])
     res = _run(monkeypatch, tmp_path, git, client,

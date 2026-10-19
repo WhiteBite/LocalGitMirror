@@ -208,6 +208,50 @@ def test_mr_replies_status_returns_newest_per_iid():
     assert res["statuses"][0]["markdown"] == "- posted: 3"
 
 
+def _closed_marker_item(iid=7, mtime=99, title="T", branch="b"):
+    md = (f"<!-- lgm-mr-closed v1 -->\n# MR !{iid} — {title}\n"
+          f"- **Ветка:** `{branch}`\n- **Обнаружено:** 2026-10-15T10:00:00+03:00\n")
+    return {"id": f"c{iid}", "path": f"mr-notes/mr-!{iid}.closed.md", "mtime": mtime,
+            "content": md}
+
+
+_REOPENED_ITEMS = [
+    {"id": "n7", "path": "mr-notes/mr-!7.md", "mtime": 20,
+     "content": "# MR !7 — Reopened\n\n- **Ветка:** `feat/x`\n"},
+    _closed_marker_item(7, mtime=10),
+]
+
+
+def test_mr_list_reopened_mr_is_open_when_note_newer_than_marker():
+    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=""),
+                         client=_StubClient(items=_REOPENED_ITEMS)), {})
+    item = res["items"][0]
+    assert item["state"] == "open"
+    assert item["title"] == "Reopened"
+
+
+def test_mr_notes_reopened_mr_is_not_closed_when_note_newer_than_marker():
+    res = op_mr_notes(Ctx(config=SimpleNamespace(sync_password=""),
+                          client=_StubClient(items=_REOPENED_ITEMS)), {"repo": "r1", "iid": 7})
+    assert res["notes"][0].get("state") != "closed"
+
+
+def test_mr_list_and_mr_notes_agree_on_state_per_iid():
+    items = _REOPENED_ITEMS + [
+        {"id": "n9", "path": "mr-notes/mr-!9.md", "mtime": 10,
+         "content": "# MR !9 — Closed\n\n- **Ветка:** `feat/y`\n"},
+        _closed_marker_item(9, mtime=20),
+    ]
+    listed = {i["iid"]: i["state"] for i in op_mr_list(
+        Ctx(config=SimpleNamespace(sync_password=""), client=_StubClient(items=items)),
+        {})["items"]}
+    noted = {n["iid"]: n.get("state", "open") for n in op_mr_notes(
+        Ctx(config=SimpleNamespace(sync_password=""), client=_StubClient(items=items)),
+        {"repo": "r1"})["notes"]}
+    assert listed == {7: "open", 9: "closed"}
+    assert noted == listed
+
+
 def _notes_items(iid=7, thread_id="t1", file="Foo.java", line=75, resolved=False):
     kind = "## ✓ решено" if resolved else "## ⚠ НЕ РЕШЕНО"
     md = "\n".join([
@@ -278,6 +322,52 @@ def test_mr_replies_send_precheck_failopen_without_notes():
     res = _send(_StubClient(items=[]), "## new Foo.java:75\nfix")
     assert res["success"] is True
     assert res["precheck"]["status"] == "notes-unavailable"
+
+
+def test_mr_replies_send_rejects_replies_for_closed_mr():
+    client = _StubClient(items=_notes_items() + [_closed_marker_item(7, mtime=99)])
+    res = _send(client, "## thread t1\nfix")
+    assert res["success"] is False
+    assert "closed" in res["error"]
+    assert res["precheck"]["status"] == "rejected"
+    assert client.sent is None
+
+
+def test_mr_replies_send_force_allows_replies_for_closed_mr():
+    client = _StubClient(items=_notes_items() + [_closed_marker_item(7, mtime=99)])
+    res = _send(client, "## thread t1\nfix", force=True)
+    assert res["success"] is True
+    assert res["precheck"]["status"] == "forced"
+    assert client.sent is not None
+
+
+def test_mr_replies_send_allows_reopened_mr():
+    client = _StubClient(items=_notes_items() + [_closed_marker_item(7, mtime=1)])
+    res = _send(client, "## thread t1\nfix")
+    assert res["success"] is True
+
+
+def test_mr_list_empty_gitlab_result_does_not_fall_back_to_postbox():
+    class _EmptyGitlabClient:
+        def __init__(self):
+            self.postbox_used = False
+
+        def gitlab_list_mrs(self):
+            return []
+
+        def repos(self):
+            self.postbox_used = True
+            return {"repos": [{"name": "r1"}]}
+
+        def file_sync_list(self, repo):
+            self.postbox_used = True
+            return {"items": []}
+
+    client = _EmptyGitlabClient()
+    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=""), client=client), {})
+    assert res["count"] == 0
+    assert res["items"] == []
+    assert client.postbox_used is False
 
 
 if __name__ == "__main__":

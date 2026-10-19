@@ -23,13 +23,14 @@ from .op_models import Ctx, _client
 from .ops_git import send_branches
 from .ops_mr import (
     _fetch_mr_branches, _local_tip, _mirror_refs_safe, _existing_shas,
-    _new_commit_count,
+    _DIVERGED_WARNING, send_exclusions,
 )
 
 _LGM_DIR = Path.home() / ".lgm"
 _REGISTRY_PATH = _LGM_DIR / "mr-projects.json"
 _STATE_PATH = _LGM_DIR / "mr-notes-state.json"
 _RESYNC_SECONDS = 6 * 86400
+_CLOSED_TTL_SECONDS = 7 * 86400
 
 
 def _load_registry() -> dict:
@@ -175,7 +176,8 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
     repo = entry.get("repo", "")
     gitlab = entry.get("gitlab", "")
     res: dict = {"repo": repo, "gitlab": gitlab, "mrs": [],
-                 "branches_sent": [], "branches_skipped": []}
+                 "branches_sent": [], "branches_skipped": [],
+                 "branch_warnings": []}
     proj = Path(entry.get("path", ""))
     if not proj.is_dir():
         res["error"] = f"project dir not found: {proj}"
@@ -205,25 +207,28 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
     branches = [b for b in branches if b]
     if branches:
         try:
-            _fetch_mr_branches(proj, branches)
+            diverged = _fetch_mr_branches(proj, branches)
+            res["branch_warnings"] = [f"{b}: {_DIVERGED_WARNING}" for b in diverged]
+            blocked = set(diverged)
             mirror_refs = _mirror_refs_safe(c, repo)
             sent: list[str] = []
             skipped: list[str] = []
+            tips: dict[str, str] = {}
             for b in branches:
+                if b in blocked:
+                    continue
                 tip = _local_tip(proj, b)
+                tips[b] = tip
                 mirror_sha = (mirror_refs.get(b) or {}).get("sha", "")
                 if mirror_sha and mirror_sha == tip:
                     skipped.append(b)
                 else:
                     sent.append(b)
-            exclude_shas = _existing_shas(
-                proj, [info.get("sha", "") for info in mirror_refs.values()]
-            ) if sent else []
-            if sent and exclude_shas and \
-                    _new_commit_count(proj, sent, exclude_shas) == 0:
-                skipped.extend(sent)
-                sent = []
             if sent:
+                mirror_shas = [info.get("sha", "") for info in mirror_refs.values()]
+                exclude_shas = send_exclusions(
+                    mirror_shas, [tips[b] for b in sent],
+                    set(_existing_shas(proj, mirror_shas)))
                 # negotiate creates the mirror-side repo when missing
                 try:
                     c.sync_negotiate(repo, [], probe=False)
@@ -244,6 +249,9 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
         seen["seen_at"] = now
         seen["title"] = m.get("title", "")
         seen["branch"] = m.get("source_branch") or ""
+        # реопен: стираем маркер закрытия, иначе повторное закрытие проглотит skip-окно
+        seen.pop("closed", None)
+        seen.pop("closed_sent_at", None)
         try:
             raw = c.gitlab_list_discussions(iid, project=gitlab)
         except LgmError as e:
@@ -291,6 +299,16 @@ def _mark_closed(c, repo: str, repo_state: dict, closed_iids: list[int],
         if _should_skip_closure(entry, now):
             out.append({"iid": iid, "marker": "unchanged"})
             continue
+        if entry.get("closed"):
+            # старше TTL почтового ящика маркер на home уже истёк — перевыкладывать бессмысленно
+            try:
+                closed_sent_at = float(entry.get("closed_sent_at") or 0)
+            except (TypeError, ValueError):
+                closed_sent_at = 0.0
+            if closed_sent_at and closed_sent_at <= now - _CLOSED_TTL_SECONDS:
+                repo_state.pop(str(iid), None)
+                out.append({"iid": iid, "marker": "evicted"})
+                continue
         md = _render_closed_marker(iid, entry.get("title", ""), entry.get("branch", ""))
         try:
             data = md.encode("utf-8")
@@ -346,6 +364,7 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
                 "mrs": sum(r.get("open_mrs", 0) for r in results),
                 "branches_sent": _count("branches_sent"),
                 "branches_skipped": _count("branches_skipped"),
+                "branch_warnings": _count("branch_warnings"),
                 "notes_uploaded": notes_uploaded,
                 "notes_unchanged": notes_unchanged,
                 "closed_marked": closed_marked,
