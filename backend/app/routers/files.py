@@ -9,6 +9,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from app.core.path_safety import PathEscapeError
 from app.routers.state import state
 
 router = APIRouter(prefix="/api", tags=["files"])
@@ -29,6 +30,13 @@ class FileSaveRequest(BaseModel):
 
 
 # ============ HELPERS ============
+
+
+def _resolve_abs_path(relative: str) -> str:
+    try:
+        return repo_manager.get_absolute_path(relative)
+    except PathEscapeError:
+        raise HTTPException(403, "Путь вне рабочей директории репозитория")
 
 
 def _init_git_workspace():
@@ -57,7 +65,7 @@ def open_file(file: str = Query(..., description="Relative file path")):
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    abs_path = repo_manager.get_absolute_path(file)
+    abs_path = _resolve_abs_path(file)
 
     if not os.path.exists(abs_path):
         if system_logger:
@@ -116,7 +124,7 @@ def _get_file_content(file: str):
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    abs_path = repo_manager.get_absolute_path(file)
+    abs_path = _resolve_abs_path(file)
 
     if not os.path.exists(abs_path):
         raise HTTPException(404, f"Файл не найден: {file}")
@@ -234,7 +242,7 @@ def view_pdf(file: str = Query(..., description="Relative file path")):
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    abs_path = repo_manager.get_absolute_path(file)
+    abs_path = _resolve_abs_path(file)
 
     if not os.path.exists(abs_path):
         raise HTTPException(404, f"Файл не найден: {file}")
@@ -453,7 +461,7 @@ def save_file(request: FileSaveRequest):
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
 
-    abs_path = repo_manager.get_absolute_path(request.path)
+    abs_path = _resolve_abs_path(request.path)
 
     try:
         # Create directories if they don't exist

@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 from rich.console import Console
 
 from app.core.logger import get_logger
+from app.core.path_safety import resolve_contained
 from app.core.settings_manager import SettingsManager
 
 console = Console()
@@ -377,9 +378,10 @@ class RepoManager:
         return tree
 
     def get_absolute_path(self, relative_path: str, repo_name: Optional[str] = None) -> str:
+        """Absolute path inside the repo workspace; raises PathEscapeError on traversal."""
         repo_name = repo_name or self._current_repo
         workspace = self._get_workspace_path(repo_name)
-        return str((workspace / relative_path).absolute())
+        return str(resolve_contained(workspace, relative_path))
 
     def get_latest_pushed_branch(self, repo_name: str) -> Optional[str]:
         """Detect which branch was just updated in the bare repo"""

@@ -1,7 +1,5 @@
 """Repos, Git server and Storage config router."""
 
-import os
-import re
 import subprocess
 from pathlib import Path
 from typing import Optional
@@ -141,6 +139,8 @@ async def select_repo(request: RepoSelectRequest):
     """Select a repository as active"""
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
+    if request.repo not in repo_manager.get_repos():
+        raise HTTPException(400, f"Репозиторий не найден: {request.repo}")
     repo_manager.current_repo = request.repo
     _init_git_workspace()
     if system_logger:
@@ -169,40 +169,45 @@ def delete_repo(request: RepoSelectRequest):
 # ============ STORAGE CONFIG ============
 
 
+_ENV_PATH = Path(__file__).resolve().parents[3] / ".env"
+
+
+def _persist_storage_path(new_value: str) -> None:
+    content = _ENV_PATH.read_text(encoding="utf-8") if _ENV_PATH.exists() else ""
+    lines = [
+        f"STORAGE_PATH={new_value}" if line.startswith("STORAGE_PATH=") else line
+        for line in content.splitlines()
+    ]
+    if not any(line.startswith("STORAGE_PATH=") for line in lines):
+        lines.append(f"STORAGE_PATH={new_value}")
+    _ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 @router.post("/config/storage")
 def set_storage_path(request: StoragePathRequest):
-    """Change storage directory"""
-    global git_handler, repo_manager, git_workspace
+    """Persist a new storage directory; it takes effect only after a server restart.
 
+    Live managers (repo/git/shared, v3 keys) must NOT be rebound here: rebinding
+    a subset of routers splits the server's state while still reporting success.
+    """
     new_path = Path(request.path)
     try:
         new_path.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         raise HTTPException(400, f"Невозможно создать директорию: {str(e)}")
 
-    if git_handler and git_handler.is_running:
-        git_handler.stop()
+    _persist_storage_path(request.path)
 
-    config["storage_path"] = new_path
-
-    from app.core.git_handler import GitHandler
-    from app.core.git_utils import GitWorkspace
-    from app.core.repo_manager import RepoManager
-
-    git_handler = GitHandler(storage_path=new_path, port=config.get("git_port", 8081))
-    repo_manager = RepoManager(new_path)
-
-    workspace = repo_manager._get_workspace_path(repo_manager.current_repo)
-    bare = repo_manager._get_bare_path(repo_manager.current_repo)
-    git_workspace = GitWorkspace(workspace, bare)
-
-    env_path = Path(__file__).parent.parent.parent.parent / ".env"
-    if env_path.exists():
-        content = env_path.read_text()
-        content = re.sub(r"STORAGE_PATH=.*", f"STORAGE_PATH={request.path}", content)
-        env_path.write_text(content)
-
-    return {"success": True, "storage_path": str(new_path)}
+    active = str(repo_manager.storage_path) if repo_manager else str(config.get("storage_path", ""))
+    if system_logger:
+        system_logger.info("Путь хранения изменен; вступит в силу после перезапуска", {"new": request.path})
+    return {
+        "success": True,
+        "storage_path": str(new_path),
+        "restart_required": True,
+        "active_storage_path": active,
+    }
 
 
 @router.post("/config/browse")

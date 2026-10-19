@@ -13,6 +13,15 @@ import aiofiles
 from fastapi import UploadFile
 
 from app.core.logger import get_logger
+from app.core.path_safety import PathEscapeError, resolve_contained
+
+
+def _safe_join(base: Path, relative: str) -> Optional[Path]:
+    """resolve_contained as Optional — None instead of PathEscapeError."""
+    try:
+        return resolve_contained(base, relative)
+    except PathEscapeError:
+        return None
 
 
 class SharedManager:
@@ -124,7 +133,9 @@ class SharedManager:
 
     def delete_folder(self, name: str) -> Dict:
         """Delete a shared folder"""
-        folder_path = self._get_folder_path(name)
+        folder_path = _safe_join(self.shared_root, name)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки"}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена"}
 
@@ -147,11 +158,15 @@ class SharedManager:
 
     def get_files(self, folder: str, subfolder: Optional[str] = None) -> Dict:
         """Get files in folder or subfolder"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки", "files": []}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена", "files": []}
 
-        target_path = folder_path / subfolder if subfolder else folder_path
+        target_path = _safe_join(folder_path, subfolder) if subfolder else folder_path
+        if target_path is None:
+            return {"success": False, "message": "Недопустимый путь подпапки", "files": []}
         if not target_path.exists():
             return {"success": False, "message": "Подпапка не найдена", "files": []}
 
@@ -197,12 +212,14 @@ class SharedManager:
 
     def save_file(self, folder: str, file_path: str, content: bytes, tags: List[str] = None, description: str = "") -> Dict:
         """Save file to shared folder with Git commit"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки"}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена"}
 
         try:
-            target_file = folder_path / file_path
+            target_file = resolve_contained(folder_path, file_path)
             target_file.parent.mkdir(parents=True, exist_ok=True)
 
             # Write file
@@ -237,12 +254,14 @@ class SharedManager:
         self, folder: str, file_path: str, upload_file: UploadFile, tags: List[str] = None, description: str = ""
     ) -> Dict:
         """Save uploaded file using async streaming (no RAM buffering)"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки"}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена"}
 
         try:
-            target_file = folder_path / file_path
+            target_file = resolve_contained(folder_path, file_path)
             target_file.parent.mkdir(parents=True, exist_ok=True)
 
             # Stream file to disk in 1MB chunks
@@ -367,19 +386,23 @@ class SharedManager:
     
     def get_latest_sync_dump(self, folder: str) -> Optional[Path]:
         """Get latest sync dump file"""
-        folder_path = self._get_folder_path(folder)
-        if not folder_path.exists():
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None or not folder_path.exists():
             return None
         
         dumps = sorted(folder_path.glob("dump_*.dmp"), key=lambda p: p.stat().st_mtime, reverse=True)
         return dumps[0] if dumps else None
     def delete_file(self, folder: str, file_path: str) -> Dict:
         """Delete file from shared folder with Git commit"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки"}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена"}
 
-        target_file = folder_path / file_path
+        target_file = _safe_join(folder_path, file_path)
+        if target_file is None:
+            return {"success": False, "message": "Недопустимый путь файла"}
         if not target_file.exists():
             return {"success": False, "message": "Файл не найден"}
 
@@ -406,9 +429,13 @@ class SharedManager:
 
     def get_file_history(self, folder: str, file_path: str) -> Dict:
         """Get Git history for a file"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки", "history": []}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена", "history": []}
+        if _safe_join(folder_path, file_path) is None:
+            return {"success": False, "message": "Недопустимый путь файла", "history": []}
 
         try:
             result = subprocess.run(
@@ -443,9 +470,13 @@ class SharedManager:
 
     def restore_file(self, folder: str, file_path: str, commit_hash: str) -> Dict:
         """Restore file to specific commit"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки"}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена"}
+        if _safe_join(folder_path, file_path) is None:
+            return {"success": False, "message": "Недопустимый путь файла"}
 
         try:
             # Checkout file from specific commit
@@ -473,12 +504,14 @@ class SharedManager:
 
     def create_subfolder(self, folder: str, subfolder_path: str) -> Dict:
         """Create subfolder in shared folder"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки"}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена"}
 
         try:
-            target_path = folder_path / subfolder_path
+            target_path = resolve_contained(folder_path, subfolder_path)
             target_path.mkdir(parents=True, exist_ok=True)
 
             # Create .gitkeep to track empty folder
@@ -501,7 +534,9 @@ class SharedManager:
 
     def search_files(self, folder: str, query: str) -> Dict:
         """Search files in folder using git grep"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки", "results": []}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена", "results": []}
 
@@ -535,7 +570,9 @@ class SharedManager:
 
     def bulk_delete_files(self, folder: str, file_paths: List[str]) -> Dict:
         """Delete multiple files at once"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки"}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена"}
 
@@ -544,7 +581,7 @@ class SharedManager:
 
         try:
             for file_path in file_paths:
-                target_file = folder_path / file_path
+                target_file = resolve_contained(folder_path, file_path)
                 if target_file.exists():
                     try:
                         target_file.unlink()
@@ -578,11 +615,15 @@ class SharedManager:
 
     def get_file_content(self, folder: str, file_path: str) -> Dict:
         """Get file content for download"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки"}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена"}
 
-        target_file = folder_path / file_path
+        target_file = _safe_join(folder_path, file_path)
+        if target_file is None:
+            return {"success": False, "message": "Недопустимый путь файла"}
         if not target_file.exists():
             return {"success": False, "message": "Файл не найден"}
 
@@ -600,11 +641,15 @@ class SharedManager:
 
     def update_tags(self, folder: str, file_path: str, tags: List[str]) -> Dict:
         """Update file tags"""
-        folder_path = self._get_folder_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {"success": False, "message": "Недопустимое имя папки"}
         if not folder_path.exists():
             return {"success": False, "message": "Папка не найдена"}
 
-        target_file = folder_path / file_path
+        target_file = _safe_join(folder_path, file_path)
+        if target_file is None:
+            return {"success": False, "message": "Недопустимый путь файла"}
         if not target_file.exists():
             return {"success": False, "message": "Файл не найден"}
 
@@ -626,7 +671,10 @@ class SharedManager:
 
     def _get_file_metadata(self, folder: str, file_path: str) -> Dict:
         """Get metadata for a file"""
-        metadata_path = self._get_metadata_path(folder)
+        folder_path = _safe_join(self.shared_root, folder)
+        if folder_path is None:
+            return {}
+        metadata_path = folder_path / ".metadata.json"
         if not metadata_path.exists():
             return {}
 
