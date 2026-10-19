@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any
 
 
@@ -342,6 +343,8 @@ def _render_mr_list(r: dict) -> list[str]:
             f"  !{m.get('iid')}  {m.get('title', '')}  "
             f"({m.get('source_branch', '')} @ {m.get('updated_at', '')})"
         )
+    for e in r.get("errors") or []:
+        out.append(f"  [FAILED] repo='{e.get('repo', '?')}': {e.get('error', '?')}")
     return out
 
 
@@ -397,6 +400,152 @@ def _render_mr_replies_status(r: dict) -> list[str]:
     return out
 
 
+def _render_preview_pull(r: dict) -> list[str]:
+    out = [f"Preview pull repo='{r.get('repo', '?')}'"]
+    out.append(f"  since: {str(r.get('since') or '(none)')[:12]}")
+    head = str(r.get("remoteHead") or "")
+    out.append(f"  mirror head: {head[:12] or '(none)'}")
+    verdict = "YES" if r.get("hasUpdates") else "no"
+    out.append(f"  incoming commits: {verdict} ({r.get('reason', '?')})")
+    return out
+
+
+def _render_has_commits(r: dict) -> list[str]:
+    known = r.get("known") or []
+    head = str(r.get("head") or "")
+    out = [f"Mirror commit check repo='{r.get('repo', '?')}'"]
+    out.append(f"  mirror head: {head[:12] or '(none)'}")
+    out.append(f"  known commits: {len(known)}")
+    for sha in known:
+        out.append(f"    {str(sha)[:12]}")
+    return out
+
+
+def _render_mr_notes(r: dict) -> list[str]:
+    out = [f"MR notes repo='{r.get('repo', '?')}'"]
+    notes = r.get("notes") or []
+    out.append(f"  {r.get('count', len(notes))} note file(s)")
+    for n in notes:
+        state = " (closed)" if n.get("state") == "closed" else ""
+        out.append(f"\n=== !{n.get('iid')}{state} — {n.get('path', '?')} ===")
+        if n.get("error"):
+            out.append(f"  {n['error']}")
+        else:
+            out.append((n.get("markdown") or "").rstrip())
+    return out
+
+
+def _render_guide(r: dict) -> list[str]:
+    return [r.get("guide", "")]
+
+
+def _render_update(r: dict) -> list[str]:
+    out = [f"CLI tools updated to {r.get('version', '?')}"]
+    out.append(f"  files updated: {r.get('files_updated', 0)}")
+    out.append(f"  tools root: {r.get('tools_root', '?')}")
+    if r.get("message"):
+        out.append(f"  {r['message']}")
+    return out
+
+
+def _render_chat_send(r: dict) -> list[str]:
+    return [f"Chat message sent (id={r.get('id', '?')})."]
+
+
+def _render_chat_list(r: dict) -> list[str]:
+    messages = r.get("messages") or []
+    out = [f"Chat messages: {r.get('count', len(messages))}"]
+    for m in messages:
+        ts = m.get("ts") or 0
+        when = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S") if ts else "?"
+        out.append(f"  [{when}] {m.get('text', '')}")
+    return out
+
+
+def _render_file_send(r: dict) -> list[str]:
+    out = [f"File sent: {r.get('file', '?')}"]
+    out.append(f"  id={r.get('id', '?')}  size={r.get('size', 0):,} bytes")
+    return out
+
+
+def _render_file_list(r: dict) -> list[str]:
+    files = r.get("files") or []
+    out = [f"Postbox files for repo='{r.get('repo', '?')}': {r.get('count', len(files))}"]
+    for f in files:
+        out.append(f"  - id={str(f.get('id', '?'))[:12]}  size={f.get('size', 0):,}  {f.get('path', '?')}")
+    return out
+
+
+def _render_file_get(r: dict) -> list[str]:
+    out = [f"File downloaded: id={r.get('id', '?')}  size={r.get('size', 0):,} bytes"]
+    if r.get("saved"):
+        out.append(f"  saved to: {r['saved']}")
+    elif r.get("message"):
+        out.append(f"  {r['message']}")
+    return out
+
+
+def _render_file_ack(r: dict) -> list[str]:
+    return [f"Postbox item deleted: repo='{r.get('repo', '?')}' id={r.get('id', '?')}"]
+
+
+def _render_config_get(r: dict) -> list[str]:
+    if r.get("section"):
+        value = r.get("value")
+        body = json.dumps(value, ensure_ascii=False, indent=2) if isinstance(value, (dict, list)) else str(value)
+        return [f"Settings section '{r['section']}':", body]
+    out = ["Server settings:"]
+    for section, value in sorted((r.get("settings") or {}).items()):
+        out.append(f"  {section}: {json.dumps(value, ensure_ascii=False)}")
+    return out
+
+
+def _render_config_set(r: dict) -> list[str]:
+    return [f"Setting updated: {r.get('section', '?')}.{r.get('key', '?')} = {r.get('value', '?')}"]
+
+
+def _render_mr_projects_scan(r: dict) -> list[str]:
+    out = [f"MR projects scan: {r.get('scanned_dirs', 0)} root(s)"]
+    for root in r.get("roots") or []:
+        out.append(f"  scanned: {root}")
+    out.append(f"  added={len(r.get('added') or [])}  updated={len(r.get('updated') or [])}  total={r.get('total', 0)}")
+    for repo in r.get("added") or []:
+        out.append(f"  [added]   {repo}")
+    for repo in r.get("updated") or []:
+        out.append(f"  [updated] {repo}")
+    return out
+
+
+def _render_mr_projects_list(r: dict) -> list[str]:
+    projects = r.get("projects") or []
+    out = [f"Registered MR-sync projects: {r.get('count', len(projects))}"]
+    for p in projects:
+        marker = "[OK]" if p.get("exists") else "[--]"
+        out.append(f"  {marker} {p.get('repo', '?')}  {p.get('path', '?')}  ({p.get('gitlab', '?')})")
+    return out
+
+
+def _render_mr_sync_all(r: dict) -> list[str]:
+    s = r.get("summary") or {}
+    out = ["MR sync all:"]
+    if r.get("dry_run"):
+        out.append("  --dry-run: nothing transferred.")
+    out.append(f"  repos={s.get('repos', 0)}  open MRs={s.get('mrs', 0)}")
+    out.append(f"  branches: sent={s.get('branches_sent', 0)}  skipped={s.get('branches_skipped', 0)}  warnings={s.get('branch_warnings', 0)}")
+    out.append(f"  notes: uploaded={s.get('notes_uploaded', 0)}  unchanged={s.get('notes_unchanged', 0)}  closed marked={s.get('closed_marked', 0)}")
+    for repo in r.get("repos") or []:
+        out.append(f"  {repo.get('repo', '?')} ({repo.get('gitlab', '?')}): open MRs={repo.get('open_mrs', 0)}")
+        for w in repo.get("branch_warnings") or []:
+            out.append(f"    [warning] {w}")
+        for m in repo.get("mrs") or []:
+            notes = m.get("notes", "")
+            if notes:
+                out.append(f"    !{m.get('iid')} {m.get('title', '')} — notes: {notes}")
+    for e in s.get("errors") or []:
+        out.append(f"  [FAILED] {e}")
+    return out
+
+
 _RENDERERS = {
     "scan": _render_scan,
     "pending": _render_pending,
@@ -411,12 +560,28 @@ _RENDERERS = {
     "branches": _render_branches,
     "send": _render_send,
     "pull": _render_pull,
+    "preview_pull": _render_preview_pull,
+    "has_commits": _render_has_commits,
     "deps_request": _render_deps_request,
     "vault_status": _render_vault_status,
     "branch_delete": _render_branch_delete,
     "prune": _render_prune,
     "mr_list": _render_mr_list,
     "mr_send": _render_mr_send,
+    "mr_notes": _render_mr_notes,
     "mr_replies_send": _render_mr_replies_send,
     "mr_replies_status": _render_mr_replies_status,
+    "guide": _render_guide,
+    "update": _render_update,
+    "chat_send": _render_chat_send,
+    "chat_list": _render_chat_list,
+    "file_send": _render_file_send,
+    "file_list": _render_file_list,
+    "file_get": _render_file_get,
+    "file_ack": _render_file_ack,
+    "config_get": _render_config_get,
+    "config_set": _render_config_set,
+    "mr_projects_scan": _render_mr_projects_scan,
+    "mr_projects_list": _render_mr_projects_list,
+    "mr_sync_all": _render_mr_sync_all,
 }
