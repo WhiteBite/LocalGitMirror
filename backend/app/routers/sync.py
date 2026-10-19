@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -108,9 +108,10 @@ _SAFE_BRANCH = re.compile(r"^[^\x00-\x1f\x7f ~^:?*\[\\]+$")
 
 
 def _collect_sync_refs(workspace: Path, bare: Path):
-    """Merged branch tips for a repo: workspace + bare for-each-ref (bare wins),
-    HEAD sha (workspace first, bare fallback), HEAD branch (bare first),
-    is_head per ref. Returns (refs, head, head_branch)."""
+    """Merged branch tips for a repo: workspace + bare for-each-ref (entry with
+    the newer committerdate wins, bare on tie), HEAD sha (workspace first, bare
+    fallback), HEAD branch (bare first), is_head per ref.
+    Returns (refs, head, head_branch)."""
     def _collect_refs(path: Path) -> dict:
         out = {}
         if not path.exists():
@@ -132,10 +133,18 @@ def _collect_sync_refs(workspace: Path, bare: Path):
                     out[name] = {"sha": sha, "updated": updated}
         return out
 
-    # Workspace first, then bare overrides
-    refs: dict = {}
-    refs.update(_collect_refs(workspace))
-    refs.update(_collect_refs(bare))
+    def _tip_date(info: dict) -> datetime:
+        try:
+            return datetime.fromisoformat(info.get("updated") or "")
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    # bare only advances on incoming sends, so a newer workspace tip is the truth
+    refs: dict = _collect_refs(workspace)
+    for name, info in _collect_refs(bare).items():
+        current = refs.get(name)
+        if current is None or _tip_date(info) >= _tip_date(current):
+            refs[name] = info
 
     # HEAD sha: prefer workspace HEAD, fall back to bare
     head = ""
