@@ -24,10 +24,11 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import Callable, List, Optional
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Reports
@@ -165,6 +166,124 @@ def _sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
+DEFAULT_BACKUP_INTERVAL_SECONDS = 6 * 3600
+_INTERVAL_ENV = "LGM_VAULT_BACKUP_INTERVAL_SECONDS"
+
+# один замок на процесс: плановый тик и ручной POST не пишут в бэкап одновременно
+_BACKUP_LOCK = threading.Lock()
+
+
+def backup_interval_from_env() -> int:
+    """Backup interval in seconds; <= 0 disables the scheduler.
+
+    Raises ``ValueError`` on non-integer input so a typo is visible at startup.
+    """
+    raw = os.getenv(_INTERVAL_ENV, "").strip()
+    if not raw:
+        return DEFAULT_BACKUP_INTERVAL_SECONDS
+    return int(raw)
+
+
+def run_backup(vault_root: Path, backup_dir: Path) -> BackupReport:
+    """Serialized backup entry point shared by the scheduler and the manual POST."""
+    with _BACKUP_LOCK:
+        return create_backup(vault_root, backup_dir)
+
+
+class VaultBackupScheduler:
+    """Periodic vault backup on a daemon thread.
+
+    Ticks that find another backup in flight are skipped, never queued: a slow
+    backup must not pile up a run storm. Run failures are recorded in
+    ``status()`` instead of killing the thread.
+    """
+
+    def __init__(
+        self,
+        vault_root_fn: Callable[[], Path],
+        backup_dir_fn: Callable[[], Path],
+        interval_seconds: int,
+    ) -> None:
+        self._vault_root_fn = vault_root_fn
+        self._backup_dir_fn = backup_dir_fn
+        self.interval_seconds = interval_seconds
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._cond = threading.Condition()
+        self._runs = 0
+        self._skipped = 0
+        self._last_run: Optional[int] = None
+        self._next_run: Optional[int] = None
+        self._last_errors: List[str] = []
+
+    def start(self) -> bool:
+        if self.interval_seconds <= 0:
+            return False
+        if self._thread is not None and self._thread.is_alive():
+            return False
+        self._stop.clear()
+        self._next_run = int(time.time()) + self.interval_seconds
+        self._thread = threading.Thread(
+            target=self._loop, name="lgm-vault-backup", daemon=True
+        )
+        self._thread.start()
+        return True
+
+    def stop(self, timeout: float = 10.0) -> bool:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout)
+        with self._cond:
+            self._next_run = None
+        return thread is None or not thread.is_alive()
+
+    @property
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def wait_runs(self, count: int, timeout: float) -> bool:
+        with self._cond:
+            return self._cond.wait_for(lambda: self._runs >= count, timeout)
+
+    def status(self) -> dict:
+        with self._cond:
+            return {
+                "enabled": self.interval_seconds > 0,
+                "interval_seconds": self.interval_seconds,
+                "running": self.is_running,
+                "runs": self._runs,
+                "skipped": self._skipped,
+                "last_run": self._last_run,
+                "next_run": self._next_run,
+                "errors": list(self._last_errors),
+            }
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            self._next_run = int(time.time()) + self.interval_seconds
+            self._tick()
+
+    def _tick(self) -> None:
+        if not _BACKUP_LOCK.acquire(blocking=False):
+            with self._cond:
+                self._skipped += 1
+            return
+        errors: List[str] = []
+        try:
+            report = create_backup(self._vault_root_fn(), self._backup_dir_fn())
+            errors = list(report.errors)
+        except Exception as e:
+            errors = [f"{type(e).__name__}: {e}"]
+        finally:
+            _BACKUP_LOCK.release()
+        with self._cond:
+            self._runs += 1
+            self._last_run = int(time.time())
+            self._last_errors = errors
+            self._cond.notify_all()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SQLite online backup
 # ─────────────────────────────────────────────────────────────────────────────
@@ -218,6 +337,12 @@ def create_backup(vault_root: Path, backup_dir: Path) -> BackupReport:
 
     vault_root = Path(vault_root)
     backup_dir = Path(backup_dir)
+
+    # нет каталога — нет данных для потери: чистый no-op без записи состояния
+    if not vault_root.is_dir():
+        report.duration_ms = int((time.monotonic() - t0) * 1000)
+        return report
+
     backup_dir.mkdir(parents=True, exist_ok=True)
 
     # ── CAS files ─────────────────────────────────────────────────────────

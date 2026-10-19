@@ -27,6 +27,11 @@ from app.core import (
     SystemMonitor,
     get_logger,
 )
+from app.core.vault_backup import (
+    DEFAULT_BACKUP_INTERVAL_SECONDS,
+    VaultBackupScheduler,
+    backup_interval_from_env,
+)
 
 # Load environment variables
 load_dotenv()
@@ -47,6 +52,7 @@ settings_manager = None
 shared_manager = None
 system_logger = None
 lan_beacon = None
+vault_backup_scheduler = None
 
 
 def ensure_post_receive_hook(repo_name: str, storage_path: Path):
@@ -109,7 +115,7 @@ def _install_quiet_disconnect_handler() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global git_handler, repo_manager, git_workspace, settings_manager, shared_manager, system_logger, lan_beacon
+    global git_handler, repo_manager, git_workspace, settings_manager, shared_manager, system_logger, lan_beacon, vault_backup_scheduler
 
     _install_quiet_disconnect_handler()
 
@@ -250,6 +256,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         console.print(f"[yellow][!] Discovery service failed to start: {e}[/yellow]")
 
+    # потеря vault = потеря зеркала, поэтому бэкап не может зависеть от ручного POST
+    try:
+        backup_interval_seconds = backup_interval_from_env()
+    except ValueError:
+        backup_interval_seconds = DEFAULT_BACKUP_INTERVAL_SECONDS
+        console.print(f"[yellow][!] LGM_VAULT_BACKUP_INTERVAL_SECONDS must be an integer; using {DEFAULT_BACKUP_INTERVAL_SECONDS}s[/yellow]")
+    vault_backup_scheduler = VaultBackupScheduler(
+        vault_root_fn=mirror.vault_root,
+        backup_dir_fn=mirror.vault_backup_dir,
+        interval_seconds=backup_interval_seconds,
+    )
+    mirror.backup_scheduler = vault_backup_scheduler
+    if vault_backup_scheduler.start():
+        console.print(f"[green]Vault backup scheduler started[/green] [dim](every {backup_interval_seconds}s)[/dim]")
+    else:
+        console.print("[yellow]Vault backup scheduler disabled (LGM_VAULT_BACKUP_INTERVAL_SECONDS <= 0)[/yellow]")
+
     # Warn about weak passwords
     sync_pass = os.getenv("SYNC_PASSWORD", "")
     if sync_pass and len(sync_pass) < 12:
@@ -287,6 +310,11 @@ async def lifespan(app: FastAPI):
 
     yield
     # Non-blocking shutdown
+    if vault_backup_scheduler:
+        try:
+            vault_backup_scheduler.stop()
+        except Exception:
+            pass
     if lan_beacon:
         try:
             lan_beacon.stop()

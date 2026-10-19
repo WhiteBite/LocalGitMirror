@@ -25,9 +25,8 @@ WIRING_KEY = "wiring-test-key"
 AUTH = {"X-Session-ID": WIRING_KEY}
 
 
-@pytest.fixture
-def real_app(tmp_path: Path, monkeypatch):
-    """Boot the real `app` from app.main with a tmp storage dir."""
+def _prepare_real_app_env(tmp_path: Path, monkeypatch) -> dict:
+    """Env + fresh module reload for booting the real app; returns saved modules."""
     storage = tmp_path / "lgm-storage"
     storage.mkdir(parents=True, exist_ok=True)
     (storage / "settings.json").write_text(
@@ -47,7 +46,13 @@ def real_app(tmp_path: Path, monkeypatch):
     saved = {m: mod for m, mod in list(sys.modules.items()) if m.startswith("app.")}
     for mod in list(saved):
         del sys.modules[mod]
+    return saved
 
+
+@pytest.fixture
+def real_app(tmp_path: Path, monkeypatch):
+    """Boot the real `app` from app.main with a tmp storage dir."""
+    saved = _prepare_real_app_env(tmp_path, monkeypatch)
     from app.main import app
     # TestClient triggers the lifespan handler exactly once on enter
     try:
@@ -141,6 +146,27 @@ def test_status_reports_honest_daemon_state(real_app: TestClient):
     resp = real_app.get("/api/status", headers=AUTH)
     assert resp.status_code == 200, resp.text
     assert resp.json()["git_running"] is False
+
+
+def test_vault_backup_scheduler_registered_and_stopped(tmp_path: Path, monkeypatch):
+    """The periodic vault backup runs with the app and dies with it."""
+    monkeypatch.setenv("LGM_VAULT_BACKUP_INTERVAL_SECONDS", "900")
+    saved = _prepare_real_app_env(tmp_path, monkeypatch)
+    try:
+        from app.main import app
+        with TestClient(app) as client:
+            main_mod = sys.modules["app.main"]
+            scheduler = main_mod.vault_backup_scheduler
+            assert scheduler is not None, "scheduler must be registered on startup"
+            assert scheduler.is_running, "scheduler thread must be alive while the app runs"
+            assert scheduler.interval_seconds == 900
+
+            resp = client.get("/api/cache/backup/status", headers=AUTH)
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["scheduler"] is not None
+        assert not scheduler.is_running, "scheduler must be stopped on shutdown"
+    finally:
+        sys.modules.update(saved)
 
 
 def test_health_endpoint(real_app: TestClient):

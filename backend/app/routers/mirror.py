@@ -63,11 +63,13 @@ from app.core.npm_cache import (
     load_npm_index,
 )
 from app.core.vault_backup import (
-    create_backup,
-    restore_from_backup,
+    _BACKUP_STATE_DIR,
+    _CAS_DIR,
     _load_last_backup,
     _state_dir,
     _VERIFY_STATE,
+    restore_from_backup,
+    run_backup,
 )
 
 router = APIRouter(tags=["mirror"])
@@ -77,6 +79,8 @@ repo_manager = None
 system_logger = None
 # X25519-ключ сервера (v3), инжектится из main.py; None => только пароль.
 server_private_key = None
+# Периодический бэкапер vault, инжектится из main.py; None => только ручной POST.
+backup_scheduler = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,6 +104,10 @@ def vault_root() -> Path:
 
 def get_store() -> ArtifactStore:
     return ArtifactStore(vault_root())
+
+
+def vault_backup_dir() -> Path:
+    return vault_root().parent / "backup"
 
 
 def _log(msg: str, extra: Optional[dict] = None) -> None:
@@ -339,32 +347,47 @@ def mirror_gradle_init(request: Request, base_url: str = Query("")):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+_BACKUP_MARKERS = ("index.json", _CAS_DIR, _BACKUP_STATE_DIR)
+
+
 @router.post("/api/cache/backup")
 def mirror_backup():
     """Trigger vault backup. Returns BackupReport JSON."""
-    vault = vault_root()
-    backup = vault.parent / "backup"
-    report = create_backup(vault, backup)
+    report = run_backup(vault_root(), vault_backup_dir())
     _log("mirror backup completed", {"files": report.files_copied, "bytes": report.bytes_copied})
     return {"success": True, **report.as_dict()}
 
 
 @router.post("/api/cache/restore")
 def mirror_restore(backup_path: str = Form(...)):
-    """Restore vault from backup directory. Returns RestoreReport JSON."""
+    """Restore vault from the server's own backup directory."""
+    canonical = vault_backup_dir()
     src = Path(backup_path)
+    if os.path.normcase(str(src.resolve())) != os.path.normcase(str(canonical.resolve())):
+        raise HTTPException(400, {
+            "code": "backup_path_not_allowed",
+            "message": f"Restore accepts only the server backup directory: {canonical}",
+        })
     if not src.is_dir():
-        raise HTTPException(400, f"Backup directory not found: {backup_path}")
+        raise HTTPException(400, {
+            "code": "backup_not_found",
+            "message": f"Backup directory not found: {backup_path}",
+        })
+    if not any((src / marker).exists() for marker in _BACKUP_MARKERS):
+        raise HTTPException(400, {
+            "code": "invalid_backup",
+            "message": "Directory holds no backup data; run a backup first",
+        })
     target = vault_root()
     report = restore_from_backup(src, target)
     _log("mirror restore completed", {"files": report.files_restored, "errors": report.errors})
-    return {"success": True, **report.as_dict()}
+    return {"success": not report.errors, **report.as_dict()}
 
 
 @router.get("/api/cache/backup/status")
 def backup_status():
-    """Return last backup time, size, and verification status."""
-    backup_dir = vault_root().parent / "backup"
+    """Return last backup time, size, verification status, and scheduler state."""
+    backup_dir = vault_backup_dir()
     last = _load_last_backup(backup_dir)
     verify = {}
     verify_path = _state_dir(backup_dir) / _VERIFY_STATE
@@ -378,6 +401,7 @@ def backup_status():
         "last_backup": last,
         "last_verify": verify,
         "backup_dir": str(backup_dir),
+        "scheduler": backup_scheduler.status() if backup_scheduler else None,
     }
 
 

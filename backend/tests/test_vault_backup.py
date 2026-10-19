@@ -9,7 +9,11 @@ Verifies:
 - Backup/restore round-trip preserves all data
 """
 
+import hashlib
 import json
+import threading
+import time
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -48,6 +52,7 @@ def vault(tmp_path, monkeypatch):
     monkeypatch.setenv("SYNC_PASSWORD", "test")
     mirror_mod.repo_manager = None
     mirror_mod.system_logger = None
+    mirror_mod.backup_scheduler = None
     return root
 
 
@@ -427,3 +432,215 @@ def test_backup_endpoint_roundtrip(populated_vault, client, tmp_path):
     # Verify restored vault
     restored = ArtifactStore(populated_vault)
     assert len(restored.inventory()) == 3
+
+
+def test_backup_interval_from_env(monkeypatch):
+    from app.core.vault_backup import DEFAULT_BACKUP_INTERVAL_SECONDS, backup_interval_from_env
+
+    monkeypatch.delenv("LGM_VAULT_BACKUP_INTERVAL_SECONDS", raising=False)
+    assert backup_interval_from_env() == DEFAULT_BACKUP_INTERVAL_SECONDS
+
+    monkeypatch.setenv("LGM_VAULT_BACKUP_INTERVAL_SECONDS", "900")
+    assert backup_interval_from_env() == 900
+
+    monkeypatch.setenv("LGM_VAULT_BACKUP_INTERVAL_SECONDS", "not-a-number")
+    with pytest.raises(ValueError):
+        backup_interval_from_env()
+
+
+def test_scheduler_fires_on_short_interval(populated_vault):
+    from app.core.vault_backup import VaultBackupScheduler
+
+    backup = populated_vault.parent / "backup"
+    scheduler = VaultBackupScheduler(
+        lambda: populated_vault, lambda: backup, interval_seconds=0.05,
+    )
+    assert scheduler.start()
+    try:
+        assert scheduler.wait_runs(2, timeout=5), (
+            f"scheduler fired only {scheduler.status()['runs']} runs"
+        )
+        assert (backup / "index.json").is_file()
+        status = scheduler.status()
+        assert status["last_run"] is not None
+        assert status["next_run"] is not None
+        assert status["errors"] == []
+    finally:
+        assert scheduler.stop(timeout=5)
+    assert not scheduler.is_running
+
+
+def test_scheduler_survives_missing_vault(tmp_path):
+    from app.core.vault_backup import VaultBackupScheduler
+
+    missing = tmp_path / "no-vault"
+    backup = tmp_path / "backup"
+    scheduler = VaultBackupScheduler(
+        lambda: missing, lambda: backup, interval_seconds=0.05,
+    )
+    scheduler.start()
+    try:
+        assert scheduler.wait_runs(1, timeout=5)
+        assert scheduler.status()["errors"] == []
+    finally:
+        scheduler.stop(timeout=5)
+
+
+def test_scheduler_records_run_errors(populated_vault):
+    from app.core.vault_backup import VaultBackupScheduler
+
+    def broken_vault_root():
+        raise RuntimeError("boom")
+
+    scheduler = VaultBackupScheduler(
+        broken_vault_root,
+        lambda: populated_vault.parent / "backup",
+        interval_seconds=0.05,
+    )
+    scheduler.start()
+    try:
+        assert scheduler.wait_runs(1, timeout=5)
+        status = scheduler.status()
+        assert status["errors"], "a failing run must surface its error"
+        assert "boom" in status["errors"][0]
+    finally:
+        scheduler.stop(timeout=5)
+
+
+def _slow_backup_factory():
+    from app.core import vault_backup as vb
+
+    active = {"now": 0, "peak": 0}
+    guard = threading.Lock()
+
+    def slow_backup(vault_root, backup_dir):
+        with guard:
+            active["now"] += 1
+            active["peak"] = max(active["peak"], active["now"])
+        time.sleep(0.2)
+        with guard:
+            active["now"] -= 1
+        return vb.BackupReport(files_copied=1)
+
+    return slow_backup, active
+
+
+def test_run_backup_serializes_concurrent_calls(populated_vault, monkeypatch):
+    from app.core import vault_backup as vb
+
+    slow_backup, active = _slow_backup_factory()
+    monkeypatch.setattr(vb, "create_backup", slow_backup)
+
+    backup = populated_vault.parent / "backup"
+    results = []
+    threads = [
+        threading.Thread(target=lambda: results.append(vb.run_backup(populated_vault, backup)))
+        for _ in range(3)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(5)
+    assert len(results) == 3
+    assert active["peak"] == 1, "concurrent backups must never overlap"
+
+
+def test_scheduler_never_overlaps_manual_backup(populated_vault, monkeypatch):
+    from app.core import vault_backup as vb
+
+    slow_backup, active = _slow_backup_factory()
+    monkeypatch.setattr(vb, "create_backup", slow_backup)
+
+    backup = populated_vault.parent / "backup"
+    scheduler = vb.VaultBackupScheduler(
+        lambda: populated_vault, lambda: backup, interval_seconds=0.05,
+    )
+    scheduler.start()
+    try:
+        vb.run_backup(populated_vault, backup)
+        assert scheduler.wait_runs(1, timeout=5)
+        assert active["peak"] == 1, "scheduled and manual backups must never overlap"
+    finally:
+        assert scheduler.stop(timeout=5)
+
+
+def test_manual_backup_endpoint_waits_for_scheduler_lock(populated_vault, client, monkeypatch):
+    from app.core import vault_backup as vb
+
+    slow_backup, active = _slow_backup_factory()
+    monkeypatch.setattr(vb, "create_backup", slow_backup)
+
+    backup = populated_vault.parent / "backup"
+    scheduler = vb.VaultBackupScheduler(
+        lambda: populated_vault, lambda: backup, interval_seconds=0.05,
+    )
+    scheduler.start()
+    try:
+        r = client.post("/api/cache/backup")
+        assert r.status_code == 200
+        assert active["peak"] == 1, "endpoint backup must serialize with scheduler ticks"
+        assert scheduler.wait_runs(1, timeout=5)
+    finally:
+        assert scheduler.stop(timeout=5)
+
+
+def test_backup_status_reports_scheduler_state(populated_vault, client):
+    from app.core.vault_backup import VaultBackupScheduler
+
+    backup = populated_vault.parent / "backup"
+    scheduler = VaultBackupScheduler(
+        lambda: populated_vault, lambda: backup, interval_seconds=0.05,
+    )
+    mirror_mod.backup_scheduler = scheduler
+    try:
+        scheduler.start()
+        assert scheduler.wait_runs(1, timeout=5)
+        r = client.get("/api/cache/backup/status")
+        assert r.status_code == 200
+        sched = r.json()["scheduler"]
+        assert sched is not None
+        assert sched["running"] is True
+        assert sched["last_run"] is not None
+        assert sched["next_run"] is not None
+        assert sched["errors"] == []
+    finally:
+        scheduler.stop(timeout=5)
+        mirror_mod.backup_scheduler = None
+
+
+def test_restore_endpoint_reports_failure_when_restore_has_errors(populated_vault, client):
+    client.post("/api/cache/backup")
+    backup = populated_vault.parent / "backup"
+
+    digest = hashlib.sha256(b"pom-content").hexdigest()
+    cas_rel = Path(_CAS_DIR) / digest[:2] / digest
+    (backup / cas_rel).unlink()
+    (populated_vault / cas_rel).unlink()
+
+    r = client.post("/api/cache/restore", data={"backup_path": str(backup)})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is False, "restore with errors must not report success"
+    assert body["errors"], "error list must be returned alongside the failure"
+
+
+def test_restore_endpoint_refuses_path_outside_server_backup(populated_vault, client, tmp_path):
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    r = client.post("/api/cache/restore", data={"backup_path": str(outside)})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "backup_path_not_allowed"
+
+
+def test_restore_endpoint_refuses_missing_server_backup(client, vault):
+    r = client.post("/api/cache/restore", data={"backup_path": str(vault.parent / "backup")})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "backup_not_found"
+
+
+def test_restore_endpoint_refuses_directory_without_backup_data(populated_vault, client):
+    canonical = populated_vault.parent / "backup"
+    canonical.mkdir(parents=True, exist_ok=True)
+    r = client.post("/api/cache/restore", data={"backup_path": str(canonical)})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "invalid_backup"
