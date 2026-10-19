@@ -20,8 +20,13 @@ and re-seals on read for whichever mode the reader speaks — "X-LGM-Epk"
 request header selects the v3 relay, its absence falls back to the legacy
 password bundle. The at-rest key never leaves the server, so leaking the
 storage dir does not leak project deps.
+
+The request blob is only removed when the Dome side acks a complete
+response; a partial fulfillment records its residual coordinates in the
+response meta and keeps the request outstanding.
 """
 import hashlib
+import json
 import os
 import re
 import time
@@ -131,7 +136,11 @@ def _responses_dir(repo: str) -> Path:
 
 def _cleanup_stale(directory: Path, max_age_seconds: int = 7 * 24 * 3600,
                    now: Optional[float] = None) -> int:
-    """Delete .bin files strictly older than max_age_seconds. Returns count deleted.
+    """Delete .bin blobs strictly older than max_age_seconds. Returns blob count.
+
+    Reaping a blob removes its .meta.json sidecar and leaves a <id>.gone
+    tombstone so later fetches can tell "expired" apart from "never existed";
+    tombstones and orphaned sidecars are themselves reaped after the TTL.
 
     `now` is injectable so tests can pin the reference time and assert the exact
     boundary deterministically (otherwise wall-clock drift between setting a
@@ -148,20 +157,38 @@ def _cleanup_stale(directory: Path, max_age_seconds: int = 7 * 24 * 3600,
     max_age_ns = int(max_age_seconds * 1_000_000_000)
     deleted = 0
     for p in directory.iterdir():
-        if not p.is_file() or not p.name.endswith(".bin"):
+        if not p.is_file():
+            continue
+        name = p.name
+        if not (name.endswith(".bin") or name.endswith(".gone")
+                or name.endswith(".meta.json")):
             continue
         try:
             age_ns = now_ns - p.stat().st_mtime_ns
             if age_ns > max_age_ns:
                 p.unlink()
-                deleted += 1
+                if name.endswith(".bin"):
+                    deleted += 1
+                    p.with_name(p.stem + ".meta.json").unlink(missing_ok=True)
+                    p.with_name(p.stem + ".gone").write_bytes(b"")
         except OSError:
             continue
     return deleted
 
 
+def _read_meta(blob_path: Path) -> Optional[dict]:
+    meta_path = blob_path.with_name(blob_path.stem + ".meta.json")
+    if not meta_path.exists():
+        return None
+    try:
+        loaded = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
 def _list_blobs(directory: Path) -> List[dict]:
-    """Return [{id, size, mtime}] for all .bin files in a deps subfolder."""
+    """Return [{id, size, mtime, request_id?, residual?}] for .bin blobs in a deps subfolder."""
     out: List[dict] = []
     if not directory.exists():
         return out
@@ -170,13 +197,18 @@ def _list_blobs(directory: Path) -> List[dict]:
             continue
         try:
             st = p.stat()
-            out.append({
-                "id": p.stem,                      # uuid without .bin
-                "size": st.st_size,
-                "mtime": int(st.st_mtime),
-            })
         except OSError:
             continue
+        item = {
+            "id": p.stem,                      # uuid without .bin
+            "size": st.st_size,
+            "mtime": int(st.st_mtime),
+        }
+        meta = _read_meta(p)
+        if meta is not None:
+            item["request_id"] = meta.get("request_id")
+            item["residual"] = meta.get("residual", [])
+        out.append(item)
     # Newest first
     out.sort(key=lambda x: x["mtime"], reverse=True)
     return out
@@ -211,7 +243,12 @@ def _decrypt_incoming(payload: bytes, k: str, aad: bytes) -> bytes:
 
 def _serve_blob(path: Path, aad: bytes, epk: Optional[str]) -> Response:
     """Read a stored blob and re-seal it for the requesting reader."""
-    blob = path.read_bytes()
+    try:
+        blob = path.read_bytes()
+    except FileNotFoundError:
+        # TTL cleanup can reap the blob between the existence check and this read
+        raise HTTPException(410, detail={"error": "expired",
+                                         "message": "Blob was removed by TTL cleanup"})
     password = _sync_password()
     if blob[:1] == b"\x04":
         try:
@@ -234,6 +271,18 @@ def _serve_blob(path: Path, aad: bytes, epk: Optional[str]) -> Response:
     if password:
         return Response(encrypt_bundle_bytes(plaintext, password), media_type="application/octet-stream")
     raise HTTPException(400, "Reader sent no X-LGM-Epk and SYNC_PASSWORD is not set — nothing to seal with")
+
+
+def _require_blob(directory: Path, item_id: str, kind: str) -> Path:
+    """Resolve a deps blob path, typing TTL expiry apart from never-existed."""
+    path = directory / f"{item_id}.bin"
+    if path.exists():
+        return path
+    if (directory / f"{item_id}.gone").exists():
+        raise HTTPException(410, detail={"error": "expired",
+                                         "message": f"{kind} was removed by TTL cleanup"})
+    raise HTTPException(404, detail={"error": f"{kind}_not_found",
+                                     "message": f"{kind} not found"})
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -304,9 +353,7 @@ def deps_queue_item(
     """Work side: download a specific request blob (encrypted manifest)."""
     repo = _resolve_repo(rid, x_doc_ref)
     item_id = _validate_id(id)
-    path = _requests_dir(repo) / f"{item_id}.bin"
-    if not path.exists():
-        raise HTTPException(404, "Request not found")
+    path = _require_blob(_requests_dir(repo), item_id, "request")
     return _serve_blob(path, hybrid_crypto.RELAY_AAD_DEPS_REQ, x_lgm_epk)
 
 
@@ -316,11 +363,14 @@ async def deps_fulfill(
     request_id: str = Form(...),
     attachment: UploadFile = File(...),
     k: str = Form(""),
+    residual: str = Form(""),
     x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
     """
     Work side: upload an encrypted archive in response to a manifest.
-    Once accepted, the original request blob is deleted (one-shot).
+    The request blob survives until the Dome side acks a complete response;
+    a partial fulfillment (non-empty residual list) keeps the request
+    outstanding so the remainder can still be shipped.
     """
     repo = _resolve_repo(rid, x_doc_ref)
     request_id = _validate_id(request_id)
@@ -331,26 +381,41 @@ async def deps_fulfill(
     if len(payload) > 2 * 1024 * 1024 * 1024:  # 2 GB safety cap
         raise HTTPException(413, "Archive too large")
 
+    residual_items: List = []
+    if residual:
+        if len(residual) > 1024 * 1024:
+            raise HTTPException(413, "Residual list too large")
+        try:
+            parsed = json.loads(residual)
+        except json.JSONDecodeError:
+            raise HTTPException(400, "Residual must be a JSON list of coordinates")
+        if not isinstance(parsed, list) or not all(
+                isinstance(x, (str, dict)) for x in parsed):
+            raise HTTPException(400, "Residual must be a JSON list of coordinates")
+        residual_items = parsed
+
     def _store() -> str:
+        _require_blob(_requests_dir(repo), request_id, "request")
         at_rest = _decrypt_incoming(payload, k, hybrid_crypto.RELAY_AAD_DEPS_RESP)
 
         response_id = uuid.uuid4().hex
-        _responses_dir(repo).joinpath(f"{response_id}.bin").write_bytes(at_rest)
-
-        # Remove the matching request — it's been answered.
-        req_path = _requests_dir(repo) / f"{request_id}.bin"
-        if req_path.exists():
-            try:
-                req_path.unlink()
-            except OSError:
-                pass
+        resp_dir = _responses_dir(repo)
+        resp_dir.joinpath(f"{response_id}.bin").write_bytes(at_rest)
+        resp_dir.joinpath(f"{response_id}.meta.json").write_text(
+            json.dumps({"request_id": request_id, "residual": residual_items}),
+            encoding="utf-8",
+        )
 
         if system_logger:
-            system_logger.info("deps response stored", {"repo": repo, "id": response_id, "bytes": len(payload)})
+            system_logger.info("deps response stored", {
+                "repo": repo, "id": response_id, "bytes": len(payload),
+                "residual": len(residual_items),
+            })
         return response_id
 
     response_id = await run_in_threadpool(_store)
-    return {"success": True, "repo": repo, "id": response_id, "size": len(payload)}
+    return {"success": True, "repo": repo, "id": response_id, "size": len(payload),
+            "request_id": request_id, "residual": residual_items}
 
 
 @router.get("/ready")
@@ -378,9 +443,7 @@ def deps_ready_item(
     """Dome side: download a response blob."""
     repo = _resolve_repo(rid, x_doc_ref)
     item_id = _validate_id(id)
-    path = _responses_dir(repo) / f"{item_id}.bin"
-    if not path.exists():
-        raise HTTPException(404, "Response not found")
+    path = _require_blob(_responses_dir(repo), item_id, "response")
     return _serve_blob(path, hybrid_crypto.RELAY_AAD_DEPS_RESP, x_lgm_epk)
 
 
@@ -390,13 +453,28 @@ def deps_ack(
     id: str = Query(...),
     x_doc_ref: Optional[str] = Header(None, alias="X-Doc-Ref"),
 ):
-    """Dome side: confirm a response has been applied; server deletes it."""
+    """Dome side: confirm a response has been applied; server deletes it.
+
+    A complete response also removes the request it answered; a partial one
+    (residual coordinates recorded) leaves the request outstanding.
+    """
     repo = _resolve_repo(rid, x_doc_ref)
     item_id = _validate_id(id)
-    path = _responses_dir(repo) / f"{item_id}.bin"
+    resp_dir = _responses_dir(repo)
+    path = resp_dir / f"{item_id}.bin"
     if path.exists():
+        meta = _read_meta(path) or {}
+        meta_path = resp_dir / f"{item_id}.meta.json"
         try:
             path.unlink()
+            meta_path.unlink(missing_ok=True)
         except OSError as e:
             raise HTTPException(500, f"Failed to delete: {e}")
+        req_id = meta.get("request_id")
+        if (isinstance(req_id, str) and not meta.get("residual")
+                and len(req_id) <= 64 and _SAFE_ID.match(req_id)):
+            try:
+                (_requests_dir(repo) / f"{req_id}.bin").unlink(missing_ok=True)
+            except OSError:
+                pass
     return {"success": True, "repo": repo, "id": item_id}

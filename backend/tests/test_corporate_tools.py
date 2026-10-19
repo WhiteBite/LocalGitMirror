@@ -251,3 +251,92 @@ def test_post_install_bad_tarball(client, tools_dir):
         files={"tarball": ("bad.tgz", b"not a tarball", "application/gzip")},
     )
     assert resp.status_code == 400
+
+
+# ── tar-slip: hostile members are refused ─────────────────────────────────────
+
+def _evil_tarball(members: list[tuple[str, bytes]]) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in members:
+            ti = tarfile.TarInfo(name=name)
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _symlink_tarball(name: str, linkname: str) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        ti = tarfile.TarInfo(name=name)
+        ti.type = tarfile.SYMTYPE
+        ti.linkname = linkname
+        tf.addfile(ti)
+    return buf.getvalue()
+
+
+def test_install_tool_refuses_traversal_member(tools_dir):
+    """A ../ member must be refused and nothing may land outside the install dir."""
+    tarball_path = tools_dir / "evil.tgz"
+    tarball_path.write_bytes(_evil_tarball([("../evil.txt", b"evil")]))
+
+    assert install_tool("evil", "1.0", tarball_path) is False
+    assert not (ct.tools_install_dir() / "evil" / "evil.txt").exists()
+    assert not (ct.tools_install_dir() / "evil" / "1.0").exists()
+
+
+def test_install_tool_refuses_archive_with_traversal_member(tools_dir):
+    """One hostile member poisons the whole archive: no partial extraction, no shim."""
+    pkg = json.dumps({"name": "evil", "version": "1.0", "bin": {"evil": "evil.js"}}).encode()
+    tarball_path = tools_dir / "mixed.tgz"
+    tarball_path.write_bytes(_evil_tarball([
+        ("package/package.json", pkg),
+        ("package/evil.js", b"console.log(1)\n"),
+        ("../escaped.txt", b"evil"),
+    ]))
+
+    assert install_tool("evil", "1.0", tarball_path) is False
+    assert not (ct.tools_install_dir() / "evil" / "escaped.txt").exists()
+    shim = ct.tools_bin_dir() / ("evil.cmd" if os.name == "nt" else "evil")
+    assert not shim.exists()
+
+
+def test_install_tool_refuses_symlink_member(tools_dir):
+    tarball_path = tools_dir / "link.tgz"
+    tarball_path.write_bytes(_symlink_tarball("package/link", "../../../outside/target"))
+
+    assert install_tool("evil", "1.0", tarball_path) is False
+    assert not (ct.tools_install_dir() / "evil" / "1.0" / "package" / "link").exists()
+
+
+def test_is_safe_member_rejects_dangerous_members():
+    def info(name: str, mtype: bytes = tarfile.REGTYPE) -> tarfile.TarInfo:
+        ti = tarfile.TarInfo(name=name)
+        ti.type = mtype
+        return ti
+
+    for name in ["../evil.txt", "package/../evil.txt", "/abs/evil.txt",
+                 "C:/evil.txt", "C:\\evil.txt", "..\\evil.txt"]:
+        assert ct._is_safe_member(info(name)) is False, name
+    assert ct._is_safe_member(info("package/link", tarfile.SYMTYPE)) is False
+    assert ct._is_safe_member(info("package/link", tarfile.LNKTYPE)) is False
+    assert ct._is_safe_member(info("dev", tarfile.CHRTYPE)) is False
+    assert ct._is_safe_member(info("package/package.json")) is True
+    assert ct._is_safe_member(info("package.json")) is True
+
+
+def test_post_install_traversal_tarball_returns_400(client, tools_dir):
+    """The install endpoint surfaces the refusal as a 400, not a silent install."""
+    pkg = json.dumps({"name": "evil", "version": "1.0", "bin": {"evil": "evil.js"}}).encode()
+    tarball = _evil_tarball([
+        ("package/package.json", pkg),
+        ("package/evil.js", b"console.log(1)\n"),
+        ("../escaped.txt", b"evil"),
+    ])
+    resp = client.post(
+        "/api/cache/tools/install",
+        data={"name": "evil", "version": "1.0"},
+        files={"tarball": ("evil.tgz", tarball, "application/gzip")},
+    )
+    assert resp.status_code == 400
+    assert not (ct.tools_install_dir() / "evil" / "escaped.txt").exists()

@@ -11,6 +11,8 @@ PLAINTEXT round-trips (not the raw wire bytes), plus the request/response
 lifecycle.
 """
 import json
+import os
+import time
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -91,9 +93,9 @@ def test_deps_full_lifecycle(tmp_path: Path, monkeypatch):
     assert rr.status_code == 200, rr.text
     response_id = rr.json()["id"]
 
-    # 5. Original request was deleted (one-shot)
+    # the request survives the fulfill — only the Dome ack completes the handshake
     pending2 = client.get("/api/documents/queue", params={"rid": repo}).json()
-    assert request_id not in [it["id"] for it in pending2["items"]]
+    assert request_id in [it["id"] for it in pending2["items"]]
 
     # 6. Dome sees the response
     resps = client.get("/api/documents/ready", params={"rid": repo}).json()
@@ -104,11 +106,13 @@ def test_deps_full_lifecycle(tmp_path: Path, monkeypatch):
     assert fetched.status_code == 200
     assert decrypt_dump_bytes(fetched.content, PASSWORD) == archive_plain
 
-    # 8. Dome ACKs — server deletes the response
+    # Dome ACKs — server deletes the response and the answered request
     ack = client.delete("/api/documents/ack", params={"rid": repo, "id": response_id})
     assert ack.status_code == 200
     final = client.get("/api/documents/ready", params={"rid": repo}).json()
     assert response_id not in [it["id"] for it in final["items"]]
+    finalq = client.get("/api/documents/queue", params={"rid": repo}).json()
+    assert request_id not in [it["id"] for it in finalq["items"]]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -190,3 +194,159 @@ def test_deps_queue_via_x_doc_ref_header(tmp_path: Path, monkeypatch):
 
     resp = client.get("/api/documents/queue")
     assert resp.status_code == 400
+
+
+# S4: lossless handshake — partial fulfillment, request_id validation, TTL race
+
+def _submit_request(client: TestClient, repo: str) -> str:
+    fake_manifest = encrypt_bundle_bytes(b"ENCRYPTED_MANIFEST_PAYLOAD" * 10, PASSWORD)
+    r = client.post(
+        "/api/documents/submit",
+        data={"rid": repo},
+        files={"attachment": ("manifest.bin", fake_manifest, "application/octet-stream")},
+    )
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def _fulfill(client: TestClient, repo: str, request_id: str, residual: str = ""):
+    fake_archive = encrypt_bundle_bytes(b"ENCRYPTED_ARCHIVE_PAYLOAD" * 100, PASSWORD)
+    data = {"rid": repo, "request_id": request_id}
+    if residual:
+        data["residual"] = residual
+    return client.post(
+        "/api/documents/fulfill",
+        data=data,
+        files={"attachment": ("archive.bin", fake_archive, "application/octet-stream")},
+    )
+
+
+def _age_blob(path: Path, age_seconds: float) -> None:
+    old = time.time() - age_seconds
+    os.utime(path, (old, old))
+
+
+def test_deps_partial_fulfillment_keeps_request_and_carries_residual(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
+    repo = "onyx-platform"
+    request_id = _submit_request(client, repo)
+
+    residual = [
+        {"ecosystem": "gradle", "group": "com.corp", "name": "secret-lib",
+         "version": "1.2", "classifier": ""},
+        "npm/@scope/pkg@3.1.0",
+    ]
+    rr = _fulfill(client, repo, request_id, residual=json.dumps(residual))
+    assert rr.status_code == 200, rr.text
+    response_id = rr.json()["id"]
+
+    # the request blob survives a partial shipment
+    pending = client.get("/api/documents/queue", params={"rid": repo}).json()
+    assert request_id in [it["id"] for it in pending["items"]]
+
+    # the response meta carries the residual missing coordinates
+    assert rr.json()["residual"] == residual
+    resps = client.get("/api/documents/ready", params={"rid": repo}).json()
+    item = next(it for it in resps["items"] if it["id"] == response_id)
+    assert item["request_id"] == request_id
+    assert item["residual"] == residual
+
+    # acking a partial response removes the response but keeps the request outstanding
+    ack = client.delete("/api/documents/ack", params={"rid": repo, "id": response_id})
+    assert ack.status_code == 200
+    resps2 = client.get("/api/documents/ready", params={"rid": repo}).json()
+    assert response_id not in [it["id"] for it in resps2["items"]]
+    pending2 = client.get("/api/documents/queue", params={"rid": repo}).json()
+    assert request_id in [it["id"] for it in pending2["items"]]
+
+
+def test_deps_complete_fulfillment_deletes_request_only_after_ack(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
+    repo = "onyx-platform"
+    request_id = _submit_request(client, repo)
+
+    rr = _fulfill(client, repo, request_id)
+    assert rr.status_code == 200, rr.text
+    response_id = rr.json()["id"]
+
+    # the request outlives the fulfill itself — only the Dome ack completes the handshake
+    pending = client.get("/api/documents/queue", params={"rid": repo}).json()
+    assert request_id in [it["id"] for it in pending["items"]]
+
+    ack = client.delete("/api/documents/ack", params={"rid": repo, "id": response_id})
+    assert ack.status_code == 200
+    pending2 = client.get("/api/documents/queue", params={"rid": repo}).json()
+    assert request_id not in [it["id"] for it in pending2["items"]]
+
+
+def test_deps_fulfill_unknown_request_id_is_typed_404_and_stores_nothing(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
+    rr = _fulfill(client, "onyx", "deadbeef")
+    assert rr.status_code == 404, rr.text
+    assert rr.json()["detail"]["error"] == "request_not_found"
+    resps = client.get("/api/documents/ready", params={"rid": "onyx"}).json()
+    assert resps["items"] == []
+
+
+def test_deps_fulfill_request_id_mismatched_repo_is_rejected(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
+    request_id = _submit_request(client, "repo-a")
+
+    rr = _fulfill(client, "repo-b", request_id)
+    assert rr.status_code == 404, rr.text
+    assert rr.json()["detail"]["error"] == "request_not_found"
+
+    resps = client.get("/api/documents/ready", params={"rid": "repo-b"}).json()
+    assert resps["items"] == []
+    pending = client.get("/api/documents/queue", params={"rid": "repo-a"}).json()
+    assert request_id in [it["id"] for it in pending["items"]]
+
+
+def test_deps_fulfill_rejects_malformed_residual(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
+    repo = "onyx-platform"
+    request_id = _submit_request(client, repo)
+
+    for bad in ["not-json", json.dumps({"not": "a list"}), json.dumps([1, 2])]:
+        rr = _fulfill(client, repo, request_id, residual=bad)
+        assert rr.status_code == 400, f"Should reject residual {bad!r}, got {rr.status_code}"
+
+    resps = client.get("/api/documents/ready", params={"rid": repo}).json()
+    assert resps["items"] == []
+
+
+def test_deps_queue_item_reaped_by_ttl_is_typed_gone(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
+    repo = "onyx-platform"
+    request_id = _submit_request(client, repo)
+
+    got = client.get("/api/documents/queue-item", params={"rid": repo, "id": request_id})
+    assert got.status_code == 200
+
+    # the blob ages past the TTL and the lazy cleanup reaps it after the listing
+    _age_blob(deps_router_mod._requests_dir(repo) / f"{request_id}.bin", 8 * 24 * 3600)
+    listing = client.get("/api/documents/queue", params={"rid": repo}).json()
+    assert request_id not in [it["id"] for it in listing["items"]]
+
+    gone = client.get("/api/documents/queue-item", params={"rid": repo, "id": request_id})
+    assert gone.status_code == 410
+    assert gone.json()["detail"]["error"] == "expired"
+
+    missing = client.get("/api/documents/queue-item", params={"rid": repo, "id": "deadbeef"})
+    assert missing.status_code == 404
+    assert missing.json()["detail"]["error"] == "request_not_found"
+
+
+def test_deps_ready_item_reaped_by_ttl_is_typed_gone(tmp_path: Path, monkeypatch):
+    client, _ = _make_client(tmp_path, monkeypatch)
+    repo = "onyx-platform"
+    request_id = _submit_request(client, repo)
+    response_id = _fulfill(client, repo, request_id).json()["id"]
+
+    _age_blob(deps_router_mod._responses_dir(repo) / f"{response_id}.bin", 8 * 24 * 3600)
+    listing = client.get("/api/documents/ready", params={"rid": repo}).json()
+    assert response_id not in [it["id"] for it in listing["items"]]
+
+    gone = client.get("/api/documents/ready-item", params={"rid": repo, "id": response_id})
+    assert gone.status_code == 410
+    assert gone.json()["detail"]["error"] == "expired"

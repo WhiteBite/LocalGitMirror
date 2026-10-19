@@ -145,3 +145,50 @@ def test_cleanup_zero_ttl_deletes_everything(tmp_path):
         _set_age_at(b, 2)  # 2 seconds old relative to NOW
     deleted = _cleanup_stale(d, max_age_seconds=1, now=NOW)  # TTL = 1 second
     assert deleted == 5
+
+
+# ── tombstones and meta sidecars ──────────────────────────────────────────────
+
+def test_cleanup_writes_tombstone_for_reaped_blob(tmp_path):
+    """Reaping a blob leaves a <id>.gone marker so fetches can tell expired from missing."""
+    d = tmp_path / "requests"
+    blob = _write_blob(d, "old.bin")
+    _set_age_at(blob, 8 * 24 * 3600)
+
+    deleted = _cleanup_stale(d, max_age_seconds=7 * 24 * 3600, now=NOW)
+
+    assert deleted == 1
+    assert not blob.exists()
+    assert (d / "old.gone").exists()
+
+
+def test_cleanup_removes_meta_sidecar_together_with_blob(tmp_path):
+    d = tmp_path / "responses"
+    blob = _write_blob(d, "resp.bin")
+    meta = _write_blob(d, "resp.meta.json")
+    _set_age_at(blob, 8 * 24 * 3600)
+    _set_age_at(meta, 1 * 24 * 3600)
+
+    deleted = _cleanup_stale(d, max_age_seconds=7 * 24 * 3600, now=NOW)
+
+    assert deleted == 1
+    assert not blob.exists() and not meta.exists()
+    assert (d / "resp.gone").exists()
+
+
+def test_cleanup_reaps_expired_tombstones(tmp_path):
+    d = tmp_path / "requests"
+    tomb = _write_blob(d, "old.gone")
+    _set_age_at(tomb, 8 * 24 * 3600)
+
+    assert _cleanup_stale(d, max_age_seconds=7 * 24 * 3600, now=NOW) == 0
+    assert not tomb.exists()
+
+
+def test_cleanup_reaps_orphaned_meta_sidecars(tmp_path):
+    d = tmp_path / "responses"
+    meta = _write_blob(d, "orphan.meta.json")
+    _set_age_at(meta, 8 * 24 * 3600)
+
+    assert _cleanup_stale(d, max_age_seconds=7 * 24 * 3600, now=NOW) == 0
+    assert not meta.exists()

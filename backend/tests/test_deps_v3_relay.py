@@ -141,7 +141,8 @@ def test_v3_fulfill_ready_item_round_trip(tmp_path, monkeypatch):
     response_id = rf.json()["id"]
 
     assert _stored_response("onyx", response_id)[0] == 0x04
-    assert not (deps_router_mod._requests_dir("onyx") / f"{request_id}.bin").exists()
+    # the request survives the fulfill; the ack of the complete response removes it
+    assert (deps_router_mod._requests_dir("onyx") / f"{request_id}.bin").exists()
 
     reader = _ClientSession(_server_pub())
     got = client.get(
@@ -151,6 +152,10 @@ def test_v3_fulfill_ready_item_round_trip(tmp_path, monkeypatch):
     )
     assert got.status_code == 200, got.text
     assert reader.open(got.content, hc.RELAY_AAD_DEPS_RESP) == zip_bytes
+
+    ack = client.delete("/api/documents/ack", params={"rid": "onyx", "id": response_id})
+    assert ack.status_code == 200
+    assert not (deps_router_mod._requests_dir("onyx") / f"{request_id}.bin").exists()
 
 
 def test_legacy_submit_normalized_at_rest_and_readable_by_v3_reader(tmp_path, monkeypatch):
@@ -178,9 +183,13 @@ def test_legacy_submit_normalized_at_rest_and_readable_by_v3_reader(tmp_path, mo
 def test_v3_fulfill_readable_by_legacy_password_reader(tmp_path, monkeypatch):
     client = _make_client(tmp_path, monkeypatch, PASSWORD)
     zip_bytes = b"response-zip-content"
-    session = _ClientSession(_server_pub())
 
-    rf = _fulfill(client, "onyx", "deadbeef", session.seal(zip_bytes, hc.RELAY_AAD_DEPS_RESP), k=session.epk_b64())
+    r = _submit(client, "onyx", encrypt_bundle_bytes(b"manifest", PASSWORD))
+    assert r.status_code == 200, r.text
+    request_id = r.json()["id"]
+
+    session = _ClientSession(_server_pub())
+    rf = _fulfill(client, "onyx", request_id, session.seal(zip_bytes, hc.RELAY_AAD_DEPS_RESP), k=session.epk_b64())
     assert rf.status_code == 200, rf.text
     response_id = rf.json()["id"]
 

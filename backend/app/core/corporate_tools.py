@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tarfile
 from dataclasses import dataclass
@@ -100,6 +101,16 @@ def list_tools() -> List[ToolInfo]:
     return tools
 
 
+def _is_safe_member(member: tarfile.TarInfo) -> bool:
+    """True if a tar member extracts without escaping the target directory."""
+    if member.issym() or member.islnk() or member.isdev():
+        return False
+    name = member.name.replace("\\", "/")
+    if name.startswith("/") or re.match(r"^[A-Za-z]:", name):
+        return False
+    return ".." not in name.split("/")
+
+
 def install_tool(name: str, version: str, tarball_path: Path) -> bool:
     """Install a tool from a tarball.
 
@@ -113,10 +124,14 @@ def install_tool(name: str, version: str, tarball_path: Path) -> bool:
 
     install_dir.mkdir(parents=True, exist_ok=True)
 
-    # Extract tarball
+    # vet every member up front: a hostile archive is refused whole, not partially extracted
     try:
         with tarfile.open(tarball_path, "r:gz") as tf:
-            tf.extractall(install_dir)
+            members = tf.getmembers()
+            if any(not _is_safe_member(m) for m in members):
+                shutil.rmtree(install_dir, ignore_errors=True)
+                return False
+            tf.extractall(install_dir, members=members, filter="data")
     except (tarfile.TarError, OSError):
         shutil.rmtree(install_dir, ignore_errors=True)
         return False
