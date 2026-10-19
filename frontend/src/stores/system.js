@@ -92,62 +92,6 @@ export const useSystemStore = defineStore('system', () => {
     }
   }
 
-  async function updateSettings(newSettings) {
-    loading.value = true
-    error.value = null
-
-    try {
-      const response = await axios.put('/api/settings', newSettings)
-      settings.value = { ...settings.value, ...response.data }
-      addNotification('Settings updated successfully', 'success')
-    } catch (err) {
-      error.value = err.response?.data?.detail || 'Failed to update settings'
-      console.error('Error updating settings:', err)
-      addNotification('Failed to update settings', 'error')
-      throw err
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function startGit() {
-    loading.value = true
-    error.value = null
-
-    try {
-      const response = await axios.post('/api/git/start')
-      gitRunning.value = true
-      addNotification('Git service started', 'success')
-      return response.data
-    } catch (err) {
-      error.value = err.response?.data?.detail || 'Failed to start Git service'
-      console.error('Error starting Git:', err)
-      addNotification('Failed to start Git service', 'error')
-      throw err
-    } finally {
-      loading.value = false
-    }
-  }
-
-  async function stopGit() {
-    loading.value = true
-    error.value = null
-
-    try {
-      const response = await axios.post('/api/git/stop')
-      gitRunning.value = false
-      addNotification('Git service stopped', 'success')
-      return response.data
-    } catch (err) {
-      error.value = err.response?.data?.detail || 'Failed to stop Git service'
-      console.error('Error stopping Git:', err)
-      addNotification('Failed to stop Git service', 'error')
-      throw err
-    } finally {
-      loading.value = false
-    }
-  }
-
   async function connectWebSocket() {
     if (wsConnection.value) {
       return
@@ -289,9 +233,6 @@ export const useSystemStore = defineStore('system', () => {
     fetchStatus,
     fetchLogs,
     fetchSettings,
-    updateSettings,
-    startGit,
-    stopGit,
     connectWebSocket,
     disconnectWebSocket,
     fetchApiKey,

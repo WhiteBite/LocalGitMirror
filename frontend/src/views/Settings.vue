@@ -164,11 +164,11 @@
               <div class="space-y-3 text-sm">
                 <div class="flex justify-between">
                   <span class="text-gray-500">{{ t('settings.git.security_mode') }}:</span>
-                  <span class="text-green-400 font-bold">HTTPS / SSL Активен</span>
+                  <span class="text-green-400 font-bold">{{ t('settings.git.security_active') }}</span>
                 </div>
                 <div class="flex justify-between">
                   <span class="text-gray-500">{{ t('settings.git.local_ip') }}:</span>
-                  <span class="text-white font-mono">{{ systemStore.status.local_ip || 'Неизвестно' }}</span>
+                  <span class="text-white font-mono">{{ systemStore.status.local_ip || t('settings.git.ip_unknown') }}</span>
                 </div>
                 <div class="flex justify-between">
                   <span class="text-gray-500">{{ t('settings.git.server_port') }}:</span>
@@ -224,6 +224,11 @@ const localSettings = reactive({
     auto_start: true,
     user_name: '',
     user_email: ''
+  },
+  ui: {
+    theme: 'dark',
+    font_size: 14,
+    show_system_log: true
   }
 })
 
@@ -234,7 +239,7 @@ onMounted(async () => {
 
 async function browseStoragePath() {
   try {
-    const response = await axios.post('/api/config/browse')
+    const response = await axios.post('/api/settings/browse')
     if (response.data.path) {
       localSettings.general.storage_path = response.data.path
     }
@@ -267,7 +272,10 @@ async function saveSettings() {
     const response = await axios.post('/api/settings', localSettings)
     if (response.data.success) {
       showNotification(t('settings.notifications.save_success'), 'success')
+      await loadSettings()
       await systemStore.fetchStatus()
+    } else {
+      showNotification(t('settings.notifications.save_partial_error'), 'error')
     }
   } catch (error) {
     showNotification(t('settings.notifications.save_error'), 'error')
