@@ -187,6 +187,7 @@ def test_gitlab_list_mrs_builds_url_and_headers(monkeypatch):
     class _Resp:
         def __init__(self, data):
             self._data = data
+            self.headers: dict = {}
 
         def read(self):
             return json.dumps(self._data).encode()
@@ -212,7 +213,7 @@ def test_gitlab_list_mrs_builds_url_and_headers(monkeypatch):
     assert captured["url"] == (
         "https://gitlab.corp.example.com/api/v4/projects/"
         "group%2Fsub%2Fproject/merge_requests"
-        "?state=opened&order_by=updated_at&sort=desc&per_page=50"
+        "?state=opened&order_by=updated_at&sort=desc&per_page=50&page=1"
     )
     assert captured["headers"].get("Private-token") == "tok123"
     assert mrs[0]["iid"] == 7

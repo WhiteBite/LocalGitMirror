@@ -25,7 +25,7 @@ import urllib.request
 import urllib.error
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from .crypto import encrypt_envelope, decrypt_envelope, encrypt_bundle
 from .relay_crypto import RelaySession, RELAY_AAD_POSTBOX, decode_pub_b64
@@ -466,21 +466,41 @@ class MirrorClient:
         except Exception as e:
             raise LgmError("network", f"GitLab unreachable: {e}") from None
 
+    def _gitlab_get_paged(self, url: str, token: str) -> tuple[Any, str]:
+        """GET like ``_gitlab_get``, also returning the X-Next-Page header ("" when absent)."""
+        req = urllib.request.Request(
+            url, headers={"PRIVATE-TOKEN": token, "User-Agent": _user_agent()}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read()), r.headers.get("X-Next-Page", "")
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")[:300]
+            raise LgmError(e.code, f"GitLab API error {e.code}: {body}") from None
+        except Exception as e:
+            raise LgmError("network", f"GitLab unreachable: {e}") from None
+
     def gitlab_list_mrs(self, project: str = "") -> list:
         """GET /api/v4/projects/<id>/merge_requests?state=opened — open MRs.
 
         ``project`` overrides GITLAB_PROJECT for registry-driven multi-project
-        sync; the response is the raw GitLab list (capped at 50, like the plugin).
+        sync; follows X-Next-Page, capped at 10 pages of 50.
         """
         url, token, resolved = self._gitlab_config(project)
         proj_id = urllib.parse.quote(resolved, safe="")
-        data = self._gitlab_get(
-            f"{url}/api/v4/projects/{proj_id}/merge_requests"
-            "?state=opened&order_by=updated_at&sort=desc&per_page=50", token
-        )
-        if not isinstance(data, list):
-            raise LgmError("network", f"GitLab returned non-list for merge_requests: {type(data).__name__}")
-        return data
+        base = (f"{url}/api/v4/projects/{proj_id}/merge_requests"
+                "?state=opened&order_by=updated_at&sort=desc&per_page=50")
+        out: list = []
+        page = 1
+        while page <= 10:
+            data, next_page = self._gitlab_get_paged(f"{base}&page={page}", token)
+            if not isinstance(data, list):
+                raise LgmError("network", f"GitLab returned non-list for merge_requests: {type(data).__name__}")
+            out.extend(data)
+            if not next_page:
+                break
+            page += 1
+        return out
 
     def gitlab_get_mr(self, iid: int, project: str = "") -> dict:
         """GET /api/v4/projects/<id>/merge_requests/<iid> — one MR."""
