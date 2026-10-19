@@ -63,6 +63,14 @@ HOME ──edits, builds──▶ sends back the same way; WORK pulls via "Pull 
 
 Negotiation: `check` reports known commits; `link` applies pointer-only updates when the target commit already exists (`apply-known` semantics in `backend/app/routers/sync.py`). Incremental bundles use mirror tips as `^` prerequisites (`send_branches` in `lgm_core/ops_git.py`).
 
+### The workspace IS the home checkout
+
+With `STORAGE_PATH=D:\Sources\kryptonit` on HOME, a repo's "workspace" (`repo_manager._get_workspace_path` = `storage/<repo>`) is the owner's real working tree there (`phonyx`, `doctransformer`, ...), cloned with `origin` at the mirror's own bare (`storage/.lgm/bare/<repo>.git`). The mirror server owns that directory as its data store, and three consequences follow:
+
+- HOME never runs `send`. `negotiate` (`sync_negotiate` in `backend/app/routers/sync.py`) checks known commits against `[workspace, bare]`; from HOME's side the workspace is the sender's own tree, so every candidate commit comes back "known", and `git bundle create` refuses an empty bundle ("Refusing to create empty bundle"). Outbound traffic is WORK-side; inbound pulls read whichever store holds the branch (`sync_export_dump`: workspace first, bare only when the branch exists solely in the bare).
+- Incoming bundles land in the home checkout. `_apply_dump_to_repo_and_sync_bare` (`backend/app/core/git_bundle.py`) fetches branch tips into the bare, then attaches the workspace to the new tip of its own branch via `_attach_workspace`. Tracked uncommitted changes are reset away by `_ensure_clean_workspace` before the apply; untracked files are never deleted, but if one collides with the incoming tree the apply fails loudly ("Sync would overwrite untracked file(s)..."). Keep mirrored checkouts clean: don't park WIP there.
+- `lgm_branches` shows merged tips: `_collect_sync_refs` unions workspace + bare refs (bare wins per ref) while `head` prefers the workspace HEAD, so a branch advanced only at home reports the home tip.
+
 ### 2. GitLab MR review loop
 
 ```
@@ -116,7 +124,7 @@ All relay blobs are stored at rest as `0x04 || nonce[12] || AES-256-GCM(plaintex
 | `lgm_core/` | shared engine: `config.py` (.env resolution), `client.py` (HTTP + v3 relay postbox client), `crypto.py` (legacy password bundles), `relay_crypto.py` (ECIES v3 relay client, byte-compatible with the server and the plugin), `ops.py` (REGISTRY) split across `ops_deps.py` / `ops_git.py` / `ops_mr.py` / `ops_vault.py` + `deps_scanner.py` / `op_models.py`, `render.py` |
 | `lgm.py` | CLI wrapper over REGISTRY |
 | `lgm_mcp.py` | MCP stdio server over REGISTRY |
-| `storage/` | server data root (gitignored): bare repos, `workspaces/`, `.lgm/{deps,files,vault,buffer}`, key files `server_x25519.key` / `relay.key`, logs |
+| `storage/` | server data root (gitignored; `STORAGE_PATH` points it at `D:\Sources\kryptonit` on HOME): workspace checkouts at `storage/<repo>` (`repo_manager._get_workspace_path`), bare repos at `storage/.lgm/bare/<repo>.git` (`repo_manager._get_bare_path`; legacy `storage/<repo>.git` only as fallback for un-migrated data), `.lgm/{deps,files,vault,buffer}`, key files `server_x25519.key` / `relay.key`, logs. There is no `workspaces/` subdirectory. See "The workspace IS the home checkout". |
 | `tests/`, `backend/tests/` | pytest suites: `tests/` for CLI/MCP/ops (`pytest.ini`, `integration` marker needs live server), `backend/tests/` for the server (incl. the cross-language KAT vector) |
 
 Plugin module map (`idea-plugin/src/main/kotlin/localgitmirror/idea/`):
