@@ -1,8 +1,10 @@
 """Test MCP stdio transport (NDJSON out; NDJSON + Content-Length in) and dispatch."""
 import io
 import json
+import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -127,6 +129,152 @@ def test_tool_schema_required_fields():
     # 'request' has --project required.
     request_tool = next(t for t in tools if t["name"] == "request")
     assert "project" in request_tool["inputSchema"]["required"]
+
+
+# ── tool schema metadata (enum / bounds / pattern / required) ─────────────────
+
+
+def _tool(name: str) -> dict:
+    tools = lgm_mcp._list_tools()
+    return next(t for t in tools if t["name"] == name)
+
+
+def _props(name: str) -> dict:
+    return _tool(name)["inputSchema"]["properties"]
+
+
+def test_config_get_section_enum():
+    """Enumerable params must expose their closed value set as enum."""
+    assert _props("config_get")["section"]["enum"] == ["", "general", "git", "ui"]
+
+
+def test_config_set_section_enum():
+    assert _props("config_set")["section"]["enum"] == ["general", "git", "ui"]
+
+
+def test_enum_params_include_their_default():
+    """A default outside the enum is a contradiction the caller can hit."""
+    for tool in lgm_mcp._list_tools():
+        for name, prop in tool["inputSchema"]["properties"].items():
+            if "enum" in prop and "default" in prop:
+                assert prop["default"] in prop["enum"], (
+                    f"{tool['name']}.{name} default {prop['default']!r} "
+                    f"not in enum {prop['enum']}")
+
+
+def test_chat_list_count_bounds():
+    """Numeric params with a help-stated range must expose minimum/maximum."""
+    assert _props("chat_list")["count"]["minimum"] == 1
+    assert _props("chat_list")["count"]["maximum"] == 100
+
+
+def test_integer_params_expose_minimum():
+    floors = {
+        ("prune", "older_days"): 0,
+        ("mr_send", "iid"): 0,
+        ("mr_notes", "iid"): 0,
+        ("mr_replies_send", "iid"): 1,
+        ("mr_replies_status", "iid"): 0,
+        ("chat_list", "count"): 1,
+    }
+    for (op_name, param), floor in floors.items():
+        assert _props(op_name)[param]["minimum"] == floor, (
+            f"{op_name}.{param} minimum != {floor}")
+
+
+def test_sha_params_expose_pattern():
+    for op_name, param in (("pull", "since"), ("pull", "haves"),
+                           ("has_commits", "commits")):
+        assert _props(op_name)[param].get("pattern"), (
+            f"{op_name}.{param} lacks a pattern")
+
+
+def test_id_params_expose_pattern():
+    for op_name in ("respond", "apply", "file_get", "file_ack"):
+        assert _props(op_name)["id"].get("pattern"), f"{op_name}.id lacks a pattern"
+
+
+def test_mr_send_iids_pattern():
+    assert _props("mr_send")["iids"].get("pattern")
+
+
+def test_patterns_match_real_values():
+    since = re.compile(_props("pull")["since"]["pattern"])
+    assert since.match("")  # optional: empty means unset
+    assert since.match("0123abcd")
+    assert since.match("f" * 40)
+    assert not since.match("not-a-sha")
+    file_id = re.compile(_props("file_get")["id"]["pattern"])
+    assert file_id.match("0" * 32)
+    assert not file_id.match("short")
+    iids = re.compile(_props("mr_send")["iids"]["pattern"])
+    assert iids.match("41,42,43")
+    assert not iids.match("41,")
+
+
+def test_required_params_advertise_no_default():
+    """A required param with a default invites the caller to omit it."""
+    for tool in lgm_mcp._list_tools():
+        schema = tool["inputSchema"]
+        for name in schema["required"]:
+            assert "default" not in schema["properties"][name], (
+                f"{tool['name']}.{name} is required but advertises a default")
+
+
+def test_mr_replies_send_iid_required():
+    schema = _tool("mr_replies_send")["inputSchema"]
+    assert "iid" in schema["required"]
+    assert "default" not in schema["properties"]["iid"]
+
+
+def test_mr_projects_scan_root_required_array():
+    schema = _tool("mr_projects_scan")["inputSchema"]
+    assert "root" in schema["required"]
+    assert schema["properties"]["root"]["type"] == "array"
+    assert "default" not in schema["properties"]["root"]
+
+
+# ── status: the real configured machine role ─────────────────────────────────
+
+
+class _StatusClient:
+    sync_password = "pw"
+
+    def capabilities(self):
+        return {"sync": {"features": {"v3": True}}}
+
+    def repos(self):
+        return {"repos": ["default", "other"]}
+
+    def tools_version(self):
+        return {"version": "0.1"}
+
+
+def _status_ctx():
+    from lgm_core.op_models import Ctx
+    return Ctx(config=SimpleNamespace(base_url="https://localhost:1",
+                                      sync_password="pw"),
+               client=_StatusClient())
+
+
+def test_status_reports_configured_machine_role(monkeypatch):
+    """status must surface LGM_MACHINE_ROLE, not a heuristic placeholder."""
+    import lgm_core.config as lgm_config
+    from lgm_core.ops_git import op_status
+    monkeypatch.setattr(lgm_config, "_ENV", {})
+    monkeypatch.setenv("LGM_MACHINE_ROLE", "work")
+    res = op_status(_status_ctx(), {})
+    assert res["role_guess"] == "work"
+
+
+def test_status_role_undetermined_when_unconfigured(monkeypatch):
+    import lgm_core.config as lgm_config
+    from lgm_core.ops_git import op_status
+    monkeypatch.setattr(lgm_config, "_ENV", {})
+    monkeypatch.delenv("LGM_MACHINE_ROLE", raising=False)
+    res = op_status(_status_ctx(), {})
+    assert "undetermined" in res["role_guess"]
+    assert "home-or-work" not in res["role_guess"]
 
 
 # ── In-process dispatch ───────────────────────────────────────────────────────

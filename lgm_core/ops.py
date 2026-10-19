@@ -117,7 +117,8 @@ REGISTRY: list[Op] = [
                 Param("project", "str", "", "Project dir (for package-lock.json bundling)"),
             Param("dry_run", "bool", False, "Show what would be sent without posting"),
             Param("id", "str", "",
-                  "Pending request id to handle (prefix match, as shown by pending; default: first)"),
+                  "Pending request id to handle (prefix match, as shown by pending; default: first)",
+                  pattern=r"^$|^[0-9a-f]{1,32}$"),
         ],
         run=op_respond,
     ),
@@ -132,7 +133,8 @@ REGISTRY: list[Op] = [
             Param("yarn_install", "bool", False, "Like --yarn, then run yarn install --offline"),
             Param("dry_run", "bool", False, "Show what would be installed without writing"),
             Param("id", "str", "",
-                  "Response id to apply (prefix match, as shown by debug; default: first)"),
+                  "Response id to apply (prefix match, as shown by debug; default: first)",
+                  pattern=r"^$|^[0-9a-f]{1,32}$"),
         ],
         run=op_apply,
     ),
@@ -161,7 +163,7 @@ REGISTRY: list[Op] = [
     # ── New ops ──────────────────────────────────────────────────────────
     Op(
         name="status",
-        summary="Server capabilities + repos + role guess.",
+        summary="Server capabilities + repos + configured machine role.",
         params=[],
         run=op_status,
     ),
@@ -198,8 +200,10 @@ REGISTRY: list[Op] = [
         params=[
             Param("repo", "str", "", "Repository name", required=True),
             Param("branch", "str", "", "Branch to pull"),
-            Param("since", "str", "", "Exclude commits reachable from this SHA"),
-            Param("haves", "str", "", "Comma-separated SHAs the client already has"),
+            Param("since", "str", "", "Exclude commits reachable from this SHA",
+                  pattern=r"^$|^[0-9a-f]{4,40}$"),
+            Param("haves", "str", "", "Comma-separated SHAs the client already has",
+                  pattern=r"^$|^[0-9a-f]{4,40}(,[0-9a-f]{4,40})*$"),
             Param("project", "str", "", "Path to git project to fetch into"),
             Param("dry_run", "bool", False, "Download bundle without fetching"),
         ],
@@ -210,7 +214,8 @@ REGISTRY: list[Op] = [
         summary="Lightweight incoming-commits check: asks the mirror whether a pull would bring anything (no bundle transfer).",
         params=[
             Param("repo", "str", "", "Repository name", required=True),
-            Param("since", "str", "", "Local SHA to compare against (default: HEAD of --project)"),
+            Param("since", "str", "", "Local SHA to compare against (default: HEAD of --project)",
+                  pattern=r"^$|^[0-9a-f]{4,40}$"),
             Param("project", "str", "", "Local git project root; its HEAD becomes --since when --since is empty"),
         ],
         run=op_preview_pull,
@@ -220,7 +225,8 @@ REGISTRY: list[Op] = [
         summary="Ask the mirror which of the given commits it already holds (inspect before send).",
         params=[
             Param("repo", "str", "", "Repository name", required=True),
-            Param("commits", "str", "", "Comma-separated SHAs to check (default: local branch tips from --project)"),
+            Param("commits", "str", "", "Comma-separated SHAs to check (default: local branch tips from --project)",
+                  pattern=r"^$|^[0-9a-f]{4,40}(,[0-9a-f]{4,40})*$"),
             Param("project", "str", "", "Local git project root; its branch tips become --commits when --commits is empty"),
         ],
         run=op_has_commits,
@@ -257,7 +263,8 @@ REGISTRY: list[Op] = [
             Param("bases", "str", "",
                   "Comma-separated base branches (a branch merged into any base is prunable); required unless --older-days is set"),
             Param("older_days", "int", 0,
-                  "Also prune branches older than N days by committerdate (0=off)"),
+                  "Also prune branches older than N days by committerdate (0=off)",
+                  minimum=0),
             Param("keep", "str", "",
                   "Comma-separated branches to always keep (HEAD is always protected)"),
             Param("apply", "bool", False,
@@ -277,8 +284,10 @@ REGISTRY: list[Op] = [
         name="mr_send",
         summary="Fetch GitLab MR branches and send them to the mirror in one deduplicated bundle (skips tips the mirror already has).",
         params=[
-            Param("iid", "int", 0, "GitLab MR iid (resolves the source branch)"),
-            Param("iids", "str", "", "Comma-separated MR iids, e.g. '41,42,43'"),
+            Param("iid", "int", 0, "GitLab MR iid (resolves the source branch)",
+                  minimum=0),
+            Param("iids", "str", "", "Comma-separated MR iids, e.g. '41,42,43'",
+                  pattern=r"^$|^[0-9]+(,[0-9]+)*$"),
             Param("all_open", "bool", False, "Send all open MRs"),
             Param("branch", "str", "", "MR source branch(es), comma-separated (used when no iid given)"),
             Param("project", "str", "", "Local git root to fetch into", required=True),
@@ -295,7 +304,7 @@ REGISTRY: list[Op] = [
                  "— copy the id into a '## thread <id>' section of mr_replies_send."),
         params=[
             Param("repo", "str", "", "Mirror repository name", required=True),
-            Param("iid", "int", 0, "Only this MR iid (0 = all)"),
+            Param("iid", "int", 0, "Only this MR iid (0 = all)", minimum=0),
         ],
         run=op_mr_notes,
     ),
@@ -310,7 +319,7 @@ REGISTRY: list[Op] = [
                  "anchored at the offending line — no praise, no code restating, no filler."),
         params=[
             Param("repo", "str", "", "Mirror repository name", required=True),
-            Param("iid", "int", 0, "GitLab MR iid", required=True),
+            Param("iid", "int", 0, "GitLab MR iid", required=True, minimum=1),
             Param("file", "str", "", "Path to a local replies-!N.md file (same section format)"),
             Param("text", "str", "", "Inline replies markdown: '## thread <id>' / "
                                      "'## new <file>:<line>' / '## new' sections, "
@@ -325,7 +334,7 @@ REGISTRY: list[Op] = [
         summary="Show the work PC's publish reports for agent MR replies (posted/failed per MR).",
         params=[
             Param("repo", "str", "", "Mirror repository name", required=True),
-            Param("iid", "int", 0, "Only this MR iid (0 = all)"),
+            Param("iid", "int", 0, "Only this MR iid (0 = all)", minimum=0),
         ],
         run=op_mr_replies_status,
     ),
@@ -354,7 +363,8 @@ REGISTRY: list[Op] = [
         name="chat_list",
         summary="Read chat messages from the exchange buffer (newest first).",
         params=[
-            Param("count", "int", 20, "Max messages to return (1-100)"),
+            Param("count", "int", 20, "Max messages to return (1-100)",
+                  minimum=1, maximum=100),
         ],
         run=op_chat_list,
     ),
@@ -380,7 +390,8 @@ REGISTRY: list[Op] = [
         summary="Download a file from the postbox.",
         params=[
             Param("repo", "str", "", "Mirror repository name", required=True),
-            Param("id", "str", "", "File ID from file_list", required=True),
+            Param("id", "str", "", "File ID from file_list", required=True,
+                  pattern=r"^[0-9a-f]{32}$"),
             Param("save", "str", "", "Local path to save the file to"),
         ],
         run=op_file_get,
@@ -390,7 +401,8 @@ REGISTRY: list[Op] = [
         summary="Delete one postbox item on the mirror by id (ack).",
         params=[
             Param("repo", "str", "", "Mirror repository name", required=True),
-            Param("id", "str", "", "File ID from file_list", required=True),
+            Param("id", "str", "", "File ID from file_list", required=True,
+                  pattern=r"^[0-9a-f]{32}$"),
         ],
         run=op_file_ack,
     ),
@@ -398,7 +410,8 @@ REGISTRY: list[Op] = [
         name="config_get",
         summary="Read server settings (all, or a specific section).",
         params=[
-            Param("section", "str", "", "Settings section: general, git, ui (empty = all)"),
+            Param("section", "str", "", "Settings section: general, git, ui (empty = all)",
+                  enum=["", "general", "git", "ui"]),
         ],
         run=op_config_get,
     ),
@@ -406,7 +419,8 @@ REGISTRY: list[Op] = [
         name="config_set",
         summary="Update a server setting for debugging/reconfiguration.",
         params=[
-            Param("section", "str", "", "Settings section: general, git, ui", required=True),
+            Param("section", "str", "", "Settings section: general, git, ui", required=True,
+                  enum=["general", "git", "ui"]),
             Param("key", "str", "", "Setting key within the section", required=True),
             Param("value", "str", "", "New value (auto-parsed: bool/int/float/JSON/string)", required=True),
         ],
@@ -416,7 +430,8 @@ REGISTRY: list[Op] = [
         name="mr_projects_scan",
         summary="Register local GitLab checkouts found under a root directory for mr_sync_all.",
         params=[
-            Param("root", "list", "", "One or more directories/checkouts to register (repeatable)", required=True),
+            Param("root", "list", None,
+                  "One or more directories/checkouts to register (repeatable)", required=True),
         ],
         run=op_mr_projects_scan,
         needs_client=False,

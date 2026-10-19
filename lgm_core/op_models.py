@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from .config import Config
+from .config import Config, cfg
 from .client import MirrorClient, LgmError
 
 
@@ -13,14 +13,21 @@ from .client import MirrorClient, LgmError
 class Param:
     """A single op parameter.
 
-    ``type`` is one of "str", "int", "bool".  A "bool" param is a flag
-    (``store_true`` in argparse).  ``required`` only applies to str/int.
+    ``type`` is one of "str", "int", "bool", "list".  A "bool" param is a
+    flag (``store_true`` in argparse); a "list" param is repeatable
+    (``action="append"``).  ``required`` only applies to str/int/list.
+    ``enum``/``minimum``/``maximum``/``pattern`` are optional JSON Schema
+    constraints surfaced to MCP clients.
     """
     name: str
-    type: str  # "str" | "int" | "bool"
+    type: str  # "str" | "int" | "bool" | "list"
     default: Any = None
     help: str = ""
     required: bool = False
+    enum: list | None = None
+    minimum: int | None = None
+    maximum: int | None = None
+    pattern: str | None = None
 
     def __post_init__(self):
         if self.type == "bool" and self.default is None:
@@ -29,6 +36,8 @@ class Param:
             self.default = ""
         if self.type == "int" and self.default is None:
             self.default = 0
+        if self.type == "list" and self.default is None:
+            self.default = []
 
 
 @dataclass(kw_only=True)
@@ -65,12 +74,9 @@ def _repo_arg(args: dict) -> str:
 
 
 def _role_guess(caps: dict, repos: dict) -> str:
-    """Guess whether this machine is 'work' or 'home' from capabilities/repos."""
-    features = caps.get("sync", {}).get("features", {})
-    repo_list = repos.get("repos", [])
-    # Heuristic: if there are repos with content, likely home; else work.
-    if features.get("v3"):
-        return "home-or-work (v3)"
-    if len(repo_list) > 1:
-        return "home"
-    return "work"
+    """The configured machine role; undetermined when LGM_MACHINE_ROLE is
+    neither home nor work (auto-detection is a plugin-only feature)."""
+    role = cfg("LGM_MACHINE_ROLE").strip().lower()
+    if role in ("home", "work"):
+        return role
+    return "undetermined (set LGM_MACHINE_ROLE=home or work)"

@@ -127,7 +127,16 @@ def _build_tool_schema(op) -> dict:
             "type": _PARAM_TYPE_MAP.get(param.type, "string"),
             "description": param.help or param.name,
         }
-        if param.default is not None and param.type != "bool":
+        if param.enum is not None:
+            prop["enum"] = list(param.enum)
+        if param.minimum is not None:
+            prop["minimum"] = param.minimum
+        if param.maximum is not None:
+            prop["maximum"] = param.maximum
+        if param.pattern:
+            prop["pattern"] = param.pattern
+        # A required param advertising a default invites the caller to omit it.
+        if param.default is not None and param.type != "bool" and not param.required:
             prop["default"] = param.default
         properties[param.name] = prop
         if param.required:
