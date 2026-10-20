@@ -52,7 +52,11 @@ object MrNotesSync {
         unchanged++
         continue
       }
-      val discussions = GitLabApi.listMrDiscussions(conf, mr.iid).discussions
+      val discussionsResult = GitLabApi.listMrDiscussions(conf, mr.iid)
+      if (discussionsResult.code in 200..299) {
+        project.service<MrReviewService>().storeDiscussions(mr.iid, mr.updatedAt, discussionsResult.discussions)
+      }
+      val discussions = discussionsResult.discussions
       if (discussions.isEmpty()) continue
       val unresolved = discussions.count { d -> !d.resolved && d.notes.any { !it.system } }
       val markdown = MrNotesWriter.renderMarkdown(

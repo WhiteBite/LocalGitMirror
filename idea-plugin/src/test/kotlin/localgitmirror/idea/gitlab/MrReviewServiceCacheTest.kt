@@ -4,6 +4,7 @@ import localgitmirror.idea.mirror.MirrorPostboxApi
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class MrReviewServiceCacheTest {
@@ -49,5 +50,43 @@ class MrReviewServiceCacheTest {
     assertTrue(MrReviewService.closedByMtime(noteMtime = 100, markerMtime = 200))
     assertFalse(MrReviewService.closedByMtime(noteMtime = 200, markerMtime = 100))
     assertTrue(MrReviewService.closedByMtime(noteMtime = 100, markerMtime = 100))
+  }
+
+  @Test
+  fun `shouldUseCachedDiscussions accepts equal non-blank stamps with a cache entry`() {
+    assertTrue(MrReviewService.shouldUseCachedDiscussions("2026-10-19T10:00:00Z", "2026-10-19T10:00:00Z", hasCache = true))
+  }
+
+  @Test
+  fun `shouldUseCachedDiscussions is false without a cache entry`() {
+    assertFalse(MrReviewService.shouldUseCachedDiscussions("2026-10-19T10:00:00Z", "2026-10-19T10:00:00Z", hasCache = false))
+  }
+
+  @Test
+  fun `shouldUseCachedDiscussions is false for blank or missing stamps`() {
+    assertFalse(MrReviewService.shouldUseCachedDiscussions("", "", hasCache = true))
+    assertFalse(MrReviewService.shouldUseCachedDiscussions(" ", " ", hasCache = true))
+    assertFalse(MrReviewService.shouldUseCachedDiscussions(null, "2026-10-19T10:00:00Z", hasCache = true))
+    assertFalse(MrReviewService.shouldUseCachedDiscussions("2026-10-19T10:00:00Z", "", hasCache = true))
+    assertFalse(MrReviewService.shouldUseCachedDiscussions("2026-10-19T10:00:00Z", null, hasCache = true))
+  }
+
+  @Test
+  fun `shouldUseCachedDiscussions is false when the MR changed`() {
+    assertFalse(MrReviewService.shouldUseCachedDiscussions("2026-10-19T10:00:00Z", "2026-10-20T09:00:00Z", hasCache = true))
+  }
+
+  @Test
+  fun `updatedAtOfMarkdown extracts the stamp MrNotesWriter rendered`() {
+    val md = MrNotesWriter.renderMarkdown(
+      iid = 5, title = "Fix login", sourceBranch = "feature/login", updatedAt = "2026-10-19T10:00:00.000Z",
+      unresolved = 1, totalThreads = 2, discussions = emptyList(),
+    )
+    assertEquals("2026-10-19T10:00:00.000Z", MrReviewService.updatedAtOfMarkdown(md))
+  }
+
+  @Test
+  fun `updatedAtOfMarkdown returns null without a stamp line`() {
+    assertNull(MrReviewService.updatedAtOfMarkdown("# MR !5 — Fix login\n\n- **Ветка:** `feature/login`\n"))
   }
 }

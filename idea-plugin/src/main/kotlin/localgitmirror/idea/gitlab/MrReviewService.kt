@@ -52,6 +52,14 @@ class MrReviewService(private val project: Project) {
     val error: String? = null,
   )
 
+  internal data class DiscussionsOutcome(
+    val discussions: List<GitLabApi.MrDiscussion>,
+    val fromCache: Boolean,
+    val error: String? = null,
+  )
+
+  private data class CachedDiscussions(val updatedAt: String, val discussions: List<GitLabApi.MrDiscussion>)
+
   @Volatile
   private var cache: List<MrRowItem> = emptyList()
 
@@ -70,12 +78,49 @@ class MrReviewService(private val project: Project) {
   // postbox item id -> mtime of the last downloaded+parsed copy; unchanged items are not re-downloaded
   private val downloadedMtime = java.util.concurrent.ConcurrentHashMap<String, Long>()
   private val parsedCache = java.util.concurrent.ConcurrentHashMap<String, Any>()
+  private val discussionsCache = java.util.concurrent.ConcurrentHashMap<Int, CachedDiscussions>()
 
   fun cachedRows(): List<MrRowItem> = cache
 
   fun cachedError(): String? = cacheError
 
   fun rowsBySourceBranch(): Map<String, MrRowItem> = cache.associateBy { it.sourceBranch }
+
+  /** Warms the per-iid discussions cache; MrNotesSync and the list refresh call it after fetching. */
+  internal fun storeDiscussions(iid: Int, updatedAt: String, discussions: List<GitLabApi.MrDiscussion>) {
+    discussionsCache[iid] = CachedDiscussions(updatedAt, discussions)
+  }
+
+  /** Cache-or-fetch for one MR: an unchanged MR (same non-blank updated_at as the cached fetch) skips GitLab entirely. */
+  internal fun discussionsFor(iid: Int, currentUpdatedAt: String): DiscussionsOutcome {
+    val entry = discussionsCache[iid] ?: coldDiscussions(iid)?.also { discussionsCache[iid] = it }
+    entry?.takeIf { shouldUseCachedDiscussions(it.updatedAt, currentUpdatedAt, hasCache = true) }?.let {
+      return DiscussionsOutcome(it.discussions, fromCache = true)
+    }
+    val conf = GitLabConfig.resolve(project)
+    if (!GitLabConfig.hasApi(conf)) {
+      return DiscussionsOutcome(entry?.discussions ?: emptyList(), fromCache = entry != null)
+    }
+    val res = GitLabApi.listMrDiscussions(conf, iid)
+    if (res.code !in 200..299) {
+      return DiscussionsOutcome(
+        entry?.discussions ?: emptyList(),
+        fromCache = entry != null,
+        error = res.message.ifBlank { "GitLab API error ${res.code}" },
+      )
+    }
+    storeDiscussions(iid, currentUpdatedAt, res.discussions)
+    return DiscussionsOutcome(res.discussions, fromCache = false)
+  }
+
+  private fun coldDiscussions(iid: Int): CachedDiscussions? {
+    val base = project.basePath ?: return null
+    val md = runCatching {
+      File(base, ".mr-notes/mr-!$iid.md").takeIf { it.isFile }?.readText(Charsets.UTF_8)
+    }.getOrNull() ?: return null
+    val stamp = updatedAtOfMarkdown(md) ?: return null
+    return CachedDiscussions(stamp, parseMrMarkdown(iid, md).discussions)
+  }
 
   fun refreshInBackground(notify: Boolean, onDone: ((List<MrRowItem>) -> Unit)? = null) {
     ApplicationManager.getApplication().executeOnPooledThread {
@@ -320,7 +365,11 @@ class MrReviewService(private val project: Project) {
     if (mrsResult.mrs.isEmpty()) return emptyList()
 
     return mrsResult.mrs.map { mr ->
-      val discussions = GitLabApi.listMrDiscussions(conf, mr.iid).discussions
+      val discussionsResult = GitLabApi.listMrDiscussions(conf, mr.iid)
+      if (discussionsResult.code in 200..299) {
+        storeDiscussions(mr.iid, mr.updatedAt, discussionsResult.discussions)
+      }
+      val discussions = discussionsResult.discussions
       val unresolved = discussions.count { d -> !d.resolved && d.notes.any { !it.system } }
       MrRowItem(
         iid = mr.iid,
@@ -533,6 +582,15 @@ class MrReviewService(private val project: Project) {
 
   companion object {
     private val IidInPath = Regex("mr-!(\\d+)")
+    private val UpdatedAtLine = Regex("\\*\\*Обновлено:\\*\\*\\s*(.+?)\\s*·")
+
+    /** True only when the cached discussions were fetched at the same non-blank GitLab updated_at the row now carries. */
+    internal fun shouldUseCachedDiscussions(storedUpdatedAt: String?, currentUpdatedAt: String?, hasCache: Boolean): Boolean =
+      hasCache && !storedUpdatedAt.isNullOrBlank() && storedUpdatedAt == currentUpdatedAt
+
+    /** Extracts the GitLab updated_at MrNotesWriter rendered into the "- **Обновлено:**" line. */
+    internal fun updatedAtOfMarkdown(markdown: String): String? =
+      UpdatedAtLine.find(markdown)?.groupValues?.getOrNull(1)?.trim()
 
     /** Newest postbox item per MR iid by mtime; equal mtimes keep the first listed. */
     internal fun newestByMtime(items: List<MirrorPostboxApi.FileSyncItem>): Map<Int, MirrorPostboxApi.FileSyncItem> {

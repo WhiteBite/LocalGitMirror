@@ -11,6 +11,7 @@ import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.testFramework.LightVirtualFile
+import com.intellij.ui.AnimatedIcon
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
@@ -43,13 +44,16 @@ import javax.swing.JTextField
 /** One discussion window for the two-sided review loop: home edits draft replies and ships the remainder to the work postbox; work checks the arrived replies and publishes only that subset to GitLab. */
 class MrReviewDialog private constructor(
   private val project: Project,
-  private var row: MrReviewService.MrRowItem,
+  cachedRow: MrReviewService.MrRowItem,
   private var pending: MrReplyPushService.PendingReplies?,
   private var localReplies: MrReplies.RepliesFile?,
 ) : DialogWrapper(project, false) {
 
   private val isWork: Boolean =
     RoleDetector.detect(service<MirrorSettingsService>().state) == MachineRole.WORK
+
+  private var loadState: MrDialogLoadState = MrDialogLoadState.opened(cachedRow)
+  private val row: MrReviewService.MrRowItem get() = loadState.row
 
   private lateinit var contentHolder: JPanel
   private val sentMarkers = mutableSetOf<String>()
@@ -75,6 +79,7 @@ class MrReviewDialog private constructor(
       sentMarkers.addAll(project.getService(MirrorProjectSettingsService::class.java).state.mrHomeSent)
     }
     init()
+    startBackgroundLoad()
   }
 
   override fun createActions(): Array<javax.swing.Action> = emptyArray()
@@ -178,6 +183,16 @@ class MrReviewDialog private constructor(
       meta.add(JLabel(text).apply { foreground = color; font = JBUI.Fonts.smallFont() })
     }
     panel.add(meta)
+    if (loadState.refreshing) {
+      panel.add(JLabel(AnimatedIcon.Default.INSTANCE).apply { alignmentX = JLabel.LEFT_ALIGNMENT })
+    }
+    loadState.loadError?.let { err ->
+      panel.add(JLabel(LocalGitMirrorBundle.message("review.fetch.fail", err)).apply {
+        foreground = ERROR_FG
+        font = JBUI.Fonts.smallFont()
+        alignmentX = JLabel.LEFT_ALIGNMENT
+      })
+    }
     return panel
   }
 
@@ -800,35 +815,49 @@ class MrReviewDialog private constructor(
   }
 
   private fun reload() {
-    val svc = project.getService(MrReviewService::class.java)
-    svc.refreshInBackground(notify = false) { rows ->
-      row = rows.firstOrNull { it.iid == row.iid } ?: row
-      ApplicationManager.getApplication().executeOnPooledThread {
-        if (isWork) {
-          when (val fetched = MrReplyPushService(project).fetchPendingReplies()) {
-            is MrReplyPushService.PendingRepliesResult.Available ->
-              pending = fetched.items.firstOrNull { it.parsed.iid == row.iid }
-            is MrReplyPushService.PendingRepliesResult.Unavailable -> {
-              pending = null
-              notify(LocalGitMirrorBundle.message("mrreplies.list.fail", fetched.reason), NotificationType.WARNING)
-            }
-          }
-        } else {
-          localReplies = readLocalReplies(row.iid)
+    applyLoadState(loadState.refreshStarted())
+    startBackgroundLoad()
+  }
+
+  private fun startBackgroundLoad() {
+    val iid = row.iid
+    val stamp = row.updatedAt
+    ApplicationManager.getApplication().executeOnPooledThread {
+      var pendingFailure: String? = null
+      var freshPending: MrReplyPushService.PendingReplies? = null
+      var freshLocal: MrReplies.RepliesFile? = null
+      if (isWork) {
+        when (val fetched = MrReplyPushService(project).fetchPendingReplies()) {
+          is MrReplyPushService.PendingRepliesResult.Available ->
+            freshPending = fetched.items.firstOrNull { it.parsed.iid == iid }
+          is MrReplyPushService.PendingRepliesResult.Unavailable -> pendingFailure = fetched.reason
         }
-        ApplicationManager.getApplication().invokeLater {
-          if (project.isDisposed) return@invokeLater
-          rebuildContent()
-        }
+      } else {
+        freshLocal = readLocalRepliesFile(project, iid)
+      }
+      val discussions = project.getService(MrReviewService::class.java).discussionsFor(iid, stamp)
+      ApplicationManager.getApplication().invokeLater {
+        if (project.isDisposed) return@invokeLater
+        pendingFailure?.let { notify(LocalGitMirrorBundle.message("mrreplies.list.fail", it), NotificationType.WARNING) }
+        if (isWork) pending = freshPending else localReplies = freshLocal
+        val next = discussions.error?.let { loadState.refreshFailed(it) }
+          ?: loadState.refreshed(rowWithDiscussions(discussions.discussions))
+        applyLoadState(next)
       }
     }
   }
 
-  private fun readLocalReplies(iid: Int): MrReplies.RepliesFile? =
-    project.basePath
-      ?.let { File(it, ".mr-notes/replies-!$iid.md") }
-      ?.takeIf { it.isFile }
-      ?.let { MrReplies.parse(it.readText(Charsets.UTF_8)) }
+  private fun rowWithDiscussions(discussions: List<GitLabApi.MrDiscussion>): MrReviewService.MrRowItem =
+    row.copy(
+      discussions = discussions,
+      unresolved = discussions.count { d -> !d.resolved && d.notes.any { !it.system } },
+      totalThreads = discussions.size,
+    )
+
+  private fun applyLoadState(next: MrDialogLoadState) {
+    loadState = next
+    rebuildContent()
+  }
 
   private fun notify(content: String, type: NotificationType) {
     ApplicationManager.getApplication().invokeLater {
@@ -877,36 +906,36 @@ class MrReviewDialog private constructor(
 
     fun openFor(project: Project, row: MrReviewService.MrRowItem) {
       val isWork = RoleDetector.detect(service<MirrorSettingsService>().state) == MachineRole.WORK
-      if (!isWork) {
-        val base = project.basePath
-        val file = base?.let { File(it, ".mr-notes/replies-!${row.iid}.md") }
-        val local = file?.takeIf { it.isFile }?.let { MrReplies.parse(it.readText(Charsets.UTF_8)) }
-        MrReviewDialog(project, row, null, local).show()
-        return
-      }
-      ApplicationManager.getApplication().executeOnPooledThread {
-        val fetched = MrReplyPushService(project).fetchPendingReplies()
-        val pending = (fetched as? MrReplyPushService.PendingRepliesResult.Available)
-          ?.items?.firstOrNull { it.parsed.iid == row.iid }
-        ApplicationManager.getApplication().invokeLater {
-          if (project.isDisposed) return@invokeLater
-          if (fetched is MrReplyPushService.PendingRepliesResult.Unavailable) {
-            NotificationGroupManager.getInstance()
-              .getNotificationGroup("DocCache")
-              .createNotification(
-                LocalGitMirrorBundle.message("mrreplies.list.fail", fetched.reason),
-                NotificationType.WARNING,
-              )
-              .notify(project)
-          }
-          MrReviewDialog(project, row, pending, null).show()
-        }
-      }
+      val local = if (!isWork) readLocalRepliesFile(project, row.iid) else null
+      MrReviewDialog(project, row, null, local).show()
     }
   }
 }
 
+private fun readLocalRepliesFile(project: Project, iid: Int): MrReplies.RepliesFile? =
+  project.basePath
+    ?.let { File(it, ".mr-notes/replies-!$iid.md") }
+    ?.takeIf { it.isFile }
+    ?.let { MrReplies.parse(it.readText(Charsets.UTF_8)) }
+
 internal enum class MrSendBlockReason { CLOSED_MR, NOTES_UNAVAILABLE }
+
+/** Dialog content decision: cached row at open, fresh row when the background fetch lands, cache + reason on failure. */
+internal data class MrDialogLoadState(
+  val row: MrReviewService.MrRowItem,
+  val refreshing: Boolean,
+  val loadError: String? = null,
+) {
+  fun refreshStarted(): MrDialogLoadState = copy(refreshing = true, loadError = null)
+
+  fun refreshed(row: MrReviewService.MrRowItem): MrDialogLoadState = MrDialogLoadState(row, refreshing = false)
+
+  fun refreshFailed(reason: String): MrDialogLoadState = copy(refreshing = false, loadError = reason)
+
+  companion object {
+    fun opened(cachedRow: MrReviewService.MrRowItem): MrDialogLoadState = MrDialogLoadState(cachedRow, refreshing = true)
+  }
+}
 
 internal enum class MrSendRefusalReason { UNKNOWN_THREAD, DUPLICATE_ANCHOR }
 
