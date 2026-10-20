@@ -207,7 +207,9 @@ def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
                 f"local branch '{branch}' at {tip} is not ahead of the "
                 f"mirror's '{branch}' at {mirror_sha}: the send would not "
                 "fast-forward the mirror. Pull the branch first (lgm pull) "
-                "or rebase onto the mirror tip, then send.")
+                "or rebase onto the mirror tip, then send. After a deliberate "
+                "history rewrite neither applies: delete the mirror branch "
+                "(lgm branch_delete) and send again.")
     return send_branches(ctx, repo, project, branches, excludes, dry_run)
 
 
