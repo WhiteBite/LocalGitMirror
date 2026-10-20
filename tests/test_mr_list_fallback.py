@@ -6,6 +6,7 @@ import pytest
 from lgm_core.client import LgmError
 from lgm_core.ops import (
     Ctx,
+    get_op,
     op_mr_list,
     op_mr_notes,
     op_mr_replies_send,
@@ -377,6 +378,65 @@ def test_mr_list_empty_gitlab_result_does_not_fall_back_to_postbox():
     assert res["count"] == 0
     assert res["items"] == []
     assert client.postbox_used is False
+
+
+def test_mr_list_cache_rows_carry_state_evidence():
+    items = _REOPENED_ITEMS + [
+        {"id": "n9", "path": "mr-notes/mr-!9.md", "mtime": 10,
+         "content": "# MR !9 — Closed\n\n- **Ветка:** `feat/y`\n"},
+        _closed_marker_item(9, mtime=20),
+    ]
+    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=""),
+                         client=_StubClient(items=items)), {})
+    by_iid = {i["iid"]: i for i in res["items"]}
+    assert by_iid[7]["state"] == "open"
+    assert by_iid[7]["state_evidence"] == "note-mtime"
+    assert by_iid[9]["state"] == "closed"
+    assert by_iid[9]["state_evidence"] == "marker"
+
+
+def test_mr_list_marker_without_note_is_closed_with_marker_evidence():
+    res = op_mr_list(Ctx(config=SimpleNamespace(sync_password=""),
+                         client=_StubClient(items=[_closed_marker_item(7, mtime=99)])), {})
+    item = res["items"][0]
+    assert item["state"] == "closed"
+    assert item["state_evidence"] == "marker"
+
+
+def test_mr_replies_send_closed_refusal_carries_state_evidence():
+    client = _StubClient(items=_notes_items() + [_closed_marker_item(7, mtime=99)])
+    res = _send(client, "## thread t1\nfix")
+    assert res["success"] is False
+    assert res["precheck"]["state"] == "closed"
+    assert res["precheck"]["state_evidence"] == "marker"
+    assert "marker" in res["error"]
+    assert client.sent is None
+
+
+def test_mr_replies_send_check_only_uploads_nothing():
+    client = _StubClient(items=_notes_items())
+    res = _send(client, "## thread t1\nfix", check=True)
+    assert res["success"] is True
+    assert res["check_only"] is True
+    assert client.sent is None
+    assert res["precheck"]["status"] == "ok"
+    assert res["anchor_warnings"] == []
+
+
+def test_mr_replies_send_check_only_still_rejects_closed_mr():
+    client = _StubClient(items=_notes_items() + [_closed_marker_item(7, mtime=99)])
+    res = _send(client, "## thread t1\nfix", check=True)
+    assert res["success"] is False
+    assert res["check_only"] is True
+    assert res["code"] == "closed-mr"
+    assert client.sent is None
+
+
+def test_mr_replies_send_check_param_registered():
+    op = get_op("mr_replies_send")
+    params = {p.name: p for p in op.params}
+    assert params["check"].type == "bool"
+    assert params["check"].default is False
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ from .op_models import Ctx, _client
 from .ops_git import send_branches
 from .ops_mr import (
     _fetch_mr_branches, _local_tip, _mirror_refs_safe, _existing_shas,
-    _diverged_warning, send_exclusions,
+    _diverged_warning, send_exclusions, _ensure_mirror_repo,
 )
 
 _LGM_DIR = Path.home() / ".lgm"
@@ -172,7 +172,7 @@ def op_mr_projects_list(ctx: Ctx, args: dict) -> dict:
 
 
 def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
-                  dry_run: bool) -> dict:
+                  dry_run: bool, notes_only: bool = False) -> dict:
     repo = entry.get("repo", "")
     gitlab = entry.get("gitlab", "")
     res: dict = {"repo": repo, "gitlab": gitlab, "mrs": [],
@@ -205,7 +205,7 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
 
     branches = [m.get("source_branch") or "" for m in mrs]
     branches = [b for b in branches if b]
-    if branches:
+    if branches and not notes_only:
         try:
             diverged = _fetch_mr_branches(proj, branches)
             res["branch_warnings"] = [_diverged_warning(b) for b in diverged]
@@ -232,11 +232,7 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
                 exclude_shas = send_exclusions(
                     mirror_shas, [tips[b] for b in sent],
                     set(_existing_shas(proj, mirror_shas)))
-                # negotiate creates the mirror-side repo when missing
-                try:
-                    c.sync_negotiate(repo, [], probe=False)
-                except LgmError:
-                    pass
+                _ensure_mirror_repo(c, repo)
                 send_branches(ctx, repo, str(proj), sent, exclude_shas)
             res["branches_sent"] = sent
             res["branches_skipped"] = skipped
@@ -334,10 +330,12 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
     Branches ship as mirror-delta bundles (only commits the mirror lacks);
     notes ship only when their rendered content hash changed (or the last
     upload is older than six days). --dry-run lists the MRs without touching
-    anything.
+    anything. --notes-only skips the branch send/planner entirely and keeps
+    notes + closure detection.
     """
     c = _client(ctx)
     dry_run = bool(args.get("dry_run", False))
+    notes_only = bool(args.get("notes_only", False))
     reg = _load_registry()
     if not reg["projects"]:
         raise LgmError(
@@ -345,7 +343,7 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
 
     state = _load_state()
     now = time.time()
-    results = [_sync_project(ctx, c, e, state, now, dry_run)
+    results = [_sync_project(ctx, c, e, state, now, dry_run, notes_only)
                for e in reg["projects"] if isinstance(e, dict)]
     if not dry_run:
         _save_state(state)
@@ -385,7 +383,8 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
     closed_marked = sum(
         1 for r in results for m in (r.get("closed") or []) if m.get("marker") == "uploaded")
     blocked = [b for r in results for b in (r.get("blocked") or [])]
-    result = {"success": not errors, "dry_run": dry_run, "repos": results,
+    result = {"success": not errors, "dry_run": dry_run, "notes_only": notes_only,
+              "repos": results,
               "blocked": blocked,
               "summary": {
                   "repos": len(results),

@@ -98,7 +98,12 @@ def op_branches(ctx: Ctx, args: dict) -> dict:
         proj = Path(project).resolve()
         if not proj.is_dir():
             raise LgmError("config", f"project not found: {proj}")
-    result = c.sync_refs(repo)
+    try:
+        result = c.sync_refs(repo)
+    except LgmError as e:
+        if _is_repo_not_found(e):
+            raise _unregistered_refusal(repo) from None
+        raise
     refs = result.get("refs", {})
     if proj is not None and isinstance(refs, dict):
         for name, info in refs.items():
@@ -107,16 +112,29 @@ def op_branches(ctx: Ctx, args: dict) -> dict:
     return result
 
 
+def _unregistered_refusal(repo: str) -> LgmError:
+    return LgmError(
+        "config",
+        f"repo '{repo}' is not registered on the mirror — nothing is stored "
+        f"there yet; a send from the work machine registers it",
+        machine_code="repo-not-found")
+
+
+def _is_repo_not_found(e: LgmError) -> bool:
+    return e.code == 404 and "Repository not found" in str(e.message)
+
+
 _NEGOTIATE_CAP = 300
 
 
 def _negotiate(c, repo: str, proj: Path, branches: list[str],
-               probe: bool = False) -> tuple[list[str], dict]:
-    """Negotiate with the mirror: ``(exclude shas, mirror refs)``.
+               probe: bool = False) -> tuple[list[str], dict, bool]:
+    """Negotiate with the mirror: ``(exclude shas, mirror refs, created)``.
 
     Candidates: branch tips + recent history (``--all`` when no branch).
     The excludes become ``^sha`` bundle prerequisites; the refs feed the
-    already-held guard in :func:`send_branch`. Fails CLOSED: a negotiation
+    already-held guard in :func:`send_branch`. ``created`` is True when this
+    call registered the repo on the mirror. Fails CLOSED: a negotiation
     error raises instead of silently sending a full bundle. Every returned
     sha exists locally by construction. ``probe=True`` skips repo creation
     on the mirror (dry-run safe).
@@ -140,7 +158,7 @@ def _negotiate(c, repo: str, proj: Path, branches: list[str],
     candidates = [s for s in dict.fromkeys(candidates)
                   if len(s) == 40][:_NEGOTIATE_CAP]
     if not candidates:
-        return [], {}
+        return [], {}, False
     try:
         resp = c.sync_negotiate(repo, candidates, probe=probe)
     except LgmError as e:
@@ -158,7 +176,7 @@ def _negotiate(c, repo: str, proj: Path, branches: list[str],
     known = set(resp.get("known") or [])
     excludes = [s for s in candidates if s in known]
     refs = resp.get("refs")
-    return excludes, refs if isinstance(refs, dict) else {}
+    return excludes, (refs if isinstance(refs, dict) else {}), bool(resp.get("created"))
 
 
 def _is_strict_descendant(proj: Path, ancestor: str, descendant: str) -> bool:
@@ -179,13 +197,16 @@ def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
     Negotiates with the mirror first: its known commits become ``^sha``
     exclusions, so repeat sends carry only new commits. Refuses when the
     local tip is not strictly ahead of the mirror's tip for the branch.
+    The result carries ``created``: True when the negotiate registered the
+    mirror repo.
     """
     branches = [branch] if branch else []
     proj = Path(project).resolve()
     excludes: list[str] = []
     mirror_refs: dict = {}
+    created = False
     if proj.is_dir():
-        excludes, mirror_refs = _negotiate(
+        excludes, mirror_refs, created = _negotiate(
             _client(ctx), repo, proj, branches, probe=dry_run)
     if branch and proj.is_dir():
         proc = subprocess.run(
@@ -212,7 +233,9 @@ def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
                 "history rewrite neither applies: delete the mirror branch "
                 "(lgm branch_delete) and send again.",
                 machine_code="diverged")
-    return send_branches(ctx, repo, project, branches, excludes, dry_run)
+    result = send_branches(ctx, repo, project, branches, excludes, dry_run)
+    result["created"] = created
+    return result
 
 
 def send_branches(ctx: Ctx, repo: str, project: str, branches: list[str],
@@ -404,6 +427,8 @@ def op_preview_pull(ctx: Ctx, args: dict) -> dict:
             raise LgmError("config", f"project not found: {proj}")
         since = _local_head(proj)
     result = c.sync_preview_pull(repo, since=since)
+    if result.get("reason") == "repo-not-found":
+        raise _unregistered_refusal(repo)
     result["since"] = since
     return result
 
@@ -428,7 +453,16 @@ def op_has_commits(ctx: Ctx, args: dict) -> dict:
         commits = _local_branch_tips(proj)
     if not commits:
         raise LgmError("config", "--commits or --project is required (no commits to check)")
-    return c.sync_has_commits(repo, commits)
+    result = c.sync_has_commits(repo, commits)
+    if not result.get("known") and "head" not in result:
+        # absent "head" means unregistered or data-less; sync_refs disambiguates
+        try:
+            c.sync_refs(repo)
+        except LgmError as e:
+            if _is_repo_not_found(e):
+                raise _unregistered_refusal(repo) from None
+            raise
+    return result
 
 
 def op_deps_request(ctx: Ctx, args: dict) -> dict:

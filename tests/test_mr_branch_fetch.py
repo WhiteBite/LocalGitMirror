@@ -113,6 +113,8 @@ def _run_mr_send(monkeypatch, work: Path, branches: str):
     ctx = _ctx()
     monkeypatch.setattr(ctx.client, "sync_refs",
                         lambda repo: {"success": True, "refs": {}})
+    monkeypatch.setattr(ctx.client, "sync_negotiate",
+                        lambda repo, commits, probe=False: {"created": False})
     sent_calls = []
 
     def fake_send_branches(ctx_, repo, project, branches_, excludes, dry_run=False):

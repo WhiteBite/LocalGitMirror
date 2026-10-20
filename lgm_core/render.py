@@ -260,6 +260,8 @@ def _render_branches(r: dict) -> list[str]:
 def _render_send(r: dict) -> list[str]:
     out = [f"Sending bundle to repo='{r.get('repo')}'"]
     out.append(f"  branch: {r.get('branch', 'all')}")
+    if r.get("created"):
+        out.append("  mirror repo created (was not registered before this send)")
     out.append(f"  bundle size: {r.get('bundle_size', 0):,} bytes")
     if r.get("dry_run"):
         out.append("  --dry-run: bundle created but not sent.")
@@ -358,6 +360,8 @@ def _render_mr_send(r: dict) -> list[str]:
     for b in r.get("blocked") or []:
         iid = f" !{b['iid']}" if b.get("iid") else ""
         out.append(f"  [blocked] {b.get('branch')}{iid}: {b.get('reason')}")
+    if r.get("created"):
+        out.append("  mirror repo created (was not registered before this send)")
     if r.get("message"):
         out.append(f"  {r['message']}")
     send = r.get("send") or {}
@@ -376,6 +380,13 @@ def _render_mr_send(r: dict) -> list[str]:
 def _render_mr_replies_send(r: dict) -> list[str]:
     if not r.get("success"):
         return [f"mr_replies_send FAILED: {r.get('error', '?')}"]
+    if r.get("check_only"):
+        pre = r.get("precheck") or {}
+        out = [f"Replies check for MR !{r.get('iid', '?')} (repo={r.get('repo', '?')}): "
+               f"precheck={pre.get('status', '?')} — nothing uploaded"]
+        for w in r.get("anchor_warnings") or []:
+            out.append(f"  [warning] {w}")
+        return out
     out = [
         f"Replies for {r.get('path')} uploaded to postbox "
         f"({r.get('size', 0)} bytes, repo={r.get('repo')})",
@@ -430,6 +441,9 @@ def _render_mr_replies_push(r: dict) -> list[str]:
             f"skipped={rep.get('skipped', 0)} failed={rep.get('failed', 0)} "
             f"parse_errors={rep.get('parse_errors', 0)}{ack}"
         )
+        sup = rep.get("ack_superseded") or []
+        if sup:
+            out.append(f"    superseded reply file(s) acked: {', '.join(sup)}")
         for rline in rep.get("replies") or []:
             out.append(f"    [{rline.get('outcome', '?')}] {rline.get('label')}: {rline.get('note', '')}")
         for n in rep.get("not_anchored") or []:
@@ -604,6 +618,8 @@ def _render_mr_sync_all(r: dict) -> list[str]:
     out = ["MR sync all:"]
     if r.get("dry_run"):
         out.append("  --dry-run: nothing transferred.")
+    if r.get("notes_only"):
+        out.append("  --notes-only: branch transfer skipped.")
     out.append(f"  repos={s.get('repos', 0)}  open MRs={s.get('mrs', 0)}")
     out.append(f"  branches: sent={s.get('branches_sent', 0)}  skipped={s.get('branches_skipped', 0)}  warnings={s.get('branch_warnings', 0)}")
     out.append(f"  notes: uploaded={s.get('notes_uploaded', 0)}  unchanged={s.get('notes_unchanged', 0)}  closed marked={s.get('closed_marked', 0)}")

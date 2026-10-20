@@ -157,9 +157,11 @@ def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: b
     if found is not None and _closed_by_mtime(found[0], found[1]):
         if force:
             return {"status": "forced"}
+        state, evidence = _state_with_evidence(found[0], found[1])
         return {"status": "rejected", "code": "closed-mr",
-                "error": f"MR !{iid} is closed/merged — replies are not sent; "
-                         f"the review is over"}
+                "state": state, "state_evidence": evidence,
+                "error": f"MR !{iid} is closed/merged (evidence: {evidence}) — "
+                         f"replies are not sent; the review is over"}
     if not thread_refs and not anchors:
         return {"status": "not-needed"}
     if found is None or found[0] is None:
@@ -243,6 +245,16 @@ def _closed_by_mtime(note: dict | None, marker: dict | None) -> bool:
     return (marker.get("mtime") or 0) >= (note.get("mtime") or 0)
 
 
+def _state_with_evidence(note: dict | None, marker: dict | None) -> tuple[str, str]:
+    """(state, state_evidence) with the mr_pending semantics: the closed marker
+    wins ties, a newer note means open, neither means unknown/expired."""
+    if marker is not None and _closed_by_mtime(note, marker):
+        return "closed", "marker"
+    if note is not None:
+        return "open", "note-mtime"
+    return "unknown", "expired"
+
+
 def _closed_marker_iids(items: list) -> dict:
     """Newest mr-notes/mr-!N.closed.md postbox item per iid."""
     markers: dict[int, dict] = {}
@@ -291,7 +303,8 @@ def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
         markers = _closed_marker_iids(items)
         for iid in sorted(set(newest) | set(markers)):
             marker = markers.get(iid)
-            closed = _closed_by_mtime(newest.get(iid), marker)
+            state, evidence = _state_with_evidence(newest.get(iid), marker)
+            closed = state == "closed"
             src = marker if closed else newest.get(iid)
             if src is None:
                 continue
@@ -309,7 +322,8 @@ def _mr_list_from_postbox(c: MirrorClient, ctx: Ctx, args: dict) -> dict:
                 "updated_at": head["updated"],
                 "unresolved": 0 if closed else head["unresolved"],
                 "source": "cache",
-                "state": "closed" if closed else "open",
+                "state": state,
+                "state_evidence": evidence,
                 "repo": name,
             })
     return {"items": out, "errors": errors}
@@ -509,6 +523,36 @@ def send_exclusions(mirror_tips: list[str], sent_tips: list[str],
             if s and s in existing_locally and s not in sent]
 
 
+def _dirty_tracked_paths(proj: Path) -> list[str]:
+    """Tracked files with uncommitted changes; untracked files are user data
+    and never block a send."""
+    proc = subprocess.run(
+        ["git", "-C", str(proj), "status", "--porcelain", "-uno"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if proc.returncode != 0:
+        return []
+    paths: list[str] = []
+    for line in proc.stdout.splitlines():
+        entry = line[3:].strip() if len(line) > 3 else ""
+        if " -> " in entry:
+            entry = entry.split(" -> ", 1)[1]
+        if entry.startswith('"') and entry.endswith('"'):
+            entry = entry[1:-1]
+        if entry:
+            paths.append(entry)
+    return paths
+
+
+def _ensure_mirror_repo(c: MirrorClient, repo: str) -> bool:
+    """Register the repo on the mirror via negotiate; True when this call created it."""
+    try:
+        return bool(c.sync_negotiate(repo, [], probe=False).get("created"))
+    except LgmError:
+        # a failed registration surfaces in the send below
+        return False
+
+
 def op_mr_send(ctx: Ctx, args: dict) -> dict:
     """Fetch GitLab MR branches into a local project and send them to the mirror.
 
@@ -520,6 +564,9 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
         packed once, with mirror tips as ^exclusions (only new commits travel).
     --dry-run skips every git mutation and the upload: the plan (sent/skipped
     per branch, from local tips vs mirror tips) is returned instead.
+    A worktree with uncommitted tracked changes is refused (code
+    dirty-worktree); untracked files never block. ``created`` in the result
+    says whether the negotiate registered the mirror repo.
     """
     c = _client(ctx)
     repo = args.get("repo", "")
@@ -556,6 +603,17 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
                             f"skip {len(skipped)}; no refs moved, nothing "
                             f"uploaded (plan uses local tips, origin not fetched)")}
 
+    dirty = _dirty_tracked_paths(proj)
+    if dirty:
+        shown = ", ".join(dirty[:10])
+        if len(dirty) > 10:
+            shown += f" (+{len(dirty) - 10} more)"
+        raise LgmError(
+            "config",
+            f"worktree has uncommitted tracked changes — commit or stash "
+            f"before sending MR branches: {shown}",
+            machine_code="dirty-worktree")
+
     diverged = _fetch_mr_branches(proj, [t["branch"] for t in targets])
     warnings = [_diverged_warning(b) for b in diverged]
     blocked = [{"iid": next((t["iid"] for t in targets if t["branch"] == b), None),
@@ -585,10 +643,12 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
     exclude_shas = send_exclusions(
         mirror_shas, [t["tip"] for t in sent],
         set(_existing_shas(proj, mirror_shas)))
+    created = _ensure_mirror_repo(c, repo)
     send_result = send_branches(ctx, repo, str(proj), [t["branch"] for t in sent],
                                 exclude_shas)
     return {"repo": repo, "project": str(proj), "sent": sent, "skipped": skipped,
-            "warnings": warnings, "blocked": blocked, "send": send_result}
+            "warnings": warnings, "blocked": blocked, "created": created,
+            "send": send_result}
 
 
 def op_mr_notes(ctx: Ctx, args: dict) -> dict:
@@ -628,7 +688,9 @@ def op_mr_notes(ctx: Ctx, args: dict) -> dict:
 
 
 def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
-    """Upload the agent's MR review replies (mr-replies/mr-!N.md) to the postbox."""
+    """Upload the agent's MR review replies (mr-replies/mr-!N.md) to the postbox.
+    --check runs the same grammar + precheck + anchor warnings and uploads
+    nothing (the result carries check_only: true)."""
     c = _client(ctx)
     repo = _repo_arg(args)
     iid = int(args.get("iid") or 0)
@@ -659,15 +721,23 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
                                project=proj)
     if precheck.get("error"):
         return {"success": False, "error": precheck["error"],
-                "code": precheck.get("code"), "precheck": precheck}
+                "code": precheck.get("code"), "precheck": precheck,
+                "check_only": bool(args.get("check"))}
     # The work-side parser keys off the "# MR !N" header; inject it so the file is never skipped.
     m = re.search(r"^#\s+MR\s+!(\d+)", content, re.MULTILINE)
     if m:
         if int(m.group(1)) != iid:
             return {"success": False,
+                    "check_only": bool(args.get("check")),
                     "error": f"content header says MR !{m.group(1)} but iid={iid}"}
     else:
         content = f"# MR !{iid}\n\n{content}"
+
+    if args.get("check"):
+        return {"success": True, "check_only": True, "repo": repo, "iid": iid,
+                "precheck": precheck,
+                "anchor_warnings": precheck.get("anchor_warnings", []),
+                "message": "check-only: grammar and precheck passed, nothing uploaded"}
 
     data = content.encode("utf-8")
     display = f"mr-replies/mr-!{iid}.md"
@@ -927,7 +997,7 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
         return {"iid": iid, "path": path, "posted": 0, "duplicates": 0, "skipped": 0,
                 "failed": 1, "parse_errors": len(parsed["errors"]), "not_anchored": [],
                 "details": [f"list discussions: {e.message}"], "replies": [],
-                "acked": False}
+                "acked": False, "ack_superseded": []}
     discussions = [_discussion_view(d) for d in raw_discussions]
     diff_refs: dict | None = None
     changed_ranges: dict | None = None
@@ -1083,9 +1153,9 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
     rep = {"iid": iid, "path": path, "posted": posted, "duplicates": duplicates,
            "skipped": skipped, "failed": failed, "parse_errors": len(parsed["errors"]),
            "not_anchored": not_anchored, "details": details, "replies": per_reply,
-           "acked": False}
+           "acked": False, "ack_superseded": []}
     if not dry_run and _should_ack(parsed["replies"], outcomes, seen_markers, iid,
-                                   rep["parse_errors"], failed):
+                                    rep["parse_errors"], failed):
         rep["acked"] = True
         for s in group:
             try:
@@ -1093,6 +1163,9 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
             except LgmError as e:
                 rep["acked"] = False
                 rep["details"].append(f"ack {s.get('path')}: {e.message}")
+                continue
+            if s["id"] != newest["id"]:
+                rep["ack_superseded"].append(s["id"])
     if not dry_run and (posted > 0 or failed > 0):
         data = _render_replies_status(iid, rep).encode("utf-8")
         status_path = f"mr-replies-status/mr-!{iid}.md"
@@ -1111,9 +1184,10 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
     invisible ``<!-- lgm:<hash> -->`` marker so retries never duplicate; a
     '## new' remark whose line is outside the MR diff (compare ranges) posts
     as a general note with the reason recorded; the postbox item is acked
-    only when every parsed reply reached a terminal outcome; a status report
-    lands in mr-replies-status/mr-!N.md. --dry-run plans without touching
-    GitLab, the postbox or the status files.
+    only when every parsed reply reached a terminal outcome — superseded
+    sibling files for the same MR are acked with it and listed in
+    ``ack_superseded``; a status report lands in mr-replies-status/mr-!N.md.
+    --dry-run plans without touching GitLab, the postbox or the status files.
     """
     c = _client(ctx)
     repo = _repo_arg(args)
@@ -1154,7 +1228,7 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
     reports = [{"iid": 0, "path": i.get("path"), "posted": 0, "duplicates": 0,
                 "skipped": 1, "failed": 0, "parse_errors": 0, "not_anchored": [],
                 "details": ["not an mr-!N.md reply file"], "replies": [],
-                "acked": False} for i in stray]
+                "acked": False, "ack_superseded": []} for i in stray]
     for path_iid in sorted(groups):
         group = groups[path_iid]
         newest = max(group, key=lambda i: (i.get("mtime") or 0))
@@ -1164,7 +1238,7 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
             reports.append({"iid": path_iid, "path": newest.get("path"), "posted": 0,
                             "duplicates": 0, "skipped": 1, "failed": 0, "parse_errors": 0,
                             "not_anchored": [], "details": [f"download/decrypt: {e}"],
-                            "replies": [], "acked": False})
+                            "replies": [], "acked": False, "ack_superseded": []})
             continue
         parsed = _parse_replies(content)
         reports.append(_push_replies_file(c, repo, group, parsed, dry_run))
@@ -1265,12 +1339,7 @@ def op_mr_pending(ctx: Ctx, args: dict) -> dict:
                 if e.code == "config":
                     gitlab_usable = False
         if entry["state_evidence"] != "gitlab":
-            marker = markers.get(iid)
-            if marker is not None and _closed_by_mtime(note, marker):
-                entry["state"] = "closed"
-                entry["state_evidence"] = "marker"
-            elif note is not None:
-                entry["state"] = "open"
-                entry["state_evidence"] = "note-mtime"
+            entry["state"], entry["state_evidence"] = _state_with_evidence(
+                note, markers.get(iid))
         out.append(entry)
     return {"success": True, "repo": repo, "count": len(out), "items": out}

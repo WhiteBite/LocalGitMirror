@@ -299,6 +299,44 @@ def test_iid_filter_pushes_only_that_mr(work_env):
     assert client.acked == ["r8"]
 
 
+def test_superseded_sibling_reply_files_are_acked_and_reported(work_env):
+    client = FakeClient(discussions=[
+        _disc("abc123", [_note("original remark", resolved=False)]),
+    ])
+    client.add_reply_file(7, _MD, mtime=5, item_id="r7-old")
+    client.add_reply_file(7, _MD, mtime=9, item_id="r7-new")
+    res = _push(client)
+    rep = _report(res)
+    assert rep["acked"] is True
+    assert rep["ack_superseded"] == ["r7-old"]
+    assert set(client.acked) == {"r7-old", "r7-new"}
+
+
+def test_single_reply_file_reports_empty_ack_superseded(work_env):
+    client = FakeClient(discussions=[
+        _disc("abc123", [_note("original remark", resolved=False)]),
+    ])
+    client.add_reply_file(7, _MD)
+    res = _push(client)
+    rep = _report(res)
+    assert rep["ack_superseded"] == []
+    assert client.acked == ["r7"]
+
+
+def test_failed_reply_leaves_ack_superseded_empty(work_env):
+    client = FakeClient(discussions=[
+        _disc("abc123", [_note("original remark", resolved=False)]),
+    ])
+    client.fail_thread_note_for = {"abc123"}
+    client.add_reply_file(7, "## thread abc123\nfix\n", mtime=5, item_id="r7-old")
+    client.add_reply_file(7, "## thread abc123\nfix\n", mtime=9, item_id="r7-new")
+    res = _push(client)
+    rep = _report(res)
+    assert rep["acked"] is False
+    assert rep["ack_superseded"] == []
+    assert client.acked == []
+
+
 def test_home_role_refuses(work_env, monkeypatch):
     monkeypatch.setitem(work_env, "LGM_MACHINE_ROLE", "home")
     client = FakeClient()
@@ -356,6 +394,23 @@ def test_render_shows_counts_per_reply_and_not_anchored():
     assert "reply 1: posted into thread abc123" in out
     assert "reply 3: B.java:99 — file not in MR diff" in out
     assert "[acked]" in out
+
+
+def test_render_lists_superseded_acked_ids():
+    payload = {
+        "success": True, "repo": "r1", "dry_run": False, "count": 1,
+        "totals": {"posted": 1, "duplicates": 0, "skipped": 0, "failed": 0,
+                   "not_anchored": 0},
+        "reports": [{
+            "iid": 7, "path": "mr-replies/mr-!7.md", "posted": 1,
+            "duplicates": 0, "skipped": 0, "failed": 0, "parse_errors": 0,
+            "acked": True, "ack_superseded": ["r7-old"],
+            "not_anchored": [], "replies": [], "details": [],
+        }],
+    }
+    out = render("mr_replies_push", payload)
+    assert "r7-old" in out
+    assert "superseded" in out
 
 
 # ── mr_replies_status: parse the v1 document once, machine fields ────────────

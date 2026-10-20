@@ -51,6 +51,8 @@ class _FakeGit:
         def fail(msg="err"):
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=msg)
 
+        if args[0] == "status":
+            return ok()
         if args[0] == "fetch":
             self.fetch_cmds.append(args)
             return ok()
@@ -84,13 +86,15 @@ class _FakeGit:
 
 class _FakeClient:
     def __init__(self, mrs: dict, mirror_refs: dict,
-                 refs_error: LgmError | None = None):
+                 refs_error: LgmError | None = None, created: bool = False):
         self.mrs = mrs  # iid -> source_branch
         self.mirror_refs = mirror_refs
         self.refs_error = refs_error
+        self.created = created
         self.sent_bundles: list[bytes] = []
         self.list_calls = 0
         self.get_calls: list[int] = []
+        self.negotiate_calls: list[tuple[str, bool]] = []
 
     def gitlab_get_mr(self, iid, project=""):
         self.get_calls.append(iid)
@@ -105,6 +109,11 @@ class _FakeClient:
             raise self.refs_error
         return {"success": True, "refs": self.mirror_refs}
 
+    def sync_negotiate(self, repo, commits, probe=False):
+        self.negotiate_calls.append((repo, probe))
+        return {"success": True, "repo": repo, "created": self.created,
+                "refs": {}, "head": "", "known": []}
+
     def sync_send(self, repo, bundle):
         self.sent_bundles.append(bundle)
         return {"success": True, "repo": repo}
@@ -113,7 +122,8 @@ class _FakeClient:
 def _run(monkeypatch, tmp_path, fake_git, fake_client, args):
     args = {"repo": "r", "project": str(tmp_path), **args}
     ctx = _ctx()
-    for name in ("gitlab_get_mr", "gitlab_list_mrs", "sync_refs", "sync_send"):
+    for name in ("gitlab_get_mr", "gitlab_list_mrs", "sync_refs",
+                 "sync_send", "sync_negotiate"):
         monkeypatch.setattr(ctx.client, name, getattr(fake_client, name))
     monkeypatch.setattr("lgm_core.ops.subprocess.run", fake_git)
     return op_mr_send(ctx, args)
@@ -348,3 +358,18 @@ def test_render_mr_send_multi():
     out = render("mr_send", {"repo": "r", "sent": [], "skipped": [
         {"iid": 1, "branch": "b", "tip": "x"}], "message": "nothing new"})
     assert "nothing new" in out
+
+
+def test_render_mr_send_says_when_mirror_repo_was_created():
+    out = render("mr_send", {
+        "repo": "r", "created": True,
+        "sent": [{"iid": 41, "branch": "b1", "tip": "abc123def"}],
+        "skipped": [], "send": {"bundle_size": 10, "excluded_bases": 0},
+    })
+    assert "created" in out
+    out = render("mr_send", {
+        "repo": "r", "created": False,
+        "sent": [{"iid": 41, "branch": "b1", "tip": "abc123def"}],
+        "skipped": [], "send": {"bundle_size": 10, "excluded_bases": 0},
+    })
+    assert "created" not in out

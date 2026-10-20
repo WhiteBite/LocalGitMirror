@@ -188,5 +188,14 @@ def test_render_mr_replies_send_clean_send_has_no_warning_lines():
     assert "warning" not in out.lower()
 
 
+def test_render_mr_replies_send_check_only_says_nothing_uploaded():
+    out = render("mr_replies_send", {
+        "success": True, "check_only": True, "repo": "r1", "iid": 7,
+        "precheck": {"status": "ok", "collisions": [], "unknown_threads": []},
+        "anchor_warnings": [], "message": "check-only: nothing uploaded"})
+    assert "nothing uploaded" in out
+    assert "uploaded to postbox" not in out
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])

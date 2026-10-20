@@ -47,6 +47,8 @@ class _FakeGit:
         def fail(msg="err"):
             return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=msg)
 
+        if args[0] == "status":
+            return ok()
         if args[0] == "fetch":
             return ok()
         if args[0] == "update-ref":
@@ -89,6 +91,10 @@ class _FakeClient:
     def sync_refs(self, repo):
         return {"success": True, "refs": self.mirror_refs}
 
+    def sync_negotiate(self, repo, commits, probe=False):
+        return {"success": True, "repo": repo, "created": False,
+                "refs": {}, "head": "", "known": []}
+
     def sync_send(self, repo, bundle):
         self.sent_bundles.append(bundle)
         return {"success": True, "repo": repo}
@@ -97,7 +103,8 @@ class _FakeClient:
 def _run(monkeypatch, tmp_path, fake_git, fake_client, args):
     args = {"repo": "r", "project": str(tmp_path), **args}
     ctx = _ctx()
-    for name in ("gitlab_get_mr", "gitlab_list_mrs", "sync_refs", "sync_send"):
+    for name in ("gitlab_get_mr", "gitlab_list_mrs", "sync_refs",
+                 "sync_send", "sync_negotiate"):
         monkeypatch.setattr(ctx.client, name, getattr(fake_client, name))
     monkeypatch.setattr("lgm_core.ops.subprocess.run", fake_git)
     return op_mr_send(ctx, args)

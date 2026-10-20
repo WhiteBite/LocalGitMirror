@@ -12,6 +12,7 @@ from lgm_core.config import Config
 from lgm_core.git_remote import parse_remote as _parse_remote
 from lgm_core.mr_notes_render import parse_discussions, render_markdown
 from lgm_core.op_models import Ctx
+from lgm_core.ops import get_op
 from lgm_core.ops_projects import op_mr_projects_scan, op_mr_projects_list, op_mr_sync_all
 
 
@@ -333,6 +334,37 @@ def test_mr_sync_all_dry_run_touches_nothing(tmp_path, monkeypatch):
     assert sent_calls == []
     assert res["repos"][0]["mrs"][0]["notes"] == "dry-run"
     assert not (tmp_path / "state.json").exists()
+
+
+def test_mr_sync_all_notes_only_param_registered():
+    op = get_op("mr_sync_all")
+    params = {p.name: p for p in op.params}
+    assert params["notes_only"].type == "bool"
+    assert params["notes_only"].default is False
+
+
+def test_mr_sync_all_notes_only_skips_branches_but_keeps_notes(tmp_path, monkeypatch):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    _seed_known_mr(opmod, tmp_path, 99, "Old MR", "old-branch", 1.0)
+
+    res = opmod.op_mr_sync_all(ctx, {"notes_only": True})
+
+    assert res["notes_only"] is True
+    assert res["summary"]["notes_uploaded"] == 1
+    assert res["summary"]["branches_sent"] == 0
+    assert sent_calls == []
+    marker = [p for (_, p, _) in uploaded if p == "mr-notes/mr-!99.closed.md"]
+    assert marker, "closure detection must stay on with --notes-only"
+
+
+def test_mr_sync_all_notes_only_still_uploads_notes(tmp_path, monkeypatch):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+
+    res = opmod.op_mr_sync_all(ctx, {"notes_only": True})
+
+    assert res["success"] is True
+    assert [p for (_, p, _) in uploaded] == ["mr-notes/mr-!24.md"]
+    assert sent_calls == []
 
 
 def test_mr_sync_all_requires_registry(tmp_path, monkeypatch):

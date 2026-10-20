@@ -330,6 +330,9 @@ REGISTRY: list[Op] = [
             Param("project", "str", "",
                   "Local git root for the anchor warnings (default: the mirror workspace "
                   "for --repo); '## new' paths outside the MR diff are warned, not blocked"),
+            Param("check", "bool", False,
+                  "Validate the reply grammar and run the precheck + anchor "
+                  "warnings without uploading anything"),
         ],
         run=op_mr_replies_send,
     ),
@@ -479,6 +482,8 @@ REGISTRY: list[Op] = [
         summary="Sync every open MR of every registered project to the mirror: branches (mirror delta) + notes (content-hash delta).",
         params=[
             Param("dry_run", "bool", False, "List the MRs without transferring anything"),
+            Param("notes_only", "bool", False,
+                  "Skip the branch send/planner entirely; sync notes and closed markers only"),
         ],
         run=op_mr_sync_all,
     ),

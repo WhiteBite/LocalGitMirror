@@ -207,11 +207,13 @@ def test_has_commits_cli_json(monkeypatch, capsys):
 # ── mr_send --dry-run: plan without touching refs ────────────────────────────
 
 class _MrSendClient:
-    def __init__(self, mrs: dict, mirror_refs: dict):
+    def __init__(self, mrs: dict, mirror_refs: dict, created: bool = False):
         self.sync_password = "pw"
         self.mrs = mrs
         self.mirror_refs = mirror_refs
+        self.created = created
         self.sent_bundles: list[bytes] = []
+        self.negotiate_calls: list[tuple[str, bool]] = []
 
     def gitlab_get_mr(self, iid, project=""):
         return {"iid": iid, "source_branch": self.mrs[iid]}
@@ -221,6 +223,11 @@ class _MrSendClient:
 
     def sync_refs(self, repo):
         return {"success": True, "refs": self.mirror_refs}
+
+    def sync_negotiate(self, repo, commits, probe=False):
+        self.negotiate_calls.append((repo, probe))
+        return {"success": True, "repo": repo, "created": self.created,
+                "refs": {}, "head": "", "known": []}
 
     def sync_send(self, repo, bundle):
         self.sent_bundles.append(bundle)
@@ -414,3 +421,187 @@ def test_mr_projects_scan_missing_root_is_usage_error(monkeypatch, capsys):
     code, out, err = _run_cli(monkeypatch, capsys, _NoopClient(),
                               ["mr_projects_scan", "--json"])
     assert code == 2, f"exit={code} stdout={out} stderr={err}"
+
+
+# ── unregistered repo: typed refusal, not "nothing incoming" ─────────────────
+
+def test_preview_pull_refuses_unregistered_repo():
+    from lgm_core.ops_git import op_preview_pull
+
+    class _Client:
+        sync_password = "pw"
+
+        def sync_preview_pull(self, repo, since=""):
+            return {"success": True, "repo": repo, "remoteHead": None,
+                    "hasUpdates": False, "reason": "repo-not-found"}
+
+    with pytest.raises(LgmError) as ei:
+        op_preview_pull(_ctx_with(_Client()), {"repo": "ghost"})
+    assert ei.value.code == "config"
+    assert ei.value.machine_code == "repo-not-found"
+    assert "not registered" in ei.value.message
+
+
+def test_has_commits_refuses_unregistered_repo():
+    from lgm_core.ops_git import op_has_commits
+
+    class _Client:
+        sync_password = "pw"
+
+        def sync_has_commits(self, repo, commits):
+            return {"success": True, "repo": repo, "known": []}
+
+        def sync_refs(self, repo):
+            raise LgmError(404, '{"detail":"Repository not found"}')
+
+    with pytest.raises(LgmError) as ei:
+        op_has_commits(_ctx_with(_Client()), {"repo": "ghost",
+                                              "commits": "a" * 40})
+    assert ei.value.code == "config"
+    assert ei.value.machine_code == "repo-not-found"
+    assert "not registered" in ei.value.message
+
+
+def test_has_commits_registered_repo_with_empty_known_passes():
+    from lgm_core.ops_git import op_has_commits
+
+    class _Client:
+        sync_password = "pw"
+
+        def sync_has_commits(self, repo, commits):
+            return {"success": True, "repo": repo, "known": []}
+
+        def sync_refs(self, repo):
+            return {"success": True, "refs": {}}
+
+    res = op_has_commits(_ctx_with(_Client()), {"repo": "r",
+                                                "commits": "a" * 40})
+    assert res["known"] == []
+
+
+def test_has_commits_skips_registration_probe_when_head_present():
+    from lgm_core.ops_git import op_has_commits
+
+    class _Client:
+        sync_password = "pw"
+
+        def sync_has_commits(self, repo, commits):
+            return {"success": True, "repo": repo, "known": [], "head": "h"}
+
+        def sync_refs(self, repo):
+            raise AssertionError("sync_refs must not run when head is present")
+
+    res = op_has_commits(_ctx_with(_Client()), {"repo": "r",
+                                                "commits": "a" * 40})
+    assert res["known"] == []
+
+
+def test_branches_refuses_unregistered_repo():
+    from lgm_core.ops_git import op_branches
+
+    class _Client:
+        sync_password = "pw"
+
+        def sync_refs(self, repo):
+            raise LgmError(404, '{"detail":"Repository not found"}')
+
+    with pytest.raises(LgmError) as ei:
+        op_branches(_ctx_with(_Client()), {"repo": "ghost"})
+    assert ei.value.code == "config"
+    assert ei.value.machine_code == "repo-not-found"
+    assert "not registered" in ei.value.message
+
+
+def test_branches_data_not_found_404_is_not_repo_not_found():
+    from lgm_core.ops_git import op_branches
+
+    class _Client:
+        sync_password = "pw"
+
+        def sync_refs(self, repo):
+            raise LgmError(404, '{"detail":"Repository data not found"}')
+
+    with pytest.raises(LgmError) as ei:
+        op_branches(_ctx_with(_Client()), {"repo": "r"})
+    assert ei.value.machine_code != "repo-not-found"
+
+
+# ── send / mr_send: the negotiate repo creation is surfaced ──────────────────
+
+def test_send_surfaces_created_flag(tmp_path):
+    from lgm_core.ops_git import op_send
+
+    repo = _repo_with_branch(tmp_path, "b1")
+    client = _MrSendClient(mrs={}, mirror_refs={}, created=True)
+
+    res = op_send(_ctx_with(client), {"repo": "r", "project": str(repo),
+                                      "branch": "b1"})
+    assert res["created"] is True
+    assert client.negotiate_calls == [("r", False)]
+    assert len(client.sent_bundles) == 1
+
+
+def test_send_created_false_for_existing_repo(tmp_path):
+    from lgm_core.ops_git import op_send
+
+    repo = _repo_with_branch(tmp_path, "b1")
+    client = _MrSendClient(mrs={}, mirror_refs={})
+
+    res = op_send(_ctx_with(client), {"repo": "r", "project": str(repo),
+                                      "branch": "b1"})
+    assert res["created"] is False
+
+
+def test_mr_send_surfaces_created_flag(tmp_path, monkeypatch):
+    import lgm_core.ops_mr as ops_mr
+
+    repo = _repo_with_branch(tmp_path, "b1")
+    monkeypatch.setattr(ops_mr, "_fetch_mr_branches", lambda proj, branches: [])
+    client = _MrSendClient(mrs={41: "b1"}, mirror_refs={}, created=True)
+
+    res = op_mr_send(_ctx_with(client), {"repo": "r", "project": str(repo),
+                                         "iid": 41})
+    assert res["created"] is True
+    assert client.negotiate_calls == [("r", False)]
+    assert len(client.sent_bundles) == 1
+
+
+# ── mr_send: dirty worktree refusal (plugin parity) ──────────────────────────
+
+def _repo_with_tracked_file(tmp_path: Path, branch: str = "b1") -> Path:
+    repo = _repo_with_branch(tmp_path, branch)
+    (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "-c", "user.email=t@t", "-c", "user.name=t",
+         "commit", "-qm", "file")
+    return repo
+
+
+def test_mr_send_refuses_dirty_worktree(tmp_path):
+    repo = _repo_with_tracked_file(tmp_path)
+    (repo / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    client = _MrSendClient(mrs={41: "b1"}, mirror_refs={})
+
+    with pytest.raises(LgmError) as ei:
+        op_mr_send(_ctx_with(client), {"repo": "r", "project": str(repo),
+                                       "iid": 41})
+    assert ei.value.code == "config"
+    assert ei.value.machine_code == "dirty-worktree"
+    assert "tracked.txt" in ei.value.message
+    assert "stash" in ei.value.message
+    assert client.sent_bundles == []
+    assert client.negotiate_calls == []
+
+
+def test_mr_send_untracked_files_do_not_block(tmp_path, monkeypatch):
+    import lgm_core.ops_mr as ops_mr
+
+    repo = _repo_with_tracked_file(tmp_path)
+    (repo / "untracked.txt").write_text("user data\n", encoding="utf-8")
+    monkeypatch.setattr(ops_mr, "_fetch_mr_branches", lambda proj, branches: [])
+    client = _MrSendClient(mrs={41: "b1"}, mirror_refs={})
+
+    res = op_mr_send(_ctx_with(client), {"repo": "r", "project": str(repo),
+                                         "iid": 41})
+    assert res["created"] is False
+    assert len(client.sent_bundles) == 1

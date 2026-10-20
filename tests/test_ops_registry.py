@@ -146,7 +146,7 @@ _FROZEN_OPS = {
     "mr_list": ["repo"],
     "mr_send": ["iid", "iids", "all_open", "branch", "project", "repo", "dry_run"],
     "mr_notes": ["repo", "iid"],
-    "mr_replies_send": ["repo", "iid", "file", "text", "force", "project"],
+    "mr_replies_send": ["repo", "iid", "file", "text", "force", "project", "check"],
     "mr_replies_status": ["repo", "iid"],
     "mr_replies_push": ["repo", "iid", "dry_run"],
     "mr_pending": ["repo"],
@@ -162,7 +162,7 @@ _FROZEN_OPS = {
     "config_set": ["section", "key", "value"],
     "mr_projects_scan": ["root"],
     "mr_projects_list": [],
-    "mr_sync_all": ["dry_run"],
+    "mr_sync_all": ["dry_run", "notes_only"],
 }
 
 

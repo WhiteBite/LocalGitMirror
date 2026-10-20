@@ -70,7 +70,7 @@ def _ctx() -> Ctx:
 
 def test_send_branch_refuses_when_mirror_already_holds_tip(monkeypatch, tmp_path):
     proj, tip = _repo_two_branches_one_tip(tmp_path)
-    monkeypatch.setattr(ops_git, "_negotiate", lambda *a, **kw: ([tip], {}))
+    monkeypatch.setattr(ops_git, "_negotiate", lambda *a, **kw: ([tip], {}, False))
     calls = []
     monkeypatch.setattr(ops_git, "send_branches",
                         lambda *a, **kw: calls.append(a))
