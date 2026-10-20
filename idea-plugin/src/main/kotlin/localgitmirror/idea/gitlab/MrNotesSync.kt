@@ -4,18 +4,34 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.UIUtil
+import localgitmirror.idea.diagnostics.AutomationFailureDeduper
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorProjectSettingsService
+import localgitmirror.idea.settings.OperationsHistoryService
 import java.security.MessageDigest
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 
+private const val CLOSURE_SKIPPED = "closure detection skipped: filtered sync"
+
+/** A filtered run skips closure detection; the skip surfaces once per streak, a full run re-arms it. */
+internal fun closureSkipDiagnostic(deduper: AutomationFailureDeduper, filtered: Boolean): String? {
+  if (!filtered) {
+    deduper.recovered()
+    return null
+  }
+  return deduper.failure(CLOSURE_SKIPPED)
+}
+
 /** Work-side notes transfer, independent of branch sync: renders every open MR's discussions and uploads `mr-notes/mr-!N.md` only when the rendered content hash changed since the last upload (per-iid hash in project state), re-uploading unchanged notes once the last upload is older than six days because the postbox drops items after seven. */
 object MrNotesSync {
 
   data class Report(val uploaded: List<Int>, val unchanged: Int, val failures: List<String>,
                     val closedMarked: List<Int> = emptyList())
+
+  private val closureSkipDeduper = AutomationFailureDeduper()
 
   fun syncInBackground(project: Project, onlyIids: Set<Int>? = null, onDone: ((Report) -> Unit)? = null) {
     ApplicationManager.getApplication().executeOnPooledThread {
@@ -79,9 +95,16 @@ object MrNotesSync {
         is MrUploadResult.Failed -> failures.add("!${mr.iid}: ${res.reason}")
       }
     }
+    val filtered = onlyIids != null
     val closed = closedCandidates(
-      state.mrNotesHash.keys.mapNotNull { it.toIntOrNull() }.toSet(), openIids, onlyIids != null,
+      state.mrNotesHash.keys.mapNotNull { it.toIntOrNull() }.toSet(), openIids, filtered,
     )
+    if (closureSkipDiagnostic(closureSkipDeduper, filtered) != null) {
+      service<OperationsHistoryService>().add(
+        LocalGitMirrorBundle.message("mrnotes.history.closureSkipped"), false,
+        LocalGitMirrorBundle.message("mrnotes.history.closureSkipped.detail"),
+      )
+    }
     val closedMarked = markClosed(project, closed, state, now, failures)
     for (iid in evictStaleClosed(state.mrClosedSentAt, now)) {
       state.mrTitles.remove(iid)

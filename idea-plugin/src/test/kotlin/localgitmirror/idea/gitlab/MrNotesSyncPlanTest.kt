@@ -7,6 +7,8 @@ import java.time.LocalDateTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class MrNotesSyncPlanTest {
@@ -21,6 +23,15 @@ class MrNotesSyncPlanTest {
   @Test
   fun `full run flags tracked MRs missing from the open list`() {
     assertEquals(listOf(99), MrNotesSync.closedCandidates(setOf(41, 42, 99), setOf(41, 42), filtered = false))
+  }
+
+  @Test
+  fun `closure skip surfaces once per filtered streak and a full run re-arms it`() {
+    val deduper = localgitmirror.idea.diagnostics.AutomationFailureDeduper()
+    assertNotNull(closureSkipDiagnostic(deduper, filtered = true))
+    assertNull(closureSkipDiagnostic(deduper, filtered = true))
+    assertNull(closureSkipDiagnostic(deduper, filtered = false))
+    assertNotNull(closureSkipDiagnostic(deduper, filtered = true))
   }
 
   @Test
