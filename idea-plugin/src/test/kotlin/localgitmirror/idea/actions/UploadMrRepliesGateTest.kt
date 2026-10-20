@@ -67,4 +67,18 @@ class UploadMrRepliesGateTest {
     assertEquals(file.replies, decision.allowed)
     assertTrue(decision.refusals.isEmpty())
   }
+
+  @Test
+  fun `closed and notes-unavailable blocks share one confirmable shape`() {
+    val closed = uploadRepliesGateDecision(
+      row(state = "closed", discussions = listOf(discussion("abc"))),
+      repliesFile("## thread abc\n\nbody"),
+    )
+    val unavailable = uploadRepliesGateDecision(null, repliesFile("## thread abc\n\nbody"))
+    for (d in listOf(closed, unavailable)) {
+      assertTrue(d.blockReason != null)
+      assertTrue(d.allowed.isEmpty())
+      assertTrue(d.refusals.isEmpty())
+    }
+  }
 }

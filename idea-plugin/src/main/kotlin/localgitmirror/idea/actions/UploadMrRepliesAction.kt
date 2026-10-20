@@ -77,10 +77,6 @@ class UploadMrRepliesAction : AnAction() {
       val decision = uploadRepliesGateDecision(row, parsed)
       if (decision.blockReason != null) {
         val blocked = LocalGitMirrorBundle.message(mrSendBlockedKey(decision.blockReason), iid)
-        if (decision.blockReason == MrSendBlockReason.CLOSED_MR) {
-          notify(project, blocked, NotificationType.WARNING)
-          return@executeOnPooledThread
-        }
         val confirmed = UIUtil.invokeAndWaitIfNeeded<Boolean> {
           Messages.showYesNoDialog(
             project,
