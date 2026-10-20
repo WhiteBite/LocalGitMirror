@@ -44,6 +44,7 @@ class MrReplyPushService(private val project: Project) {
     val parseErrors: Int = 0,
     val quiet: Boolean = false,
     val outcomes: Map<MrReplies.Reply, Outcome> = emptyMap(),
+    val notAnchored: List<String> = emptyList(),
   ) {
     val clean: Boolean get() = failed == 0 && parseErrors == 0
   }
@@ -238,6 +239,12 @@ class MrReplyPushService(private val project: Project) {
     }
     val detail = GitLabApi.getMrDetail(conf, iid)
     val diffRefs = detail.diffRefs
+    val changedRanges = if (detail.code in 200..299 && detail.targetBranch.isNotBlank() && detail.sourceBranch.isNotBlank()) {
+      val cmp = GitLabApi.compareChangedRanges(conf, detail.targetBranch, detail.sourceBranch)
+      if (cmp.code in 200..299) cmp.ranges else null
+    } else {
+      null
+    }
 
     val projectState = project.service<MirrorProjectSettingsService>().state
     val ledger = projectState.mrReplyLedger
@@ -252,6 +259,7 @@ class MrReplyPushService(private val project: Project) {
     var failed = 0
     val outcomes = LinkedHashMap<MrReplies.Reply, Outcome>()
     val details = mutableListOf<String>()
+    val notAnchored = mutableListOf<String>()
     parsed.errors.forEach { details.add("parse: $it") }
 
     for ((idx, reply) in parsed.replies.withIndex()) {
@@ -309,11 +317,13 @@ class MrReplyPushService(private val project: Project) {
                 details.add("$label: unresolved thread ${clash.id} already at ${reply.file}:${clash.anchorLine} — reply into it, don't duplicate")
                 continue
               }
+              val preReason = anchorabilityReason(reply, changedRanges)
               val anchored = GitLabApi.postNewDiscussion(conf, iid, body, diffRefs, GitLabApi.DiffPosition(reply.file, reply.line))
               if (anchored.ok()) {
                 result = anchored
               } else if (anchored.code in setOf(400, 422)) {
                 fallbackNote = "line not in MR diff"
+                notAnchored.add("$label: ${reply.file}:${reply.line} — ${preReason ?: "line not in MR diff"}")
                 result = GitLabApi.postMrNote(conf, iid, "`${reply.file}:${reply.line}`:\n\n$body")
               } else {
                 result = anchored
@@ -341,7 +351,7 @@ class MrReplyPushService(private val project: Project) {
       }
     }
 
-    val report = FileReport(path, posted, dupSkipped, skipped, failed, details, parsed.errors.size, outcomes = outcomes)
+    val report = FileReport(path, posted, dupSkipped, skipped, failed, details, parsed.errors.size, outcomes = outcomes, notAnchored = notAnchored)
     if (shouldAck(report, parsed.replies, pending.parsed.replies, seenMarkers, iid)) {
       pending.siblings.forEach { s ->
         MirrorPostboxApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, s.id)
@@ -356,7 +366,7 @@ class MrReplyPushService(private val project: Project) {
     return markQuiet(report)
   }
 
-  private fun renderStatus(iid: Int, r: FileReport): String {
+  internal fun renderStatus(iid: Int, r: FileReport): String {
     val at = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
     return buildString {
       appendLine("<!-- lgm-replies-status v1 -->")
@@ -365,8 +375,10 @@ class MrReplyPushService(private val project: Project) {
       appendLine("- duplicates: ${r.dupSkipped}")
       appendLine("- skipped: ${r.skipped}")
       appendLine("- failed: ${r.failed}")
+      appendLine("- not anchored: ${r.notAnchored.size}")
       appendLine("- at: $at")
       r.details.forEach { appendLine("  - $it") }
+      r.notAnchored.forEach { appendLine("  - $it") }
     }
   }
 
@@ -375,8 +387,13 @@ class MrReplyPushService(private val project: Project) {
     val dup = reports.sumOf { it.dupSkipped }
     val skip = reports.sumOf { it.skipped }
     val fail = reports.sumOf { it.failed }
+    val notAnchored = reports.sumOf { it.notAnchored.size }
     val type = if (fail > 0) NotificationType.WARNING else NotificationType.INFORMATION
     var content = LocalGitMirrorBundle.message("mrreplies.push.summary", posted, dup, skip, fail)
+    if (notAnchored > 0) {
+      content += "\n" + LocalGitMirrorBundle.message("mrreplies.push.notanchored", notAnchored)
+      content += "\n" + reports.flatMap { it.notAnchored }.joinToString("\n") { "- $it" }
+    }
     if (skip > 0) {
       content += "\n" + reports.filter { it.skipped > 0 }.flatMap { it.details }.joinToString("\n") { "- $it" }
     }
@@ -406,6 +423,13 @@ class MrReplyPushService(private val project: Project) {
           d.anchorFile == reply.file &&
           d.anchorLine != null && kotlin.math.abs(d.anchorLine!! - reply.line) <= ANCHOR_WINDOW
       }
+
+    /** null = anchorable or unknown (no compare data); a reason means GitLab will downgrade the remark to a general note. */
+    internal fun anchorabilityReason(reply: MrReplies.Reply, ranges: Map<String, List<IntRange>>?): String? {
+      if (ranges == null) return null
+      val fileRanges = ranges[reply.file] ?: return "file not in MR diff"
+      return if (fileRanges.any { reply.line in it }) null else "line outside diff hunks"
+    }
 
     /** A pass may ack (delete) the postbox item only when every file reply is terminal: posted/dup this pass, dead, or already in the ledger from an earlier pass. */
     internal fun shouldAck(

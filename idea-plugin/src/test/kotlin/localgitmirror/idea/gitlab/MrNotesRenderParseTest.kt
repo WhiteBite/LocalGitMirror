@@ -115,12 +115,59 @@ class MrNotesRenderParseTest {
   }
 
   @Test
-  fun `status markdown parses posted and failed counts`() {
+  fun `status markdown parses posted failed and not-anchored counts`() {
     val svc = MrReviewService(project)
-    val md = "<!-- lgm-replies-status v1 -->\n# MR !46 — status\n- posted: 3\n- duplicates: 1\n- skipped: 0\n- failed: 2\n- at: x\n"
+    val md = "<!-- lgm-replies-status v1 -->\n# MR !46 — status\n- posted: 3\n- duplicates: 1\n- skipped: 0\n- failed: 2\n- not anchored: 5\n- at: x\n"
     val st = svc.parseStatus(md)
     assertEquals(3, st.posted)
     assertEquals(2, st.failed)
+    assertEquals(5, st.notAnchored)
+  }
+
+  @Test
+  fun `render puts the target branch line right after the source branch line`() {
+    val md = MrNotesWriter.renderMarkdown(
+      project = null, iid = 24, title = "T", sourceBranch = "llm-core", targetBranch = "format-core",
+      updatedAt = "u", unresolved = 0, totalThreads = 0, discussions = emptyList(),
+    )
+    val lines = md.lines()
+    val srcIdx = lines.indexOfFirst { it.contains("**Ветка:**") }
+    val tgtIdx = lines.indexOfFirst { it.contains("**Target:**") }
+    assertEquals(srcIdx + 1, tgtIdx)
+    assertTrue(lines[tgtIdx].contains("`format-core`"))
+  }
+
+  @Test
+  fun `render omits the target line when the branch is unknown`() {
+    val md = MrNotesWriter.renderMarkdown(
+      project = null, iid = 24, title = "T", sourceBranch = "llm-core",
+      updatedAt = "u", unresolved = 0, totalThreads = 0, discussions = emptyList(),
+    )
+    assertTrue(md.lines().none { it.contains("**Target:**") })
+  }
+
+  @Test
+  fun `parseMrMarkdown round-trips the target branch`() {
+    val md = MrNotesWriter.renderMarkdown(
+      project = null, iid = 24, title = "T", sourceBranch = "llm-core", targetBranch = "format-core",
+      updatedAt = "u", unresolved = 1, totalThreads = 2, discussions = discussions(),
+    )
+    assertEquals("format-core", MrReviewService(project).parseMrMarkdown(24, md).targetBranch)
+  }
+
+  @Test
+  fun `Target metadata line does not disturb reply parsing`() {
+    val md = """
+      # MR !42 — answers
+      - **Target:** `format-core`
+      ## new Foo.kt:10
+      body text
+    """.trimIndent()
+    val f = MrReplies.parse(md)
+    assertEquals(0, f.errors.size)
+    assertEquals(1, f.replies.size)
+    assertEquals("Foo.kt", f.replies[0].file)
+    assertEquals(10, f.replies[0].line)
   }
 
   @Test

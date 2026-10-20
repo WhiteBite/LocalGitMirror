@@ -39,9 +39,11 @@ class MrReviewService(private val project: Project) {
     val notesSentAt: String? = null,
     val state: String = "open",
     val repo: String = "",
+    val targetBranch: String = "",
+    val replyNotAnchored: Int = 0,
   )
 
-  data class StatusReport(val posted: Int, val failed: Int)
+  data class StatusReport(val posted: Int, val failed: Int, val notAnchored: Int = 0)
 
   internal data class CacheData(
     val rows: List<MrRowItem>,
@@ -171,6 +173,7 @@ class MrReviewService(private val project: Project) {
         replyState = stateFor(row.iid, cache),
         replyPosted = st?.posted ?: 0,
         replyFailed = st?.failed ?: 0,
+        replyNotAnchored = st?.notAnchored ?: 0,
         notesSentAt = row.notesSentAt ?: notesSentAt[row.iid.toString()],
       )
     }
@@ -192,7 +195,8 @@ class MrReviewService(private val project: Project) {
   internal fun parseStatus(markdown: String): StatusReport {
     val posted = Regex("^- posted:\\s*(\\d+)", RegexOption.MULTILINE).find(markdown)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
     val failed = Regex("^- failed:\\s*(\\d+)", RegexOption.MULTILINE).find(markdown)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-    return StatusReport(posted, failed)
+    val notAnchored = Regex("^- not anchored:\\s*(\\d+)", RegexOption.MULTILINE).find(markdown)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+    return StatusReport(posted, failed, notAnchored)
   }
 
   private fun fetchCacheData(): CacheData {
@@ -381,6 +385,7 @@ class MrReviewService(private val project: Project) {
         discussions = discussions,
         source = Source.GITLAB,
         receivedMarkdown = null,
+        targetBranch = mr.targetBranch,
       )
     }
   }
@@ -436,6 +441,10 @@ class MrReviewService(private val project: Project) {
       ?.let { line -> Regex("`([^`]+)`").find(line)?.groupValues?.getOrNull(1) }
       ?: ""
 
+    val target = lines.firstOrNull { it.contains("**Target:**") }
+      ?.let { line -> Regex("`([^`]+)`").find(line)?.groupValues?.getOrNull(1) }
+      ?: ""
+
     val threads = parseThreads(markdown)
     val unresolved = threads.count { !it.resolved && it.notes.any { n -> !n.system } }
 
@@ -449,6 +458,7 @@ class MrReviewService(private val project: Project) {
       discussions = threads,
       source = Source.CACHE,
       receivedMarkdown = markdown,
+      targetBranch = target,
     )
   }
 

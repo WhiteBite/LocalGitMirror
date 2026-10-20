@@ -61,7 +61,7 @@ object MrNotesSync {
       val unresolved = discussions.count { d -> !d.resolved && d.notes.any { !it.system } }
       val markdown = MrNotesWriter.renderMarkdown(
         project, mr.iid, mr.title, mr.sourceBranch, mr.updatedAt,
-        unresolved, discussions.size, discussions,
+        unresolved, discussions.size, discussions, mr.targetBranch,
       )
       val hash = sha256Hex(markdown)
       if (shouldSkipUpload(state.mrNotesHash[key], hash, state.mrNotesSentAt[key], now)) {

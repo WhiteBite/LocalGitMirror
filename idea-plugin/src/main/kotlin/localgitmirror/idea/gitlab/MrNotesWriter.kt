@@ -21,6 +21,7 @@ object MrNotesWriter {
     unresolved: Int,
     totalThreads: Int,
     discussions: List<GitLabApi.MrDiscussion>,
+    targetBranch: String = "",
   ): String {
     val sb = StringBuilder()
     sb.appendLine("<!-- Сгенерировано плагином DocCache из обсуждений GitLab MR !$iid. Не редактируйте вручную. -->")
@@ -35,6 +36,7 @@ object MrNotesWriter {
     sb.appendLine("> длинно — только если нужен сценарий. Без похвалы, пересказа кода автору и «стоит отметить»; не уверен — короткий вопрос.")
     sb.appendLine()
     sb.appendLine("- **Ветка:** `$sourceBranch`")
+    if (targetBranch.isNotBlank()) sb.appendLine("- **Target:** `$targetBranch`")
     sb.appendLine("- **Статус:** открыт · **$unresolved нерешённых** из $totalThreads тредов")
     sb.appendLine("- **Обновлено:** $updatedAt · **Источник:** GitLab MR !$iid")
     sb.appendLine()
@@ -191,7 +193,7 @@ object MrNotesWriter {
     } else {
       renderMarkdown(
         project, row.iid, row.title, row.sourceBranch, row.updatedAt,
-        row.unresolved, row.totalThreads, row.discussions,
+        row.unresolved, row.totalThreads, row.discussions, row.targetBranch,
       )
     }
 

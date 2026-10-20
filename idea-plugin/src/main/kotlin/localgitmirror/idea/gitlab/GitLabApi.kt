@@ -35,7 +35,8 @@ object GitLabApi {
     val iid: Int,
     val title: String,
     val sourceBranch: String,
-    val updatedAt: String
+    val updatedAt: String,
+    val targetBranch: String = "",
   )
 
   data class MrsResult(val code: Int, val mrs: List<MrInfo>, val message: String)
@@ -130,12 +131,20 @@ object GitLabApi {
   data class DiscussionsResult(val code: Int, val discussions: List<MrDiscussion>, val message: String)
 
   data class DiffRefs(val baseSha: String, val headSha: String, val startSha: String)
-  data class MrDetail(val code: Int, val sourceBranch: String, val diffRefs: DiffRefs?, val message: String)
+  data class MrDetail(
+    val code: Int,
+    val sourceBranch: String,
+    val diffRefs: DiffRefs?,
+    val message: String,
+    val targetBranch: String = "",
+  )
 
   data class DiffPosition(val newPath: String, val newLine: Int)
   data class WriteResult(val code: Int, val message: String) {
     fun ok(): Boolean = code in 200..299
   }
+
+  data class CompareRangesResult(val code: Int, val ranges: Map<String, List<IntRange>>, val message: String)
 
   /**
    * GET {url}/api/v4/projects/{project}/merge_requests/{iid}/discussions —
@@ -208,6 +217,19 @@ object GitLabApi {
     "${base.trimEnd('/')}/api/v4/projects/${projectPathEncoded(project)}" +
       "/merge_requests?state=opened&order_by=updated_at&sort=desc&per_page=50&page=$page"
 
+  internal fun parseMrsBody(body: String): List<MrInfo> =
+    Json.parseToJsonElement(body).jsonArray.mapNotNull { el ->
+      val o = el.jsonObject
+      val iid = o["iid"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return@mapNotNull null
+      MrInfo(
+        iid = iid,
+        title = o["title"]?.jsonPrimitive?.contentOrNull ?: "",
+        sourceBranch = o["source_branch"]?.jsonPrimitive?.contentOrNull ?: "",
+        updatedAt = o["updated_at"]?.jsonPrimitive?.contentOrNull ?: "",
+        targetBranch = o["target_branch"]?.jsonPrimitive?.contentOrNull ?: "",
+      )
+    }
+
   internal fun nextPageOf(header: String?): Int? {
     val v = header?.trim()?.toIntOrNull() ?: return null
     return if (v > 0) v else null
@@ -232,17 +254,7 @@ object GitLabApi {
         val body = HttpClient.readBody(conn)
         if (code !in 200..299) return MrsResult(code, emptyList(), body.take(300))
 
-        val arr = Json.parseToJsonElement(body).jsonArray
-        mrs += arr.mapNotNull { el ->
-          val o = el.jsonObject
-          val iid = o["iid"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: return@mapNotNull null
-          MrInfo(
-            iid = iid,
-            title = o["title"]?.jsonPrimitive?.contentOrNull ?: "",
-            sourceBranch = o["source_branch"]?.jsonPrimitive?.contentOrNull ?: "",
-            updatedAt = o["updated_at"]?.jsonPrimitive?.contentOrNull ?: ""
-          )
-        }
+        mrs += parseMrsBody(body)
         fetched++
         val next = nextPageOf(conn.getHeaderField("X-Next-Page"))
         if (!shouldFetchPage(next, fetched)) break
@@ -286,6 +298,7 @@ object GitLabApi {
 
       val o = Json.parseToJsonElement(body).jsonObject
       val branch = o["source_branch"]?.jsonPrimitive?.contentOrNull ?: ""
+      val target = o["target_branch"]?.jsonPrimitive?.contentOrNull ?: ""
       val refs = o["diff_refs"]?.jsonObject
       val diffRefs = if (refs != null) {
         DiffRefs(
@@ -294,10 +307,57 @@ object GitLabApi {
           startSha = refs["start_sha"]?.jsonPrimitive?.contentOrNull ?: "",
         )
       } else null
-      MrDetail(code, branch, diffRefs, "OK")
+      MrDetail(code, branch, diffRefs, "OK", target)
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t, isMirror = false)
       MrDetail(0, "", null, "${e.type}: ${e.message}")
+    }
+  }
+
+  /**
+   * GET {url}/api/v4/projects/{project}/repository/compare?from=<target>&to=<source> —
+   * new-side line ranges per changed file, so callers can tell which `## new
+   * file:line` anchors GitLab will accept. A non-2xx code yields empty ranges;
+   * callers treat that as "no verdict" and let GitLab decide.
+   */
+  fun compareChangedRanges(conf: GitLabConfig.GitLabConf, from: String, to: String): CompareRangesResult {
+    if (conf.url.isBlank() || conf.project.isBlank() || conf.token.isBlank()) {
+      return CompareRangesResult(0, emptyMap(), "not-detected")
+    }
+    return try {
+      val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+        "/repository/compare?from=${URLEncoder.encode(from, "UTF-8")}&to=${URLEncoder.encode(to, "UTF-8")}"
+      val conn = open(url, conf.token)
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+      if (code !in 200..299) return CompareRangesResult(code, emptyMap(), body.take(300))
+      CompareRangesResult(code, parseCompareRanges(body), "OK")
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t, isMirror = false)
+      CompareRangesResult(0, emptyMap(), "${e.type}: ${e.message}")
+    }
+  }
+
+  internal fun parseCompareRanges(body: String): Map<String, List<IntRange>> {
+    val diffs = runCatching { Json.parseToJsonElement(body).jsonObject["diffs"]?.jsonArray }.getOrNull()
+      ?: return emptyMap()
+    val ranges = LinkedHashMap<String, List<IntRange>>()
+    for (d in diffs) {
+      val newPath = d.jsonObject["new_path"]?.jsonPrimitive?.contentOrNull ?: continue
+      val diffText = d.jsonObject["diff"]?.jsonPrimitive?.contentOrNull ?: continue
+      ranges[newPath] = parseHunkNewRanges(diffText)
+    }
+    return ranges
+  }
+
+  /** New-side line ranges of every `@@ -a,b +c,d @@` hunk header; a missing count means one line, a zero count an empty range. */
+  internal fun parseHunkNewRanges(diffText: String): List<IntRange> {
+    val hunkHeader = Regex("^@@ -\\d+(?:,\\d+)? \\+(\\d+)(?:,(\\d+))? @@")
+    return diffText.lines().mapNotNull { line ->
+      val m = hunkHeader.find(line) ?: return@mapNotNull null
+      val start = m.groupValues[1].toIntOrNull() ?: return@mapNotNull null
+      val count = m.groupValues[2].takeIf { it.isNotEmpty() }?.toIntOrNull() ?: 1
+      start..(start + count - 1)
     }
   }
 

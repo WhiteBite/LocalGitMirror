@@ -191,7 +191,7 @@ internal fun LocalGitMirrorPanel.refreshReview() {
                    it.sourceBranch.lowercase().contains(filter)
                  }
   val signature = visible.joinToString(";") {
-    "${it.iid}:${it.unresolved}:${it.replyState}:${it.replyPosted}:${it.replyFailed}:${it.notesSentAt}:${it.title}:${it.source}:${it.state}"
+    "${it.iid}:${it.unresolved}:${it.replyState}:${it.replyPosted}:${it.replyFailed}:${it.replyNotAnchored}:${it.notesSentAt}:${it.title}:${it.source}:${it.state}"
   }
   if (signature != reviewRowsSignature) {
     reviewRowsSignature = signature
@@ -331,6 +331,12 @@ internal class MrReviewListCellRenderer(private val project: Project) : ColoredL
       val stateText = LocalGitMirrorBundle.message(stateKey, count)
       append("  \u00b7 $stateText", SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, stateColor))
     }
+    if (value.replyNotAnchored > 0) {
+      append(
+        "  \u00b7 ${LocalGitMirrorBundle.message("review.state.notanchored", value.replyNotAnchored)}",
+        SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, amber),
+      )
+    }
     append("  ${value.title}", SimpleTextAttributes.REGULAR_ATTRIBUTES)
     if (value.source == MrReviewService.Source.CACHE) {
       append("  [${LocalGitMirrorBundle.message("review.row.cache")}]", SimpleTextAttributes.GRAYED_ATTRIBUTES)
@@ -357,6 +363,9 @@ internal class MrReviewListCellRenderer(private val project: Project) : ColoredL
         append("Notes: ").appendLine(value.notesSentAt)
       }
       append("Unresolved: ").append(value.unresolved).append("/").append(value.totalThreads).append("\n")
+      if (value.replyNotAnchored > 0) {
+        append("Not anchored: ").appendLine(value.replyNotAnchored)
+      }
       append("State: ").append(value.state)
     }
   }
