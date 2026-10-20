@@ -10,6 +10,7 @@ import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorProjectSettingsService
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.MrPublishReceipt
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
@@ -363,8 +364,25 @@ class MrReplyPushService(private val project: Project) {
       if (status is MrUploadResult.Failed) {
         details.add("status report upload failed: ${status.reason}")
       }
+      persistReceipt(iid, report)
     }
     return markQuiet(report)
+  }
+
+  private fun persistReceipt(iid: Int, report: FileReport) {
+    val at = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+    val receipt = MrPublishReceipt(
+      posted = report.posted,
+      failed = report.failed,
+      skipped = report.skipped,
+      notAnchored = report.notAnchored.size,
+      at = at,
+      details = (report.details + report.notAnchored).toMutableList(),
+    )
+    val state = project.service<MirrorProjectSettingsService>().state
+    if (state.mrPublishReceipts[iid.toString()] != receipt) {
+      state.mrPublishReceipts[iid.toString()] = receipt
+    }
   }
 
   internal fun renderStatus(iid: Int, r: FileReport): String {

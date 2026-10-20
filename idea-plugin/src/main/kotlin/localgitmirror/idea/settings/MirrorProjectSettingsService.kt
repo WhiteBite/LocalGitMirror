@@ -6,6 +6,22 @@ import com.intellij.openapi.components.Storage
 import com.intellij.openapi.components.StoragePathMacros
 import com.intellij.util.xmlb.XmlSerializerUtil
 
+/** Newest reply-publish receipt per MR; survives the 7-day postbox TTL that erases mr-replies-status files. */
+data class MrPublishReceipt(
+  var posted: Int = 0,
+  var failed: Int = 0,
+  var skipped: Int = 0,
+  var notAnchored: Int = 0,
+  var at: String = "",
+  var details: MutableList<String> = mutableListOf(),
+)
+
+/** Mirror-side tip of an MR branch as observed by the last MR sync; the Review row compares it with the local tip. */
+data class MrMirrorTip(
+  var sha: String = "",
+  var at: String = "",
+)
+
 /**
  * PER-PROJECT settings. The Mirror repo name lives here — NOT in the global
  * application settings — so one project's repo can never leak onto another
@@ -40,7 +56,11 @@ class MirrorProjectSettingsService : PersistentStateComponent<MirrorProjectSetti
     // Last seen GitLab updated_at per MR iid - unchanged MRs skip the discussions refetch.
     var mrUpdatedAt: MutableMap<String, String> = mutableMapOf(),
     // "yyyy-MM-dd HH:mm" of the last closed-marker upload per MR iid.
-    var mrClosedSentAt: MutableMap<String, String> = mutableMapOf()
+    var mrClosedSentAt: MutableMap<String, String> = mutableMapOf(),
+    // Newest reply-publish receipt per MR iid - keeps the row badge after the postbox status file expires.
+    var mrPublishReceipts: MutableMap<String, MrPublishReceipt> = mutableMapOf(),
+    // Mirror tip per MR source branch ("yyyy-MM-dd HH:mm" observation stamp) - drives the branch-freshness badge.
+    var mrMirrorTips: MutableMap<String, MrMirrorTip> = mutableMapOf()
   )
 
   private var state = State()

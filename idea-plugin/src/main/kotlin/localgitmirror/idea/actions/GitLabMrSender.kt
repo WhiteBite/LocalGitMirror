@@ -10,13 +10,17 @@ import localgitmirror.idea.gitlab.MrReviewService
 import localgitmirror.idea.gitlab.MrSendPlanner
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorSyncApi
+import localgitmirror.idea.settings.MirrorProjectSettingsService
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.MrMirrorTip
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncEngine
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import localgitmirror.idea.ui.PanelSyncMessages
 import java.io.File
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 /** Shared tail of the MR transfer: fetch source branches from origin, then send. Must run on a background thread. */
 object GitLabMrSender {
@@ -170,6 +174,7 @@ object GitLabMrSender {
           history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
             "repo=${syncRes.repo ?: "?"} branch=$branch iid=$iid")
         }
+        storeSentMirrorTips(project, projectDir, toSend)
       }
     }
 
@@ -265,7 +270,28 @@ object GitLabMrSender {
         ?: remoteTip(project, projectDir, remote, branch)
       if (tip != null) localTips[branch] = tip
     }
-    return decideMrSend(mirrorRefsFrom(refsResult), localTips, branches)
+    val mirrorRefs = mirrorRefsFrom(refsResult)
+    val branchSet = branches.toSet()
+    storeMirrorTips(project, mirrorRefs.filterKeys { it in branchSet })
+    return decideMrSend(mirrorRefs, localTips, branches)
+  }
+
+  private fun storeSentMirrorTips(project: Project, projectDir: File, branches: List<String>) {
+    val tips = mutableMapOf<String, String>()
+    for (branch in branches) {
+      GitLocal.branchHash(project, projectDir, branch)?.let { tips[branch] = it }
+    }
+    storeMirrorTips(project, tips)
+  }
+
+  private fun storeMirrorTips(project: Project, tips: Map<String, String>) {
+    if (tips.isEmpty()) return
+    val state = project.service<MirrorProjectSettingsService>().state
+    val at = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+    for ((branch, sha) in tips) {
+      if (sha.isBlank()) continue
+      state.mrMirrorTips[branch] = MrMirrorTip(sha, at)
+    }
   }
 
   internal fun decideMrSend(
@@ -330,6 +356,7 @@ object GitLabMrSender {
     )
     history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), true,
       "repo=${syncRes.repo ?: "?"} branch=$branch iid=$iid")
+    project.basePath?.let { storeSentMirrorTips(project, File(it), listOf(branch)) }
     return true
   }
 

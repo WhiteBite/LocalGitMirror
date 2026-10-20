@@ -6,10 +6,12 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.UIUtil
+import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorProjectSettingsService
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.MrPublishReceipt
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
@@ -41,13 +43,21 @@ class MrReviewService(private val project: Project) {
     val repo: String = "",
     val targetBranch: String = "",
     val replyNotAnchored: Int = 0,
+    val replyDetails: List<String> = emptyList(),
+    val replyReceiptAt: String? = null,
+    val branchFreshness: String = "unknown",
+    val branchLocalTip: String? = null,
+    val branchMirrorTip: String? = null,
+    val mirrorTipAt: String? = null,
   )
 
   data class StatusReport(val posted: Int, val failed: Int, val notAnchored: Int = 0)
 
+  internal enum class BranchFreshness { STALE, AHEAD, OK, UNKNOWN }
+
   internal data class CacheData(
     val rows: List<MrRowItem>,
-    val status: Map<Int, StatusReport>,
+    val receipts: Map<Int, MrPublishReceipt>,
     val pendingIids: Set<Int>,
     val localIids: Set<Int>,
     val errorIids: Set<Int> = emptySet(),
@@ -166,27 +176,72 @@ class MrReviewService(private val project: Project) {
   }
 
   internal fun decorate(rows: List<MrRowItem>, cache: CacheData): List<MrRowItem> {
-    val notesSentAt = project.service<MirrorProjectSettingsService>().state.mrNotesSentAt
+    val projectState = project.service<MirrorProjectSettingsService>().state
+    val notesSentAt = projectState.mrNotesSentAt
+    val baseDir = project.basePath
+    val localTipCache = HashMap<String, String?>()
     return rows.map { row ->
-      val st = cache.status[row.iid]
+      val postbox = cache.receipts[row.iid]
+      val receipt = receiptFor(row.iid, postbox, projectState.mrPublishReceipts[row.iid.toString()])
+      val branch = branchStateFor(row.sourceBranch, projectState, baseDir, localTipCache)
       row.copy(
-        replyState = stateFor(row.iid, cache),
-        replyPosted = st?.posted ?: 0,
-        replyFailed = st?.failed ?: 0,
-        replyNotAnchored = st?.notAnchored ?: 0,
+        replyState = stateFor(row.iid, cache, projectState.mrPublishReceipts[row.iid.toString()]),
+        replyPosted = receipt?.posted ?: 0,
+        replyFailed = receipt?.failed ?: 0,
+        replyNotAnchored = receipt?.notAnchored ?: 0,
+        replyDetails = receipt?.details ?: emptyList(),
+        replyReceiptAt = if (postbox == null) receipt?.at?.takeIf { it.isNotBlank() } else null,
         notesSentAt = row.notesSentAt ?: notesSentAt[row.iid.toString()],
+        branchFreshness = branch?.freshness?.name?.lowercase() ?: "unknown",
+        branchLocalTip = branch?.localTip,
+        branchMirrorTip = branch?.mirrorTip,
+        mirrorTipAt = branch?.mirrorTipAt,
       )
     }
   }
 
+  private data class BranchState(
+    val freshness: BranchFreshness,
+    val localTip: String?,
+    val mirrorTip: String?,
+    val mirrorTipAt: String?,
+  )
+
+  private fun branchStateFor(
+    branch: String,
+    state: MirrorProjectSettingsService.State,
+    baseDir: String?,
+    localTipCache: MutableMap<String, String?>,
+  ): BranchState? {
+    if (branch.isBlank()) return null
+    val mirror = state.mrMirrorTips[branch] ?: return null
+    if (mirror.sha.isBlank()) return null
+    val workDir = baseDir?.let(::File)
+    val localTip = if (workDir != null)
+      localTipCache.getOrPut(branch) { runCatching { GitLocal.branchHash(project, workDir, branch) }.getOrNull() }
+    else null
+    val localBehind = if (workDir != null && localTip != null && !localTip.equals(mirror.sha, ignoreCase = true))
+      runCatching { GitLocal.isAncestor(project, workDir, localTip, mirror.sha) }.getOrNull()
+    else null
+    return BranchState(
+      branchFreshness(localTip, mirror.sha, localBehind),
+      localTip,
+      mirror.sha,
+      mirror.at.takeIf { it.isNotBlank() },
+    )
+  }
+
   /** Raw state key for the reply pipeline; the UI localizes and colors it. */
-  internal fun stateFor(iid: Int, cache: CacheData): String {
-    val st = cache.status[iid]
+  internal fun stateFor(iid: Int, cache: CacheData, persistedReceipt: MrPublishReceipt?): String {
+    val st = cache.receipts[iid]
     return when {
       st != null && st.failed > 0 -> "failed"
       st != null && st.posted > 0 -> "posted"
       iid in cache.errorIids -> "error"
+      // pending outranks the persisted receipt: a fresh mr-replies file is newer than the last publish
       iid in cache.pendingIids -> "pending"
+      st == null && persistedReceipt != null && persistedReceipt.failed > 0 -> "failed"
+      st == null && persistedReceipt != null && persistedReceipt.posted > 0 -> "posted"
       iid in cache.localIids -> "local"
       else -> ""
     }
@@ -197,6 +252,24 @@ class MrReviewService(private val project: Project) {
     val failed = Regex("^- failed:\\s*(\\d+)", RegexOption.MULTILINE).find(markdown)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
     val notAnchored = Regex("^- not anchored:\\s*(\\d+)", RegexOption.MULTILINE).find(markdown)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
     return StatusReport(posted, failed, notAnchored)
+  }
+
+  internal fun parseReceipt(markdown: String): MrPublishReceipt {
+    val st = parseStatus(markdown)
+    val skipped = Regex("^- skipped:\\s*(\\d+)", RegexOption.MULTILINE).find(markdown)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+    val at = Regex("^- at:\\s*(.+)$", RegexOption.MULTILINE).find(markdown)?.groupValues?.getOrNull(1)?.trim() ?: ""
+    val details = markdown.lines()
+      .map { it.trimEnd() }
+      .filter { it.startsWith("  - ") }
+      .map { it.removePrefix("  - ") }
+    return MrPublishReceipt(
+      posted = st.posted,
+      failed = st.failed,
+      skipped = skipped,
+      notAnchored = st.notAnchored,
+      at = at,
+      details = details.toMutableList(),
+    )
   }
 
   private fun fetchCacheData(): CacheData {
@@ -243,10 +316,12 @@ class MrReviewService(private val project: Project) {
         path.startsWith("mr-notes/") -> noteItems.add(item)
       }
     }
-    val status = mutableMapOf<Int, StatusReport>()
+    val receipts = mutableMapOf<Int, MrPublishReceipt>()
     for ((iid, group) in statusCandidates.groupBy { it.first }) {
       val newest = group.maxByOrNull { it.second.mtime } ?: continue
-      status[iid] = parseStatus(newest.third)
+      val receipt = parseReceipt(newest.third)
+      receipts[iid] = receipt
+      persistReceipt(iid, receipt)
       for (stale in group) {
         if (stale.second.id != newest.second.id) {
           runCatching { MirrorPostboxApi.fileSyncAck(settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, stale.second.id) }
@@ -286,7 +361,14 @@ class MrReviewService(private val project: Project) {
     }
     val rows = postboxRows + markerRows +
       localMrRows(baseDir, repo, (postboxRows + markerRows).map { it.iid }.toSet(), closedMarkers.keys)
-    return CacheData(rows, status, pendingIids, localReplyIids(baseDir), errorIids, itemErrors.joinToString("; ").take(300).ifBlank { null })
+    return CacheData(rows, receipts, pendingIids, localReplyIids(baseDir), errorIids, itemErrors.joinToString("; ").take(300).ifBlank { null })
+  }
+
+  private fun persistReceipt(iid: Int, receipt: MrPublishReceipt) {
+    val state = project.service<MirrorProjectSettingsService>().state
+    if (state.mrPublishReceipts[iid.toString()] != receipt) {
+      state.mrPublishReceipts[iid.toString()] = receipt
+    }
   }
 
   // Postbox notes expire after 7 days; local .mr-notes copies keep the MR visible and reviewable.
@@ -591,6 +673,24 @@ class MrReviewService(private val project: Project) {
   }
 
   companion object {
+    /** The postbox copy is the freshest publish outcome; the persisted one keeps the badge after the 7-day TTL. */
+    internal fun receiptFor(iid: Int, postboxReceipt: MrPublishReceipt?, persistedReceipt: MrPublishReceipt?): MrPublishReceipt? =
+      postboxReceipt ?: persistedReceipt
+
+    /** AHEAD = the local tip is an ancestor of the mirror tip (local behind); differing tips without ancestry are STALE. */
+    internal fun branchFreshness(localTip: String?, mirrorTip: String?, localAncestorOfMirror: Boolean? = null): BranchFreshness =
+      when {
+        localTip.isNullOrBlank() || mirrorTip.isNullOrBlank() -> BranchFreshness.UNKNOWN
+        localTip.equals(mirrorTip, ignoreCase = true) -> BranchFreshness.OK
+        localAncestorOfMirror == true -> BranchFreshness.AHEAD
+        else -> BranchFreshness.STALE
+      }
+
+    private val FailedHttpStatus = Regex("HTTP \\d+")
+
+    internal fun failedReplyTooltipLines(details: List<String>): List<String> =
+      details.filter { it.startsWith("reply ") && (it.contains("failed") || FailedHttpStatus.containsMatchIn(it)) }
+
     private val IidInPath = Regex("mr-!(\\d+)")
     private val UpdatedAtLine = Regex("\\*\\*Обновлено:\\*\\*\\s*(.+?)\\s*·")
 

@@ -218,7 +218,7 @@ internal fun LocalGitMirrorPanel.refreshReview() {
                    it.sourceBranch.lowercase().contains(filter)
                  }
   val signature = visible.joinToString(";") {
-    "${it.iid}:${it.unresolved}:${it.replyState}:${it.replyPosted}:${it.replyFailed}:${it.replyNotAnchored}:${it.notesSentAt}:${it.title}:${it.source}:${it.state}"
+    "${it.iid}:${it.unresolved}:${it.replyState}:${it.replyPosted}:${it.replyFailed}:${it.replyNotAnchored}:${it.notesSentAt}:${it.title}:${it.source}:${it.state}:${it.replyReceiptAt}:${it.branchFreshness}"
   }
   if (signature != reviewRowsSignature) {
     reviewRowsSignature = signature
@@ -357,13 +357,29 @@ internal class MrReviewListCellRenderer(private val project: Project) : ColoredL
         localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state),
         service<MirrorSettingsService>().state.autoPushReplies,
       )
-      val stateText = LocalGitMirrorBundle.message(stateKey, count)
+      val stateText = when {
+        value.replyState == "failed" && value.replyReceiptAt != null ->
+          LocalGitMirrorBundle.message("review.state.failed.at", count, value.replyReceiptAt)
+        value.replyState == "posted" && value.replyReceiptAt != null ->
+          LocalGitMirrorBundle.message("review.state.posted.at", count, value.replyReceiptAt)
+        else -> LocalGitMirrorBundle.message(stateKey, count)
+      }
       append("  \u00b7 $stateText", SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, stateColor))
     }
     if (value.replyNotAnchored > 0) {
       append(
         "  \u00b7 ${LocalGitMirrorBundle.message("review.state.notanchored", value.replyNotAnchored)}",
         SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, amber),
+      )
+    }
+    when (value.branchFreshness) {
+      "stale" -> append(
+        "  \u00b7 ${LocalGitMirrorBundle.message("review.branch.stale")}",
+        SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, amber),
+      )
+      "ahead" -> append(
+        "  \u00b7 ${LocalGitMirrorBundle.message("review.branch.ahead")}",
+        SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, JBColor(0x1565C0, 0x64B5F6)),
       )
     }
     append("  ${value.title}", SimpleTextAttributes.REGULAR_ATTRIBUTES)
@@ -395,7 +411,21 @@ internal class MrReviewListCellRenderer(private val project: Project) : ColoredL
       if (value.replyNotAnchored > 0) {
         append("Not anchored: ").appendLine(value.replyNotAnchored)
       }
+      val failedLabels = MrReviewService.failedReplyTooltipLines(value.replyDetails)
+      if (failedLabels.isNotEmpty()) {
+        append(LocalGitMirrorBundle.message("review.tooltip.failedReplies")).appendLine()
+        failedLabels.forEach { append("  ").append(it).appendLine() }
+      }
+      when (value.branchFreshness) {
+        "stale" -> appendLine(LocalGitMirrorBundle.message(
+          "review.tooltip.branch.stale", shortSha(value.branchLocalTip), shortSha(value.branchMirrorTip), value.mirrorTipAt ?: ""))
+        "ahead" -> appendLine(LocalGitMirrorBundle.message(
+          "review.tooltip.branch.ahead", shortSha(value.branchLocalTip), shortSha(value.branchMirrorTip), value.mirrorTipAt ?: ""))
+        "ok" -> appendLine(LocalGitMirrorBundle.message("review.tooltip.branch.ok", shortSha(value.branchLocalTip)))
+      }
       append("State: ").append(value.state)
     }
   }
+
+  private fun shortSha(sha: String?): String = sha?.take(7) ?: "?"
 }
