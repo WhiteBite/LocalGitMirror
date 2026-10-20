@@ -136,10 +136,11 @@ internal class BranchDetail(private val panel: LocalGitMirrorPanel) : JPanel(Bor
   private fun repliesText(mr: MrReviewService.MrRowItem): String {
     if (mr.replyState.isBlank()) return LocalGitMirrorBundle.message("detail.replies.none")
     val count = if (mr.replyState == "failed") mr.replyFailed else mr.replyPosted
-    val isWork = localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) ==
-      localgitmirror.idea.deps.MachineRole.WORK
-    val key = if (mr.replyState == "pending" && isWork)
-      "review.state.pending.work" else "review.state.${mr.replyState}"
+    val key = reviewReplyStateKey(
+      mr.replyState,
+      localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state),
+      service<MirrorSettingsService>().state.autoPushReplies,
+    )
     return LocalGitMirrorBundle.message(key, count)
   }
 

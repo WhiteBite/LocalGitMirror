@@ -10,6 +10,7 @@ import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorProjectSettingsService
 import localgitmirror.idea.settings.MirrorSettingsService
+import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
@@ -397,6 +398,12 @@ class MrReplyPushService(private val project: Project) {
     if (skip > 0) {
       content += "\n" + reports.filter { it.skipped > 0 }.flatMap { it.details }.joinToString("\n") { "- $it" }
     }
+    val history = pushSummaryHistory(reports)
+    service<OperationsHistoryService>().add(
+      LocalGitMirrorBundle.message("history.op.pushMrReplies"),
+      history.success,
+      history.details,
+    )
     notify(content, type)
   }
 
@@ -463,6 +470,14 @@ class MrReplyPushService(private val project: Project) {
       val hex = digest.take(4).joinToString("") { b -> "%02x".format(b) }
       return "<!-- lgm:$hex -->"
     }
+
+    internal data class PushHistoryRow(val success: Boolean, val details: String)
+
+    internal fun pushSummaryHistory(reports: List<FileReport>): PushHistoryRow = PushHistoryRow(
+      success = reports.sumOf { it.failed } == 0,
+      details = "posted=${reports.sumOf { it.posted }} dup=${reports.sumOf { it.dupSkipped }} " +
+        "skip=${reports.sumOf { it.skipped }} fail=${reports.sumOf { it.failed }} files=${reports.size}"
+    )
   }
 }
 

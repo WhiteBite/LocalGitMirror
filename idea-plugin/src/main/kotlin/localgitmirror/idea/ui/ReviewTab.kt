@@ -75,8 +75,6 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
     viewportBorder = BorderFactory.createEmptyBorder()
   }
 
-  val isWorkRole = localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) ==
-    localgitmirror.idea.deps.MachineRole.WORK
   fun iconBtn(icon: javax.swing.Icon, tipKey: String, onClick: (javax.swing.JButton) -> Unit): JButton =
     JButton(icon).apply {
       margin = JBUI.insets(2, 4)
@@ -90,14 +88,20 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
   val fetchBtn = iconBtn(AllIcons.Actions.Refresh, "review.tip.fetch") { reloadReview() }
   reviewFetchButton = fetchBtn
   val syncNotesBtn = iconBtn(AllIcons.Actions.Upload, "review.tip.syncNotes") { syncMrNotes() }
-  syncNotesBtn.isVisible = isWorkRole
-  val pushRepliesBtn = iconBtn(AllIcons.Actions.Download, "review.tip.pushReplies") {
+  reviewSyncNotesButton = syncNotesBtn
+  val pushRepliesBtn = iconBtn(AllIcons.Actions.Upload, "review.tip.pushReplies") {
     localgitmirror.idea.gitlab.MrReplyPushService(project).pushInBackground()
   }
-  pushRepliesBtn.isVisible = isWorkRole
+  reviewPushRepliesButton = pushRepliesBtn
   val moreBtn = iconBtn(AllIcons.Actions.MoreHorizontal, "panel.toolbar.more.tooltip") {
     val popup = javax.swing.JPopupMenu()
     popup.add(javax.swing.JMenuItem(LocalGitMirrorBundle.message("review.sendSelected")).apply {
+      val policy = sendSelectedPolicy(
+        localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state),
+        mrReviewList.selectedValuesList.any { sendableMrRow(it) },
+      )
+      isEnabled = policy.enabled
+      policy.reasonKey?.let { key -> toolTipText = LocalGitMirrorBundle.message(key) }
       addActionListener { sendSelectedMrs() }
     })
     popup.add(javax.swing.JMenuItem(LocalGitMirrorBundle.message("review.saveAll")).apply {
@@ -112,6 +116,7 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
   }
   mrReviewList.addListSelectionListener(selectionGate)
   selectionGate.valueChanged(null)
+  applyReviewWorkButtonPolicy()
   project.getService(MrReviewService::class.java).onCacheUpdated = { refreshReview() }
 
   val bottom = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(2), 0)).apply {
@@ -135,6 +140,26 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
 
 internal fun LocalGitMirrorPanel.openMrDialog(row: MrReviewService.MrRowItem) {
   localgitmirror.idea.gitlab.MrReviewDialog.openFor(project, row)
+}
+
+internal fun LocalGitMirrorPanel.applyReviewWorkButtonPolicy() {
+  val policy = reviewWorkButtonPolicy(
+    localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state)
+  )
+  val reason = policy.reasonKey?.let { LocalGitMirrorBundle.message(it) }
+  reviewSyncNotesButton?.let { btn ->
+    btn.isEnabled = policy.enabled
+    btn.toolTipText = tooltipWithReason("review.tip.syncNotes", reason)
+  }
+  reviewPushRepliesButton?.let { btn ->
+    btn.isEnabled = policy.enabled
+    btn.toolTipText = tooltipWithReason("review.tip.pushReplies", reason)
+  }
+}
+
+private fun tooltipWithReason(tipKey: String, reason: String?): String {
+  val tip = LocalGitMirrorBundle.message(tipKey)
+  return if (reason == null) tip else "$tip\n$reason"
 }
 
 /** Upload mr-notes for the selected MRs (all open MRs when none is selected) when their rendered content changed. */
@@ -162,10 +187,12 @@ internal fun LocalGitMirrorPanel.syncMrNotes(onlyIids: Set<Int>? = null) {
   }
 }
 
+internal fun sendableMrRow(row: MrReviewService.MrRowItem): Boolean =
+  row.source == MrReviewService.Source.GITLAB && row.sourceBranch.isNotBlank()
+
 /** Send selected MRs' branches to Cache in one batch via GitLabMrSender.sendAll. */
 internal fun LocalGitMirrorPanel.sendSelectedMrs() {
-  val rows = mrReviewList.selectedValuesList
-    .filter { it.source == MrReviewService.Source.GITLAB && it.sourceBranch.isNotBlank() }
+  val rows = mrReviewList.selectedValuesList.filter { sendableMrRow(it) }
   if (rows.isEmpty()) {
     notify(LocalGitMirrorBundle.message("review.sendSelected.none"), NotificationType.WARNING)
     return
@@ -240,6 +267,7 @@ internal fun LocalGitMirrorPanel.refreshReview() {
   reviewFetchButton?.text = LocalGitMirrorBundle.message(
     if (hasGitlab) "review.fetch" else "review.fetch.cache"
   )
+  applyReviewWorkButtonPolicy()
 }
 
 internal fun LocalGitMirrorPanel.reloadReview(notify: Boolean = true) {
@@ -324,10 +352,11 @@ internal class MrReviewListCellRenderer(private val project: Project) : ColoredL
         "local" -> JBColor(0x6F7277, 0x8C8F94)
         else -> amber
       }
-      val stateKey = if (value.replyState == "pending" &&
-        localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state) ==
-        localgitmirror.idea.deps.MachineRole.WORK
-      ) "review.state.pending.work" else "review.state.${value.replyState}"
+      val stateKey = reviewReplyStateKey(
+        value.replyState,
+        localgitmirror.idea.deps.RoleDetector.detect(service<MirrorSettingsService>().state),
+        service<MirrorSettingsService>().state.autoPushReplies,
+      )
       val stateText = LocalGitMirrorBundle.message(stateKey, count)
       append("  \u00b7 $stateText", SimpleTextAttributes(SimpleTextAttributes.STYLE_PLAIN, stateColor))
     }

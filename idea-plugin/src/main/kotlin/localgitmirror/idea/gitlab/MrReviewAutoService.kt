@@ -120,6 +120,10 @@ class MrReviewAutoService(private val project: Project) : Disposable {
         }
         if (pending.count.toString() == lastPendingSignature) return
         lastPendingSignature = pending.count.toString()
+        service<OperationsHistoryService>().add(
+          LocalGitMirrorBundle.message("history.op.pendingMrReplies"), true,
+          "count=${pending.count}"
+        )
         notify(LocalGitMirrorBundle.message("mrreview.pending", pending.count), NotificationType.INFORMATION)
       }
       is MrReplyPushService.PendingCount.Unavailable -> {
@@ -172,6 +176,11 @@ class MrReviewAutoService(private val project: Project) : Disposable {
     val signature = "${report.uploaded}|${report.failures}"
     if (signature == lastNotesSignature) return
     lastNotesSignature = signature
+    service<OperationsHistoryService>().add(
+      LocalGitMirrorBundle.message("history.op.autoMrNotes"),
+      report.failures.isEmpty(),
+      "uploaded=${report.uploaded} unchanged=${report.unchanged}",
+    )
     if (report.uploaded.isNotEmpty()) {
       notify(LocalGitMirrorBundle.message("mrnotes.sync.auto", report.uploaded.size), NotificationType.INFORMATION)
     }

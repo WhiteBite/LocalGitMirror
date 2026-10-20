@@ -94,6 +94,8 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   internal var branchFilterMode: BranchFilterMode = BranchFilterMode.ALL
   internal var respondButton: javax.swing.JButton? = null
   internal var reviewFetchButton: javax.swing.JButton? = null
+  internal var reviewSyncNotesButton: javax.swing.JButton? = null
+  internal var reviewPushRepliesButton: javax.swing.JButton? = null
   internal var reviewRowsSignature = ""
   internal val branchFilterField = SearchTextField(false).apply {
     textEditor.emptyText.text = LocalGitMirrorBundle.message("panel.branch.filter")
