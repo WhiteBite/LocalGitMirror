@@ -349,3 +349,82 @@ def test_handle_unknown_method():
     assert resp is not None
     assert "error" in resp
     assert resp["error"]["code"] == -32601
+
+
+# ── argument validation against the generated schema ─────────────────────────
+
+
+def _envelope(result: dict) -> dict:
+    assert result["isError"] is True, f"expected isError, got: {result}"
+    return json.loads(result["content"][0]["text"])
+
+
+def test_tools_call_missing_required_argument_is_schema_error():
+    res = lgm_mcp._call_tool("chat_send", {})
+    env = _envelope(res)
+    assert env["success"] is False
+    assert env["error"]["kind"] == "schema"
+    assert env["error"]["code"] == "invalid-arguments"
+    assert "text" in env["error"]["message"]
+
+
+def test_tools_call_enum_violation_is_schema_error():
+    res = lgm_mcp._call_tool("config_get", {"section": "bogus"})
+    env = _envelope(res)
+    assert env["error"]["kind"] == "schema"
+    assert "section" in env["error"]["message"]
+
+
+def test_tools_call_minimum_violation_is_schema_error():
+    res = lgm_mcp._call_tool("chat_list", {"count": 0})
+    env = _envelope(res)
+    assert env["error"]["kind"] == "schema"
+    assert "count" in env["error"]["message"]
+
+
+def test_tools_call_pattern_violation_is_schema_error():
+    res = lgm_mcp._call_tool("file_get", {"repo": "r", "id": "short"})
+    env = _envelope(res)
+    assert env["error"]["kind"] == "schema"
+    assert "id" in env["error"]["message"]
+
+
+def test_tools_call_type_violation_is_schema_error():
+    res = lgm_mcp._call_tool("chat_list", {"count": "5"})
+    env = _envelope(res)
+    assert env["error"]["kind"] == "schema"
+    assert "count" in env["error"]["message"]
+
+
+def test_tools_call_non_object_arguments_is_schema_error():
+    res = lgm_mcp._call_tool("chat_list", ["not", "an", "object"])
+    env = _envelope(res)
+    assert env["error"]["kind"] == "schema"
+
+
+# ── op failures and LgmError map to isError with the CLI envelope ───────────
+
+
+def test_tools_call_op_failure_maps_to_is_error_with_envelope():
+    res = lgm_mcp._call_tool("mr_replies_send",
+                             {"repo": "r1", "iid": 7, "text": "no sections here"})
+    env = _envelope(res)
+    assert env["success"] is False
+    assert env["error"]["kind"] == "op_failure"
+    assert "no reply sections" in env["error"]["message"]
+
+
+def test_tools_call_lgm_error_maps_to_envelope():
+    res = lgm_mcp._call_tool("mr_replies_send",
+                             {"repo": "", "iid": 7, "text": "## new\nx"})
+    env = _envelope(res)
+    assert env["success"] is False
+    assert env["error"]["kind"] == "config"
+    assert "--repo" in env["error"]["message"]
+
+
+def test_tools_call_success_result_has_no_is_error():
+    res = lgm_mcp._call_tool("scan", {})
+    assert "isError" not in res
+    data = json.loads(res["content"][0]["text"])
+    assert "roots" in data

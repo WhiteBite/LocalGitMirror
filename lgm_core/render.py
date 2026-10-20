@@ -7,7 +7,6 @@ which dispatches to the right function.  ``--json`` bypasses this entirely.
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime
 from typing import Any
 
@@ -356,6 +355,9 @@ def _render_mr_send(r: dict) -> list[str]:
     for t in r.get("skipped") or []:
         iid = f" !{t['iid']}" if t.get("iid") else ""
         out.append(f"  [skipped] {t.get('branch')}{iid} (already on mirror)")
+    for b in r.get("blocked") or []:
+        iid = f" !{b['iid']}" if b.get("iid") else ""
+        out.append(f"  [blocked] {b.get('branch')}{iid}: {b.get('reason')}")
     if r.get("message"):
         out.append(f"  {r['message']}")
     send = r.get("send") or {}
@@ -393,12 +395,17 @@ def _render_mr_replies_status(r: dict) -> list[str]:
         if "error" in s:
             out.append(f"{s['path']}: {s['error']}")
             continue
-        md = s.get("markdown", "")
-        posted = re.search(r"^- posted:\s*(\d+)", md, re.M)
-        failed = re.search(r"^- failed:\s*(\d+)", md, re.M)
+        if not s.get("parsed"):
+            out.append(f"{s['path']}: unrecognized status document "
+                       f"(no lgm-replies-status v1 marker)")
+            continue
+        not_anchored = s.get("not_anchored")
         out.append(
-            f"{s['path']}: posted={posted.group(1) if posted else '?'} "
-            f"failed={failed.group(1) if failed else '?'}"
+            f"{s['path']}: posted={s.get('posted')} "
+            f"duplicates={s.get('duplicates')} skipped={s.get('skipped')} "
+            f"failed={s.get('failed')} "
+            f"not_anchored={'?' if not_anchored is None else not_anchored} "
+            f"at={s.get('at') or '?'}"
         )
     return out
 
@@ -557,6 +564,41 @@ def _render_mr_projects_list(r: dict) -> list[str]:
     return out
 
 
+def _render_mr_pending(r: dict) -> list[str]:
+    items = r.get("items") or []
+    out = [f"MR pipeline repo='{r.get('repo', '?')}': {r.get('count', len(items))} MR(s)"]
+    for it in items:
+        notes = it.get("notes")
+        if notes:
+            notes_txt = (f"notes {notes.get('age_seconds', 0)}s old "
+                         f"(mtime {notes.get('mtime')})")
+        else:
+            notes_txt = "notes absent (expired or never transferred)"
+        if it.get("replies_pending"):
+            ids = ", ".join(str(i) for i in it.get("reply_ids") or [])
+            replies_txt = f"replies pending ({ids})"
+        else:
+            replies_txt = "no replies pending"
+        lp = it.get("last_publish")
+        if lp is None:
+            publish_txt = "never published"
+        elif lp.get("parsed"):
+            not_anchored = lp.get("not_anchored")
+            publish_txt = (f"last publish posted={lp.get('posted')} "
+                           f"duplicates={lp.get('duplicates')} "
+                           f"skipped={lp.get('skipped')} "
+                           f"failed={lp.get('failed')} "
+                           f"not_anchored={'?' if not_anchored is None else not_anchored} "
+                           f"at {lp.get('at') or '?'}")
+        else:
+            publish_txt = (f"last publish unreadable "
+                           f"({lp.get('error', 'no v1 marker')})")
+        out.append(f"  !{it.get('iid')} state={it.get('state')} "
+                   f"({it.get('state_evidence')})")
+        out.append(f"    {notes_txt}; {replies_txt}; {publish_txt}")
+    return out
+
+
 def _render_mr_sync_all(r: dict) -> list[str]:
     s = r.get("summary") or {}
     out = ["MR sync all:"]
@@ -569,6 +611,8 @@ def _render_mr_sync_all(r: dict) -> list[str]:
         out.append(f"  {repo.get('repo', '?')} ({repo.get('gitlab', '?')}): open MRs={repo.get('open_mrs', 0)}")
         for w in repo.get("branch_warnings") or []:
             out.append(f"    [warning] {w}")
+        for b in repo.get("blocked") or []:
+            out.append(f"    [blocked] !{b.get('iid')} {b.get('branch')}: {b.get('reason')}")
         for m in repo.get("mrs") or []:
             notes = m.get("notes", "")
             if notes:
@@ -604,6 +648,7 @@ _RENDERERS = {
     "mr_replies_send": _render_mr_replies_send,
     "mr_replies_status": _render_mr_replies_status,
     "mr_replies_push": _render_mr_replies_push,
+    "mr_pending": _render_mr_pending,
     "guide": _render_guide,
     "update": _render_update,
     "chat_send": _render_chat_send,

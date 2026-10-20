@@ -13,7 +13,8 @@ Global flags: --base-url, --api-key, --password, --repo, --json.
 Exit codes: 0 success; 1 crash (unexpected exception); 2 usage error;
 3 config error; 4 network error; 5 the mirror or an op refused the
 operation.  Under --json every failure prints one error envelope to
-stdout: {"success": false, "error": {"kind": ..., "message": ...}}.
+stdout: {"success": false, "error": {"kind": ..., "code": ..., "message": ...}}
+(code is a stable machine reason like "diverged" or null).
 
 Config is read from .env in the same directory as this script, or from
 --base-url / --password / --api-key flags. SYNC_PASSWORD and API_KEY from
@@ -151,9 +152,12 @@ _EXIT_BY_KIND = {"config": 3, "network": 4}
 _EXIT_REFUSED = 5
 
 
-def _print_error(args: argparse.Namespace, kind, message: str) -> int:
+def _print_error(args: argparse.Namespace, kind, message: str,
+                 machine_code=None) -> int:
     if getattr(args, "json", False):
-        envelope = {"success": False, "error": {"kind": kind, "message": message}}
+        envelope = {"success": False,
+                    "error": {"kind": kind, "code": machine_code,
+                              "message": message}}
         print(json.dumps(envelope, ensure_ascii=False, indent=2))
     else:
         print(f"ERROR: [{kind}] {message}", file=sys.stderr)
@@ -183,13 +187,15 @@ def main() -> int:
     try:
         result = op.run(ctx, op_args)
     except LgmError as e:
-        return _print_error(args, e.code, e.message)
+        return _print_error(args, e.code, e.message, e.machine_code)
     except Exception as e:
         return _print_error(args, "crash", f"{type(e).__name__}: {e}")
 
     if isinstance(result, dict) and result.get("success") is False:
         detail = result.get("error") or result.get("message") or "operation reported success=false"
-        return _print_error(args, "op_failure", str(detail))
+        code = result.get("code")
+        return _print_error(args, "op_failure", str(detail),
+                            code if isinstance(code, str) else None)
 
     if getattr(args, "json", False):
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

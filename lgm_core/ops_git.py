@@ -199,17 +199,19 @@ def send_branch(ctx: Ctx, repo: str, project: str, branch: str,
                 "config",
                 f"mirror already holds '{branch}' at {tip}: nothing to send. "
                 "On the home host the mirror's workspace IS this checkout - "
-                "the other machine receives it with `pull`, not from your `send`.")
+                "the other machine receives it with `pull`, not from your `send`.",
+                machine_code="already-held")
         mirror_sha = (mirror_refs.get(branch) or {}).get("sha", "")
         if tip and mirror_sha and not _is_strict_descendant(proj, mirror_sha, tip):
             raise LgmError(
                 "config",
                 f"local branch '{branch}' at {tip} is not ahead of the "
                 f"mirror's '{branch}' at {mirror_sha}: the send would not "
-                "fast-forward the mirror. Pull the branch first (lgm pull) "
+                "fast-forward the mirror. Pull from the mirror first (lgm pull) "
                 "or rebase onto the mirror tip, then send. After a deliberate "
                 "history rewrite neither applies: delete the mirror branch "
-                "(lgm branch_delete) and send again.")
+                "(lgm branch_delete) and send again.",
+                machine_code="diverged")
     return send_branches(ctx, repo, project, branches, excludes, dry_run)
 
 
@@ -249,7 +251,8 @@ def send_branches(ctx: Ctx, repo: str, project: str, branches: list[str],
                     "mirror already holds every commit of the requested ref(s): "
                     "nothing to send. On the home host the mirror's workspace IS "
                     "this checkout - the other machine receives it with `pull`, "
-                    "not from your `send`.")
+                    "not from your `send`.",
+                    machine_code="already-held")
             raise LgmError("git", stderr or "git bundle create failed")
         bundle_bytes = bundle_path.read_bytes()
 
@@ -539,10 +542,12 @@ MR REVIEW REPLIES (home agent -> work PC -> GitLab):
    Comment style: as a human reviewer — issues only (bug, bad call, miss),
    1-3 sentences, long only when a scenario needs it; anchored at the offending
    line, imperative, concrete; no praise, no code restating, no filler openers.
-   3. mr_replies_status repo=<name> [iid=<N>] — work PC's publish report
-     (posted/failed counts); empty means not published yet.
-  The work PC posts approved replies to GitLab; a human may approve them in
-  the IDE first, so a pending send is normal — poll mr_replies_status.
+    3. mr_replies_status repo=<name> [iid=<N>] — work PC's publish report
+      (posted/failed counts); empty means not published yet.
+   4. mr_pending repo=<name> — one pipeline view per MR: notes age, replies
+      pending, last publish outcome, closed state with evidence.
+   The work PC posts approved replies to GitLab; a human may approve them in
+   the IDE first, so a pending send is normal — poll mr_replies_status.
 
 DIAGNOSTICS: status, repos, debug.
 

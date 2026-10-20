@@ -94,6 +94,10 @@ def op_file_send(ctx: Ctx, args: dict) -> dict:
     return {"success": True, "id": res.get("id", ""), "file": rel, "size": len(data)}
 
 
+# same TTL as the server's postbox cleanup window (7 days)
+_POSTBOX_TTL_SECONDS = 7 * 24 * 3600
+
+
 def op_file_list(ctx: Ctx, args: dict) -> dict:
     """List files in the postbox for a repo."""
     repo = args.get("repo", "")
@@ -107,7 +111,10 @@ def op_file_list(ctx: Ctx, args: dict) -> dict:
         "repo": repo,
         "count": len(items),
         "files": [
-            {"id": i["id"], "path": i["path"], "size": i.get("plain_size", i.get("size", 0))}
+            {"id": i["id"], "path": i["path"],
+             "size": i.get("plain_size", i.get("size", 0)),
+             "mtime": int(i.get("mtime") or 0),
+             "expires_at": int(i.get("mtime") or 0) + _POSTBOX_TTL_SECONDS}
             for i in items
         ],
     }

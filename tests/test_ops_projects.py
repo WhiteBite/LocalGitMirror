@@ -393,6 +393,32 @@ def test_mr_sync_all_surfaces_branch_failure_in_summary(tmp_path, monkeypatch):
     assert any("doctransformer" in e for e in res["summary"]["errors"])
 
 
+def test_mr_sync_all_collects_per_mr_note_failures(tmp_path, monkeypatch):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    ctx.client.gitlab_list_discussions = lambda iid, project="": (
+        _ for _ in ()).throw(LgmError(500, "boom"))
+
+    res = opmod.op_mr_sync_all(ctx, {})
+    assert res["success"] is False
+    assert res["summary"]["failures"] == [
+        {"repo": "doctransformer", "iid": 24, "stage": "notes", "error": "boom"}]
+    assert any("MR !24" in e and "boom" in e
+               for e in res["summary"]["errors"])
+
+
+def test_mr_sync_all_blocked_carries_iids_for_diverged_branches(tmp_path, monkeypatch):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    monkeypatch.setattr(opmod, "_fetch_mr_branches",
+                        lambda proj, branches: ["llm-core"])
+
+    res = opmod.op_mr_sync_all(ctx, {})
+    assert res["repos"][0]["blocked"] == [
+        {"iid": 24, "branch": "llm-core", "reason": "diverged from origin"}]
+    assert res["blocked"] == res["repos"][0]["blocked"]
+    assert "git pull origin llm-core" in res["repos"][0]["branch_warnings"][0]
+    assert sent_calls == []
+
+
 def _seed_known_mr(opmod, tmp_path, iid: int, title: str, branch: str, sent_at: float):
     opmod._save_state({"doctransformer": {
         str(iid): {"hash": "x", "sent_at": sent_at, "title": title, "branch": branch}}})

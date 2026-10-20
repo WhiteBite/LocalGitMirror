@@ -12,7 +12,8 @@ from lgm_core.client import MirrorClient
 from lgm_core.config import Config
 from lgm_core.op_models import Ctx
 from lgm_core.ops import op_mr_send
-from lgm_core.ops_mr import _DIVERGED_WARNING, _fetch_mr_branches
+from lgm_core.ops_mr import _diverged_warning, _fetch_mr_branches
+from lgm_core.render import render
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -132,7 +133,9 @@ def test_op_mr_send_excludes_divergent_branch(tmp_path, monkeypatch):
     res, sent_calls = _run_mr_send(monkeypatch, work, "feat,ok")
 
     assert [t["branch"] for t in res["sent"]] == ["ok"]
-    assert res["warnings"] == [f"feat: {_DIVERGED_WARNING}"]
+    assert res["warnings"] == [_diverged_warning("feat")]
+    assert res["blocked"] == [{"iid": None, "branch": "feat",
+                               "reason": "diverged from origin"}]
     assert sent_calls == [["ok"]]
     assert _git(work, "rev-parse", "refs/heads/feat") == l1
 
@@ -144,7 +147,33 @@ def test_op_mr_send_all_divergent_sends_nothing(tmp_path, monkeypatch):
     res, sent_calls = _run_mr_send(monkeypatch, work, "feat")
 
     assert res["sent"] == []
-    assert res["warnings"] == [f"feat: {_DIVERGED_WARNING}"]
+    assert res["warnings"] == [_diverged_warning("feat")]
     assert "nothing new" in res["message"]
     assert sent_calls == []
     assert _git(work, "rev-parse", "refs/heads/feat") == l1
+
+
+def test_op_mr_send_blocked_carries_the_mr_iid(tmp_path, monkeypatch):
+    _seed, work, _c0 = _setup(tmp_path)
+    _local_feat_ahead(work, "l1.txt")
+
+    ctx = _ctx()
+    monkeypatch.setattr(ctx.client, "sync_refs",
+                        lambda repo: {"success": True, "refs": {}})
+    monkeypatch.setattr(ctx.client, "gitlab_get_mr",
+                        lambda iid, project="": {"iid": iid,
+                                                 "source_branch": "feat"})
+    sent_calls = []
+    monkeypatch.setattr(ops_mr, "send_branches",
+                        lambda *a, **k: sent_calls.append(a) or {"bundle_size": 1})
+
+    res = op_mr_send(ctx, {"repo": "r", "project": str(work), "iid": 41})
+
+    assert res["blocked"] == [{"iid": 41, "branch": "feat",
+                               "reason": "diverged from origin"}]
+    assert res["sent"] == []
+    assert "nothing new" in res["message"]
+    assert sent_calls == []
+    out = render("mr_send", res)
+    assert "[blocked] feat !41" in out
+    assert "diverged from origin" in out

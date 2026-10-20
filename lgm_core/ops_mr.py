@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +26,33 @@ _NOTES_ANCHOR = re.compile(r"^\*\*Место:\*\* `([^`]+):(\d+)`")
 _REPLY_THREAD = re.compile(r"^##\s+thread\s+(\S+)\s*$", re.MULTILINE)
 _REPLY_ANCHORED = re.compile(r"^##\s+new\s+(\S+?):(\d+)\s*$", re.MULTILINE)
 ANCHOR_WINDOW = 3
+
+_REPLIES_STATUS_MARKER = "<!-- lgm-replies-status v1 -->"
+_REPLIES_STATUS_FIELD = re.compile(r"^- ([a-z ]+):\s*(.*)$")
+
+
+def _parse_replies_status(markdown: str) -> dict:
+    """Numeric fields of a lgm-replies-status v1 document; ``parsed`` is
+    False when the v1 marker is absent (foreign or hand-edited file), in
+    which case every counter stays None and only ``markdown`` is truth."""
+    out = {"posted": None, "duplicates": None, "skipped": None, "failed": None,
+           "not_anchored": None, "at": "", "details": [], "parsed": False}
+    if _REPLIES_STATUS_MARKER not in markdown:
+        return out
+    out["parsed"] = True
+    for line in markdown.splitlines():
+        m = _REPLIES_STATUS_FIELD.match(line)
+        if m:
+            key, raw = m.group(1), m.group(2).strip()
+            if key == "at":
+                out["at"] = raw
+            elif key == "not anchored":
+                out["not_anchored"] = int(raw) if raw.isdigit() else None
+            elif key in ("posted", "duplicates", "skipped", "failed"):
+                out[key] = int(raw) if raw.isdigit() else None
+        elif line.startswith("  - "):
+            out["details"].append(line[4:].strip())
+    return out
 
 
 def _parse_notes_threads(markdown: str) -> dict:
@@ -129,7 +157,7 @@ def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: b
     if found is not None and _closed_by_mtime(found[0], found[1]):
         if force:
             return {"status": "forced"}
-        return {"status": "rejected",
+        return {"status": "rejected", "code": "closed-mr",
                 "error": f"MR !{iid} is closed/merged — replies are not sent; "
                          f"the review is over"}
     if not thread_refs and not anchors:
@@ -137,7 +165,7 @@ def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: b
     if found is None or found[0] is None:
         if force:
             return {"status": "forced"}
-        return {"status": "rejected",
+        return {"status": "rejected", "code": "notes-unavailable",
                 "error": f"mr-notes for MR !{iid} are unavailable (expired or not "
                          f"transferred) — cannot verify thread ids; "
                          f"force=true to override"}
@@ -146,7 +174,7 @@ def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: b
     except Exception:
         if force:
             return {"status": "forced"}
-        return {"status": "rejected",
+        return {"status": "rejected", "code": "notes-unavailable",
                 "error": f"mr-notes for MR !{iid} could not be fetched — cannot "
                          f"verify thread ids; force=true to override"}
     threads = _parse_notes_threads(notes)
@@ -363,8 +391,9 @@ def _resolve_mr_targets(c: MirrorClient, args: dict,
     return targets
 
 
-_DIVERGED_WARNING = ("local branch diverged from origin — not sent; "
-                     "align it (pull) or send from a clean checkout")
+def _diverged_warning(branch: str) -> str:
+    return (f"local branch '{branch}' diverged from origin — not sent; "
+            f"fix with 'git pull origin {branch}' or rebase onto 'origin/{branch}'")
 
 
 def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[str]:
@@ -522,19 +551,22 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
             else:
                 sent.append(t)
         return {"repo": repo, "project": str(proj), "dry_run": True,
-                "sent": sent, "skipped": skipped, "warnings": [],
+                "sent": sent, "skipped": skipped, "warnings": [], "blocked": [],
                 "message": (f"dry-run: would send {len(sent)} branch(es), "
                             f"skip {len(skipped)}; no refs moved, nothing "
                             f"uploaded (plan uses local tips, origin not fetched)")}
 
     diverged = _fetch_mr_branches(proj, [t["branch"] for t in targets])
-    warnings = [f"{b}: {_DIVERGED_WARNING}" for b in diverged]
-    blocked = set(diverged)
+    warnings = [_diverged_warning(b) for b in diverged]
+    blocked = [{"iid": next((t["iid"] for t in targets if t["branch"] == b), None),
+                "branch": b, "reason": "diverged from origin"}
+               for b in diverged]
+    blocked_branches = set(diverged)
 
     sent: list[dict] = []
     skipped: list[dict] = []
     for t in targets:
-        if t["branch"] in blocked:
+        if t["branch"] in blocked_branches:
             continue
         tip = _local_tip(proj, t["branch"])
         mirror_sha = (mirror_refs.get(t["branch"]) or {}).get("sha", "")
@@ -546,7 +578,7 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
 
     if not sent:
         return {"repo": repo, "project": str(proj), "sent": [], "skipped": skipped,
-                "warnings": warnings,
+                "warnings": warnings, "blocked": blocked,
                 "message": "nothing new: mirror already has all requested commits"}
 
     mirror_shas = [info.get("sha", "") for info in mirror_refs.values()]
@@ -556,7 +588,7 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
     send_result = send_branches(ctx, repo, str(proj), [t["branch"] for t in sent],
                                 exclude_shas)
     return {"repo": repo, "project": str(proj), "sent": sent, "skipped": skipped,
-            "warnings": warnings, "send": send_result}
+            "warnings": warnings, "blocked": blocked, "send": send_result}
 
 
 def op_mr_notes(ctx: Ctx, args: dict) -> dict:
@@ -626,7 +658,8 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
     precheck = _notes_precheck(c, repo, iid, content, force=bool(args.get("force")),
                                project=proj)
     if precheck.get("error"):
-        return {"success": False, "error": precheck["error"], "precheck": precheck}
+        return {"success": False, "error": precheck["error"],
+                "code": precheck.get("code"), "precheck": precheck}
     # The work-side parser keys off the "# MR !N" header; inject it so the file is never skipped.
     m = re.search(r"^#\s+MR\s+!(\d+)", content, re.MULTILINE)
     if m:
@@ -646,7 +679,9 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
 
 
 def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:
-    """Read the work PC's publish reports (mr-replies-status/mr-!N.md) from the postbox."""
+    """Read the work PC's publish reports (mr-replies-status/mr-!N.md) from
+    the postbox; each entry carries the parsed v1 numeric fields plus the
+    raw ``markdown`` for humans."""
     c = _client(ctx)
     repo = _repo_arg(args)
     lst = c.file_sync_list(repo)
@@ -668,7 +703,10 @@ def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:
     for n, i in sorted(newest.items()):
         try:
             plain = c.file_sync_fetch(repo, i["id"])
-            statuses.append({"iid": n, "path": i["path"], "markdown": plain.decode("utf-8")})
+            entry = {"iid": n, "path": i["path"],
+                     "markdown": plain.decode("utf-8")}
+            entry.update(_parse_replies_status(entry["markdown"]))
+            statuses.append(entry)
         except Exception:
             statuses.append({"iid": n, "path": i["path"], "error": "fetch/decrypt failed (v3 relay)"})
     return {"success": True, "repo": repo, "count": len(statuses), "statuses": statuses}
@@ -1083,10 +1121,18 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
     if missing:
         raise LgmError("config",
                        "GitLab URL/project/token not configured — set " + ", ".join(missing))
-    if cfg("LGM_MACHINE_ROLE").strip().lower() == "home":
+    role = cfg("LGM_MACHINE_ROLE").strip().lower()
+    if role == "home":
         raise LgmError("config",
                        "mr_replies_push publishes to GitLab from the work machine; "
-                       "this machine is home (LGM_MACHINE_ROLE=home)")
+                       "this machine is home (LGM_MACHINE_ROLE=home)",
+                       machine_code="wrong-machine")
+    if role != "work":
+        raise LgmError("config",
+                       "LGM_MACHINE_ROLE is neither home nor work — publishing "
+                       "needs to know this is the work machine; set "
+                       "LGM_MACHINE_ROLE=work",
+                       machine_code="role-unset")
     dry_run = bool(args.get("dry_run"))
     iid_filter = int(args.get("iid") or 0)
     items = (c.file_sync_list(repo).get("items") or [])
@@ -1132,3 +1178,91 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
     elif not reports:
         result["message"] = "no pending mr-replies files in the postbox"
     return result
+
+
+def op_mr_pending(ctx: Ctx, args: dict) -> dict:
+    """One pipeline view per MR iid: notes freshness (mtime + age seconds),
+    replies pending in the postbox (bool + ids), the last publish outcome
+    (parsed from the newest mr-replies-status entry) and the closed state
+    with evidence.
+
+    ``state_evidence``: ``gitlab`` (GitLab answered, authoritative),
+    ``marker`` (closed marker at least as new as the note), ``note-mtime``
+    (note newer than the marker, or no marker at all), ``expired``
+    (neither note nor marker — the postbox TTL ate them).
+    """
+    c = _client(ctx)
+    repo = _repo_arg(args)
+    items = (c.file_sync_list(repo).get("items") or [])
+    now = time.time()
+
+    notes: dict[int, dict] = {}
+    markers: dict[int, dict] = {}
+    replies: dict[int, list] = {}
+    statuses: dict[int, dict] = {}
+    for i in items:
+        eff = i.get("path") or ""
+        if eff.startswith("mr-notes/"):
+            cm = _MR_CLOSED_FILE.search(eff)
+            nm = _MR_NOTES_FILE.search(eff)
+            if cm:
+                iid = int(cm.group(1))
+                if iid not in markers or (i.get("mtime") or 0) > (markers[iid].get("mtime") or 0):
+                    markers[iid] = i
+            elif nm:
+                iid = int(nm.group(1))
+                if iid not in notes or (i.get("mtime") or 0) > (notes[iid].get("mtime") or 0):
+                    notes[iid] = i
+        elif eff.startswith("mr-replies/"):
+            rm = _MR_NOTES_FILE.search(eff)
+            if rm:
+                replies.setdefault(int(rm.group(1)), []).append(i)
+        elif eff.startswith("mr-replies-status/"):
+            sm = _MR_NOTES_FILE.search(eff)
+            if sm:
+                iid = int(sm.group(1))
+                if iid not in statuses or (i.get("mtime") or 0) > (statuses[iid].get("mtime") or 0):
+                    statuses[iid] = i
+
+    gitlab_usable = True
+    out: list[dict] = []
+    for iid in sorted(set(notes) | set(markers) | set(replies) | set(statuses)):
+        entry: dict = {"iid": iid, "notes": None, "replies_pending": False,
+                       "reply_ids": [], "last_publish": None,
+                       "state": "unknown", "state_evidence": "expired"}
+        note = notes.get(iid)
+        if note is not None:
+            mtime = int(note.get("mtime") or 0)
+            entry["notes"] = {"mtime": mtime,
+                              "age_seconds": max(0, int(now - mtime))}
+        rep = replies.get(iid)
+        if rep:
+            entry["replies_pending"] = True
+            entry["reply_ids"] = [r.get("id") for r in rep]
+        st = statuses.get(iid)
+        if st is not None:
+            try:
+                plain = c.file_sync_fetch(repo, st["id"]).decode("utf-8")
+                entry["last_publish"] = _parse_replies_status(plain)
+            except Exception:
+                entry["last_publish"] = {"parsed": False,
+                                         "error": "fetch/decrypt failed (v3 relay)"}
+        if gitlab_usable:
+            try:
+                state = (c.gitlab_get_mr(iid).get("state") or "").lower()
+                if state in ("opened", "closed", "merged", "locked"):
+                    entry["state"] = "closed" if state in ("closed", "merged") else "open"
+                    entry["state_evidence"] = "gitlab"
+            except LgmError as e:
+                if e.code == "config":
+                    gitlab_usable = False
+        if entry["state_evidence"] != "gitlab":
+            marker = markers.get(iid)
+            if marker is not None and _closed_by_mtime(note, marker):
+                entry["state"] = "closed"
+                entry["state_evidence"] = "marker"
+            elif note is not None:
+                entry["state"] = "open"
+                entry["state_evidence"] = "note-mtime"
+        out.append(entry)
+    return {"success": True, "repo": repo, "count": len(out), "items": out}

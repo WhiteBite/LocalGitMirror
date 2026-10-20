@@ -67,6 +67,7 @@ from .ops_mr import (
     op_mr_list, _resolve_mr_targets, _fetch_mr_branches, _local_tip,
     _mirror_refs_safe, _existing_shas, op_mr_send,
     op_mr_notes, op_mr_replies_send, op_mr_replies_status, op_mr_replies_push,
+    op_mr_pending,
 )
 from .ops_chat import (
     op_chat_send, op_chat_list,
@@ -357,6 +358,16 @@ REGISTRY: list[Op] = [
                   "writes, no postbox acks, no status upload"),
         ],
         run=op_mr_replies_push,
+    ),
+    Op(
+        name="mr_pending",
+        summary=("One pipeline view per MR: notes freshness (mtime + age), replies "
+                 "pending in the postbox, the last publish outcome and the closed "
+                 "state with evidence (gitlab | marker | note-mtime | expired)."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+        ],
+        run=op_mr_pending,
     ),
     Op(
         name="guide",

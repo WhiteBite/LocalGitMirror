@@ -23,7 +23,7 @@ from .op_models import Ctx, _client
 from .ops_git import send_branches
 from .ops_mr import (
     _fetch_mr_branches, _local_tip, _mirror_refs_safe, _existing_shas,
-    _DIVERGED_WARNING, send_exclusions,
+    _diverged_warning, send_exclusions,
 )
 
 _LGM_DIR = Path.home() / ".lgm"
@@ -177,7 +177,7 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
     gitlab = entry.get("gitlab", "")
     res: dict = {"repo": repo, "gitlab": gitlab, "mrs": [],
                  "branches_sent": [], "branches_skipped": [],
-                 "branch_warnings": []}
+                 "branch_warnings": [], "blocked": []}
     proj = Path(entry.get("path", ""))
     if not proj.is_dir():
         res["error"] = f"project dir not found: {proj}"
@@ -208,7 +208,10 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
     if branches:
         try:
             diverged = _fetch_mr_branches(proj, branches)
-            res["branch_warnings"] = [f"{b}: {_DIVERGED_WARNING}" for b in diverged]
+            res["branch_warnings"] = [_diverged_warning(b) for b in diverged]
+            iid_by_branch = {m.get("source_branch") or "": m.get("iid") for m in mrs}
+            res["blocked"] = [{"iid": iid_by_branch.get(b), "branch": b,
+                               "reason": "diverged from origin"} for b in diverged]
             blocked = set(diverged)
             mirror_refs = _mirror_refs_safe(c, repo)
             sent: list[str] = []
@@ -350,23 +353,52 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
     def _count(field: str) -> int:
         return sum(len(r.get(field) or []) for r in results)
 
+    failures: list[dict] = []
+    for r in results:
+        repo = r.get("repo", "?")
+        if r.get("error"):
+            failures.append({"repo": repo, "iid": None, "stage": "gitlab",
+                             "error": r["error"]})
+        if r.get("branches_error"):
+            failures.append({"repo": repo, "iid": None, "stage": "branches",
+                             "error": r["branches_error"]})
+        for m in r.get("mrs") or []:
+            notes = m.get("notes") or ""
+            if notes.startswith("failed:"):
+                failures.append({"repo": repo, "iid": m.get("iid"), "stage": "notes",
+                                 "error": notes[len("failed:"):].strip()})
+        for cm in r.get("closed") or []:
+            marker = cm.get("marker") or ""
+            if marker.startswith("failed:"):
+                failures.append({"repo": repo, "iid": cm.get("iid"),
+                                 "stage": "closed-marker",
+                                 "error": marker[len("failed:"):].strip()})
+
     notes_uploaded = sum(
         1 for r in results for m in r.get("mrs", []) if m.get("notes") == "uploaded")
     notes_unchanged = sum(
         1 for r in results for m in r.get("mrs", []) if m.get("notes") == "unchanged")
     errors = [f"{r['repo']}: {r.get('error') or r.get('branches_error')}"
               for r in results if r.get("error") or r.get("branches_error")]
+    errors += [f"{f['repo']}: MR !{f['iid']} {f['stage']} failed: {f['error']}"
+               for f in failures if f.get("iid")]
     closed_marked = sum(
         1 for r in results for m in (r.get("closed") or []) if m.get("marker") == "uploaded")
-    return {"success": not errors, "dry_run": dry_run, "repos": results,
-            "summary": {
-                "repos": len(results),
-                "mrs": sum(r.get("open_mrs", 0) for r in results),
-                "branches_sent": _count("branches_sent"),
-                "branches_skipped": _count("branches_skipped"),
-                "branch_warnings": _count("branch_warnings"),
-                "notes_uploaded": notes_uploaded,
-                "notes_unchanged": notes_unchanged,
-                "closed_marked": closed_marked,
-                "errors": errors,
-            }}
+    blocked = [b for r in results for b in (r.get("blocked") or [])]
+    result = {"success": not errors, "dry_run": dry_run, "repos": results,
+              "blocked": blocked,
+              "summary": {
+                  "repos": len(results),
+                  "mrs": sum(r.get("open_mrs", 0) for r in results),
+                  "branches_sent": _count("branches_sent"),
+                  "branches_skipped": _count("branches_skipped"),
+                  "branch_warnings": _count("branch_warnings"),
+                  "notes_uploaded": notes_uploaded,
+                  "notes_unchanged": notes_unchanged,
+                  "closed_marked": closed_marked,
+                  "failures": failures,
+                  "errors": errors,
+              }}
+    if errors:
+        result["message"] = "; ".join(errors)
+    return result

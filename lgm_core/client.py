@@ -39,19 +39,23 @@ def repo_to_rid(repo_name: str) -> str:
 
 
 class LgmError(Exception):
-    """Structured error: ``code`` + ``message``.
+    """Structured error: ``code`` + ``message`` + optional ``machine_code``.
 
     ``code`` is an int HTTP status from the mirror, or a kind string:
     "config" (bad input/env), "network" (unreachable), "git" / "gitlab"
     (local tool or GitLab API failure), "server" (mirror answered but
-    refused).  lgm.py maps kinds to exit codes: config=3, network=4,
-    every other kind=5; 1 is reserved for non-LgmError crashes and 2
-    for argparse usage errors.
+    refused).  ``machine_code`` is a stable machine-readable reason
+    ("already-held", "diverged", "closed-mr", "wrong-machine",
+    "role-unset", "notes-unavailable") or None; lgm.py copies it into the
+    JSON error envelope.  lgm.py maps kinds to exit codes: config=3,
+    network=4, every other kind=5; 1 is reserved for non-LgmError crashes
+    and 2 for argparse usage errors.
     """
 
-    def __init__(self, code, message: str):
+    def __init__(self, code, message: str, machine_code: str | None = None):
         self.code = code
         self.message = message
+        self.machine_code = machine_code
         super().__init__(f"[{code}] {message}")
 
 

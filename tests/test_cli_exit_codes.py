@@ -142,5 +142,76 @@ def test_success_still_exits_zero_and_json_parses(monkeypatch, capsys):
     assert data["id"] == "item1"
 
 
+def test_lgm_error_envelope_carries_machine_code(monkeypatch, capsys):
+    code, out, err = _run(monkeypatch, capsys,
+                          _ChatClient(exc=LgmError("server", "no fast-forward",
+                                                   machine_code="diverged")),
+                          ["chat_send", "--text", "hi", "--json"])
+    assert code == 5
+    env = json.loads(out)
+    assert env["error"]["kind"] == "server"
+    assert env["error"]["code"] == "diverged"
+    assert "no fast-forward" in env["error"]["message"]
+
+
+class _ClosedNotesClient:
+    sync_password = ""
+
+    def file_sync_list(self, repo):
+        return {"items": [
+            {"id": "n1", "path": "mr-notes/mr-!7.md", "mtime": 9},
+            {"id": "c1", "path": "mr-notes/mr-!7.closed.md", "mtime": 99},
+        ]}
+
+    def file_sync_fetch(self, repo, item_id):
+        return _NOTES_MD.encode("utf-8")
+
+
+def test_op_failure_envelope_carries_machine_code(monkeypatch, capsys):
+    code, out, err = _run(monkeypatch, capsys, _ClosedNotesClient(), [
+        "mr_replies_send", "--repo", "r1", "--iid", "7",
+        "--text", "## thread t1\nfix", "--json",
+    ])
+    assert code == 5, f"exit={code} stdout={out}"
+    env = json.loads(out)
+    assert env["success"] is False
+    assert env["error"]["kind"] == "op_failure"
+    assert env["error"]["code"] == "closed-mr"
+    assert "closed" in env["error"]["message"]
+
+
+def test_mr_sync_all_note_failure_exits_nonzero(monkeypatch, capsys, tmp_path):
+    import lgm_core.ops_projects as opmod
+    monkeypatch.setattr(opmod, "_REGISTRY_PATH", tmp_path / "reg.json")
+    monkeypatch.setattr(opmod, "_STATE_PATH", tmp_path / "state.json")
+    opmod._save_registry({"projects": [
+        {"repo": "r1", "path": str(tmp_path), "gitlab": "g/p"}]})
+    monkeypatch.setattr(opmod, "_fetch_mr_branches", lambda proj, branches: [])
+    monkeypatch.setattr(opmod, "_mirror_refs_safe", lambda c, repo: {})
+    monkeypatch.setattr(opmod, "send_branches",
+                        lambda *a, **k: {"bundle_size": 1})
+
+    class _SyncClient:
+        sync_password = "pw"
+
+        def gitlab_list_mrs(self, project=""):
+            return [{"iid": 24, "title": "T", "source_branch": "",
+                     "updated_at": "u"}]
+
+        def gitlab_list_discussions(self, iid, project=""):
+            raise LgmError(500, "boom")
+
+        def sync_negotiate(self, repo, commits, probe=False):
+            return {"known": []}
+
+    code, out, err = _run(monkeypatch, capsys, _SyncClient(),
+                          ["mr_sync_all", "--json"])
+    assert code == 5, f"exit={code} stdout={out}"
+    env = json.loads(out)
+    assert env["success"] is False
+    assert env["error"]["kind"] == "op_failure"
+    assert "boom" in env["error"]["message"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-q"])

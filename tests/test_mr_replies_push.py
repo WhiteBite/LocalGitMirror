@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lgm_core import ops_mr
 from lgm_core.client import LgmError
 from lgm_core.op_models import Ctx
-from lgm_core.ops import op_mr_replies_push
+from lgm_core.ops import op_mr_replies_push, op_mr_replies_status
 from lgm_core.render import render
 
 
@@ -356,6 +356,107 @@ def test_render_shows_counts_per_reply_and_not_anchored():
     assert "reply 1: posted into thread abc123" in out
     assert "reply 3: B.java:99 — file not in MR diff" in out
     assert "[acked]" in out
+
+
+# ── mr_replies_status: parse the v1 document once, machine fields ────────────
+
+_STATUS_MD = "\n".join([
+    "<!-- lgm-replies-status v1 -->",
+    "# MR !7 — status",
+    "- posted: 4",
+    "- duplicates: 1",
+    "- skipped: 2",
+    "- failed: 3",
+    "- not anchored: 7",
+    "- at: 2026-10-19 23:45",
+    "  - reply 1: posted into thread abc123",
+    "  - reply 3: B.java:99 — file not in MR diff",
+]) + "\n"
+
+
+def _status_ctx(client):
+    return Ctx(config=SimpleNamespace(sync_password="", storage_path=""),
+               client=client)
+
+
+def _add_status_file(client, iid=7, mtime=5, data=_STATUS_MD, item_id="s7"):
+    client.postbox[item_id] = {"path": f"mr-replies-status/mr-!{iid}.md",
+                               "mtime": mtime, "data": data.encode("utf-8")}
+
+
+def test_mr_replies_status_parses_v1_document_into_fields():
+    client = FakeClient()
+    _add_status_file(client)
+    res = op_mr_replies_status(_status_ctx(client), {"repo": "r1"})
+    s = res["statuses"][0]
+    assert s["parsed"] is True
+    assert s["posted"] == 4 and s["duplicates"] == 1
+    assert s["skipped"] == 2 and s["failed"] == 3
+    assert s["not_anchored"] == 7
+    assert s["at"] == "2026-10-19 23:45"
+    assert s["details"] == ["reply 1: posted into thread abc123",
+                            "reply 3: B.java:99 — file not in MR diff"]
+    assert s["markdown"] == _STATUS_MD
+
+
+def test_mr_replies_status_marks_foreign_documents_unparsed():
+    client = FakeClient()
+    _add_status_file(client, data="- posted: 3\n")
+    res = op_mr_replies_status(_status_ctx(client), {"repo": "r1"})
+    s = res["statuses"][0]
+    assert s["parsed"] is False
+    assert s["posted"] is None and s["failed"] is None
+    assert s["markdown"] == "- posted: 3\n"
+
+
+def test_render_mr_replies_status_reads_parsed_fields():
+    payload = {"success": True, "repo": "r1", "count": 1, "statuses": [{
+        "iid": 7, "path": "mr-replies-status/mr-!7.md", "markdown": _STATUS_MD,
+        "posted": 4, "duplicates": 1, "skipped": 2, "failed": 3,
+        "not_anchored": 7, "at": "2026-10-19 23:45", "details": [],
+        "parsed": True,
+    }]}
+    out = render("mr_replies_status", payload)
+    assert "posted=4" in out and "failed=3" in out
+    assert "not_anchored=7" in out
+    assert "2026-10-19 23:45" in out
+
+
+def test_render_mr_replies_status_flags_unparsed_documents():
+    payload = {"success": True, "repo": "r1", "count": 1, "statuses": [{
+        "iid": 7, "path": "mr-replies-status/mr-!7.md", "markdown": "- posted: 3",
+        "posted": None, "duplicates": None, "skipped": None, "failed": None,
+        "not_anchored": None, "at": "", "details": [], "parsed": False,
+    }]}
+    out = render("mr_replies_status", payload)
+    assert "unrecognized" in out
+
+
+def test_render_mr_replies_status_owns_no_posted_regex():
+    src = (Path(__file__).resolve().parent.parent / "lgm_core" / "render.py"
+           ).read_text(encoding="utf-8")
+    assert "re.search" not in src
+    assert 'r"^- posted' not in src
+
+
+# ── machine codes on the push refusals ───────────────────────────────────────
+
+def test_push_wrong_machine_carries_machine_code(work_env, monkeypatch):
+    monkeypatch.setitem(work_env, "LGM_MACHINE_ROLE", "home")
+    client = FakeClient()
+    client.add_reply_file(7, _MD)
+    with pytest.raises(LgmError) as excinfo:
+        _push(client)
+    assert excinfo.value.machine_code == "wrong-machine"
+
+
+def test_push_role_unset_carries_machine_code(work_env, monkeypatch):
+    monkeypatch.setitem(work_env, "LGM_MACHINE_ROLE", "")
+    client = FakeClient()
+    client.add_reply_file(7, _MD)
+    with pytest.raises(LgmError) as excinfo:
+        _push(client)
+    assert excinfo.value.machine_code == "role-unset"
 
 
 if __name__ == "__main__":

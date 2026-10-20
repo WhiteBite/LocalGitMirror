@@ -243,15 +243,17 @@ def test_file_list_formats_items():
     from lgm_core.ops import op_file_list
     ctx = _ctx()
     ctx.client.file_sync_list = lambda repo: {"success": True, "repo": repo, "items": [
-        {"id": "a1", "path": "logs/run.txt", "plain_size": 42},
-        {"id": "a2", "path": "logs/other.bin", "size": 7},
+        {"id": "a1", "path": "logs/run.txt", "plain_size": 42, "mtime": 1000},
+        {"id": "a2", "path": "logs/other.bin", "size": 7, "mtime": 2000},
     ]}
 
     res = op_file_list(ctx, {"repo": "r"})
     assert res["success"] is True
     assert res["count"] == 2
-    assert res["files"][0] == {"id": "a1", "path": "logs/run.txt", "size": 42}
+    assert res["files"][0] == {"id": "a1", "path": "logs/run.txt", "size": 42,
+                               "mtime": 1000, "expires_at": 1000 + 7 * 24 * 3600}
     assert res["files"][1]["size"] == 7
+    assert res["files"][1]["expires_at"] == 2000 + 7 * 24 * 3600
 
 
 def test_file_get_saves_to_disk(tmp_path):

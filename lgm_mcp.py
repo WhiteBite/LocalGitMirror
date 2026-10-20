@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -163,14 +164,89 @@ def _list_tools() -> list[dict]:
 # ── Tool dispatch ─────────────────────────────────────────────────────────────
 
 
+def _validate_arguments(op, arguments: dict) -> list[str]:
+    """Schema violations for the op's own generated inputSchema
+    (required / type / enum / minimum / maximum / pattern)."""
+    violations: list[str] = []
+    for param in op.params:
+        missing = param.name not in arguments or arguments[param.name] is None
+        if missing:
+            if param.required:
+                violations.append(f"missing required parameter '{param.name}'")
+            continue
+        value = arguments[param.name]
+        if param.type == "int":
+            if isinstance(value, bool) or not isinstance(value, int):
+                violations.append(
+                    f"parameter '{param.name}' must be an integer, "
+                    f"got {type(value).__name__}")
+                continue
+            if param.minimum is not None and value < param.minimum:
+                violations.append(
+                    f"parameter '{param.name}' must be >= {param.minimum}, "
+                    f"got {value}")
+            if param.maximum is not None and value > param.maximum:
+                violations.append(
+                    f"parameter '{param.name}' must be <= {param.maximum}, "
+                    f"got {value}")
+        elif param.type == "bool":
+            if not isinstance(value, bool):
+                violations.append(
+                    f"parameter '{param.name}' must be a boolean, "
+                    f"got {type(value).__name__}")
+        elif param.type == "list":
+            if not isinstance(value, list):
+                violations.append(
+                    f"parameter '{param.name}' must be an array, "
+                    f"got {type(value).__name__}")
+        else:
+            if not isinstance(value, str):
+                violations.append(
+                    f"parameter '{param.name}' must be a string, "
+                    f"got {type(value).__name__}")
+                continue
+            if param.enum is not None and value not in param.enum:
+                violations.append(
+                    f"parameter '{param.name}' must be one of {param.enum}, "
+                    f"got {value!r}")
+            if param.pattern and re.fullmatch(param.pattern, value) is None:
+                violations.append(
+                    f"parameter '{param.name}' does not match pattern "
+                    f"{param.pattern!r}, got {value!r}")
+    return violations
+
+
+def _error_result(envelope: dict) -> dict:
+    """An isError tool result whose text is the CLI's JSON error envelope."""
+    return {
+        "isError": True,
+        "content": [{"type": "text",
+                     "text": json.dumps(envelope, ensure_ascii=False, indent=2)}],
+    }
+
+
 def _call_tool(name: str, arguments: dict) -> dict:
-    """Execute an op and return the MCP tools/call result."""
+    """Execute an op and return the MCP tools/call result.
+
+    Schema violations, LgmErrors, crashes and op results with
+    ``success is False`` all return ``isError: true`` with the same JSON
+    error envelope the CLI prints under ``--json``.
+    """
     op = get_op(name)
     if op is None:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": f"Unknown tool: {name}"}],
-        }
+        return _error_result({"success": False, "error": {
+            "kind": "unknown-tool", "code": None,
+            "message": f"Unknown tool: {name}"}})
+
+    if not isinstance(arguments, dict):
+        return _error_result({"success": False, "error": {
+            "kind": "schema", "code": "invalid-arguments",
+            "message": "arguments must be a JSON object"}})
+    violations = _validate_arguments(op, arguments)
+    if violations:
+        return _error_result({"success": False, "error": {
+            "kind": "schema", "code": "invalid-arguments",
+            "message": "; ".join(violations)}})
 
     config = Config.from_env()
     client = MirrorClient(
@@ -191,15 +267,21 @@ def _call_tool(name: str, arguments: dict) -> dict:
     try:
         result = op.run(ctx, args)
     except LgmError as e:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": f"[{e.code}] {e.message}"}],
-        }
+        return _error_result({"success": False, "error": {
+            "kind": e.code, "code": e.machine_code, "message": e.message}})
     except Exception as e:
-        return {
-            "isError": True,
-            "content": [{"type": "text", "text": f"{type(e).__name__}: {e}"}],
-        }
+        return _error_result({"success": False, "error": {
+            "kind": "crash", "code": None,
+            "message": f"{type(e).__name__}: {e}"}})
+
+    if isinstance(result, dict) and result.get("success") is False:
+        detail = result.get("error") or result.get("message") \
+            or "operation reported success=false"
+        code = result.get("code")
+        return _error_result({"success": False, "error": {
+            "kind": "op_failure",
+            "code": code if isinstance(code, str) else None,
+            "message": str(detail)}})
 
     text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
     return {
