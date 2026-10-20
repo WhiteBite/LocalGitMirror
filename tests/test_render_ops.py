@@ -151,6 +151,21 @@ REALISTIC = {
 }
 
 
+FULL_ID = "1219be2670054df9866ca75e8eda0d5f"
+
+
+def test_rendered_ids_are_not_truncated_so_they_round_trip():
+    cases = {
+        "file_list": {"repo": "r", "count": 1, "files": [{"id": FULL_ID, "size": 10, "path": "p.md"}]},
+        "respond": {"repo": "r", "request_id": FULL_ID},
+        "apply": {"repo": "r", "response_id": FULL_ID},
+    }
+    for name, payload in cases.items():
+        out = render(name, payload)
+        text = "\n".join(out) if isinstance(out, list) else out
+        assert FULL_ID in text, f"{name} truncated an id the next command needs: {text}"
+
+
 def test_payloads_cover_every_registry_op():
     assert set(OP_NAMES) == set(REALISTIC), (
         f"payload fixtures out of sync with REGISTRY: "

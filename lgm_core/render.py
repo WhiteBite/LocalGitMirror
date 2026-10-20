@@ -42,7 +42,7 @@ def _render_pending(r: dict) -> list[str]:
     items = r.get("items", [])
     out.append(f"  {len(items)} pending request(s)")
     for it in items:
-        out.append(f"  - id={str(it.get('id', '?'))[:12]}  size={it.get('size', 0)}  mtime={it.get('mtime', '?')}")
+        out.append(f"  - id={str(it.get('id', '?'))}  size={it.get('size', 0)}  mtime={it.get('mtime', '?')}")
     return out
 
 
@@ -71,7 +71,7 @@ def _render_debug(r: dict) -> list[str]:
         items = pending.get("items", [])
         out.append(f"  {len(items)} pending")
         for it in items:
-            out.append(f"  - {str(it.get('id', '?'))[:12]}  mtime={it.get('mtime', '?')}")
+            out.append(f"  - {str(it.get('id', '?'))}  mtime={it.get('mtime', '?')}")
     responses = mirror.get("responses", {})
     out.append(f"\n--- Available responses for repo='{r.get('repo')}' ---")
     if "error" in responses:
@@ -80,7 +80,7 @@ def _render_debug(r: dict) -> list[str]:
         items = responses.get("items", [])
         out.append(f"  {len(items)} available")
         for it in items:
-            out.append(f"  - {str(it.get('id', '?'))[:12]}  size={it.get('size', 0)}")
+            out.append(f"  - {str(it.get('id', '?'))}  size={it.get('size', 0)}")
     return out
 
 
@@ -90,7 +90,7 @@ def _render_respond(r: dict) -> list[str]:
         out.append(f"  {r['message']}")
         return out
     req_id = r.get("request_id", "?")
-    out.append(f"  Request: {str(req_id)[:12]}")
+    out.append(f"  Request: {req_id}")
     if r.get("remaining"):
         out.append(f"  {r['remaining']} more request(s) in queue")
     manifest = r.get("manifest", {})
@@ -121,7 +121,7 @@ def _render_apply(r: dict) -> list[str]:
         out.append(f"  {r['message']}")
         return out
     resp_id = r.get("response_id", "?")
-    out.append(f"  Response: {str(resp_id)[:12]}")
+    out.append(f"  Response: {resp_id}")
     if r.get("remaining"):
         out.append(f"  {r['remaining']} more response(s) waiting")
     out.append(f"  Target cache: {r.get('target', '?')}")
@@ -172,7 +172,7 @@ def _render_request(r: dict) -> list[str]:
         return out
     if r.get("posted"):
         resp = r.get("response", {})
-        out.append(f"  OK: id={str(resp.get('id', '?'))[:12]} size={resp.get('size', 0):,} bytes")
+        out.append(f"  OK: id={str(resp.get('id', '?'))} size={resp.get('size', 0):,} bytes")
         out.append("\n  On the work machine: `python lgm.py respond`")
     return out
 
@@ -294,7 +294,7 @@ def _render_pull(r: dict) -> list[str]:
 
 def _render_deps_request(r: dict) -> list[str]:
     out = [f"Posted manifest to repo='{r.get('repo')}'"]
-    out.append(f"  id={str(r.get('id', '?'))[:12]}  size={r.get('size', 0):,} bytes")
+    out.append(f"  id={str(r.get('id', '?'))}  size={r.get('size', 0):,} bytes")
     return out
 
 
@@ -472,7 +472,7 @@ def _render_file_list(r: dict) -> list[str]:
     files = r.get("files") or []
     out = [f"Postbox files for repo='{r.get('repo', '?')}': {r.get('count', len(files))}"]
     for f in files:
-        out.append(f"  - id={str(f.get('id', '?'))[:12]}  size={f.get('size', 0):,}  {f.get('path', '?')}")
+        out.append(f"  - id={str(f.get('id', '?'))}  size={f.get('size', 0):,}  {f.get('path', '?')}")
     return out
 
 
