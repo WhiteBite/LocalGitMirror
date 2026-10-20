@@ -140,3 +140,65 @@ def test_plugin_latest_enc0_refused_enc1_still_ships_archive(tmp_path, monkeypat
     assert sealed.status_code == 200
     from app.core.bundle_crypto import decrypt_dump_bytes
     assert decrypt_dump_bytes(sealed.content, "pw") == payload
+
+
+def _client_from(addr: tuple) -> TestClient:
+    """TestClient whose peer address is forced to ``addr``."""
+    async def scoped(scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            scope = dict(scope, client=addr)
+        await app(scope, receive, send)
+    return TestClient(scoped)
+
+
+def test_plaintext_allowed_loopback_hosts_only():
+    # "testclient" is the FastAPI TestClient default peer, not loopback — the enc-refusal tests above stay valid.
+    from app.routers import plugin
+    assert plugin._plaintext_allowed("127.0.0.1")
+    assert plugin._plaintext_allowed("::1")
+    assert not plugin._plaintext_allowed("testclient")
+    assert not plugin._plaintext_allowed("192.168.1.50")
+    assert not plugin._plaintext_allowed("8.8.8.8")
+
+
+def test_plugin_info_plaintext_refused_for_remote_addr(tmp_path, monkeypatch):
+    _enc_env(monkeypatch, tmp_path, b"fake-zip-content")
+    client = _client_from(("192.168.1.50", 50000))
+
+    r = client.get("/api/plugin/info", headers=AUTH)
+
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"]["code"] == "enc_required"
+    assert "localgitmirror" not in r.text
+
+
+def test_plugin_info_plaintext_for_loopback_client(tmp_path, monkeypatch):
+    _enc_env(monkeypatch, tmp_path, b"fake-zip-content")
+    client = _client_from(("127.0.0.1", 50000))
+
+    plain = client.get("/api/plugin/info", headers=AUTH)
+
+    assert plain.status_code == 200, plain.text
+    data = plain.json()
+    assert "e" not in data
+    assert data["version"] == "0.999.0"
+    assert data["filename"] == "localgitmirror-idea-plugin-0.999.0.zip"
+
+    sealed = client.get("/api/plugin/info", params={"enc": "1"}, headers=AUTH)
+    assert sealed.status_code == 200
+    assert set(sealed.json()) == {"e"}
+
+
+def test_plugin_latest_plaintext_for_loopback_client(tmp_path, monkeypatch):
+    payload = b"PK\x03\x04" + b"\x00" * 64
+    _enc_env(monkeypatch, tmp_path, payload)
+    client = _client_from(("127.0.0.1", 50000))
+
+    plain = client.get("/api/plugin/latest", headers=AUTH)
+
+    assert plain.status_code == 200, plain.text
+    assert plain.content == payload
+
+    sealed = client.get("/api/plugin/latest", params={"enc": "1"}, headers=AUTH)
+    assert sealed.status_code == 200
+    assert sealed.content[:2] != b"PK"

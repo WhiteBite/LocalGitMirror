@@ -12,11 +12,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from app.core.bundle_crypto import encrypt_bundle_bytes
 from app.core.envelope_crypto import encrypt_envelope
+from app.core.mirror_dataplane import _is_loopback
 
 router = APIRouter(prefix="/api/plugin", tags=["plugin"])
 
@@ -185,19 +186,12 @@ def _enc_password() -> str:
     return password
 
 
-@router.get("/info")
-def plugin_info(enc: bool = Query(False)):
-    """Return the exact semantic-versioned archive available to the IDE.
+def _plaintext_allowed(client_host: str) -> bool:
+    """Loopback peers (the SPA this server itself serves) may skip the envelope."""
+    return _is_loopback(client_host)
 
-    ``?enc=1`` hides the metadata (filename reveals the tool name) behind the
-    standard envelope — the work network is hostile, the mirror is trusted.
-    Plaintext (``enc=0`` or no flag) is refused: the sync password is
-    required. A stale or missing archive is reported via ``building`` while
-    one background rebuild runs.
-    """
-    if not enc:
-        raise HTTPException(status_code=400, detail=_PLAINTEXT_REFUSAL)
-    password = _enc_password()
+
+def _info_metadata() -> dict:
     archive, building = _ensure_current_zip()
     metadata: dict = {"available": archive is not None, "building": building}
     if archive is not None:
@@ -213,24 +207,43 @@ def plugin_info(enc: bool = Query(False)):
         )
     if _BUILD_ERROR:
         metadata["build_error"] = _BUILD_ERROR
-    return {"e": encrypt_envelope(metadata, password)}
+    return metadata
+
+
+@router.get("/info")
+def plugin_info(request: Request, enc: bool = Query(False)):
+    """Return the exact semantic-versioned archive available to the IDE.
+
+    ``?enc=1`` hides the metadata (filename reveals the tool name) behind the
+    standard envelope — the work network is hostile, the mirror is trusted.
+    Plaintext (``enc=0`` or no flag) is refused for remote clients: the sync
+    password is required; loopback peers (the SPA this server itself serves)
+    get the plaintext form. A stale or missing archive is reported via
+    ``building`` while one background rebuild runs.
+    """
+    if not enc:
+        if not _plaintext_allowed(request.client.host if request.client else ""):
+            raise HTTPException(status_code=400, detail=_PLAINTEXT_REFUSAL)
+        return _info_metadata()
+    password = _enc_password()
+    return {"e": encrypt_envelope(_info_metadata(), password)}
 
 
 @router.get("/latest")
-def plugin_latest(enc: bool = Query(False)):
+def plugin_latest(request: Request, enc: bool = Query(False)):
     """Stream the same current archive described by ``/info``.
 
     ``?enc=1`` ships the archive as a bundle-format ciphertext (pure noise on
     the wire; the raw ZIP would expose the plugin's bytecode to traffic
-    inspection). Plaintext (``enc=0`` or no flag) is refused: the sync
-    password is required. The newest existing ZIP is served while a rebuild
-    runs in the background.
+    inspection). Plaintext (``enc=0`` or no flag) is refused for remote
+    clients: the sync password is required; loopback peers (the SPA this
+    server itself serves) get the raw ZIP. The newest existing ZIP is served
+    while a rebuild runs in the background.
     """
     if not enc:
-        raise HTTPException(status_code=400, detail=_PLAINTEXT_REFUSAL)
+        if not _plaintext_allowed(request.client.host if request.client else ""):
+            raise HTTPException(status_code=400, detail=_PLAINTEXT_REFUSAL)
+        return Response(content=_current_zip().read_bytes(), media_type="application/zip")
     password = _enc_password()
-    archive, _building = _ensure_current_zip()
-    if archive is None:
-        raise HTTPException(status_code=404, detail="Plugin archive not built yet")
-    blob = encrypt_bundle_bytes(archive.read_bytes(), password)
+    blob = encrypt_bundle_bytes(_current_zip().read_bytes(), password)
     return Response(content=blob, media_type="application/octet-stream")
