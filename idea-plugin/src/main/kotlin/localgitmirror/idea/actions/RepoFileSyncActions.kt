@@ -34,6 +34,22 @@ private fun fileSyncNotify(project: Project?, message: String, type: Notificatio
     .notify(project)
 }
 
+internal enum class FileSyncConfigStatus { OK, CONFIG_MISSING, SERVER_KEY_NOT_PINNED }
+
+internal const val FILESYNC_KEY_NOT_PINNED_KEY = "filesync.notify.keyNotPinned"
+
+internal fun fileSyncConfigStatus(baseUrlBlank: Boolean, v3Pinned: Boolean): FileSyncConfigStatus = when {
+  baseUrlBlank -> FileSyncConfigStatus.CONFIG_MISSING
+  !v3Pinned -> FileSyncConfigStatus.SERVER_KEY_NOT_PINNED
+  else -> FileSyncConfigStatus.OK
+}
+
+internal fun fileSyncConfigNotifyKey(status: FileSyncConfigStatus): String? = when (status) {
+  FileSyncConfigStatus.OK -> null
+  FileSyncConfigStatus.CONFIG_MISSING -> "notify.config.missing"
+  FileSyncConfigStatus.SERVER_KEY_NOT_PINNED -> FILESYNC_KEY_NOT_PINNED_KEY
+}
+
 private data class FileSyncContext(
   val settings: MirrorSettingsService.State,
   val apiKey: String,
@@ -48,12 +64,11 @@ private fun fileSyncContext(project: Project?): FileSyncContext? {
     return null
   }
   val settings = service<MirrorSettingsService>().state
-  if (settings.baseUrl.isBlank()) {
-    fileSyncNotify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
-    return null
-  }
-  if (!MirrorCrypto.isV3Pinned()) {
-    fileSyncNotify(project, LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)
+  val configNotifyKey = fileSyncConfigNotifyKey(
+    fileSyncConfigStatus(settings.baseUrl.isBlank(), MirrorCrypto.isV3Pinned())
+  )
+  if (configNotifyKey != null) {
+    fileSyncNotify(project, LocalGitMirrorBundle.message(configNotifyKey), NotificationType.WARNING)
     return null
   }
   val dir = File(basePath).canonicalFile

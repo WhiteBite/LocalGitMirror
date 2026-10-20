@@ -13,6 +13,14 @@ import javax.swing.JPanel
 import javax.swing.JProgressBar
 import javax.swing.JToggleButton
 
+internal enum class CancelAffordance { HIDDEN, DISABLED, ACTIVE }
+
+internal fun cancelAffordance(isSyncing: Boolean, cancellableTracked: Boolean): CancelAffordance = when {
+  !isSyncing -> CancelAffordance.HIDDEN
+  cancellableTracked -> CancelAffordance.ACTIVE
+  else -> CancelAffordance.DISABLED
+}
+
 internal class ProgressController(private val panel: LocalGitMirrorPanel) {
 
   internal val progressBar = JProgressBar().apply {
@@ -39,11 +47,16 @@ internal class ProgressController(private val panel: LocalGitMirrorPanel) {
   internal var isSyncing = false
     set(value) {
       field = value
+      if (value) currentIndicator = null
       updateUiState()
     }
 
   /** Current progress indicator for cancellation support. Set by sync operations. */
   internal var currentIndicator: ProgressIndicator? = null
+    set(value) {
+      field = value
+      applyCancelAffordance()
+    }
 
   /** Update progress bar + label from any thread. fraction in [0..1] or -1 for indeterminate. */
   internal fun setProgress(fraction: Double, text: String) {
@@ -63,6 +76,14 @@ internal class ProgressController(private val panel: LocalGitMirrorPanel) {
     currentIndicator?.cancel()
   }
 
+  private fun applyCancelAffordance() {
+    UIUtil.invokeLaterIfNeeded {
+      val affordance = cancelAffordance(isSyncing, currentIndicator != null)
+      cancelButton.isVisible = affordance != CancelAffordance.HIDDEN
+      cancelButton.isEnabled = affordance == CancelAffordance.ACTIVE
+    }
+  }
+
   private fun updateUiState() {
     UIUtil.invokeLaterIfNeeded {
       val enabled = !isSyncing
@@ -73,10 +94,11 @@ internal class ProgressController(private val panel: LocalGitMirrorPanel) {
         }
       }
       disableAll(panel)
-      cancelButton.isEnabled = true
+      val affordance = cancelAffordance(isSyncing, currentIndicator != null)
+      cancelButton.isVisible = affordance != CancelAffordance.HIDDEN
+      cancelButton.isEnabled = affordance == CancelAffordance.ACTIVE
       progressBar.isVisible = isSyncing
       progressLabel.isVisible = isSyncing
-      cancelButton.isVisible = isSyncing
       progressRow?.isVisible = isSyncing
       if (!isSyncing) {
         progressLabel.text = ""
