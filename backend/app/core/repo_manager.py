@@ -328,6 +328,9 @@ class RepoManager:
         bare_path = self._get_bare_path(repo_name)
         workspace = self._get_workspace_path(repo_name)
 
+        if repo_name not in self.get_repos():
+            return {"success": False, "message": f"Отказано: '{repo_name}' не в списке репозиториев"}
+
         try:
             import shutil
 

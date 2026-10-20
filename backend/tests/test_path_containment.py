@@ -136,6 +136,33 @@ def test_repos_delete_still_deletes_a_real_repo(tmp_path: Path):
     assert "doomed" not in repo_manager.get_repos()
 
 
+def test_manager_delete_repo_refuses_a_name_it_does_not_enumerate(tmp_path: Path):
+    storage = tmp_path / "storage"
+    storage.mkdir(parents=True, exist_ok=True)
+    (storage / "settings.json").write_text(json.dumps({"git": {}}), encoding="utf-8")
+    manager = RepoManager(storage)
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("do not delete\n", encoding="utf-8")
+
+    result = manager.delete_repo("../victim")
+
+    assert result["success"] is False
+    assert (victim / "keep.txt").exists()
+
+
+def test_manager_delete_repo_refuses_system_dirs(tmp_path: Path):
+    storage = tmp_path / "storage"
+    (storage / ".lgm" / "bare").mkdir(parents=True, exist_ok=True)
+    (storage / "settings.json").write_text(json.dumps({"git": {}}), encoding="utf-8")
+    manager = RepoManager(storage)
+
+    for name in (".lgm", "bare", "shared"):
+        assert manager.delete_repo(name)["success"] is False, name
+
+    assert (storage / ".lgm" / "bare").exists()
+
+
 def test_shared_save_rejects_dotdot(tmp_path: Path):
     storage = tmp_path / "storage"
     storage.mkdir(parents=True, exist_ok=True)
