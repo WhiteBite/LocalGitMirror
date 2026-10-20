@@ -12,7 +12,11 @@ class GitLabApiRedirectTest {
   private lateinit var server: HttpServer
   private var redirectHits = 0
   private var loopHits = 0
+  private var postLoopHits = 0
   private var tokenSeenOnFinalHop: String? = null
+  private var postTokenSeen: String? = null
+  private var postMethodSeen: String? = null
+  private var postBodySeen: String? = null
 
   @BeforeTest
   fun up() {
@@ -31,10 +35,26 @@ class GitLabApiRedirectTest {
     }
     server.createContext("/api/v4") { ex ->
       tokenSeenOnFinalHop = ex.requestHeaders.getFirst("PRIVATE-TOKEN")
-      val body = "[]".toByteArray(Charsets.UTF_8)
+      postMethodSeen = ex.requestMethod
+      if (ex.requestMethod == "POST") {
+        postTokenSeen = ex.requestHeaders.getFirst("PRIVATE-TOKEN")
+        postBodySeen = ex.requestBody.readBytes().toString(Charsets.UTF_8)
+      }
+      val body = (if (ex.requestMethod == "POST") "{}" else "[]").toByteArray(Charsets.UTF_8)
       ex.responseHeaders.add("Content-Type", "application/json")
       ex.sendResponseHeaders(200, body.size.toLong())
       ex.responseBody.use { it.write(body) }
+    }
+    server.createContext("/rpost") { ex ->
+      ex.responseHeaders.add("Location", "/api/v4/projects/x/merge_requests/9/notes")
+      ex.sendResponseHeaders(301, -1)
+      ex.close()
+    }
+    server.createContext("/ploop") { ex ->
+      postLoopHits++
+      ex.responseHeaders.add("Location", "/ploop")
+      ex.sendResponseHeaders(301, -1)
+      ex.close()
     }
     server.start()
   }
@@ -66,5 +86,27 @@ class GitLabApiRedirectTest {
     assertEquals(301, result.code)
     assertTrue(loopHits <= 4, "hops must be bounded, got $loopHits")
     assertTrue(result.message.contains("redirect", ignoreCase = true), result.message)
+  }
+
+  @Test
+  fun `posting a note follows a redirect keeping method body and token`() {
+    val conf = GitLabConfig.GitLabConf("${base()}/rpost", "x", "secret-token")
+
+    val result = GitLabApi.postMrNote(conf, 9, "hello world")
+
+    assertTrue(result.ok(), "POST redirect must be followed: ${result.message}")
+    assertEquals("POST", postMethodSeen)
+    assertEquals("secret-token", postTokenSeen)
+    assertTrue(postBodySeen?.contains("hello world") == true, postBodySeen ?: "no body captured")
+  }
+
+  @Test
+  fun `posting into a redirect loop stops after bounded hops`() {
+    val conf = GitLabConfig.GitLabConf("${base()}/ploop", "x", "t")
+
+    val result = GitLabApi.postMrNote(conf, 9, "x")
+
+    assertEquals(301, result.code)
+    assertTrue(postLoopHits <= 4, "hops must be bounded, got $postLoopHits")
   }
 }

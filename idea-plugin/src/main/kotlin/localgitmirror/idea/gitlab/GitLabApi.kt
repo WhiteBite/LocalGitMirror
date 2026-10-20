@@ -316,14 +316,33 @@ object GitLabApi {
 
   private fun write(url: String, conf: GitLabConfig.GitLabConf, method: String, payload: kotlinx.serialization.json.JsonObject): WriteResult {
     return try {
-      val conn = openWrite(url, conf.token, method, payload.toString())
-      val code = conn.responseCode
-      val body = HttpClient.readBody(conn)
-      if (code in 200..299) WriteResult(code, "OK") else WriteResult(code, body.take(300))
+      writeFollowing(url, conf.token, method, payload.toString())
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t, isMirror = false)
       WriteResult(0, "${e.type}: ${e.message}")
     }
+  }
+
+  private fun writeFollowing(url: String, token: String, method: String, body: String): WriteResult {
+    var current = url
+    repeat(MAX_REDIRECT_HOPS + 1) {
+      val conn = openWrite(current, token, method, body)
+      val code = conn.responseCode
+      val location = conn.getHeaderField("Location")
+      if (code !in REDIRECT_CODES || location.isNullOrBlank()) {
+        val text = HttpClient.readBody(conn)
+        return if (code in 200..299) WriteResult(code, "OK") else WriteResult(code, redirectHint(conn, code, text))
+      }
+      val from = URL(current)
+      val next = URL(from, location)
+      if (!next.host.equals(from.host, ignoreCase = true) && next.protocol != "https") {
+        val text = HttpClient.readBody(conn)
+        return WriteResult(code, redirectHint(conn, code, text))
+      }
+      conn.disconnect()
+      current = next.toExternalForm()
+    }
+    return WriteResult(301, "too many redirects (more than $MAX_REDIRECT_HOPS)")
   }
 
   /** POST a note into an existing discussion thread. */
