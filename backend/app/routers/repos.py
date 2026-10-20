@@ -153,6 +153,8 @@ def delete_repo(request: RepoSelectRequest):
     """Delete a repository"""
     if not repo_manager:
         raise HTTPException(500, "Repo manager не инициализирован")
+    if request.repo not in repo_manager.get_repos():
+        raise HTTPException(400, f"Репозиторий не найден: {request.repo}")
     if repo_manager.current_repo == request.repo:
         repo_manager.current_repo = "default"
     result = repo_manager.delete_repo(request.repo)

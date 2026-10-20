@@ -110,6 +110,32 @@ def test_repos_select_rejects_dotdot(tmp_path: Path):
     assert not (tmp_path / "x").exists()
 
 
+def test_repos_delete_rejects_names_outside_the_storage(tmp_path: Path):
+    repo_manager, client, storage = _build_client(tmp_path)
+    _make_repo(client, "contain")
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "keep.txt").write_text("do not delete\n", encoding="utf-8")
+
+    resp = client.post("/api/repos/delete", json={"repo": "../victim"})
+
+    assert resp.status_code == 400, resp.text
+    assert (victim / "keep.txt").exists(), "a traversal name must never reach rmtree"
+    assert repo_manager.current_repo == "contain"
+
+
+def test_repos_delete_still_deletes_a_real_repo(tmp_path: Path):
+    repo_manager, client, storage = _build_client(tmp_path)
+    _make_repo(client, "doomed")
+    assert (storage / "doomed").exists()
+
+    resp = client.post("/api/repos/delete", json={"repo": "doomed"})
+
+    assert resp.status_code == 200, resp.text
+    assert not (storage / "doomed").exists()
+    assert "doomed" not in repo_manager.get_repos()
+
+
 def test_shared_save_rejects_dotdot(tmp_path: Path):
     storage = tmp_path / "storage"
     storage.mkdir(parents=True, exist_ok=True)
