@@ -30,6 +30,7 @@ class _PendingClient:
 
     def __init__(self, items=(), mr_state=None, gitlab_error="default"):
         self.sync_password = ""
+        self.projects_seen = []
         self._items = list(items)
         self._mr_state = mr_state or {}
         # GitLab answers iff mr_state is populated; otherwise the home-side refusal.
@@ -50,6 +51,7 @@ class _PendingClient:
     def gitlab_get_mr(self, iid, project=""):
         if self._gitlab_error is not None:
             raise self._gitlab_error
+        self.projects_seen.append(project)
         return {"iid": iid, "state": self._mr_state[iid]}
 
 
@@ -89,6 +91,18 @@ def test_mr_pending_reports_notes_mtime_and_age(frozen_now):
     it = res["items"][0]
     assert it["iid"] == 24
     assert it["notes"] == {"mtime": _NOW - 3600, "age_seconds": 3600}
+
+
+def test_mr_pending_asks_gitlab_in_the_registry_project(frozen_now, monkeypatch):
+    from lgm_core import ops_projects
+    monkeypatch.setattr(ops_projects, "_load_registry",
+                        lambda: {"projects": [{"repo": "r1", "gitlab": "group/proj"}]})
+    client = _PendingClient([_note(24, 100)], mr_state={24: "opened"})
+
+    res = op_mr_pending(_ctx(client), {"repo": "r1"})
+
+    assert res["items"][0]["state_evidence"] == "gitlab"
+    assert client.projects_seen == ["group/proj"]
 
 
 def test_mr_pending_lists_pending_reply_ids(frozen_now):

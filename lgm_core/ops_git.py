@@ -543,9 +543,9 @@ MR REVIEW REPLIES (home agent -> work PC -> GitLab):
    1-3 sentences, long only when a scenario needs it; anchored at the offending
    line, imperative, concrete; no praise, no code restating, no filler openers.
     3. mr_replies_status repo=<name> [iid=<N>] — work PC's publish report
-      (posted/failed counts); empty means not published yet.
-   4. mr_pending repo=<name> — one pipeline view per MR: notes age, replies
-      pending, last publish outcome, closed state with evidence.
+       (posted/failed counts); empty means not published yet.
+    4. mr_pending repo=<name> — one pipeline view per MR: notes age, replies
+       pending, last publish outcome, closed state with evidence.
    The work PC posts approved replies to GitLab; a human may approve them in
    the IDE first, so a pending send is normal — poll mr_replies_status.
 

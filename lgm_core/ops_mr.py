@@ -1225,6 +1225,14 @@ def op_mr_pending(ctx: Ctx, args: dict) -> dict:
                     statuses[iid] = i
 
     gitlab_usable = True
+    # lazy import: ops_projects imports this module at top level
+    try:
+        from .ops_projects import _load_registry
+        gitlab_project = next((str(e.get("gitlab", "") or "")
+                               for e in _load_registry().get("projects", [])
+                               if e.get("repo") == repo), "")
+    except Exception:
+        gitlab_project = ""
     out: list[dict] = []
     for iid in sorted(set(notes) | set(markers) | set(replies) | set(statuses)):
         entry: dict = {"iid": iid, "notes": None, "replies_pending": False,
@@ -1249,7 +1257,7 @@ def op_mr_pending(ctx: Ctx, args: dict) -> dict:
                                          "error": "fetch/decrypt failed (v3 relay)"}
         if gitlab_usable:
             try:
-                state = (c.gitlab_get_mr(iid).get("state") or "").lower()
+                state = (c.gitlab_get_mr(iid, project=gitlab_project).get("state") or "").lower()
                 if state in ("opened", "closed", "merged", "locked"):
                     entry["state"] = "closed" if state in ("closed", "merged") else "open"
                     entry["state_evidence"] = "gitlab"
