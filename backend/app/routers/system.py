@@ -69,7 +69,7 @@ async def get_config():
     """Get current configuration"""
     return {
         "storage_path": str(config.get("storage_path", "storage")),
-        "git_port": config.get("git_port", 8081),
+        "git_port": config.get("git_port", 8444),
         "ollama_url": config.get("ollama_url", "http://localhost:11434"),
     }
 
