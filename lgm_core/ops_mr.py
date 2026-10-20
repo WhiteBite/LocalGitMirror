@@ -12,6 +12,7 @@ from .ops_git import send_branches
 
 _MRN_TITLE = re.compile(r"^# MR !(\d+) — (.*)$")
 _MRN_BRANCH = re.compile(r"^- \*\*Ветка:\*\* `([^`]+)`")
+_MRN_TARGET = re.compile(r"^- \*\*(?:Target|Целевая):\*\* `([^`]+)`")
 _MRN_UPDATED = re.compile(r"^- \*\*Обновлено:\*\* (\S+)")
 _MRN_DETECTED = re.compile(r"^- \*\*Обнаружено:\*\* (\S+)")
 _MR_NOTES_FILE = re.compile(r"mr-!(\d+)\.md$")
@@ -79,11 +80,46 @@ def _note_and_marker_items(c: MirrorClient, repo: str, iid: int) -> tuple | None
     return note, _closed_marker_iids(items).get(iid)
 
 
-def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: bool) -> dict:
+def _anchor_diff_warnings(proj: Path | None, iid: int, source: str, target: str,
+                          anchors: list) -> list[str]:
+    """Non-blocking file-level check: GitLab anchors '## new' threads only to
+    lines inside the MR diff, so a path outside merge-base(target)..source
+    posts as a general note. Line-level checks belong to the plugin."""
+    if proj is None or not anchors or not source or not target:
+        return []
+    src = _local_tip(proj, source, missing_ok=True)
+    tgt = _local_tip(proj, target, missing_ok=True)
+    if not src or not tgt:
+        return []
+    mb = subprocess.run(
+        ["git", "-C", str(proj), "merge-base", tgt, src],
+        capture_output=True, text=True, timeout=30,
+    )
+    base = mb.stdout.strip()
+    if mb.returncode != 0 or not base:
+        return []
+    diff = subprocess.run(
+        ["git", "-C", str(proj), "diff", "--name-only", f"{base}..{src}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if diff.returncode != 0:
+        return []
+    changed = set(diff.stdout.splitlines())
+    return [
+        f"{file}:{line} not in MR !{iid} diff ({source} vs {target}) - "
+        f"will post as a general note or belongs in an issue"
+        for file, line in anchors if file not in changed
+    ]
+
+
+def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: bool,
+                    project: Path | None = None) -> dict:
     """Reject replies for a closed MR or ones duplicating the live review: a '## new'
     anchor colliding with an unresolved thread (±ANCHOR_WINDOW lines, same file) or a
     '## thread' id absent from the notes. Fail-closed when the notes are unavailable:
-    thread ids cannot be verified, so the reply is refused unless force."""
+    thread ids cannot be verified, so the reply is refused unless force.
+    ``anchor_warnings`` (non-blocking) list '## new' anchors whose file is outside
+    the MR diff; computed only when both branches resolve in ``project``."""
     thread_refs = _REPLY_THREAD.findall(content)
     anchors = [(m.group(1), int(m.group(2))) for m in _REPLY_ANCHORED.finditer(content)]
     found = _note_and_marker_items(c, repo, iid)
@@ -113,7 +149,11 @@ def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: b
     threads = _parse_notes_threads(notes)
     collisions = _anchor_collisions(anchors, threads["unresolved"])
     unknown = [t for t in thread_refs if t not in threads["ids"]]
-    result = {"status": "ok", "collisions": collisions, "unknown_threads": unknown}
+    head = _parse_mr_notes_head(notes)
+    anchor_warnings = _anchor_diff_warnings(
+        project, iid, head["source_branch"], head["target_branch"], anchors)
+    result = {"status": "ok", "collisions": collisions, "unknown_threads": unknown,
+              "anchor_warnings": anchor_warnings}
     if not collisions and not unknown:
         return result
     result["status"] = "forced" if force else "rejected"
@@ -135,6 +175,7 @@ def _notes_precheck(c: MirrorClient, repo: str, iid: int, content: str, force: b
 
 def _parse_mr_notes_head(markdown: str) -> dict:
     iid, title, branch = 0, "", ""
+    target = ""
     unresolved = 0
     updated = ""
     for line in markdown.splitlines():
@@ -145,6 +186,9 @@ def _parse_mr_notes_head(markdown: str) -> dict:
         b = _MRN_BRANCH.match(line)
         if b:
             branch = b.group(1)
+        t = _MRN_TARGET.match(line)
+        if t:
+            target = t.group(1)
         d = _MRN_DETECTED.match(line)
         if d:
             updated = d.group(1)
@@ -154,6 +198,7 @@ def _parse_mr_notes_head(markdown: str) -> dict:
         if line.startswith("## ⚠"):
             unresolved += 1
     return {"iid": iid, "title": title, "source_branch": branch,
+            "target_branch": target,
             "unresolved": unresolved, "updated": updated}
 
 
@@ -567,7 +612,16 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
         return {"success": False, "error": "provide file (path) or text (markdown body)"}
     if "## thread" not in content and "## new" not in content:
         return {"success": False, "error": "no reply sections ('## thread <id>' / '## new') found in content"}
-    precheck = _notes_precheck(c, repo, iid, content, force=bool(args.get("force")))
+    project = (args.get("project") or "").strip()
+    if project:
+        proj: Path | None = Path(project).resolve()
+    else:
+        storage = getattr(ctx.config, "storage_path", "") or ""
+        proj = Path(storage).resolve() / repo if storage else None
+    if proj is not None and not proj.is_dir():
+        proj = None
+    precheck = _notes_precheck(c, repo, iid, content, force=bool(args.get("force")),
+                               project=proj)
     if precheck.get("error"):
         return {"success": False, "error": precheck["error"], "precheck": precheck}
     # The work-side parser keys off the "# MR !N" header; inject it so the file is never skipped.
@@ -583,7 +637,9 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
     display = f"mr-replies/mr-!{iid}.md"
     res = c.file_sync_send(repo, display, len(data), data)
     return {"success": True, "repo": repo, "path": display, "size": len(data),
-            "precheck": precheck, "response": res}
+            "precheck": precheck,
+            "anchor_warnings": precheck.get("anchor_warnings", []),
+            "response": res}
 
 
 def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:

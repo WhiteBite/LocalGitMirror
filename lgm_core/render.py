@@ -374,11 +374,14 @@ def _render_mr_send(r: dict) -> list[str]:
 def _render_mr_replies_send(r: dict) -> list[str]:
     if not r.get("success"):
         return [f"mr_replies_send FAILED: {r.get('error', '?')}"]
-    return [
+    out = [
         f"Replies for {r.get('path')} uploaded to postbox "
         f"({r.get('size', 0)} bytes, repo={r.get('repo')})",
         "The work machine will post them to GitLab automatically.",
     ]
+    for w in r.get("anchor_warnings") or []:
+        out.append(f"  [warning] {w}")
+    return out
 
 
 def _render_mr_replies_status(r: dict) -> list[str]:

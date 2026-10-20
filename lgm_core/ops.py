@@ -326,6 +326,9 @@ REGISTRY: list[Op] = [
                                      "'resolve: yes' first line per thread"),
             Param("force", "bool", False, "Skip the precheck that rejects anchors colliding "
                                           "with unresolved threads and unknown thread ids"),
+            Param("project", "str", "",
+                  "Local git root for the anchor warnings (default: the mirror workspace "
+                  "for --repo); '## new' paths outside the MR diff are warned, not blocked"),
         ],
         run=op_mr_replies_send,
     ),
