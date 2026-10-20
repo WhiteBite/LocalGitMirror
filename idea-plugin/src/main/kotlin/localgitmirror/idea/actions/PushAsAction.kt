@@ -16,6 +16,7 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
+import localgitmirror.idea.ui.PanelSyncMessages
 import java.io.File
 
 /**
@@ -105,7 +106,7 @@ class PushAsAction : AnAction() {
           val syncRes = syncFacade.runFullSync(projectDir, settings)
           val result = syncRes.step
           if (!result.ok) {
-            notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}", NotificationType.ERROR)
+            notify(project, "[trace=${syncRes.traceId}] ${PanelSyncMessages.sendFailureText(syncRes.repo, result.message, result.details)}", NotificationType.ERROR)
             history.add(LocalGitMirrorBundle.message("history.op.pushAs"), false,
               "branch=$targetBranch err=${result.message.take(300)}")
             return
@@ -118,7 +119,7 @@ class PushAsAction : AnAction() {
             return
           }
 
-          notify(project, "[trace=${syncRes.traceId}] ${LocalGitMirrorBundle.message("notify.send.pushAs.ok", targetBranch, syncRes.repo ?: "?")}", NotificationType.INFORMATION)
+          notify(project, "[trace=${syncRes.traceId}] ${PanelSyncMessages.pushAsOk(targetBranch, syncRes.repo)}", NotificationType.INFORMATION)
           history.add(LocalGitMirrorBundle.message("history.op.pushAs"), true,
             "branch=$targetBranch repo=${syncRes.repo ?: "?"}")
         } finally {

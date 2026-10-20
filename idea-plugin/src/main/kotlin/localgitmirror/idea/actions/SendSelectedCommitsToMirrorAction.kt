@@ -15,6 +15,7 @@ import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.sync.v2.SyncFacadeService
+import localgitmirror.idea.ui.PanelSyncMessages
 import java.io.File
 
 class SendSelectedCommitsToMirrorAction : AnAction() {
@@ -86,7 +87,7 @@ class SendSelectedCommitsToMirrorAction : AnAction() {
           val syncRes = syncFacade.runFullSync(projectDir, settings)
           val res = syncRes.step
           if (!res.ok) {
-            notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${res.message}. ${res.details}", NotificationType.ERROR)
+            notify(project, "[trace=${syncRes.traceId}] ${PanelSyncMessages.sendFailureText(syncRes.repo, res.message, res.details)}", NotificationType.ERROR)
             history.add(LocalGitMirrorBundle.message("history.op.sendCommits"), false,
               "err=${res.message.take(300)}")
             return

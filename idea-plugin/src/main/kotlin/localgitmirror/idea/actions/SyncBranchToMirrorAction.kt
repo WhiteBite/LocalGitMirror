@@ -16,6 +16,7 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncFacadeService
+import localgitmirror.idea.ui.PanelSyncMessages
 import java.io.File
 
 class SyncBranchToMirrorAction : AnAction() {
@@ -92,7 +93,7 @@ class SyncBranchToMirrorAction : AnAction() {
 
         val result = syncRes.step
         if (!result.ok) {
-          notify(project, "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}", NotificationType.ERROR)
+          notify(project, "[trace=${syncRes.traceId}] ${PanelSyncMessages.sendFailureText(syncRes.repo, result.message, result.details)}", NotificationType.ERROR)
           history.add(LocalGitMirrorBundle.message("history.op.sendBranch"), false,
             "branch=$chosen err=${result.message.take(300)}")
           return

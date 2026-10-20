@@ -15,6 +15,7 @@ import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncEngine
 import localgitmirror.idea.sync.v2.SyncFacadeService
+import localgitmirror.idea.ui.PanelSyncMessages
 import java.io.File
 
 /** Shared tail of the MR transfer: fetch source branches from origin, then send. Must run on a background thread. */
@@ -144,7 +145,7 @@ object GitLabMrSender {
       result != null && !result.ok -> {
         notify(
           project,
-          "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}",
+          "[trace=${syncRes.traceId}] ${PanelSyncMessages.sendFailureText(syncRes.repo, result.message, result.details)}",
           NotificationType.ERROR
         )
         for ((branch, iid) in attempted) {
@@ -302,7 +303,7 @@ object GitLabMrSender {
     if (!result.ok) {
       notify(
         project,
-        "[trace=${syncRes.traceId}] repo='${syncRes.repo ?: "?"}' ${result.message}. ${result.details}",
+        "[trace=${syncRes.traceId}] ${PanelSyncMessages.sendFailureText(syncRes.repo, result.message, result.details)}",
         NotificationType.ERROR
       )
       history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
