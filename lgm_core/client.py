@@ -104,6 +104,18 @@ def _auth_headers(api_key: str) -> dict:
     return h
 
 
+_GITLAB_REDIRECTS = {301, 302, 307, 308}
+_GITLAB_MAX_REDIRECT_HOPS = 3
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_GITLAB_OPENER = urllib.request.build_opener(_NoRedirectHandler())
+
+
 class MirrorClient:
     """Thin HTTP client covering the full Mirror API surface."""
 
@@ -488,6 +500,37 @@ class MirrorClient:
         except Exception as e:
             raise LgmError("network", f"GitLab unreachable: {e}") from None
 
+    def _gitlab_write(self, url: str, token: str, method: str, payload: dict) -> dict:
+        """POST/PUT JSON to GitLab. Redirects are followed with method and body
+        preserved: urllib would silently turn a redirected POST into a GET."""
+        data = json.dumps(payload).encode("utf-8")
+        current = url
+        for _ in range(_GITLAB_MAX_REDIRECT_HOPS + 1):
+            req = urllib.request.Request(
+                current, data=data, method=method,
+                headers={"PRIVATE-TOKEN": token, "User-Agent": _user_agent(),
+                         "Content-Type": "application/json"},
+            )
+            try:
+                with _GITLAB_OPENER.open(req, timeout=self.timeout) as r:
+                    body = r.read()
+                    return json.loads(body) if body else {}
+            except urllib.error.HTTPError as e:
+                location = e.headers.get("Location", "") if e.code in _GITLAB_REDIRECTS else ""
+                if location:
+                    nxt = urllib.parse.urljoin(current, location)
+                    parts, cur = urllib.parse.urlparse(nxt), urllib.parse.urlparse(current)
+                    if (parts.hostname or "").lower() == (cur.hostname or "").lower() \
+                            or parts.scheme == "https":
+                        current = nxt
+                        continue
+                text = e.read().decode(errors="replace")[:300]
+                raise LgmError(e.code, f"GitLab API error {e.code}: {text}") from None
+            except Exception as e:
+                raise LgmError("network", f"GitLab unreachable: {e}") from None
+        raise LgmError("network",
+                       f"GitLab unreachable: too many redirects (more than {_GITLAB_MAX_REDIRECT_HOPS})")
+
     def gitlab_list_mrs(self, project: str = "") -> list:
         """GET /api/v4/projects/<id>/merge_requests?state=opened — open MRs.
 
@@ -549,6 +592,74 @@ class MirrorClient:
             out.extend(data)
             page += 1
         return out
+
+    def gitlab_compare(self, from_ref: str, to_ref: str, project: str = "") -> dict:
+        """GET .../repository/compare?from=<from>&to=<to> — the raw compare
+        payload; callers parse ``diffs[*].diff`` hunk ranges for anchor checks."""
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
+        return self._gitlab_get(
+            f"{url}/api/v4/projects/{proj_id}/repository/compare"
+            f"?from={urllib.parse.quote(from_ref, safe='')}"
+            f"&to={urllib.parse.quote(to_ref, safe='')}",
+            token,
+        )
+
+    def gitlab_post_thread_note(self, iid: int, discussion_id: str, body: str,
+                                project: str = "") -> dict:
+        """POST .../merge_requests/<iid>/discussions/<id>/notes — reply into a thread."""
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
+        return self._gitlab_write(
+            f"{url}/api/v4/projects/{proj_id}/merge_requests/{int(iid)}"
+            f"/discussions/{urllib.parse.quote(discussion_id, safe='')}/notes",
+            token, "POST", {"body": body},
+        )
+
+    def gitlab_post_mr_note(self, iid: int, body: str, project: str = "") -> dict:
+        """POST .../merge_requests/<iid>/notes — general (non-anchored) MR note."""
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
+        return self._gitlab_write(
+            f"{url}/api/v4/projects/{proj_id}/merge_requests/{int(iid)}/notes",
+            token, "POST", {"body": body},
+        )
+
+    def gitlab_post_new_discussion(self, iid: int, body: str,
+                                   diff_refs: Optional[dict] = None,
+                                   position: Optional[tuple] = None,
+                                   project: str = "") -> dict:
+        """POST .../merge_requests/<iid>/discussions — new thread. Anchored to
+        the MR diff only when both ``diff_refs`` ({base_sha, start_sha, head_sha})
+        and ``position`` (new_path, new_line) are given; GitLab answers 400/422
+        when the line is outside the diff, so callers fall back to a general note."""
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
+        payload: dict = {"body": body}
+        if diff_refs and position:
+            payload["position"] = {
+                "base_sha": diff_refs.get("base_sha", ""),
+                "start_sha": diff_refs.get("start_sha", ""),
+                "head_sha": diff_refs.get("head_sha", ""),
+                "position_type": "text",
+                "new_path": position[0],
+                "new_line": position[1],
+            }
+        return self._gitlab_write(
+            f"{url}/api/v4/projects/{proj_id}/merge_requests/{int(iid)}/discussions",
+            token, "POST", payload,
+        )
+
+    def gitlab_resolve_discussion(self, iid: int, discussion_id: str,
+                                  project: str = "") -> dict:
+        """PUT .../discussions/<id> with resolved=true — close a thread."""
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
+        return self._gitlab_write(
+            f"{url}/api/v4/projects/{proj_id}/merge_requests/{int(iid)}"
+            f"/discussions/{urllib.parse.quote(discussion_id, safe='')}",
+            token, "PUT", {"resolved": True},
+        )
 
     # ── deps (gradle/npm artifact sync) — /api/documents/* ─────────────
     # These endpoints are plain multipart (no envelope) — the payload itself

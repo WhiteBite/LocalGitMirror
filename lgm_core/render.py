@@ -403,6 +403,35 @@ def _render_mr_replies_status(r: dict) -> list[str]:
     return out
 
 
+def _render_mr_replies_push(r: dict) -> list[str]:
+    mode = " (dry-run)" if r.get("dry_run") else ""
+    out = [f"MR replies push repo='{r.get('repo', '?')}'{mode}"]
+    totals = r.get("totals") or {}
+    if totals:
+        out.append(
+            f"  totals: posted={totals.get('posted', 0)} "
+            f"duplicates={totals.get('duplicates', 0)} "
+            f"skipped={totals.get('skipped', 0)} "
+            f"failed={totals.get('failed', 0)} "
+            f"not_anchored={totals.get('not_anchored', 0)}"
+        )
+    for rep in r.get("reports") or []:
+        ack = " [acked]" if rep.get("acked") else ""
+        out.append(
+            f"  !{rep.get('iid')} {rep.get('path')}: "
+            f"posted={rep.get('posted', 0)} duplicates={rep.get('duplicates', 0)} "
+            f"skipped={rep.get('skipped', 0)} failed={rep.get('failed', 0)} "
+            f"parse_errors={rep.get('parse_errors', 0)}{ack}"
+        )
+        for rline in rep.get("replies") or []:
+            out.append(f"    [{rline.get('outcome', '?')}] {rline.get('label')}: {rline.get('note', '')}")
+        for n in rep.get("not_anchored") or []:
+            out.append(f"    [not-anchored] {n}")
+    if r.get("message"):
+        out.append(f"  {r['message']}")
+    return out
+
+
 def _render_preview_pull(r: dict) -> list[str]:
     out = [f"Preview pull repo='{r.get('repo', '?')}'"]
     out.append(f"  since: {str(r.get('since') or '(none)')[:12]}")
@@ -574,6 +603,7 @@ _RENDERERS = {
     "mr_notes": _render_mr_notes,
     "mr_replies_send": _render_mr_replies_send,
     "mr_replies_status": _render_mr_replies_status,
+    "mr_replies_push": _render_mr_replies_push,
     "guide": _render_guide,
     "update": _render_update,
     "chat_send": _render_chat_send,

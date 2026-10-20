@@ -66,7 +66,7 @@ from .ops_mr import (
     _MRN_TITLE, _MRN_BRANCH, _parse_mr_notes_head, _mr_list_from_postbox,
     op_mr_list, _resolve_mr_targets, _fetch_mr_branches, _local_tip,
     _mirror_refs_safe, _existing_shas, op_mr_send,
-    op_mr_notes, op_mr_replies_send, op_mr_replies_status,
+    op_mr_notes, op_mr_replies_send, op_mr_replies_status, op_mr_replies_push,
 )
 from .ops_chat import (
     op_chat_send, op_chat_list,
@@ -340,6 +340,23 @@ REGISTRY: list[Op] = [
             Param("iid", "int", 0, "Only this MR iid (0 = all)", minimum=0),
         ],
         run=op_mr_replies_status,
+    ),
+    Op(
+        name="mr_replies_push",
+        summary=("Publish pending mr-replies files from the mirror postbox to GitLab "
+                 "(work side, headless twin of the plugin's push): thread replies, "
+                 "resolve flags, anchored discussions with a general-note fallback when "
+                 "the line is outside the MR diff, exactly-once markers, a status report "
+                 "to mr-replies-status/, and a postbox ack only when every reply reached "
+                 "a terminal outcome. Publishes exactly what the replies file contains."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "Only this MR iid (0 = all)", minimum=0),
+            Param("dry_run", "bool", False,
+                  "Plan only: list what would be posted/skipped and why; no GitLab "
+                  "writes, no postbox acks, no status upload"),
+        ],
+        run=op_mr_replies_push,
     ),
     Op(
         name="guide",

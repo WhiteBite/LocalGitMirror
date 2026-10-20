@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from .client import MirrorClient, LgmError
+from .config import cfg
 from .git_remote import gitlab_project_for
 from .op_models import Ctx, _client, _repo_arg
 from .ops_git import send_branches
@@ -669,3 +672,463 @@ def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:
         except Exception:
             statuses.append({"iid": n, "path": i["path"], "error": "fetch/decrypt failed (v3 relay)"})
     return {"success": True, "repo": repo, "count": len(statuses), "statuses": statuses}
+
+
+_REPLY_HEADER = re.compile(r"^#\s+MR\s+!(\d+)")
+_REPLY_THREAD_LINE = re.compile(r"^##\s+thread\s+(\S+)\s*$")
+_REPLY_ANCHORED_LINE = re.compile(r"^##\s+new\s+(\S+?):(\d+)\s*$")
+_REPLY_GENERAL_LINE = re.compile(r"^##\s+new\s*$")
+_REPLY_RESOLVE_LINE = re.compile(r"^resolve:\s*(yes|no)\s*$", re.IGNORECASE)
+_REPLY_BRANCH_LINE = "- branch:"
+_HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+_MARKER_RE = re.compile(r"<!-- lgm:[0-9a-f]{8} -->")
+
+
+def _parse_replies(markdown: str) -> dict:
+    """Parse the mr-replies v1 format (same grammar as the plugin's MrReplies):
+    '## thread <id>' / '## new <file>:<line>' / '## new' sections, an optional
+    'resolve: yes' first line per thread section, a '# MR !N' header and a
+    '- branch:' line. Malformed sections land in errors and are never sent."""
+    iid, branch = 0, ""
+    replies: list[dict] = []
+    errors: list[str] = []
+    kind: str | None = None
+    thread_id, file = "", ""
+    line_no = 0
+    resolve = False
+    resolve_seen = False
+    body: list[str] = []
+    section_no = 0
+
+    def flush() -> None:
+        nonlocal kind, thread_id, file, line_no, resolve, resolve_seen, body, section_no
+        if kind is None:
+            return
+        section_no += 1
+        text = "\n".join(body).strip()
+        if not text:
+            errors.append(f"section {section_no}: empty body, skipped")
+        elif kind == "thread" and not thread_id:
+            errors.append(f"section {section_no}: blank thread id, skipped")
+        elif kind == "new_anchored" and (not file or line_no <= 0):
+            errors.append(f"section {section_no}: bad file:line, skipped")
+        else:
+            replies.append({"kind": kind, "thread_id": thread_id, "file": file,
+                            "line": line_no, "resolve": resolve and kind == "thread",
+                            "body": text})
+        kind = None
+        thread_id = ""
+        file = ""
+        line_no = 0
+        resolve = False
+        resolve_seen = False
+        body = []
+
+    for raw in markdown.splitlines():
+        text = raw.rstrip()
+        m = _REPLY_HEADER.match(text)
+        if m:
+            iid = int(m.group(1))
+        if text.startswith(_REPLY_BRANCH_LINE):
+            branch = text.split(_REPLY_BRANCH_LINE, 1)[1].strip()
+            continue
+        tm = _REPLY_THREAD_LINE.match(text)
+        am = _REPLY_ANCHORED_LINE.match(text)
+        gm = _REPLY_GENERAL_LINE.match(text)
+        if tm or am or gm:
+            flush()
+            if tm:
+                kind, thread_id = "thread", tm.group(1)
+            elif am:
+                kind, file = "new_anchored", am.group(1)
+                line_no = int(am.group(2))
+            else:
+                kind = "new_general"
+            continue
+        if kind is None:
+            continue
+        rm = _REPLY_RESOLVE_LINE.match(text)
+        if rm and not resolve_seen and not "".join(body).strip():
+            resolve = rm.group(1).lower() == "yes"
+            resolve_seen = True
+            continue
+        body.append(text)
+    flush()
+    return {"iid": iid, "branch": branch, "replies": replies, "errors": errors}
+
+
+def _reply_marker(iid: int, reply: dict) -> str:
+    key = ("t:" + reply["thread_id"] if reply["kind"] == "thread"
+           else f"a:{reply['file']}:{reply['line']}" if reply["kind"] == "new_anchored"
+           else "g")
+    digest = hashlib.sha1(f"{iid}|{key}|{reply['body']}".encode("utf-8")).digest()
+    return f"<!-- lgm:{digest[:4].hex()} -->"
+
+
+def _discussion_view(d: dict) -> dict:
+    notes: list[dict] = []
+    any_resolvable = False
+    all_resolved = True
+    for n in d.get("notes") or []:
+        resolvable = bool(n.get("resolvable"))
+        is_resolved = bool(n.get("resolved"))
+        if resolvable:
+            any_resolvable = True
+            if not is_resolved:
+                all_resolved = False
+        pos = n.get("position") or {}
+        new_line = pos.get("new_line")
+        old_line = pos.get("old_line")
+        notes.append({
+            "system": bool(n.get("system")),
+            "body": n.get("body") or "",
+            "file": pos.get("new_path") or pos.get("old_path"),
+            "line": new_line if new_line is not None else old_line,
+        })
+    return {
+        "id": d.get("id") or "",
+        "resolved": any_resolvable and all_resolved,
+        "notes": notes,
+        "anchor_file": next((n["file"] for n in notes if n["file"] is not None), None),
+        "anchor_line": next((n["line"] for n in notes if n["line"] is not None), None),
+    }
+
+
+def _anchor_clash(reply: dict, discussions: list) -> dict | None:
+    for d in discussions:
+        if d["resolved"] or d["anchor_file"] != reply["file"] or d["anchor_line"] is None:
+            continue
+        if any(not n["system"] for n in d["notes"]) \
+                and abs(d["anchor_line"] - reply["line"]) <= ANCHOR_WINDOW:
+            return d
+    return None
+
+
+def _anchorability_reason(reply: dict, ranges: dict | None) -> str | None:
+    if ranges is None:
+        return None
+    file_ranges = ranges.get(reply["file"])
+    if file_ranges is None:
+        return "file not in MR diff"
+    if any(lo <= reply["line"] <= hi for lo, hi in file_ranges):
+        return None
+    return "line outside diff hunks"
+
+
+def _parse_hunk_new_ranges(diff_text: str) -> list:
+    out = []
+    for line in diff_text.splitlines():
+        m = _HUNK_HEADER.match(line)
+        if not m:
+            continue
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) else 1
+        out.append((start, start + count - 1))
+    return out
+
+
+def _parse_compare_ranges(compare: dict) -> dict:
+    ranges: dict[str, list] = {}
+    for d in compare.get("diffs") or []:
+        new_path = d.get("new_path")
+        diff_text = d.get("diff")
+        if not new_path or not diff_text:
+            continue
+        ranges[new_path] = _parse_hunk_new_ranges(diff_text)
+    return ranges
+
+
+def _resolve_decision(marker_seen: bool, wants_resolve: bool, thread_resolved: bool) -> str:
+    if not marker_seen:
+        return "post"
+    if thread_resolved:
+        return "skip"
+    if wants_resolve:
+        return "resolve_only"
+    return "skip"
+
+
+def _should_ack(replies: list, outcomes: dict, seen_markers: set, iid: int,
+                parse_errors: int, failed: int) -> bool:
+    if parse_errors > 0:
+        return False
+    terminal = {i for i, r in enumerate(replies)
+                if outcomes.get(i) in ("posted", "dup", "dead")
+                or _reply_marker(iid, r) in seen_markers}
+    if len(terminal) == len(replies):
+        return True
+    return failed == 0
+
+
+def _render_replies_status(iid: int, rep: dict) -> str:
+    at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    lines = [
+        "<!-- lgm-replies-status v1 -->",
+        f"# MR !{iid} — status",
+        f"- posted: {rep['posted']}",
+        f"- duplicates: {rep['duplicates']}",
+        f"- skipped: {rep['skipped']}",
+        f"- failed: {rep['failed']}",
+        f"- not anchored: {len(rep['not_anchored'])}",
+        f"- at: {at}",
+    ]
+    lines += [f"  - {d}" for d in rep["details"]]
+    lines += [f"  - {n}" for n in rep["not_anchored"]]
+    return "\n".join(lines) + "\n"
+
+
+def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
+                       dry_run: bool) -> dict:
+    newest = max(group, key=lambda i: (i.get("mtime") or 0))
+    path = newest.get("path") or ""
+    pm = _MR_NOTES_FILE.search(path)
+    iid = parsed["iid"] or (int(pm.group(1)) if pm else 0)
+    try:
+        raw_discussions = c.gitlab_list_discussions(iid)
+    except LgmError as e:
+        return {"iid": iid, "path": path, "posted": 0, "duplicates": 0, "skipped": 0,
+                "failed": 1, "parse_errors": len(parsed["errors"]), "not_anchored": [],
+                "details": [f"list discussions: {e.message}"], "replies": [],
+                "acked": False}
+    discussions = [_discussion_view(d) for d in raw_discussions]
+    diff_refs: dict | None = None
+    changed_ranges: dict | None = None
+    try:
+        detail = c.gitlab_get_mr(iid)
+        diff_refs = detail.get("diff_refs") or None
+        target = (detail.get("target_branch") or "").strip()
+        source = (detail.get("source_branch") or "").strip()
+        if target and source:
+            changed_ranges = _parse_compare_ranges(c.gitlab_compare(target, source))
+    except LgmError:
+        pass  # anchoring data is optional; unanchorable remarks downgrade to notes
+
+    seen_markers: set[str] = set()
+    for d in discussions:
+        for n in d["notes"]:
+            m = _MARKER_RE.search(n["body"] or "")
+            if m:
+                seen_markers.add(m.group(0))
+
+    posted = duplicates = skipped = failed = 0
+    outcomes: dict[int, str] = {}
+    details = [f"parse: {e}" for e in parsed["errors"]]
+    not_anchored: list[str] = []
+    per_reply: list[dict] = []
+
+    for idx, reply in enumerate(parsed["replies"]):
+        label = f"reply {idx + 1}"
+        marker = _reply_marker(iid, reply)
+        thread = next((d for d in discussions
+                       if reply["kind"] == "thread" and d["id"] == reply["thread_id"]), None)
+        target = (reply["thread_id"] if reply["kind"] == "thread"
+                  else f"{reply['file']}:{reply['line']}" if reply["kind"] == "new_anchored"
+                  else "")
+        entry = {"label": label, "kind": reply["kind"], "target": target}
+        wants_resolve = reply["resolve"] and thread is not None
+        thread_resolved = thread["resolved"] if thread else True
+        action = _resolve_decision(marker in seen_markers, wants_resolve, thread_resolved)
+
+        def record(outcome: str, note: str, in_status: bool = True) -> None:
+            nonlocal posted, duplicates, skipped, failed
+            if outcome == "posted":
+                posted += 1
+            elif outcome == "dup":
+                duplicates += 1
+            elif outcome == "dead":
+                skipped += 1
+            else:
+                failed += 1
+            outcomes[idx] = outcome
+            if in_status:
+                details.append(f"{label}: {note}")
+            per_reply.append({**entry, "outcome": outcome, "note": note})
+
+        if action == "skip":
+            record("dup", "duplicate, already in GitLab")
+            continue
+        if action == "resolve_only":
+            if dry_run:
+                record("dup", f"would resolve duplicate thread {reply['thread_id']}")
+                continue
+            try:
+                c.gitlab_resolve_discussion(iid, reply["thread_id"])
+                record("dup", f"duplicate, thread {reply['thread_id']} resolved")
+            except LgmError as e:
+                record("failed",
+                       f"duplicate, resolve {reply['thread_id']} failed HTTP {e.code}")
+            continue
+
+        body = f"{marker}\n\n{reply['body']}"
+        if reply["kind"] == "thread":
+            if thread is None:
+                record("dead", f"thread {reply['thread_id']} no longer exists")
+                continue
+            if dry_run:
+                record("posted", f"would post into thread {reply['thread_id']}")
+                if reply["resolve"]:
+                    details.append(f"{label}: would resolve thread {reply['thread_id']} after posting")
+                continue
+            try:
+                c.gitlab_post_thread_note(iid, reply["thread_id"], body)
+                seen_markers.add(marker)
+                note = f"posted into thread {reply['thread_id']}"
+                if reply["resolve"]:
+                    try:
+                        c.gitlab_resolve_discussion(iid, reply["thread_id"])
+                        note += " (resolved)"
+                    except LgmError as e:
+                        failed += 1
+                        details.append(f"{label}: posted, resolve failed HTTP {e.code}")
+                        note += f" (resolve failed HTTP {e.code})"
+                record("posted", note, in_status=False)
+            except LgmError as e:
+                if e.code == 404:
+                    record("dead", f"thread {reply['thread_id']} no longer exists")
+                else:
+                    record("failed", f"HTTP {e.code} {e.message}")
+            continue
+
+        if reply["kind"] == "new_anchored":
+            clash = _anchor_clash(reply, discussions)
+            if clash is not None:
+                record("dead", f"unresolved thread {clash['id']} already at "
+                               f"{reply['file']}:{clash['anchor_line']} — "
+                               f"reply into it, don't duplicate")
+                continue
+            pre_reason = _anchorability_reason(reply, changed_ranges)
+            if dry_run:
+                if pre_reason:
+                    not_anchored.append(f"{label}: {reply['file']}:{reply['line']} — {pre_reason}")
+                    record("posted", f"would post as general note ({pre_reason})")
+                else:
+                    record("posted",
+                           f"would post anchored discussion at {reply['file']}:{reply['line']}")
+                continue
+            fallback = False
+            try:
+                c.gitlab_post_new_discussion(iid, body, diff_refs=diff_refs,
+                                             position=(reply["file"], reply["line"]))
+            except LgmError as e:
+                if e.code not in (400, 422):
+                    record("failed", f"HTTP {e.code} {e.message}")
+                    continue
+                fallback = True
+                not_anchored.append(f"{label}: {reply['file']}:{reply['line']} — "
+                                    f"{pre_reason or 'line not in MR diff'}")
+                try:
+                    c.gitlab_post_mr_note(iid, f"`{reply['file']}:{reply['line']}`:\n\n{body}")
+                except LgmError as e2:
+                    record("failed", f"HTTP {e2.code} {e2.message}")
+                    continue
+            seen_markers.add(marker)
+            if fallback:
+                details.append(f"{label}: line not in MR diff, posted as general note")
+                record("posted", "posted as general note (line not in MR diff)",
+                       in_status=False)
+            else:
+                record("posted", f"posted anchored discussion at {reply['file']}:{reply['line']}",
+                       in_status=False)
+            continue
+
+        if dry_run:
+            record("posted", "would post general note")
+            continue
+        try:
+            c.gitlab_post_mr_note(iid, body)
+        except LgmError as e:
+            record("failed", f"HTTP {e.code} {e.message}")
+            continue
+        seen_markers.add(marker)
+        record("posted", "posted general note", in_status=False)
+
+    rep = {"iid": iid, "path": path, "posted": posted, "duplicates": duplicates,
+           "skipped": skipped, "failed": failed, "parse_errors": len(parsed["errors"]),
+           "not_anchored": not_anchored, "details": details, "replies": per_reply,
+           "acked": False}
+    if not dry_run and _should_ack(parsed["replies"], outcomes, seen_markers, iid,
+                                   rep["parse_errors"], failed):
+        rep["acked"] = True
+        for s in group:
+            try:
+                c.file_sync_ack(repo, s["id"])
+            except LgmError as e:
+                rep["acked"] = False
+                rep["details"].append(f"ack {s.get('path')}: {e.message}")
+    if not dry_run and (posted > 0 or failed > 0):
+        data = _render_replies_status(iid, rep).encode("utf-8")
+        status_path = f"mr-replies-status/mr-!{iid}.md"
+        try:
+            c.file_sync_send(repo, status_path, len(data), data)
+            rep["status_path"] = status_path
+        except LgmError as e:
+            rep["details"].append(f"status report upload failed: {e.message}")
+    return rep
+
+
+def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
+    """Publish pending mr-replies files from the postbox to GitLab (work side).
+
+    Mirrors the plugin's MrReplyPushService: every posted note carries an
+    invisible ``<!-- lgm:<hash> -->`` marker so retries never duplicate; a
+    '## new' remark whose line is outside the MR diff (compare ranges) posts
+    as a general note with the reason recorded; the postbox item is acked
+    only when every parsed reply reached a terminal outcome; a status report
+    lands in mr-replies-status/mr-!N.md. --dry-run plans without touching
+    GitLab, the postbox or the status files.
+    """
+    c = _client(ctx)
+    repo = _repo_arg(args)
+    missing = [k for k in ("GITLAB_URL", "GITLAB_TOKEN", "GITLAB_PROJECT") if not cfg(k)]
+    if missing:
+        raise LgmError("config",
+                       "GitLab URL/project/token not configured — set " + ", ".join(missing))
+    if cfg("LGM_MACHINE_ROLE").strip().lower() == "home":
+        raise LgmError("config",
+                       "mr_replies_push publishes to GitLab from the work machine; "
+                       "this machine is home (LGM_MACHINE_ROLE=home)")
+    dry_run = bool(args.get("dry_run"))
+    iid_filter = int(args.get("iid") or 0)
+    items = (c.file_sync_list(repo).get("items") or [])
+    groups: dict[int, list] = {}
+    stray: list[dict] = []
+    for i in items:
+        eff = i.get("path") or ""
+        if not eff.startswith("mr-replies/"):
+            continue
+        m = _MR_NOTES_FILE.search(eff)
+        if not m:
+            if not iid_filter:
+                stray.append(i)
+            continue
+        n = int(m.group(1))
+        if iid_filter and n != iid_filter:
+            continue
+        groups.setdefault(n, []).append(i)
+    reports = [{"iid": 0, "path": i.get("path"), "posted": 0, "duplicates": 0,
+                "skipped": 1, "failed": 0, "parse_errors": 0, "not_anchored": [],
+                "details": ["not an mr-!N.md reply file"], "replies": [],
+                "acked": False} for i in stray]
+    for path_iid in sorted(groups):
+        group = groups[path_iid]
+        newest = max(group, key=lambda i: (i.get("mtime") or 0))
+        try:
+            content = c.file_sync_fetch(repo, newest["id"]).decode("utf-8")
+        except Exception as e:
+            reports.append({"iid": path_iid, "path": newest.get("path"), "posted": 0,
+                            "duplicates": 0, "skipped": 1, "failed": 0, "parse_errors": 0,
+                            "not_anchored": [], "details": [f"download/decrypt: {e}"],
+                            "replies": [], "acked": False})
+            continue
+        parsed = _parse_replies(content)
+        reports.append(_push_replies_file(c, repo, group, parsed, dry_run))
+    totals = {k: sum(r.get(k, 0) for r in reports)
+              for k in ("posted", "duplicates", "skipped", "failed")}
+    totals["not_anchored"] = sum(len(r.get("not_anchored") or []) for r in reports)
+    result = {"success": True, "repo": repo, "dry_run": dry_run,
+              "count": len(reports), "reports": reports, "totals": totals}
+    if dry_run:
+        result["message"] = "dry-run: nothing posted, no acks, no status upload"
+    elif not reports:
+        result["message"] = "no pending mr-replies files in the postbox"
+    return result
