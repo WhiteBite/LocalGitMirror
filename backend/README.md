@@ -65,6 +65,6 @@ backend/app/
 | `SYNC_PASSWORD` | — | пароль шифрования бандлов и архива плагина (legacy-путь); v3-релей использует закреплённый ключ сервера |
 | `GIT_USER`, `GIT_PASS`, `SILENT_GIT` | — | smart-HTTP; рабочий процесс его не использует |
 | `BACKUP_PASSWORD` | — | бэкапы vault |
-| `OLLAMA_URL`, `OLLAMA_MODEL` | — | наследство ранних версий: отдаётся только в `/api/config`, подключений к Ollama нет |
+| `OLLAMA_URL`, `OLLAMA_MODEL` | — | наследство ранних версий: подключений к Ollama нет, `/api/config` отдаёт только `ollama_url`, а `OLLAMA_MODEL` не читается вовсе |
 
 Прочие серверные ключи (`LGM_VAULT_PATH`, `LGM_BUFFER_*`) перечислены в разделе Operational constants в [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md).
