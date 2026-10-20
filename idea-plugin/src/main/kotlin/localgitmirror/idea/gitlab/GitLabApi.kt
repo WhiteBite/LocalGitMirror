@@ -52,7 +52,28 @@ object GitLabApi {
   private fun projectPathEncoded(project: String): String =
     URLEncoder.encode(project.trim().trim('/'), "UTF-8").replace("+", "%20")
 
+  private val REDIRECT_CODES = setOf(301, 302, 307, 308)
+  private const val MAX_REDIRECT_HOPS = 3
+
   private fun open(url: String, token: String): HttpURLConnection {
+    var current = url
+    var hops = 0
+    while (true) {
+      val conn = openOnce(current, token)
+      val code = conn.responseCode
+      val location = conn.getHeaderField("Location")
+      if (code !in REDIRECT_CODES || location.isNullOrBlank() || hops == MAX_REDIRECT_HOPS) return conn
+      val from = URL(current)
+      val next = URL(from, location)
+      // GitLab moves projects and upgrades http->https; a cross-host non-https hop would leak the token
+      if (!next.host.equals(from.host, ignoreCase = true) && next.protocol != "https") return conn
+      conn.disconnect()
+      current = next.toExternalForm()
+      hops++
+    }
+  }
+
+  private fun openOnce(url: String, token: String): HttpURLConnection {
     val conn = HttpClient.open(URL(url), insecureTls())
     conn.requestMethod = "GET"
     conn.connectTimeout = 15_000
@@ -61,6 +82,13 @@ object GitLabApi {
     conn.setRequestProperty("Accept", "application/json")
     return conn
   }
+
+  private fun redirectHint(conn: HttpURLConnection, code: Int, err: String): String =
+    if (code in 300..399) {
+      "redirect to ${conn.getHeaderField("Location")} was not followed - fix the GitLab URL in settings"
+    } else {
+      err.take(200)
+    }
 
   /** GET {url}/api/v4/projects/{project} — proves url+project+token work together. */
   fun verify(conf: GitLabConfig.GitLabConf): VerifyResult {
@@ -78,7 +106,7 @@ object GitLabApi {
       if (code in 200..299) {
         VerifyResult(code, parseProjectName(body), "")
       } else {
-        VerifyResult(code, null, body.take(200))
+        VerifyResult(code, null, redirectHint(conn, code, body))
       }
     } catch (t: Throwable) {
       VerifyResult(0, null, t.message ?: "error")
@@ -128,7 +156,7 @@ object GitLabApi {
         val code = conn.responseCode
         if (code !in 200..299) {
           val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
-          return DiscussionsResult(code, out, err.take(200))
+          return DiscussionsResult(code, out, redirectHint(conn, code, err))
         }
         val body = conn.inputStream.bufferedReader().use { it.readText() }
         val arr = Json.parseToJsonElement(body).jsonArray
