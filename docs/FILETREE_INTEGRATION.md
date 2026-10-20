@@ -1,19 +1,14 @@
 # Руководство по интеграции компонента FileTree в LocalGitMirror
 
-## Созданные файлы
+## Структура задачи
 
 ### Основные компоненты
 1. **`frontend/src/components/FileTree.vue`** - Главный компонент дерева файлов
 2. **`frontend/src/components/TreeNode.vue`** - Рекурсивный компонент узла дерева
-3. **`frontend/src/components/FileTree.example.vue`** - Пример использования
-4. **`frontend/src/views/FileBrowserWithTree.vue`** - Интегрированный FileBrowser с деревом
-
-### Документация
-5. **`frontend/src/components/FileTree.README.md`** - Полная документация компонента
 
 ### Тесты
-6. **`frontend/src/components/__tests__/FileTree.spec.js`** - Тесты FileTree
-7. **`frontend/src/components/__tests__/TreeNode.spec.js`** - Тесты TreeNode
+3. **`frontend/src/components/__tests__/FileTree.spec.js`** - Тесты FileTree
+4. **`frontend/src/components/__tests__/TreeNode.spec.js`** - Тесты TreeNode
 
 ## Быстрый старт
 
@@ -55,55 +50,20 @@ const handleFolderToggle = (path) => {
 
 ### 2. Интеграция с существующим FileBrowser
 
-#### Вариант A: Замена существующего FileBrowser
-
-Замените `frontend/src/views/FileBrowser.vue` на `FileBrowserWithTree.vue`:
-
-```bash
-# Сохраните старую версию
-mv frontend/src/views/FileBrowser.vue frontend/src/views/FileBrowser.old.vue
-
-# Используйте новую версию
-mv frontend/src/views/FileBrowserWithTree.vue frontend/src/views/FileBrowser.vue
-```
-
-#### Вариант B: Добавление переключателя режимов
-
-Добавьте в существующий `FileBrowser.vue`:
+Компонент уже встроен в `frontend/src/components/file-browser/FileBrowserSidebar.vue`, который используется во `frontend/src/views/FileBrowser.vue`:
 
 ```vue
 <template>
-  <div class="file-browser">
-    <!-- Кнопка переключения режима -->
-    <button @click="toggleViewMode" class="btn-toggle">
-      {{ viewMode === 'tree' ? 'Просмотр списком' : 'Просмотр деревом' }}
-    </button>
-
-    <!-- Режим дерева -->
-    <FileTree
-      v-if="viewMode === 'tree'"
-      :files="filesStore.files"
-      :selected-file="selectedFile"
-      :search-query="searchQuery"
-      @file-select="handleFileSelect"
-    />
-
-    <!-- Режим списка (существующий код) -->
-    <div v-else>
-      <!-- Ваш существующий код списка -->
-    </div>
-  </div>
+  <FileTree
+    :files="files"
+    :selected-file="selectedFile"
+    :search-query="searchQuery"
+    @file-select="handleFileSelect"
+  />
 </template>
 
 <script setup>
-import { ref } from 'vue'
 import FileTree from '@/components/FileTree.vue'
-
-const viewMode = ref('tree')
-
-const toggleViewMode = () => {
-  viewMode.value = viewMode.value === 'tree' ? 'list' : 'tree'
-}
 </script>
 ```
 
@@ -523,12 +483,8 @@ describe('FileTree', () => {
 
 ## Поддержка
 
-Если у вас возникли вопросы или проблемы:
-
-1. Проверьте [FileTree.README.md](./src/components/FileTree.README.md)
-2. Посмотрите [FileTree.example.vue](./src/components/FileTree.example.vue)
-3. Запустите тесты: `npm run test FileTree`
-4. Создайте issue в репозитории
+1. Запустите тесты: `npm run test FileTree`
+2. Создайте issue в репозитории
 
 ## Лицензия
 
