@@ -42,17 +42,12 @@
 
 - **[FILE_VIEWER_COMPONENTS.md](FILE_VIEWER_COMPONENTS.md)** - Компоненты просмотра файлов
 - **[FILETREE_INTEGRATION.md](FILETREE_INTEGRATION.md)** - Интеграция дерева файлов
-- **[FILETREE_SUMMARY.md](FILETREE_SUMMARY.md)** - Резюме дерева файлов
+- **[FILE_BROWSER_UX.md](FILE_BROWSER_UX.md)** - UX браузера файлов
 
-## 📊 Информация о проекте
+## 🔁 Контракты
 
-- **[PROJECT_SUMMARY.md](PROJECT_SUMMARY.md)** - Резюме проекта и обзор
-- **[SUMMARY.md](SUMMARY.md)** - Общее резюме
-
-## 📝 Разработка
-
-- **[TODO.md](../TODO.md)** - Задачи разработки и roadmap (в корне)
-- **[CLEANUP_REPORT.md](../CLEANUP_REPORT.md)** - Отчёт о недавней очистке (в корне)
+- **[mr-send-contract.md](mr-send-contract.md)** - Контракт дедупликации MR-send (плагин ↔ CLI)
+- **[IDEA_PLUGIN_MVP.md](IDEA_PLUGIN_MVP.md)** - Функциональная спецификация плагина
 
 ## 🗂️ Структура документации
 
@@ -60,16 +55,16 @@
 docs/
 ├── INDEX.md                     # Этот файл - Индекс документации
 ├── QUICKSTART.md                # Руководство по быстрому старту
-├── ARCHITECTURE.md              # Архитектура системы
+├── ARCHITECTURE.md              # Архитектура и топология (читать первым)
 ├── MIGRATION_GUIDE.md           # Руководство по миграции
 ├── LOGGING.md                   # Система логирования (консолидированная)
 ├── SETTINGS.md                  # Система настроек (консолидированная)
 ├── FILE_BROWSER.md              # Браузер файлов (консолидированная)
+├── FILE_BROWSER_UX.md           # UX браузера файлов
 ├── FILE_VIEWER_COMPONENTS.md    # Компоненты просмотра файлов
 ├── FILETREE_INTEGRATION.md      # Интеграция дерева файлов
-├── FILETREE_SUMMARY.md          # Резюме дерева файлов
-├── PROJECT_SUMMARY.md           # Резюме проекта
-└── SUMMARY.md                   # Общее резюме
+├── IDEA_PLUGIN_MVP.md           # Спецификация плагина DocCache
+└── mr-send-contract.md          # Контракт дедупликации MR-send
 ```
 
 ## 🔍 Поиск информации
@@ -104,15 +99,6 @@ docs/
 2. Просмотрите [QUICKSTART.md](QUICKSTART.md) для распространённых задач
 3. Проверьте [ARCHITECTURE.md](ARCHITECTURE.md) для понимания системы
 4. Просмотрите специфическую документацию функции (LOGGING, SETTINGS, FILE_BROWSER)
-
-## 📅 Недавние обновления
-
-- **2026-01-28**: Крупная очистка и консолидация документации
-  - Консолидирована документация LOGGING (5 файлов → 1)
-  - Консолидирована документация SETTINGS (3 файла → 1)
-  - Консолидирована документация FILE_BROWSER (3 файла → 1)
-  - Создан этот INDEX.md для лёгкой навигации
-  - Смотрите [CLEANUP_REPORT.md](../CLEANUP_REPORT.md) для деталей
 
 ## 🔗 Внешние ресурсы
 

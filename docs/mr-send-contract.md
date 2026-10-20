@@ -92,8 +92,12 @@ root, parses it with kotlinx-serialization, and asserts `MrSendPlanner.planSend`
 returns the same `sent`/`skipped`/`excludeShas`.
 
 `MrSendPlanner` is pure — no IDE, no git, no network. The caller supplies mirror
-refs, local tips and locally-present SHAs, and gets the send decision. `GitLabMrSender` (the plugin's current MR flow: per-branch checkout +
-full sync, no mirror-tip dedup) does not call the planner yet; converging the
-plugin's send path onto the planner is a separate later step — this contract is
-the gate that keeps the two implementations from silently diverging in the
-meantime.
+refs, local tips and locally-present SHAs, and gets the send decision. The
+plugin's MR flow calls it: `GitLabMrSender` fetches the requested source
+branches, resolves mirror refs via `/api/documents/list` and local tips, plans
+with `MrSendPlanner.planSend` (`decideMrSend` / `planMrSend` in
+`idea-plugin/.../actions/GitLabMrSender.kt`), skips tip-equal branches with an
+"already on cache" notice, and sends the survivors in one sync batch; branches
+whose tip exists neither locally nor on the remote are reported as failures,
+divergent local branches are not sent. Both sides of this contract are wired;
+the fixture keeps them from silently diverging.
