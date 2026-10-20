@@ -109,6 +109,25 @@ All relay blobs are stored at rest as `0x04 || nonce[12] || AES-256-GCM(plaintex
 - Loopback exception: loopback clients — the SPA served on the HOME host, a fully trusted machine — may omit `k`/`meta` and send legacy-shaped `path` + `plain_size` fields with a plaintext attachment (`frontend/src/stores/postbox.js`); reads without `X-LGM-Epk` return plaintext. Non-loopback clients without the v3 fields fail closed.
 - No password path exists for the postbox: a client without the pinned server key cannot use it at all.
 
+### MR-цикл: контракт шагов
+
+Run the loop from this table alone. Each step lists the machine, every surface that can perform it, and the proof an agent should check before moving on. The web SPA is not part of the loop (server-admin only). CLI commands below are identical MCP tool names; exit codes and the `--json` envelope follow the contract in "The four user-facing surfaces".
+
+| # | Шаг | Машина | Поверхности | Доказательство (проверить агенту) |
+| --- | --- | --- | --- | --- |
+| 1 | Ветка MR → зеркало | WORK | Review tab: ⋯ → «Отправить выбранные» (`review.sendSelected`); action «Send MR branch to Cache…»; CLI/MCP `lgm mr_send --repo R --project P [--iid N]` | В результате `sent[] / skipped[] / blocked[]`; разойдённая с origin ветка попадает в `blocked[]` с `reason: diverged from origin`, а не молча; `lgm branches --repo R` показывает тот же tip, что GitLab. |
+| 2 | Заметки ревью → зеркало | WORK | Кнопка Upload в Review tab (tip `review.tip.syncNotes`) или автоцикл `MrReviewAutoService`; CLI/MCP `lgm mr_sync_all` (headless-эквивалент всего цикла) | Строка `mr-notes/mr-!N.md` в `lgm file_list --repo R --json`: поля `mtime` + `expires_at` у каждого item; mtime вырос, значит заметки свежее; строка Review-tab показывает возраст («заметки …»). |
+| 3 | Ответы агента (черновик + отправка) | HOME | Диалог MR: кнопка «Send remainder to work» / RU «Отправить остаток на работу», либо `.mr-notes/replies-!N.md` + `lgm mr_replies_send --repo R --iid N --file F` (`--text` для inline) | Оба пути проходят один гейт: закрытый MR, неизвестный id треда, дубль якоря на нерешённый тред. Отказ = exit 5 + `error.code` (`closed-mr`, `notes-unavailable`); unknown-thread/duplicate-anchor отказывают без кода, причина в `message`. Успех: JSON с `path: mr-replies/mr-!N.md`. |
+| 4 | Ответы HOME → WORK | shared postbox (явного действия нет) | WORK видит pending badge/balloon в Review tab; CLI/MCP `lgm mr_pending --repo R` | `items[].replies_pending: true` + `reply_ids[]` для iid; на WORK строка получает состояние «ответы ждут на работе». |
+| 5 | Публикация в GitLab | WORK | Диалог: чекбоксы + «Publish N selected» / авто по `autoPushReplies` / кнопка push в Review tab; CLI/MCP `lgm mr_replies_push --repo R [--iid N] [--dry-run]` | Per-reply `outcome` (`posted`/`dup`/`dead`) в JSON; receipt `mr-replies-status/mr-!N.md` с разобранными `posted / duplicates / skipped / failed / not_anchored / details`; каждый posted-note несёт невидимый маркер `<!-- lgm:<hash> -->` — повтор не дублирует; `acked: true` означает, что postbox-файл потреблён и будет удалён, никогда не перепостится. |
+| 6 | Receipt на HOME | HOME | Бейдж строки Review tab (состояние переживает перезапуск: читается из project state); CLI/MCP `lgm mr_replies_status --repo R --iid N` | Числовые поля статуса (`posted`, `failed`, ...) плюс `parsed: true`; `lgm mr_pending` отдаёт то же в `items[].last_publish`. |
+
+### Принятые решения
+
+- **F10, роль машины в `mr_replies_push`.** Явный `LGM_MACHINE_ROLE=home` — отказ (`wrong-machine`); нераспознанная роль — продолжение. Рабочий ноутбук может не задавать переменную окружения вообще, а настоящий страж публикации — достижимость GitLab: дома её нет, поэтому лишний отказ по роли только ломает headless-цикл на неконфигурированной машине.
+- **F18, free-text режим «Send MR branch to Cache…».** Введённое вручную имя ветки переносит только ветку: заметки MR не подтягиваются, потому что привязки к iid нет. Следствие: строка Review tab после такой отправки не обновляется — это операция переноса кода, не цикла ревью.
+- **F3-residual, кнопки «синхронизировать всё сейчас» в плагине нет.** Цикл покрыт со всех сторон: автоцикл на WORK делает ветки и заметки, кнопки ⇧ (sync notes) и ⇩ (push replies) закрывают ручные случаи, `lgm mr_sync_all` — headless-эквивалент. Одна кнопка-комбайн добавила бы второй путь к тем же трём операциям без нового доказательства успеха.
+
 ## Repository layout
 
 | Path | Purpose |
