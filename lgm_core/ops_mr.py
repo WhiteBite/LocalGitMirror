@@ -22,6 +22,7 @@ _MRN_DETECTED = re.compile(r"^- \*\*Обнаружено:\*\* (\S+)")
 _MR_NOTES_FILE = re.compile(r"mr-!(\d+)\.md$")
 _MR_CLOSED_FILE = re.compile(r"mr-!(\d+)\.closed\.md$")
 _NOTES_THREAD_ID = re.compile(r"^\*\*ID треда:\*\* `([^`]+)`")
+_NOTE_LGM_MARKER = re.compile(r"<!-- lgm:([0-9a-f]+) -->")
 _NOTES_ANCHOR = re.compile(r"^\*\*Место:\*\* `([^`]+):(\d+)`")
 _REPLY_THREAD = re.compile(r"^##\s+thread\s+(\S+)\s*$", re.MULTILINE)
 _REPLY_ANCHORED = re.compile(r"^##\s+new\s+(\S+?):(\d+)\s*$", re.MULTILINE)
@@ -233,6 +234,17 @@ def _parse_mr_notes_head(markdown: str) -> dict:
     return {"iid": iid, "title": title, "source_branch": branch,
             "target_branch": target,
             "unresolved": unresolved, "updated": updated}
+
+
+def _iso_age_seconds(value: str, now: float) -> int | None:
+    """Age of an ISO-8601 stamp in seconds; None when absent or unparseable."""
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+    return max(0, int(now - ts))
 
 
 def _closed_by_mtime(note: dict | None, marker: dict | None) -> bool:
@@ -1255,10 +1267,17 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
 
 
 def op_mr_pending(ctx: Ctx, args: dict) -> dict:
-    """One pipeline view per MR iid: notes freshness (mtime + age seconds),
-    replies pending in the postbox (bool + ids), the last publish outcome
-    (parsed from the newest mr-replies-status entry) and the closed state
-    with evidence.
+    """One pipeline view per MR iid: notes freshness, replies pending in the
+    postbox (bool + ids), the last publish outcome (parsed from the newest
+    mr-replies-status entry) and the closed state with evidence.
+
+    Freshness carries two independent signals: ``updated_at`` is GitLab's MR
+    ``updated_at`` as stamped into the note header (it moves on MR-level events
+    and can postdate the newest remark), while ``mtime``/``age_seconds`` say
+    when the postbox blob was last written. ``lgm_markers`` counts the
+    exactly-once markers of published replies inside that blob; compared with
+    ``last_publish.posted`` it shows whether the notes already reflect the push
+    or still predate it.
 
     ``state_evidence``: ``gitlab`` (GitLab answered, authoritative),
     ``marker`` (closed marker at least as new as the note), ``note-mtime``
@@ -1316,7 +1335,18 @@ def op_mr_pending(ctx: Ctx, args: dict) -> dict:
         if note is not None:
             mtime = int(note.get("mtime") or 0)
             entry["notes"] = {"mtime": mtime,
-                              "age_seconds": max(0, int(now - mtime))}
+                              "age_seconds": max(0, int(now - mtime)),
+                              "updated_at": None, "updated_age_seconds": None,
+                              "lgm_markers": 0}
+            try:
+                plain = c.file_sync_fetch(repo, note["id"]).decode("utf-8")
+                stamp = _parse_mr_notes_head(plain).get("updated") or ""
+                entry["notes"]["updated_at"] = stamp or None
+                entry["notes"]["updated_age_seconds"] = _iso_age_seconds(stamp, now)
+                entry["notes"]["lgm_markers"] = len(
+                    set(_NOTE_LGM_MARKER.findall(plain)))
+            except Exception:
+                entry["notes"]["updated_error"] = "fetch/decrypt failed (v3 relay)"
         rep = replies.get(iid)
         if rep:
             entry["replies_pending"] = True

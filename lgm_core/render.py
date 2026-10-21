@@ -584,8 +584,18 @@ def _render_mr_pending(r: dict) -> list[str]:
     for it in items:
         notes = it.get("notes")
         if notes:
-            notes_txt = (f"notes {notes.get('age_seconds', 0)}s old "
-                         f"(mtime {notes.get('mtime')})")
+            age = notes.get("age_seconds", 0)
+            stamp = notes.get("updated_at")
+            if stamp:
+                notes_txt = (f"notes updated_at {stamp} "
+                             f"({notes.get('updated_age_seconds')}s ago); "
+                             f"file {age}s old (mtime {notes.get('mtime')})")
+            elif notes.get("updated_error"):
+                notes_txt = (f"notes updated_at unknown "
+                             f"({notes.get('updated_error')}); "
+                             f"file {age}s old (mtime {notes.get('mtime')})")
+            else:
+                notes_txt = f"notes {age}s old (mtime {notes.get('mtime')})"
         else:
             notes_txt = "notes absent (expired or never transferred)"
         if it.get("replies_pending"):
@@ -607,6 +617,11 @@ def _render_mr_pending(r: dict) -> list[str]:
         else:
             publish_txt = (f"last publish unreadable "
                            f"({lp.get('error', 'no v1 marker')})")
+        if notes and isinstance(lp, dict) and lp.get("parsed") and lp.get("posted") is not None:
+            seen = notes.get("lgm_markers", 0)
+            publish_txt += f"; published replies visible in notes {seen}/{lp.get('posted')}"
+            if seen < lp.get("posted"):
+                publish_txt += " (notes predate the push, re-sync to verify)"
         out.append(f"  !{it.get('iid')} state={it.get('state')} "
                    f"({it.get('state_evidence')})")
         out.append(f"    {notes_txt}; {replies_txt}; {publish_txt}")

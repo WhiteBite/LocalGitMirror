@@ -2,6 +2,7 @@
 pending in the postbox, the last publish outcome and the closed state with
 evidence. Also pins the file_list postbox items carrying mtime/expires_at."""
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -90,7 +91,80 @@ def test_mr_pending_reports_notes_mtime_and_age(frozen_now):
     res = op_mr_pending(_ctx(client), {"repo": "r1"})
     it = res["items"][0]
     assert it["iid"] == 24
-    assert it["notes"] == {"mtime": _NOW - 3600, "age_seconds": 3600}
+    assert it["notes"] == {"mtime": _NOW - 3600, "age_seconds": 3600,
+                           "updated_at": None, "updated_age_seconds": None,
+                           "lgm_markers": 0}
+
+
+def test_mr_pending_counts_distinct_published_markers(frozen_now):
+    content = ("# MR !24 - t\n"
+               "- **Обновлено:** 2026-10-20T21:39:40.928Z · **Источник:** GitLab MR !24\n"
+               "<!-- lgm:19feffae -->\n<!-- lgm:3a9cad9f -->\n<!-- lgm:19feffae -->\n")
+    client = _PendingClient([_note(24, _NOW - 10, content=content)])
+    notes = op_mr_pending(_ctx(client), {"repo": "r1"})["items"][0]["notes"]
+    assert notes["lgm_markers"] == 2
+
+
+_NOTES_WITH_STAMP = ("# MR !50 - title\n"
+                     "- **Ветка:** `agent_mode`\n"
+                     "- **Обновлено:** 2026-10-19T16:51:02.072Z · "
+                     "**Источник:** GitLab MR !50\n")
+
+
+def test_mr_pending_reports_last_activity_from_the_notes_header(frozen_now):
+    client = _PendingClient([_note(50, _NOW - 49186, content=_NOTES_WITH_STAMP)])
+    notes = op_mr_pending(_ctx(client), {"repo": "r1"})["items"][0]["notes"]
+    expected = int(_NOW - datetime.fromisoformat(
+        "2026-10-19T16:51:02.072+00:00").timestamp())
+    assert notes["updated_at"] == "2026-10-19T16:51:02.072Z"
+    assert notes["updated_age_seconds"] == expected
+    assert notes["age_seconds"] == 49186
+
+
+class _BrokenFetchClient(_PendingClient):
+    def file_sync_fetch(self, repo, item_id):
+        raise LgmError("network", "unreachable")
+
+
+def test_mr_pending_unreadable_notes_keep_the_file_age(frozen_now):
+    client = _BrokenFetchClient([_note(24, _NOW - 60)])
+    notes = op_mr_pending(_ctx(client), {"repo": "r1"})["items"][0]["notes"]
+    assert notes["updated_at"] is None
+    assert notes["updated_error"] == "fetch/decrypt failed (v3 relay)"
+    assert notes["age_seconds"] == 60
+
+
+def test_render_mr_pending_shows_last_activity_before_the_file_age():
+    payload = {"success": True, "repo": "r1", "count": 1, "items": [
+        {"iid": 50,
+         "notes": {"mtime": 1792490363, "age_seconds": 49186,
+                   "updated_at": "2026-10-19T16:51:02.072Z",
+                   "updated_age_seconds": 123456},
+         "replies_pending": False, "reply_ids": [], "last_publish": None,
+         "state": "open", "state_evidence": "note-mtime"},
+    ]}
+    out = render("mr_pending", payload)
+    assert "updated_at 2026-10-19T16:51:02.072Z (123456s ago)" in out
+    assert "file 49186s old" in out
+
+
+def test_render_mr_pending_reports_published_reply_visibility():
+    def item(iid, posted, markers):
+        return {"iid": iid,
+                "notes": {"mtime": 100, "age_seconds": 5,
+                          "updated_at": None, "updated_age_seconds": None,
+                          "lgm_markers": markers},
+                "replies_pending": False, "reply_ids": [],
+                "last_publish": {"posted": posted, "duplicates": 0,
+                                 "skipped": 0, "failed": 0, "not_anchored": 0,
+                                 "at": "2026-10-21 02:11", "details": [],
+                                 "parsed": True},
+                "state": "open", "state_evidence": "note-mtime"}
+
+    out = render("mr_pending", {"success": True, "repo": "r1", "count": 2,
+                                "items": [item(24, 19, 19), item(27, 7, 0)]})
+    assert "visible in notes 19/19" in out
+    assert "visible in notes 0/7 (notes predate the push, re-sync to verify)" in out
 
 
 def test_mr_pending_asks_gitlab_in_the_registry_project(frozen_now, monkeypatch):
