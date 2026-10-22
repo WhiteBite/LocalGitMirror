@@ -163,8 +163,10 @@ def test_render_mr_pending_reports_published_reply_visibility():
 
     out = render("mr_pending", {"success": True, "repo": "r1", "count": 2,
                                 "items": [item(24, 19, 19), item(27, 7, 0)]})
-    assert "visible in notes 19/19" in out
-    assert "visible in notes 0/7 (notes predate the push, re-sync to verify)" in out
+    assert "notes carry 19 lgm markers (last publish posted=19)" in out
+    assert "notes carry 0 lgm markers (last publish posted=7)" in out
+    assert "notes predate the push, re-sync to verify" in out
+    assert out.count("notes predate the push") == 1
 
 
 def test_mr_pending_asks_gitlab_in_the_registry_project(frozen_now, monkeypatch):

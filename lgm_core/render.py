@@ -619,9 +619,10 @@ def _render_mr_pending(r: dict) -> list[str]:
                            f"({lp.get('error', 'no v1 marker')})")
         if notes and isinstance(lp, dict) and lp.get("parsed") and lp.get("posted") is not None:
             seen = notes.get("lgm_markers", 0)
-            publish_txt += f"; published replies visible in notes {seen}/{lp.get('posted')}"
+            publish_txt += (f"; notes carry {seen} lgm markers "
+                            f"(last publish posted={lp.get('posted')})")
             if seen < lp.get("posted"):
-                publish_txt += " (notes predate the push, re-sync to verify)"
+                publish_txt += " — notes predate the push, re-sync to verify"
         out.append(f"  !{it.get('iid')} state={it.get('state')} "
                    f"({it.get('state_evidence')})")
         out.append(f"    {notes_txt}; {replies_txt}; {publish_txt}")
