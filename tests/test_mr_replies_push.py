@@ -75,6 +75,7 @@ class FakeClient:
         self.compare = compare if compare is not None else dict(_COMPARE)
         self.fail_new_discussion_for: set[str] = set()
         self.fail_thread_note_for: set[str] = set()
+        self.projects: set[str] = set()
 
     def add_reply_file(self, iid: int, data: str, mtime: int = 5, item_id: str = "r7"):
         self.postbox[item_id] = {"path": f"mr-replies/mr-!{iid}.md",
@@ -96,32 +97,39 @@ class FakeClient:
         return {"id": "up1"}
 
     def gitlab_list_discussions(self, iid, project=""):
+        self.projects.add(project)
         return self.discussions
 
     def gitlab_get_mr(self, iid, project=""):
+        self.projects.add(project)
         return self.mr
 
     def gitlab_compare(self, from_ref, to_ref, project=""):
+        self.projects.add(project)
         return self.compare
 
     def gitlab_post_thread_note(self, iid, discussion_id, body, project=""):
+        self.projects.add(project)
         if discussion_id in self.fail_thread_note_for:
             raise LgmError(500, "boom")
         self.thread_notes.append((iid, discussion_id, body))
         return {"id": "n1"}
 
     def gitlab_post_mr_note(self, iid, body, project=""):
+        self.projects.add(project)
         self.mr_notes.append((iid, body))
         return {"id": "n2"}
 
     def gitlab_post_new_discussion(self, iid, body, diff_refs=None, position=None,
                                    project=""):
+        self.projects.add(project)
         if position and position[0] in self.fail_new_discussion_for:
             raise LgmError(400, "position is invalid")
         self.new_discussions.append((iid, body, diff_refs, position))
         return {"id": "d1"}
 
     def gitlab_resolve_discussion(self, iid, discussion_id, project=""):
+        self.projects.add(project)
         self.resolved.append((iid, discussion_id))
         return {"success": True}
 
@@ -135,6 +143,12 @@ def work_env(monkeypatch):
     values = dict(_ENV)
     monkeypatch.setattr(ops_mr, "cfg", lambda key, default="": values.get(key, default))
     return values
+
+
+@pytest.fixture(autouse=True)
+def _empty_registry(monkeypatch):
+    from lgm_core import ops_projects
+    monkeypatch.setattr(ops_projects, "_load_registry", lambda: {"projects": []})
 
 
 def _push(client, args=None):
@@ -512,6 +526,48 @@ def test_push_role_unset_carries_machine_code(work_env, monkeypatch):
     with pytest.raises(LgmError) as excinfo:
         _push(client)
     assert excinfo.value.machine_code == "role-unset"
+
+
+def test_push_resolves_the_project_from_the_registry(work_env, monkeypatch):
+    from lgm_core import ops_projects
+    monkeypatch.setattr(ops_projects, "_load_registry",
+                        lambda: {"projects": [{"repo": "r1", "gitlab": "grp/other"}]})
+    client = FakeClient(discussions=[
+        _disc("abc123", [_note("original", resolved=False)], resolved=False)])
+    client.add_reply_file(7, _MD)
+    seen: list[str] = []
+    for name in ("gitlab_list_discussions", "gitlab_get_mr", "gitlab_compare",
+                 "gitlab_post_thread_note", "gitlab_post_mr_note",
+                 "gitlab_post_new_discussion", "gitlab_resolve_discussion"):
+        original = getattr(client, name)
+
+        def wrap(*a, _original=original, **kw):
+            seen.append(kw.get("project", ""))
+            return _original(*a, **kw)
+
+        setattr(client, name, wrap)
+    _push(client)
+    assert seen and set(seen) == {"grp/other"}
+
+
+def test_push_accepts_a_registry_project_without_global_gitlab_project(work_env, monkeypatch):
+    from lgm_core import ops_projects
+    monkeypatch.delitem(work_env, "GITLAB_PROJECT")
+    monkeypatch.setattr(ops_projects, "_load_registry",
+                        lambda: {"projects": [{"repo": "r1", "gitlab": "grp/other"}]})
+    client = FakeClient(discussions=[
+        _disc("abc123", [_note("original", resolved=False)], resolved=False)])
+    client.add_reply_file(7, _MD)
+    res = _push(client)
+    assert res["success"] is True
+    assert _report(res)["posted"] == 4
+
+
+def test_push_requires_a_project_when_repo_is_not_registered(work_env, monkeypatch):
+    monkeypatch.delitem(work_env, "GITLAB_PROJECT")
+    with pytest.raises(LgmError) as excinfo:
+        _push(FakeClient())
+    assert "GITLAB_PROJECT" in excinfo.value.message
 
 
 if __name__ == "__main__":

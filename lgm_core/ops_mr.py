@@ -997,14 +997,27 @@ def _render_replies_status(iid: int, rep: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _repo_gitlab_project(repo: str) -> str:
+    """Registry mapping repo -> GitLab project path; empty means the global
+    GITLAB_PROJECT stays in charge (single-project setups)."""
+    try:
+        # lazy import: ops_projects imports this module at top level
+        from .ops_projects import _load_registry
+        return next((str(e.get("gitlab", "") or "")
+                     for e in _load_registry().get("projects", [])
+                     if e.get("repo") == repo), "")
+    except Exception:
+        return ""
+
+
 def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
-                       dry_run: bool) -> dict:
+                       dry_run: bool, project: str = "") -> dict:
     newest = max(group, key=lambda i: (i.get("mtime") or 0))
     path = newest.get("path") or ""
     pm = _MR_NOTES_FILE.search(path)
     iid = parsed["iid"] or (int(pm.group(1)) if pm else 0)
     try:
-        raw_discussions = c.gitlab_list_discussions(iid)
+        raw_discussions = c.gitlab_list_discussions(iid, project=project)
     except LgmError as e:
         return {"iid": iid, "path": path, "posted": 0, "duplicates": 0, "skipped": 0,
                 "failed": 1, "parse_errors": len(parsed["errors"]), "not_anchored": [],
@@ -1014,12 +1027,13 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
     diff_refs: dict | None = None
     changed_ranges: dict | None = None
     try:
-        detail = c.gitlab_get_mr(iid)
+        detail = c.gitlab_get_mr(iid, project=project)
         diff_refs = detail.get("diff_refs") or None
         target = (detail.get("target_branch") or "").strip()
         source = (detail.get("source_branch") or "").strip()
         if target and source:
-            changed_ranges = _parse_compare_ranges(c.gitlab_compare(target, source))
+            changed_ranges = _parse_compare_ranges(
+                c.gitlab_compare(target, source, project=project))
     except LgmError:
         pass  # anchoring data is optional; unanchorable remarks downgrade to notes
 
@@ -1072,7 +1086,7 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
                 record("dup", f"would resolve duplicate thread {reply['thread_id']}")
                 continue
             try:
-                c.gitlab_resolve_discussion(iid, reply["thread_id"])
+                c.gitlab_resolve_discussion(iid, reply["thread_id"], project=project)
                 record("dup", f"duplicate, thread {reply['thread_id']} resolved")
             except LgmError as e:
                 record("failed",
@@ -1090,12 +1104,12 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
                     details.append(f"{label}: would resolve thread {reply['thread_id']} after posting")
                 continue
             try:
-                c.gitlab_post_thread_note(iid, reply["thread_id"], body)
+                c.gitlab_post_thread_note(iid, reply["thread_id"], body, project=project)
                 seen_markers.add(marker)
                 note = f"posted into thread {reply['thread_id']}"
                 if reply["resolve"]:
                     try:
-                        c.gitlab_resolve_discussion(iid, reply["thread_id"])
+                        c.gitlab_resolve_discussion(iid, reply["thread_id"], project=project)
                         note += " (resolved)"
                     except LgmError as e:
                         failed += 1
@@ -1128,7 +1142,8 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
             fallback = False
             try:
                 c.gitlab_post_new_discussion(iid, body, diff_refs=diff_refs,
-                                             position=(reply["file"], reply["line"]))
+                                             position=(reply["file"], reply["line"]),
+                                             project=project)
             except LgmError as e:
                 if e.code not in (400, 422):
                     record("failed", f"HTTP {e.code} {e.message}")
@@ -1137,7 +1152,8 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
                 not_anchored.append(f"{label}: {reply['file']}:{reply['line']} — "
                                     f"{pre_reason or 'line not in MR diff'}")
                 try:
-                    c.gitlab_post_mr_note(iid, f"`{reply['file']}:{reply['line']}`:\n\n{body}")
+                    c.gitlab_post_mr_note(iid, f"`{reply['file']}:{reply['line']}`:\n\n{body}",
+                                          project=project)
                 except LgmError as e2:
                     record("failed", f"HTTP {e2.code} {e2.message}")
                     continue
@@ -1155,7 +1171,7 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
             record("posted", "would post general note")
             continue
         try:
-            c.gitlab_post_mr_note(iid, body)
+            c.gitlab_post_mr_note(iid, body, project=project)
         except LgmError as e:
             record("failed", f"HTTP {e.code} {e.message}")
             continue
@@ -1200,10 +1216,17 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
     sibling files for the same MR are acked with it and listed in
     ``ack_superseded``; a status report lands in mr-replies-status/mr-!N.md.
     --dry-run plans without touching GitLab, the postbox or the status files.
+
+    The GitLab project comes from the registry entry for ``repo`` so one work
+    machine can publish to several projects; ``GITLAB_PROJECT`` is the
+    fallback when the repo is not registered.
     """
     c = _client(ctx)
     repo = _repo_arg(args)
-    missing = [k for k in ("GITLAB_URL", "GITLAB_TOKEN", "GITLAB_PROJECT") if not cfg(k)]
+    project = _repo_gitlab_project(repo)
+    missing = [k for k in ("GITLAB_URL", "GITLAB_TOKEN") if not cfg(k)]
+    if not project and not cfg("GITLAB_PROJECT"):
+        missing.append("GITLAB_PROJECT")
     if missing:
         raise LgmError("config",
                        "GitLab URL/project/token not configured — set " + ", ".join(missing))
@@ -1253,7 +1276,7 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
                             "replies": [], "acked": False, "ack_superseded": []})
             continue
         parsed = _parse_replies(content)
-        reports.append(_push_replies_file(c, repo, group, parsed, dry_run))
+        reports.append(_push_replies_file(c, repo, group, parsed, dry_run, project))
     totals = {k: sum(r.get(k, 0) for r in reports)
               for k in ("posted", "duplicates", "skipped", "failed")}
     totals["not_anchored"] = sum(len(r.get("not_anchored") or []) for r in reports)
@@ -1318,14 +1341,7 @@ def op_mr_pending(ctx: Ctx, args: dict) -> dict:
                     statuses[iid] = i
 
     gitlab_usable = True
-    # lazy import: ops_projects imports this module at top level
-    try:
-        from .ops_projects import _load_registry
-        gitlab_project = next((str(e.get("gitlab", "") or "")
-                               for e in _load_registry().get("projects", [])
-                               if e.get("repo") == repo), "")
-    except Exception:
-        gitlab_project = ""
+    gitlab_project = _repo_gitlab_project(repo)
     out: list[dict] = []
     for iid in sorted(set(notes) | set(markers) | set(replies) | set(statuses)):
         entry: dict = {"iid": iid, "notes": None, "replies_pending": False,
