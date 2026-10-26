@@ -325,6 +325,69 @@ def test_mr_sync_all_second_run_is_full_delta(tmp_path, monkeypatch):
     assert len(sent_calls) == 1
 
 
+@pytest.mark.parametrize("raw", [[], [{"id": "system", "notes": [
+    {"system": True, "body": "opened", "created_at": "2026-10-03"}]}]])
+def test_mr_sync_all_transfers_mrs_without_reviewer_threads(tmp_path, monkeypatch, raw):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    ctx.client.gitlab_list_discussions = lambda iid, project="": raw
+
+    res = opmod.op_mr_sync_all(ctx, {"notes_only": True})
+
+    assert res["summary"]["notes_uploaded"] == 1
+    assert [path for _, path, _ in uploaded] == ["mr-notes/mr-!24.md"]
+    from lgm_core.ops_mr import _parse_mr_notes_head
+    head = _parse_mr_notes_head(uploaded[0][2].decode("utf-8"))
+    assert head["source_branch"] == "llm-core"
+    assert head["unresolved"] == 0
+
+
+def test_mr_sync_all_transfers_target_branch_in_notes(tmp_path, monkeypatch):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    ctx.client.gitlab_list_mrs = lambda project="": [
+        {"iid": 24, "title": "T", "source_branch": "llm-core",
+         "target_branch": "release/next", "updated_at": "2026-10-03"}]
+
+    opmod.op_mr_sync_all(ctx, {"notes_only": True})
+
+    from lgm_core.ops_mr import _parse_mr_notes_head
+    head = _parse_mr_notes_head(uploaded[0][2].decode("utf-8"))
+    assert head["target_branch"] == "release/next"
+
+
+def test_mcp_transfers_unreviewed_mr_to_home_and_returns_review(tmp_path, monkeypatch):
+    import json
+    import lgm_mcp
+
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+    ctx.client.gitlab_list_discussions = lambda iid, project="": []
+    monkeypatch.setattr(lgm_mcp.Config, "from_env", lambda: ctx.config)
+    monkeypatch.setattr(lgm_mcp, "MirrorClient", lambda **kwargs: ctx.client)
+    ctx.client.file_sync_list = lambda repo: {"items": [
+        {"id": str(i), "path": path, "mtime": 100 + i}
+        for i, (_, path, _) in enumerate(uploaded)]}
+    ctx.client.file_sync_fetch = lambda repo, item_id: uploaded[int(item_id)][2]
+    monkeypatch.setenv("LGM_MACHINE_ROLE", "work")
+
+    sent = lgm_mcp._call_tool("mr_sync_all", {"notes_only": True})
+    assert not sent.get("isError")
+    assert json.loads(sent["content"][0]["text"])["summary"]["notes_uploaded"] == 1
+
+    def no_gitlab(project=""):
+        raise LgmError("config", "GitLab not configured on HOME")
+
+    monkeypatch.setenv("LGM_MACHINE_ROLE", "home")
+    ctx.client.gitlab_list_mrs = no_gitlab
+    listed = lgm_mcp._call_tool("mr_list", {"repo": "doctransformer"})
+    assert not listed.get("isError")
+    items = json.loads(listed["content"][0]["text"])["items"]
+    assert [(item["iid"], item["source"]) for item in items] == [(24, "cache")]
+
+    replied = lgm_mcp._call_tool("mr_replies_send", {
+        "repo": "doctransformer", "iid": 24, "text": "## new\nReview finding"})
+    assert not replied.get("isError")
+    assert uploaded[-1][1] == "mr-replies/mr-!24.md"
+
+
 def test_mr_sync_all_dry_run_touches_nothing(tmp_path, monkeypatch):
     opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
 

@@ -18,6 +18,7 @@ import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
 import java.io.File
 import java.util.concurrent.ThreadLocalRandom
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val AUTO_SEND_DIRTY = "worktree dirty"
 
@@ -45,6 +46,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   private val homeCycleDeduper = AutomationFailureDeduper()
   private val workCycleDeduper = AutomationFailureDeduper()
   private val autoSendSkipDeduper = AutomationFailureDeduper()
+  private val workCycleRunning = AtomicBoolean(false)
 
   fun start() {
     if (started) return
@@ -73,11 +75,18 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   fun triggerWorkCycle() {
     if (disposed || !settings.autoMrReview || settings.baseUrl.isBlank()) return
     if (RoleDetector.detect(settings) != MachineRole.WORK) return
-    try {
-      pollWork()
-      workCycleDeduper.recovered()
-    } catch (t: Throwable) {
-      reportCycleFailure(workCycleDeduper, t)
+    if (!workCycleRunning.compareAndSet(false, true)) return
+    ApplicationManager.getApplication().executeOnPooledThread {
+      try {
+        if (!disposed && !project.isDisposed) {
+          pollWork()
+          workCycleDeduper.recovered()
+        }
+      } catch (t: Throwable) {
+        reportCycleFailure(workCycleDeduper, t)
+      } finally {
+        workCycleRunning.set(false)
+      }
     }
   }
 
@@ -146,28 +155,25 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   }
 
   private fun autoSendBranches() {
-    if (!settings.autoMrBranches) return
-    ApplicationManager.getApplication().executeOnPooledThread {
-      if (disposed || project.isDisposed) return@executeOnPooledThread
-      val baseDir = project.basePath ?: return@executeOnPooledThread
-      if (!File(baseDir).exists()) return@executeOnPooledThread
-      val conf = GitLabConfig.resolve(project)
-      if (!GitLabConfig.hasApi(conf)) return@executeOnPooledThread
-      val res = runCatching { GitLabApi.listOpenMrs(conf) }.getOrNull() ?: return@executeOnPooledThread
-      if (res.code !in 200..299) return@executeOnPooledThread
-      val targets = GitLabMrSender.mrTargetsFromMrs(res.mrs)
-      if (targets.isEmpty()) return@executeOnPooledThread
-      val skip = autoSendSkipDiagnostic(autoSendSkipDeduper, GitLocal.isCleanWorkTree(project, File(baseDir)))
-      if (skip != null) {
-        service<OperationsHistoryService>().add(
-          LocalGitMirrorBundle.message("history.op.autoMrReview"), false,
-          "err=auto MR branch send skipped: $skip"
-        )
-        notify(LocalGitMirrorBundle.message("mrreview.auto.branchSkip.dirty"), NotificationType.WARNING)
-        return@executeOnPooledThread
-      }
-      GitLabMrSender.sendAll(project, targets, quiet = true)
+    if (!settings.autoMrBranches || disposed || project.isDisposed) return
+    val baseDir = project.basePath ?: return
+    if (!File(baseDir).exists()) return
+    val conf = GitLabConfig.resolve(project)
+    if (!GitLabConfig.hasApi(conf)) return
+    val res = runCatching { GitLabApi.listOpenMrs(conf) }.getOrNull() ?: return
+    if (res.code !in 200..299) return
+    val targets = GitLabMrSender.mrTargetsFromMrs(res.mrs)
+    if (targets.isEmpty()) return
+    val skip = autoSendSkipDiagnostic(autoSendSkipDeduper, GitLocal.isCleanWorkTree(project, File(baseDir)))
+    if (skip != null) {
+      service<OperationsHistoryService>().add(
+        LocalGitMirrorBundle.message("history.op.autoMrReview"), false,
+        "err=auto MR branch send skipped: $skip"
+      )
+      notify(LocalGitMirrorBundle.message("mrreview.auto.branchSkip.dirty"), NotificationType.WARNING)
+      return
     }
+    GitLabMrSender.sendAll(project, targets, quiet = true)
   }
 
   private fun pollNotesSync() {

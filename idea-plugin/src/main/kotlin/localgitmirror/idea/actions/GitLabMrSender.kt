@@ -10,6 +10,7 @@ import localgitmirror.idea.gitlab.MrReviewService
 import localgitmirror.idea.gitlab.MrSendPlanner
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorSyncApi
+import localgitmirror.idea.mirror.MirrorCrypto
 import localgitmirror.idea.settings.MirrorProjectSettingsService
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.MrMirrorTip
@@ -17,6 +18,7 @@ import localgitmirror.idea.settings.OperationsHistoryService
 import localgitmirror.idea.settings.SecretsStore
 import localgitmirror.idea.sync.v2.SyncEngine
 import localgitmirror.idea.sync.v2.SyncFacadeService
+import localgitmirror.idea.sync.v2.syncPasswordConfigured
 import localgitmirror.idea.ui.PanelSyncMessages
 import java.io.File
 import java.time.LocalDateTime
@@ -36,7 +38,7 @@ object GitLabMrSender {
       if (notifyIssues) notify(project, LocalGitMirrorBundle.message("action.syncBranch.urlMissing"), NotificationType.WARNING)
       return false
     }
-    if (SecretsStore.syncPassword.isBlank()) {
+    if (!syncPasswordConfigured(SecretsStore.syncPassword, MirrorCrypto.isV3Pinned())) {
       if (notifyIssues) notify(project, LocalGitMirrorBundle.message("action.syncBranch.syncPasswordMissing"), NotificationType.WARNING)
       return false
     }

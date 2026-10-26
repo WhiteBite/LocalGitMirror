@@ -57,11 +57,13 @@ Branch bundles stay opaque to the server (envelope + bundle crypto, sealed to th
 
 ```
 WORK ──plugin "Send current"/"Send branch…"──▶ POST /api/documents/upload (encrypted git bundle) ──▶ mirror bare repo + workspace checkout
-HOME ──plugin "Sync pull…"/lgm pull──▶ POST /api/documents/check (which tips mirror has) ──▶ incremental bundle download ──▶ git fetch locally
-HOME ──edits, builds──▶ sends back the same way; WORK pulls via "Pull back…"
+HOME ──edits, builds, commits directly in the mirror workspace──▶ commits available to export (no HOME send)
+WORK ──"Pull back…" / MCP pull──▶ incremental bundle download ──▶ fast-forward local branch + working tree
 ```
 
 Negotiation: `check` reports known commits; `link` applies pointer-only updates when the target commit already exists (`apply-known` semantics in `backend/app/routers/sync.py`). Incremental bundles use mirror tips as `^` prerequisites (`send_branches` in `lgm_core/ops_git.py`).
+
+CLI/MCP `pull` imports bundle heads into `refs/remotes/lgm/*` first. The current branch is merged with `--ff-only`, keeping its index and files aligned; other branches are fetched without force, in an atomic ref update. A dirty tracked working tree or divergent current branch is refused before local branch updates. No local branch is force-reset.
 
 ### The workspace IS the home checkout
 
@@ -75,15 +77,19 @@ With `STORAGE_PATH=D:\Sources\kryptonit` on HOME, a repo's "workspace" (`repo_ma
 
 ```
 WORK ──"Send MR branch to Cache…"──▶ git fetch origin <MR source branch> ──one deduplicated bundle──▶ mirror
-WORK ──MrNotesSync (auto poll / Review tab)──▶ renders every open MR's discussions ──▶ postbox mr-notes/mr-!N.md (only when the content hash changed)
+WORK ──MrNotesSync (Review tab / explicit action)──▶ renders every open MR, including those without discussions ──▶ postbox mr-notes/mr-!N.md
 HOME ──agent reads .mr-notes/ (auto-written when autoMrReview)──edits replies──▶ .mr-notes/replies-!N.md
 HOME ──"Send review replies to work…"──▶ postbox mr-replies/mr-!N.md
 WORK ──"Push MR replies to GitLab…"──▶ pulls mr-replies/* from postbox, posts to GitLab (exactly-once markers), uploads report mr-replies-status/mr-!N.md
 ```
 
-Notes transfer is independent of branch sync: `MrNotesSync` (`idea/gitlab/MrNotesSync.kt`) renders discussions for all open MRs and uploads `mr-notes/mr-!N.md` only when the rendered markdown hash changed since the last upload (per-iid hash in project state). It runs from the `MrReviewAutoService` WORK-side poll (jittered 60 s) and from the Review tab. The old `mr-notes-request` back-channel is gone — notes refresh is push-from-work, not pull-on-demand.
+Notes transfer is independent of branch sync: `MrNotesSync` (`idea/gitlab/MrNotesSync.kt`) uploads all open MRs, including those without reviewer threads, when the rendered markdown changes or the last upload is six days old. Both plugin and MCP notes include the target branch when GitLab provides it. A discussions API failure is reported, not converted into an empty successful snapshot. WORK has no periodic MR poll: opening Review triggers the work cycle when `autoMrReview` is enabled; GitLab/postbox calls run off the UI thread, and concurrent work cycles are coalesced. Manual notes upload and MCP `mr_sync_all` remain available. Only HOME uses the jittered 60-second notes-receive poll. The old `mr-notes-request` back-channel is gone.
 
 Home has no GitLab access; `mr_list` falls back to inventorying transferred `mr-notes/` blobs (`_mr_list_from_postbox`, `lgm_core/ops_mr.py`).
+
+For whole-MR review, transfer the target branch too (`mr_send` with `branch=<target>` in MCP, or Send branch in IDEA), then compare it with the MR source. Source-branch transfer alone does not guarantee that the latest target branch is available at home.
+
+When returning fixes: commit at HOME, pull at WORK, push those commits to corporate GitLab, then publish replies and resolve threads. Review-only comments do not require a code push. `mr_replies_push` / the IDEA publication dialog publish comments independently of code; their receipt is not proof that fixes reached GitLab or that tests passed.
 
 Notes, replies, and status reports travel through the file postbox as v3 relay payloads (AAD `lgm/v3/relay/postbox`) — see the postbox contract below. No `SYNC_PASSWORD` is involved anywhere in this loop: uploads are sealed by `MirrorCrypto.sealPostboxPayload`, downloads opened by `MirrorPostboxApi.fileSyncDownload` (plugin) or `lgm_core/relay_crypto.py RelaySession` (CLI/MCP).
 
@@ -116,7 +122,7 @@ Run the loop from this table alone. Each step lists the machine, every surface t
 | # | Шаг | Машина | Поверхности | Доказательство (проверить агенту) |
 | --- | --- | --- | --- | --- |
 | 1 | Ветка MR → зеркало | WORK | Review tab: ⋯ → «Отправить выбранные» (`review.sendSelected`); action «Send MR branch to Cache…»; CLI/MCP `lgm mr_send --repo R --project P [--iid N]` | В результате `sent[] / skipped[] / blocked[]`; разойдённая с origin ветка попадает в `blocked[]` с `reason: diverged from origin`, а не молча; `lgm branches --repo R` показывает тот же tip, что GitLab. |
-| 2 | Заметки ревью → зеркало | WORK | Кнопка Upload в Review tab (tip `review.tip.syncNotes`) или автоцикл `MrReviewAutoService`; CLI/MCP `lgm mr_sync_all` (headless-эквивалент всего цикла) | Строка `mr-notes/mr-!N.md` в `lgm file_list --repo R --json`: поля `mtime` + `expires_at` у каждого item; mtime вырос, значит заметки свежее; строка Review-tab показывает возраст («заметки …»). `lgm mr_pending` разделяет два сигнала, которые нельзя читать как один: `items[].notes.updated_at` — штамп GitLab из заголовка блоба, он меняется от событий уровня MR и может быть новее последней реплики, а `mtime`/`age_seconds` — когда блоб записан в ящик. |
+| 2 | Заметки ревью → зеркало | WORK | Кнопка Upload в Review tab (tip `review.tip.syncNotes`) или цикл `MrReviewAutoService` при открытии Review; CLI/MCP `lgm mr_sync_all` (ветки + заметки, без публикации ответов) | Строка `mr-notes/mr-!N.md` в `lgm file_list --repo R --json`: поля `mtime` + `expires_at` у каждого item; mtime вырос, значит заметки свежее; строка Review-tab показывает возраст («заметки …»). `lgm mr_pending` разделяет два сигнала, которые нельзя читать как один: `items[].notes.updated_at` — штамп GitLab из заголовка блоба, он меняется от событий уровня MR и может быть новее последней реплики, а `mtime`/`age_seconds` — когда блоб записан в ящик. |
 | 3 | Ответы агента (черновик + отправка) | HOME | Диалог MR: кнопка «Send remainder to work» / RU «Отправить остаток на работу», либо `.mr-notes/replies-!N.md` + `lgm mr_replies_send --repo R --iid N --file F` (`--text` для inline) | Оба пути проходят один гейт: закрытый MR, неизвестный id треда, дубль якоря на нерешённый тред. Отказ = exit 5 + `error.code` (`closed-mr`, `notes-unavailable`); unknown-thread/duplicate-anchor отказывают без кода, причина в `message`. Успех: JSON с `path: mr-replies/mr-!N.md`. |
 | 4 | Ответы HOME → WORK | shared postbox (явного действия нет) | WORK видит pending badge/balloon в Review tab; CLI/MCP `lgm mr_pending --repo R` | `items[].replies_pending: true` + `reply_ids[]` для iid; на WORK строка получает состояние «ответы ждут на работе». |
 | 5 | Публикация в GitLab | WORK | Диалог: чекбоксы + «Publish N selected» / авто по `autoPushReplies` / кнопка push в Review tab; CLI/MCP `lgm mr_replies_push --repo R [--iid N] [--dry-run]` | Per-reply `outcome` (`posted`/`dup`/`dead`) в JSON; receipt `mr-replies-status/mr-!N.md` с разобранными `posted / duplicates / skipped / failed / not_anchored / details`; каждый posted-note несёт невидимый маркер `<!-- lgm:<hash> -->` — повтор не дублирует; `acked: true` означает, что postbox-файл потреблён и будет удалён, никогда не перепостится. |
@@ -126,7 +132,7 @@ Run the loop from this table alone. Each step lists the machine, every surface t
 
 - **F10, роль машины в `mr_replies_push`.** Явный `LGM_MACHINE_ROLE=home` — отказ (`wrong-machine`); нераспознанная роль — продолжение. Рабочий ноутбук может не задавать переменную окружения вообще, а настоящий страж публикации — достижимость GitLab: дома её нет, поэтому лишний отказ по роли только ломает headless-цикл на неконфигурированной машине.
 - **F18, free-text режим «Send MR branch to Cache…».** Введённое вручную имя ветки переносит только ветку: заметки MR не подтягиваются, потому что привязки к iid нет. Следствие: строка Review tab после такой отправки не обновляется — это операция переноса кода, не цикла ревью.
-- **F3-residual, кнопки «синхронизировать всё сейчас» в плагине нет.** Цикл покрыт со всех сторон: автоцикл на WORK делает ветки и заметки, кнопки ⇧ (sync notes) и ⇩ (push replies) закрывают ручные случаи, `lgm mr_sync_all` — headless-эквивалент. Одна кнопка-комбайн добавила бы второй путь к тем же трём операциям без нового доказательства успеха.
+- **F3-residual, кнопки «синхронизировать всё сейчас» в плагине нет.** Цикл при открытии Review на WORK делает заметки и, при `autoMrBranches`, ветки; кнопки ⇧ (sync notes) и ⇩ (push replies) закрывают ручные случаи. MCP `mr_sync_all` передаёт ветки и заметки; публикация ответов выполняется отдельно через `mr_replies_push`.
 
 ## Repository layout
 

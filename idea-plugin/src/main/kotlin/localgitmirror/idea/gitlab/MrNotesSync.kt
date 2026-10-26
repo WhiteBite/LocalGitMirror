@@ -69,15 +69,17 @@ object MrNotesSync {
         continue
       }
       val discussionsResult = GitLabApi.listMrDiscussions(conf, mr.iid)
-      if (discussionsResult.code in 200..299) {
-        project.service<MrReviewService>().storeDiscussions(mr.iid, mr.updatedAt, discussionsResult.discussions)
+      if (discussionsResult.code !in 200..299) {
+        failures.add("!${mr.iid}: ${discussionsResult.message.ifBlank { "GitLab API error ${discussionsResult.code}" }}")
+        continue
       }
+      project.service<MrReviewService>().storeDiscussions(mr.iid, mr.updatedAt, discussionsResult.discussions)
       val discussions = discussionsResult.discussions
-      if (discussions.isEmpty()) continue
+      val userThreads = discussions.filter { d -> d.notes.any { !it.system } }
       val unresolved = discussions.count { d -> !d.resolved && d.notes.any { !it.system } }
       val markdown = MrNotesWriter.renderMarkdown(
         project, mr.iid, mr.title, mr.sourceBranch, mr.updatedAt,
-        unresolved, discussions.size, discussions, mr.targetBranch,
+        unresolved, userThreads.size, discussions, mr.targetBranch,
       )
       val hash = sha256Hex(markdown)
       if (shouldSkipUpload(state.mrNotesHash[key], hash, state.mrNotesSentAt[key], now)) {

@@ -257,9 +257,6 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
             item["notes"] = f"failed: {e.message}"
             continue
         discussions = parse_discussions(raw)
-        if not any(any(not n["system"] for n in d["notes"]) for d in discussions):
-            item["notes"] = "skipped (no threads)"
-            continue
         unresolved = sum(
             1 for d in discussions
             if not d["resolved"] and any(not n["system"] for n in d["notes"]))
@@ -270,6 +267,7 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
             iid, m.get("title", ""), m.get("source_branch") or "",
             m.get("updated_at", ""), unresolved, unresolved + resolved,
             discussions, project_dir=proj, branch=m.get("source_branch") or "",
+            target_branch=m.get("target_branch") or "",
         )
         h = hashlib.sha256(md.encode("utf-8")).hexdigest()
         if _should_skip(repo_state.get(str(iid)), h, now):

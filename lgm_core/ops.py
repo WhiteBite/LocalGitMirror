@@ -197,7 +197,7 @@ REGISTRY: list[Op] = [
     ),
     Op(
         name="pull",
-        summary="Pull an encrypted git bundle from the mirror and fetch it locally.",
+        summary="Pull an encrypted git bundle and fast-forward local branches and the current working tree.",
         params=[
             Param("repo", "str", "", "Repository name", required=True),
             Param("branch", "str", "", "Branch to pull"),

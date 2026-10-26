@@ -95,7 +95,8 @@ def _read_file_lines(project_dir: Path | None, branch: str,
 
 def render_markdown(iid: int, title: str, source_branch: str, updated_at: str,
                     unresolved: int, total_threads: int, discussions: list[dict],
-                    project_dir: Path | None = None, branch: str = "") -> str:
+                    project_dir: Path | None = None, branch: str = "",
+                    target_branch: str = "") -> str:
     lines: list[str] = []
     a = lines.append
     a(f"<!-- Сгенерировано плагином DocCache из обсуждений GitLab MR !{iid}. Не редактируйте вручную. -->")
@@ -104,6 +105,8 @@ def render_markdown(iid: int, title: str, source_branch: str, updated_at: str,
     lines.extend(_HEADER_INSTRUCTIONS)
     a("")
     a(f"- **Ветка:** `{source_branch}`")
+    if target_branch:
+        a(f"- **Target:** `{target_branch}`")
     a(f"- **Статус:** открыт · **{unresolved} нерешённых** из {total_threads} тредов")
     a(f"- **Обновлено:** {updated_at} · **Источник:** GitLab MR !{iid}")
     a("")

@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 
 from .client import LgmError
 from .crypto import decrypt_bundle
+from .git_pull import fetch_bundle
 from .op_models import Ctx, _client, _repo_arg, _role_guess
 
 
@@ -328,7 +329,7 @@ def _local_haves(proj: Path, branch: str) -> str:
 
 
 def op_pull(ctx: Ctx, args: dict) -> dict:
-    """Pull an encrypted git bundle from the mirror and fetch it locally.
+    """Pull a bundle and fast-forward local branches and the current working tree.
 
     Without ``--haves`` the local repo is negotiated automatically so the
     mirror bundles only what this machine lacks.
@@ -376,12 +377,7 @@ def op_pull(ctx: Ctx, args: dict) -> dict:
     with tempfile.TemporaryDirectory(prefix="tmp-") as tmp:
         bundle_path = Path(tmp) / "incoming.bundle"
         bundle_path.write_bytes(bundle_bytes)
-        fetch_proc = subprocess.run(
-            ["git", "fetch", str(bundle_path), "+refs/heads/*:refs/heads/*"],
-            cwd=str(proj), capture_output=True, text=True, timeout=300,
-        )
-        if fetch_proc.returncode != 0:
-            raise LgmError("git", fetch_proc.stderr.strip() or "git fetch failed")
+        fetch_proc = fetch_bundle(proj, bundle_path)
         return {"repo": repo, "branch": branch, "status": status,
                 "head": head, "bundle_size": len(bundle_bytes),
                 "fetch_exit": fetch_proc.returncode,
@@ -550,7 +546,11 @@ LocalGitMirror transfer guide (work PC <-> home PC via the stealth mirror).
 CODE (branches/commits):
   1. branches repo=<name>          — see what the mirror has (names + SHAs).
   2. send repo=<name> project=<git root> [branch=<b>]   — bundle & upload (work side).
-  3. pull repo=<name> [branch=<b>] [project=<git root>] — download & fetch (home side).
+  3. HOME: edit and commit in the mirror workspace; no send is needed there.
+  4. WORK: pull repo=<name> branch=<b> project=<git root> — receive home commits.
+     The current branch and its files fast-forward together; dirty/diverged
+     branches are refused, never reset. Other imported branches fast-forward only.
+  5. WORK: push the received branch to corporate GitLab using local git/IDE.
   Direct git push/pull between the machines does NOT exist; corporate GitLab is
   unreachable from home. Local git inside a workspace is fine.
 
@@ -563,6 +563,11 @@ CORPORATE DEPS (gradle/npm):
           publish / vault_status (corporate artifact vault).
 
 MR REVIEW REPLIES (home agent -> work PC -> GitLab):
+  WORK preparation: mr_projects_scan root=<checkouts root>, then mr_sync_all.
+    mr_sync_all sends open MR source branches and notes, including MRs without
+    comments. notes_only=true refreshes notes without sending branches.
+    For a whole-MR review, also transfer its target branch with mr_send
+    repo=<name> project=<git root> branch=<target>; do not guess the base.
   0. mr_list [repo=<name>]                — open MRs; without GitLab config lists MRs from transferred notes.
   1. mr_notes repo=<name> [iid=<N>]       — read reviewer threads transferred from work.
   2. Write answers, then EITHER:
@@ -580,8 +585,13 @@ MR REVIEW REPLIES (home agent -> work PC -> GitLab):
        (posted/failed counts); empty means not published yet.
     4. mr_pending repo=<name> — one pipeline view per MR: notes age, replies
        pending, last publish outcome, closed state with evidence.
-   The work PC posts approved replies to GitLab; a human may approve them in
-   the IDE first, so a pending send is normal — poll mr_replies_status.
+    The work PC posts approved replies to GitLab; a human may approve them in
+    the IDE first, so a pending send is normal — poll mr_replies_status.
+    WORK: mr_replies_push repo=<name> iid=<N> dry_run=true previews publication;
+    omit dry_run to publish. When replies describe code fixes, pull and push
+    those commits to GitLab BEFORE publishing the replies or resolving threads.
+    For review-only comments no code push is required. The reply receipt proves
+    comment publication, not code delivery or test success.
 
 DIAGNOSTICS: status, repos, debug.
 

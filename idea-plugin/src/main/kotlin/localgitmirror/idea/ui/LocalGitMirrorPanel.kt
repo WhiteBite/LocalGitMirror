@@ -419,8 +419,10 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   private fun onTabChanged(index: Int) {
     if (project.isDisposed || ApplicationManager.getApplication().isDisposeInProgress) return
     when (index) {
-      0 -> reloadReview()
-      1 -> project.getService(localgitmirror.idea.gitlab.MrReviewAutoService::class.java).triggerWorkCycle()
+      0 -> {
+        reloadReview()
+        project.getService(localgitmirror.idea.gitlab.MrReviewAutoService::class.java).triggerWorkCycle()
+      }
       2 -> {
         refreshExchangeInBackground()
         startExchangePolling()

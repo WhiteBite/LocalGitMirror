@@ -37,6 +37,21 @@ class MrNotesRenderParseTest {
   )
 
   @Test
+  fun `MR without discussions remains readable on home`() {
+    val md = MrNotesWriter.renderMarkdown(
+      iid = 24, title = "Review me", sourceBranch = "feature", targetBranch = "release",
+      updatedAt = "2026-10-26", unresolved = 0, totalThreads = 0, discussions = emptyList(),
+    )
+
+    val row = MrReviewService(project).parseMrMarkdown(24, md)
+
+    assertEquals("feature", row.sourceBranch)
+    assertEquals("release", row.targetBranch)
+    assertEquals(0, row.totalThreads)
+    assertTrue(MrReviewService(project).parseThreads(md).isEmpty())
+  }
+
+  @Test
   fun `render puts unresolved first then resolved then system section`() {
     val md = MrNotesWriter.renderMarkdown(
       project = null, iid = 412, title = "Refactor", sourceBranch = "refactor/x",
