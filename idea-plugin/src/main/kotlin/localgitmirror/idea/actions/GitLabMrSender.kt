@@ -66,6 +66,11 @@ object GitLabMrSender {
       return
     }
 
+    val materialized = materializeRemoteBranches(project, projectDir, remote, listOf(branch))
+    if (materialized.divergent.isNotEmpty() || materialized.unresolved.isNotEmpty()) {
+      notify(project, "Branch $branch cannot be aligned with $remote", NotificationType.WARNING)
+      return
+    }
     val plan = planMrSend(project, projectDir, settings, syncFacade, remote, listOf(branch))
     if (branch in plan.skipped) {
       notify(project, LocalGitMirrorBundle.message("gitlab.notify.alreadyOnCache", branch), NotificationType.INFORMATION)
@@ -76,22 +81,23 @@ object GitLabMrSender {
     notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
 
     val originalBranch = GitLocal.currentBranch(project, projectDir)
-    val co = GitLocal.checkout(project, projectDir, branch)
-    if (!co.ok()) {
-      notify(
-        project,
-        LocalGitMirrorBundle.message("action.syncBranch.checkoutFailed", branch, co.stderr),
-        NotificationType.ERROR
-      )
-      history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
-        "branch=$branch iid=$iid err=${co.stderr.take(300)}")
-      return
-    }
-
     val syncRes = try {
+      val co = GitLocal.checkout(project, projectDir, branch)
+      if (!co.ok()) {
+        notify(
+          project,
+          LocalGitMirrorBundle.message("action.syncBranch.checkoutFailed", branch, co.stderr),
+          NotificationType.ERROR
+        )
+        history.add(LocalGitMirrorBundle.message("history.op.sendGitLabMr"), false,
+          "branch=$branch iid=$iid err=${co.stderr.take(300)}")
+        return
+      }
       syncFacade.runFullSync(projectDir, settings)
     } finally {
-      restoreBranch(project, projectDir, originalBranch)
+      com.intellij.openapi.progress.ProgressManager.getInstance().executeNonCancelableSection {
+        restoreBranch(project, projectDir, originalBranch)
+      }
     }
     reportSyncOutcome(project, settings, syncRes, branch, iid, history)
   }
@@ -117,13 +123,13 @@ object GitLabMrSender {
       return
     }
 
+    val materialized = materializeRemoteBranches(project, projectDir, remote, branches)
     val plan = planMrSend(project, projectDir, settings, syncFacade, remote, branches)
 
     val repoInfo = syncFacade.describeRepoTarget(projectDir, settings)
     if (!quiet) notify(project, LocalGitMirrorBundle.message("action.syncBranch.starting", repoInfo), NotificationType.INFORMATION)
 
     val planned = branches.filter { it !in plan.skipped }
-    val materialized = materializeRemoteBranches(project, projectDir, remote, planned)
     val unresolvableSet = materialized.unresolved.toSet()
     val divergentSet = materialized.divergent.toSet()
 
@@ -141,7 +147,15 @@ object GitLabMrSender {
 
     val sendable = planned.filter { it !in unresolvableSet && it !in divergentSet }
     val (toSend, syncRes) = sendBatch(sendable, plan) {
-      syncFacade.runFullSync(projectDir, settings, additionalBranches = it)
+      val original = GitLocal.currentBranch(project, projectDir)
+      try {
+        check(GitLocal.checkout(project, projectDir, it.first()).ok()) { "Cannot checkout ${it.first()}" }
+        syncFacade.runFullSync(projectDir, settings, additionalBranches = it.drop(1))
+      } finally {
+        com.intellij.openapi.progress.ProgressManager.getInstance().executeNonCancelableSection {
+          restoreBranch(project, projectDir, original)
+        }
+      }
     }
     val attempted = targets.filter { it.first in toSend.toSet() }
     val skipped = targets.size - attempted.size - targets.count { it.first in unresolvableSet } - targets.count { it.first in divergentSet }
@@ -220,9 +234,17 @@ object GitLabMrSender {
     branches,
     { GitLocal.branchHash(project, projectDir, it) },
     { remoteTip(project, projectDir, remote, it) },
-    { branch, tip -> GitLocal.run(project, projectDir, 30, "branch", branch, tip).ok() },
+    { branch, tip ->
+      if (GitLocal.currentBranch(project, projectDir) == branch)
+        GitLocal.run(project, projectDir, 30, "merge", "--ff-only", "--no-edit", tip).ok()
+      else GitLocal.run(project, projectDir, 30, "branch", branch, tip).ok()
+    },
     { local, tip -> GitLocal.run(project, projectDir, 30, "merge-base", "--is-ancestor", local, tip).ok() },
-    { branch, tip -> GitLocal.run(project, projectDir, 30, "update-ref", "refs/heads/$branch", tip).ok() },
+    { branch, tip ->
+      if (GitLocal.currentBranch(project, projectDir) == branch)
+        GitLocal.run(project, projectDir, 30, "merge", "--ff-only", "--no-edit", tip).ok()
+      else GitLocal.run(project, projectDir, 30, "fetch", ".", "refs/remotes/$remote/$branch:refs/heads/$branch").ok()
+    },
   )
 
   internal data class MaterializeResult(

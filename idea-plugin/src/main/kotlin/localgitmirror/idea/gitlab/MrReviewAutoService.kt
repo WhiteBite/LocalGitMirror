@@ -103,8 +103,10 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   private fun pollWork() {
     val conf = GitLabConfig.resolve(project)
     if (!GitLabConfig.hasApi(conf)) return
-    pollNotesSync()
-    autoSendBranches()
+    val inventory = GitLabApi.listOpenMrs(conf)
+    if (inventory.code !in 200..299) return
+    pollNotesSync(inventory)
+    autoSendBranches(inventory)
     val service = MrReplyPushService(project)
     if (settings.autoPushReplies) {
       val reports = service.pushOnce()
@@ -154,13 +156,12 @@ class MrReviewAutoService(private val project: Project) : Disposable {
     }
   }
 
-  private fun autoSendBranches() {
+  private fun autoSendBranches(res: GitLabApi.MrsResult) {
     if (!settings.autoMrBranches || disposed || project.isDisposed) return
     val baseDir = project.basePath ?: return
     if (!File(baseDir).exists()) return
     val conf = GitLabConfig.resolve(project)
     if (!GitLabConfig.hasApi(conf)) return
-    val res = runCatching { GitLabApi.listOpenMrs(conf) }.getOrNull() ?: return
     if (res.code !in 200..299) return
     val targets = GitLabMrSender.mrTargetsFromMrs(res.mrs)
     if (targets.isEmpty()) return
@@ -176,8 +177,8 @@ class MrReviewAutoService(private val project: Project) : Disposable {
     GitLabMrSender.sendAll(project, targets, quiet = true)
   }
 
-  private fun pollNotesSync() {
-    val report = runCatching { MrNotesSync.sync(project) }
+  private fun pollNotesSync(inventory: GitLabApi.MrsResult) {
+    val report = runCatching { MrNotesSync.sync(project, inventory = inventory) }
       .getOrElse { MrNotesSync.Report(emptyList(), 0, listOf(it.message ?: "error")) }
     val signature = "${report.uploaded}|${report.failures}"
     if (signature == lastNotesSignature) return

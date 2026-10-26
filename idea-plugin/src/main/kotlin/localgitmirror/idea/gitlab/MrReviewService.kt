@@ -104,12 +104,12 @@ class MrReviewService(private val project: Project) {
   }
 
   /** Cache-or-fetch for one MR: an unchanged MR (same non-blank updated_at as the cached fetch) skips GitLab entirely. */
-  internal fun discussionsFor(iid: Int, currentUpdatedAt: String): DiscussionsOutcome {
+  @Synchronized
+  internal fun discussionsFor(iid: Int, currentUpdatedAt: String, conf: GitLabConfig.GitLabConf = GitLabConfig.resolve(project)): DiscussionsOutcome {
     val entry = discussionsCache[iid] ?: coldDiscussions(iid)?.also { discussionsCache[iid] = it }
     entry?.takeIf { shouldUseCachedDiscussions(it.updatedAt, currentUpdatedAt, hasCache = true) }?.let {
       return DiscussionsOutcome(it.discussions, fromCache = true)
     }
-    val conf = GitLabConfig.resolve(project)
     if (!GitLabConfig.hasApi(conf)) {
       return DiscussionsOutcome(entry?.discussions ?: emptyList(), fromCache = entry != null)
     }
@@ -451,10 +451,7 @@ class MrReviewService(private val project: Project) {
     if (mrsResult.mrs.isEmpty()) return emptyList()
 
     return mrsResult.mrs.map { mr ->
-      val discussionsResult = GitLabApi.listMrDiscussions(conf, mr.iid)
-      if (discussionsResult.code in 200..299) {
-        storeDiscussions(mr.iid, mr.updatedAt, discussionsResult.discussions)
-      }
+      val discussionsResult = discussionsFor(mr.iid, mr.updatedAt, conf)
       val discussions = discussionsResult.discussions
       val unresolved = discussions.count { d -> !d.resolved && d.notes.any { !it.system } }
       MrRowItem(
@@ -463,7 +460,7 @@ class MrReviewService(private val project: Project) {
         sourceBranch = mr.sourceBranch,
         updatedAt = mr.updatedAt,
         unresolved = unresolved,
-        totalThreads = discussions.size,
+        totalThreads = discussions.count { d -> d.notes.any { !it.system } },
         discussions = discussions,
         source = Source.GITLAB,
         receivedMarkdown = null,

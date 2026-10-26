@@ -65,6 +65,8 @@ Negotiation: `check` reports known commits; `link` applies pointer-only updates 
 
 CLI/MCP `pull` imports bundle heads into `refs/remotes/lgm/*` first. The current branch is merged with `--ff-only`, keeping its index and files aligned; other branches are fetched without force, in an atomic ref update. A dirty tracked working tree or divergent current branch is refused before local branch updates. No local branch is force-reset.
 
+IDEA cancellation propagates through Git process waits and blocking HTTP reads/writes. Cancelled Git commands terminate their process tree; cancelled HTTP waits disconnect the connection and unwind instead of becoming a network failure or triggering a full-bundle fallback. Cancellation cannot undo a request that the server already applied. Branch restoration after an MR send runs in a non-cancellable cleanup section. Online negotiation or pointer-only update failure stops the send rather than silently packing full history.
+
 ### The workspace IS the home checkout
 
 With `STORAGE_PATH=D:\Sources\kryptonit` on HOME, a repo's "workspace" (`repo_manager._get_workspace_path` = `storage/<repo>`) is the owner's real working tree there (`phonyx`, `doctransformer`, ...), cloned with `origin` at the mirror's own bare (`storage/.lgm/bare/<repo>.git`). The mirror server owns that directory as its data store, and three consequences follow:
@@ -86,6 +88,8 @@ WORK ──"Push MR replies to GitLab…"──▶ pulls mr-replies/* from postb
 Notes transfer is independent of branch sync: `MrNotesSync` (`idea/gitlab/MrNotesSync.kt`) uploads all open MRs, including those without reviewer threads, when the rendered markdown changes or the last upload is six days old. Both plugin and MCP notes include the target branch when GitLab provides it. A discussions API failure is reported, not converted into an empty successful snapshot. WORK has no periodic MR poll: opening Review triggers the work cycle when `autoMrReview` is enabled; GitLab/postbox calls run off the UI thread, and concurrent work cycles are coalesced. Manual notes upload and MCP `mr_sync_all` remain available. Only HOME uses the jittered 60-second notes-receive poll. The old `mr-notes-request` back-channel is gone.
 
 Home has no GitLab access; `mr_list` falls back to inventorying transferred `mr-notes/` blobs (`_mr_list_from_postbox`, `lgm_core/ops_mr.py`).
+
+GitLab inventories and discussions follow `X-Next-Page` without a ten-page truncation; repeated/non-progressing page numbers fail the operation. Unchanged non-blank MR `updated_at` stamps skip discussion downloads while the six-day upload is fresh. IDEA list refresh and notes transfer share the discussions cache, and a WORK cycle shares one MR inventory between notes and branch sending. MR branch preparation fast-forwards the checked-out branch with its files, and materializes branches before comparing tips with the mirror. MCP MR sends negotiate shared-history candidates before building a single bundle. Export cache keys include the exported refs, not just the source checkout's HEAD.
 
 For whole-MR review, transfer the target branch too (`mr_send` with `branch=<target>` in MCP, or Send branch in IDEA), then compare it with the MR source. Source-branch transfer alone does not guarantee that the latest target branch is available at home.
 

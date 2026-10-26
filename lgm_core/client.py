@@ -547,14 +547,16 @@ class MirrorClient:
                 "?state=opened&order_by=updated_at&sort=desc&per_page=50")
         out: list = []
         page = 1
-        while page <= 10:
+        while True:
             data, next_page = self._gitlab_get_paged(f"{base}&page={page}", token)
             if not isinstance(data, list):
                 raise LgmError("network", f"GitLab returned non-list for merge_requests: {type(data).__name__}")
             out.extend(data)
             if not next_page:
                 break
-            page += 1
+            if not next_page.isdigit() or int(next_page) <= page:
+                raise LgmError("network", "GitLab returned invalid pagination")
+            page = int(next_page)
         return out
 
     def gitlab_get_mr(self, iid: int, project: str = "") -> dict:
@@ -584,17 +586,19 @@ class MirrorClient:
             raise LgmError("config", f"MR iid must be an integer, got: {iid!r}") from None
         out: list = []
         page = 1
-        while page <= 10:
-            data = self._gitlab_get(
+        while True:
+            data, next_page = self._gitlab_get_paged(
                 f"{url}/api/v4/projects/{proj_id}/merge_requests/{iid_int}"
                 f"/discussions?per_page=100&page={page}", token
             )
             if not isinstance(data, list):
                 raise LgmError("network", f"GitLab returned non-list for discussions: {type(data).__name__}")
-            if not data:
-                break
             out.extend(data)
-            page += 1
+            if not next_page:
+                break
+            if not next_page.isdigit() or int(next_page) <= page:
+                raise LgmError("network", "GitLab returned invalid pagination")
+            page = int(next_page)
         return out
 
     def gitlab_compare(self, from_ref: str, to_ref: str, project: str = "") -> dict:

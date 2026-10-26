@@ -41,10 +41,11 @@ class GitLabApiPagingTest {
   }
 
   @Test
-  fun `shouldFetchPage follows the next page until the 10-page cap`() {
+  fun `shouldFetchPage follows progressing pages beyond ten`() {
     assertTrue(GitLabApi.shouldFetchPage(2, fetched = 1))
     assertTrue(GitLabApi.shouldFetchPage(10, fetched = 9))
     assertFalse(GitLabApi.shouldFetchPage(null, fetched = 1))
-    assertFalse(GitLabApi.shouldFetchPage(11, fetched = 10))
+    assertTrue(GitLabApi.shouldFetchPage(11, fetched = 10))
+    assertFalse(GitLabApi.shouldFetchPage(10, fetched = 10))
   }
 }

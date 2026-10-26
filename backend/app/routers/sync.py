@@ -850,7 +850,12 @@ def sync_export_dump(e: str = Form(...), k: Optional[str] = Form(None)):
         cache_key = None
         served_from_cache = False
         if cache_dir is not None:
-            cache_key = _export_cache_key(repo_name, head, branch_name, since, haves)
+            refs_proc = _git(source, "for-each-ref", "--format=%(refname) %(objectname)",
+                             *([f"refs/heads/{branch_name}"] if branch_name else []))
+            if refs_proc.returncode != 0:
+                raise HTTPException(500, "Cannot read export refs")
+            cache_key = _export_cache_key(repo_name, head + "\n" + refs_proc.stdout,
+                                          branch_name, since, haves)
             if _export_cache_lookup(cache_dir, cache_key, bundle_path):
                 # Validate the cached bytes are a real git bundle before trusting
                 # them. A corrupt/garbage cache file is treated as a miss so we

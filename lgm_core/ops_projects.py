@@ -23,7 +23,7 @@ from .op_models import Ctx, _client
 from .ops_git import send_branches
 from .ops_mr import (
     _fetch_mr_branches, _local_tip, _mirror_refs_safe, _existing_shas,
-    _diverged_warning, send_exclusions, _ensure_mirror_repo,
+    _diverged_warning, send_exclusions, _negotiate_mr_bases,
 )
 
 _LGM_DIR = Path.home() / ".lgm"
@@ -229,10 +229,11 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
                     sent.append(b)
             if sent:
                 mirror_shas = [info.get("sha", "") for info in mirror_refs.values()]
+                known, _ = _negotiate_mr_bases(c, proj, repo, sent)
+                mirror_shas = list(dict.fromkeys([*mirror_shas, *known]))
                 exclude_shas = send_exclusions(
                     mirror_shas, [tips[b] for b in sent],
                     set(_existing_shas(proj, mirror_shas)))
-                _ensure_mirror_repo(c, repo)
                 send_branches(ctx, repo, str(proj), sent, exclude_shas)
             res["branches_sent"] = sent
             res["branches_skipped"] = skipped
@@ -251,6 +252,11 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
         # реопен: стираем маркер закрытия, иначе повторное закрытие проглотит skip-окно
         seen.pop("closed", None)
         seen.pop("closed_sent_at", None)
+        stamp = m.get("updated_at") or ""
+        if (stamp and seen.get("updated_at") == stamp
+                and _should_skip(seen, seen.get("hash", ""), now)):
+            item["notes"] = "unchanged"
+            continue
         try:
             raw = c.gitlab_list_discussions(iid, project=gitlab)
         except LgmError as e:
@@ -271,6 +277,7 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
         )
         h = hashlib.sha256(md.encode("utf-8")).hexdigest()
         if _should_skip(repo_state.get(str(iid)), h, now):
+            seen["updated_at"] = stamp
             item["notes"] = "unchanged"
             continue
         try:
@@ -281,6 +288,7 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
             continue
         seen["hash"] = h
         seen["sent_at"] = now
+        seen["updated_at"] = stamp
         item["notes"] = "uploaded"
 
     res["closed"] = _mark_closed(c, repo, repo_state, closed_iids, now)

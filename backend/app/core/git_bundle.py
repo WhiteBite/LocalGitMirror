@@ -3,6 +3,7 @@
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -615,7 +616,9 @@ def _export_cache_lookup(cache_dir: Path, key: str, dest: Path) -> bool:
         cached = cache_dir / key
         if not cached.is_file() or cached.stat().st_size == 0:
             return False
-        dest.write_bytes(cached.read_bytes())
+        if time.time() - cached.stat().st_mtime > _EXPORT_CACHE_TTL_SECONDS:
+            return False
+        shutil.copyfile(cached, dest)
         try:
             os.utime(cached, None)
         except Exception:
@@ -631,7 +634,7 @@ def _export_cache_store(cache_dir: Path, key: str, bundle_path: Path) -> None:
     try:
         if not bundle_path.is_file() or bundle_path.stat().st_size == 0:
             return
-        tmp.write_bytes(bundle_path.read_bytes())
+        shutil.copyfile(bundle_path, tmp)
         target = cache_dir / key
         os.replace(tmp, target)
     except Exception:

@@ -165,14 +165,15 @@ internal fun SyncEngine.negotiateMultiBranch(
   }
 
   // one round trip: server creates the repo and batch-checks every candidate
-  val candidates = branchInfos.flatMap { it.candidates }
+  val candidates = branchInfos.flatMap { info -> info.candidates.mapIndexed { i, sha -> i to sha } }
+    .sortedBy { it.first }.map { it.second }
     .filter { hashRe.matches(it) }
     .distinct()
     .take(SyncConstants.HAS_COMMITS_CANDIDATE_LIMIT)
 
   val neg = mirror.negotiate(settings.baseUrl, settings.mirrorApiKey, repo, candidates, settings.syncPassword, settings.mirrorInsecureTls)
   val serverRefs = neg.refs
-  if (neg.code !in 200..299 || serverRefs == null) return MultiBranchNegotiation(null, emptyList())
+  check(neg.code in 200..299 && serverRefs != null) { "Negotiation failed (HTTP ${neg.code}); full bundle refused" }
 
   // server tips are exclude-base candidates even with empty local state
   val serverKnown: Set<String> = serverRefs.values

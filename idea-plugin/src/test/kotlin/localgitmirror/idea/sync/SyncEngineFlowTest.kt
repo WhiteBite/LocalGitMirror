@@ -114,7 +114,7 @@ class SyncEngineFlowTest {
   }
 
   @Test
-  fun `negotiate failure falls back to full bundle upload`() {
+  fun `negotiate failure refuses packing and upload`() {
     val mirror = FakeMirrorPort(negotiateCode = 503)
     val git = FakeGitPort(head = "abc1234")
     val work = FakeWorkKitPort(createDump = true)
@@ -125,11 +125,11 @@ class SyncEngineFlowTest {
     val projectDir = createTempDir(prefix = "tmp-engine-negotiate-fail-")
     try {
       val res = engine.runFullSyncWithSnapshot(project = dummyProject(), projectDir = projectDir, snapshot = defaultSnapshot())
-      assertEquals(true, res.step.ok)
+      assertEquals(false, res.step.ok)
       assertEquals(1, mirror.negotiateCalls)
       assertEquals(0, mirror.applyKnownCalls)
-      assertEquals(1, work.runBackupCalls)
-      assertEquals(1, mirror.uploadCalls)
+      assertEquals(0, work.runBackupCalls)
+      assertEquals(0, mirror.uploadCalls)
     } finally {
       projectDir.deleteRecursively()
     }

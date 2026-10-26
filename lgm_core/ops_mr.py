@@ -451,10 +451,14 @@ def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[str]:
             capture_output=True, text=True, timeout=30,
         )
         if chk.returncode != 0:
-            # git fetch writes only remote-tracking refs; create the local ref for the bundle.
+            current = subprocess.run(
+                ["git", "-C", str(proj), "symbolic-ref", "--short", "-q", "HEAD"],
+                capture_output=True, text=True, timeout=30,
+            ).stdout.strip()
+            create = (["merge", "--ff-only", "--no-edit", origin_sha] if current == b
+                      else ["branch", b, origin_sha])
             mk = subprocess.run(
-                ["git", "-C", str(proj), "update-ref",
-                 f"refs/heads/{b}", origin_sha],
+                ["git", "-C", str(proj), *create],
                 capture_output=True, text=True, timeout=30,
             )
             if mk.returncode != 0:
@@ -474,8 +478,14 @@ def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[str]:
         if anc.returncode != 0:
             diverged.append(b)
             continue
+        current = subprocess.run(
+            ["git", "-C", str(proj), "symbolic-ref", "--short", "-q", "HEAD"],
+            capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+        update = (["merge", "--ff-only", "--no-edit", origin_sha] if current == b
+                  else ["fetch", ".", f"refs/remotes/origin/{b}:refs/heads/{b}"])
         upd = subprocess.run(
-            ["git", "-C", str(proj), "update-ref", f"refs/heads/{b}", origin_sha],
+            ["git", "-C", str(proj), *update],
             capture_output=True, text=True, timeout=30,
         )
         if upd.returncode != 0:
@@ -558,13 +568,19 @@ def _dirty_tracked_paths(proj: Path) -> list[str]:
     return paths
 
 
-def _ensure_mirror_repo(c: MirrorClient, repo: str) -> bool:
-    """Register the repo on the mirror via negotiate; True when this call created it."""
-    try:
-        return bool(c.sync_negotiate(repo, [], probe=False).get("created"))
-    except LgmError:
-        # a failed registration surfaces in the send below
-        return False
+def _negotiate_mr_bases(c: MirrorClient, proj: Path, repo: str,
+                        branches: list[str]) -> tuple[list[str], bool]:
+    history = subprocess.run(
+        ["git", "-C", str(proj), "rev-list", "--max-count=300", "--date-order", *branches, "--"],
+        capture_output=True, text=True, timeout=60,
+    )
+    if history.returncode:
+        raise LgmError("git", history.stderr.strip())
+    candidates = history.stdout.splitlines()
+    result = c.sync_negotiate(repo, candidates)
+    offered = set(candidates)
+    return ([sha for sha in result.get("known", []) if sha in offered],
+            bool(result.get("created")))
 
 
 def op_mr_send(ctx: Ctx, args: dict) -> dict:
@@ -654,10 +670,11 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
                 "message": "nothing new: mirror already has all requested commits"}
 
     mirror_shas = [info.get("sha", "") for info in mirror_refs.values()]
+    known, created = _negotiate_mr_bases(c, proj, repo, [t["branch"] for t in sent])
+    mirror_shas = list(dict.fromkeys([*mirror_shas, *known]))
     exclude_shas = send_exclusions(
         mirror_shas, [t["tip"] for t in sent],
         set(_existing_shas(proj, mirror_shas)))
-    created = _ensure_mirror_repo(c, repo)
     send_result = send_branches(ctx, repo, str(proj), [t["branch"] for t in sent],
                                 exclude_shas)
     return {"repo": repo, "project": str(proj), "sent": sent, "skipped": skipped,

@@ -2,7 +2,6 @@ package localgitmirror.idea.git
 
 import com.intellij.openapi.project.Project
 import java.io.File
-import java.util.concurrent.TimeUnit
 
 object GitLocal {
   data class CommitSummary(
@@ -34,6 +33,7 @@ object GitLocal {
   }
 
   fun run(project: Project, workDir: File, timeoutSeconds: Long, vararg args: String): Result {
+    localgitmirror.idea.net.Cancellation.check()
     val cmd = mutableListOf("git")
     cmd.addAll(args)
 
@@ -56,7 +56,7 @@ object GitLocal {
     val errT = Thread { errSb.append(proc.errorStream.bufferedReader().readText()) }.apply { isDaemon = true }
     outT.start()
     errT.start()
-    if (!proc.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+    if (!localgitmirror.idea.net.Cancellation.waitFor(proc, timeoutSeconds)) {
       proc.destroyForcibly()
       outT.join(2000)
       errT.join(2000)

@@ -226,6 +226,7 @@ class SyncEngine(
           return FullSyncResult(okStep, applied, null, repoName, traceId, diagnostics.steps)
         }
         diag(projectDir, diagnostics, "apply-known", SyncStepOutcome.FAIL, "Pointer-only apply failed: ${applied.body.take(200)}", mapOf("repo" to repoName, "httpCode" to applied.code.toString()))
+        error("Pointer-only update failed (HTTP ${applied.code}); full bundle refused")
       }
 
       // Marker BEFORE the long local step (git bundle + encrypt) so the sync
@@ -309,6 +310,7 @@ class SyncEngine(
 
       FullSyncResult(StepResult(true, "Sync completed", uploadRes.details), http, dump, repoName, traceId, diagnostics.steps)
     } catch (t: Throwable) {
+      localgitmirror.idea.net.Cancellation.rethrow(t)
       diag(projectDir, diagnostics, "unexpected-error", SyncStepOutcome.FAIL, "Sync failed", mapOf("error" to (t.message ?: "Unexpected error")))
       FullSyncResult(StepResult(false, "Sync failed", t.message ?: "Unexpected error"), null, null, null, traceId, diagnostics.steps)
     }

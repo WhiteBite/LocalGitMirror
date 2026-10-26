@@ -3,7 +3,6 @@ package localgitmirror.idea.workkit
 import java.io.File
 import java.io.IOException
 import java.nio.charset.StandardCharsets
-import java.util.concurrent.TimeUnit
 import localgitmirror.idea.actions.PullLogic
 import localgitmirror.idea.git.GitDirCache
 
@@ -92,6 +91,7 @@ object BundleImporter {
         }
       }
     } catch (t: Throwable) {
+      localgitmirror.idea.net.Cancellation.rethrow(t)
       ApplyResult(false, "", t.message ?: "Sync import failed", 1)
     }
   }
@@ -279,11 +279,15 @@ object BundleImporter {
     val errSb = StringBuilder()
     val errT = Thread { errSb.append(p.errorStream.bufferedReader().readText()) }.apply { isDaemon = true }
     errT.start()
-    val stdout = p.inputStream.bufferedReader().readText().trim()
-    if (!p.waitFor(300, TimeUnit.SECONDS)) {
+    val outSb = StringBuilder()
+    val outT = Thread { outSb.append(p.inputStream.bufferedReader().readText()) }.apply { isDaemon = true }
+    outT.start()
+    if (!localgitmirror.idea.net.Cancellation.waitFor(p, 300)) {
       p.destroyForcibly()
-      return CmdResult(124, stdout, "timeout")
+      return CmdResult(124, "", "timeout")
     }
+    outT.join(2000)
+    val stdout = outSb.toString().trim()
     errT.join(2000)
     return CmdResult(p.exitValue(), stdout, errSb.toString().trim())
   }

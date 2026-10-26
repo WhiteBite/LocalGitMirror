@@ -56,11 +56,15 @@ class _FakeGit:
         if args[0] == "fetch":
             self.fetch_cmds.append(args)
             return ok()
-        if args[0] == "update-ref":
-            self.update_refs.append(args[1])
+        if args[0] == "branch":
+            self.update_refs.append("refs/heads/" + args[1])
             return ok()
+        if args[0] == "symbolic-ref":
+            return fail()
         if args[0] == "remote":
             return fail()
+        if args[0] == "rev-list":
+            return ok("\n".join(self.tips.values()))
         if args[:2] == ["rev-parse", "--verify"]:
             ref = args[2]
             if ref.startswith("refs/remotes/origin/"):

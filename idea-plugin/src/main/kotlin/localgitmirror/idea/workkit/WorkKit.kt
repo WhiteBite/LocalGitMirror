@@ -63,6 +63,7 @@ object WorkKit {
       }.trim()
       Result(0, stdout, "")
     } catch (t: Throwable) {
+      localgitmirror.idea.net.Cancellation.rethrow(t)
       Result(1, "", t.message ?: "Sync export failed")
     }
   }

@@ -110,6 +110,7 @@ object GitLabApi {
         VerifyResult(code, null, redirectHint(conn, code, body))
       }
     } catch (t: Throwable) {
+      localgitmirror.idea.net.Cancellation.rethrow(t)
       VerifyResult(0, null, t.message ?: "error")
     }
   }
@@ -158,7 +159,7 @@ object GitLabApi {
     return try {
       val out = mutableListOf<MrDiscussion>()
       var page = 1
-      while (page in 1..10) {
+      while (true) {
         val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
           "/merge_requests/$iid/discussions?per_page=100&page=$page"
         val conn = open(url, conf.token)
@@ -205,10 +206,13 @@ object GitLabApi {
         }
         val next = conn.getHeaderField("X-Next-Page")?.trim().orEmpty()
         if (next.isEmpty()) break
-        page = next.toIntOrNull() ?: break
+        val nextPage = next.toIntOrNull()
+        require(nextPage != null && nextPage > page) { "GitLab returned invalid pagination" }
+        page = nextPage
       }
       DiscussionsResult(200, out, "")
     } catch (t: Throwable) {
+      localgitmirror.idea.net.Cancellation.rethrow(t)
       DiscussionsResult(0, emptyList(), t.message ?: "error")
     }
   }
@@ -236,18 +240,17 @@ object GitLabApi {
   }
 
   internal fun shouldFetchPage(next: Int?, fetched: Int): Boolean =
-    next != null && fetched < 10
+    next != null && next > fetched
 
   /**
    * GET {url}/api/v4/projects/{project}/merge_requests?state=opened
-   * Newest-updated first. Paginated via X-Next-Page, capped at 10 pages.
+   * Newest-updated first, paginated via X-Next-Page.
    */
   fun listOpenMrs(conf: GitLabConfig.GitLabConf): MrsResult {
     return try {
       val mrs = mutableListOf<MrInfo>()
       var code: Int
       var page = 1
-      var fetched = 0
       while (true) {
         val conn = open(mrsPageUrl(conf.url, conf.project, page), conf.token)
         code = conn.responseCode
@@ -255,10 +258,10 @@ object GitLabApi {
         if (code !in 200..299) return MrsResult(code, emptyList(), body.take(300))
 
         mrs += parseMrsBody(body)
-        fetched++
         val next = nextPageOf(conn.getHeaderField("X-Next-Page"))
-        if (!shouldFetchPage(next, fetched)) break
-        page = next ?: break
+        if (next == null) break
+        require(next > page) { "GitLab returned invalid pagination" }
+        page = next
       }
       MrsResult(code, mrs, "OK")
     } catch (t: Throwable) {

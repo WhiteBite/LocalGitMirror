@@ -43,12 +43,12 @@ object MrNotesSync {
     }
   }
 
-  fun sync(project: Project, onlyIids: Set<Int>? = null): Report {
+  fun sync(project: Project, onlyIids: Set<Int>? = null, inventory: GitLabApi.MrsResult? = null): Report {
     val conf = GitLabConfig.resolve(project)
     if (!GitLabConfig.hasApi(conf)) {
       return Report(emptyList(), 0, listOf("GitLab URL/project/token not configured"))
     }
-    val mrsResult = GitLabApi.listOpenMrs(conf)
+    val mrsResult = inventory ?: GitLabApi.listOpenMrs(conf)
     if (mrsResult.code !in 200..299) {
       return Report(emptyList(), 0, listOf(mrsResult.message.ifBlank { "GitLab API error ${mrsResult.code}" }))
     }
@@ -68,9 +68,9 @@ object MrNotesSync {
         unchanged++
         continue
       }
-      val discussionsResult = GitLabApi.listMrDiscussions(conf, mr.iid)
-      if (discussionsResult.code !in 200..299) {
-        failures.add("!${mr.iid}: ${discussionsResult.message.ifBlank { "GitLab API error ${discussionsResult.code}" }}")
+      val discussionsResult = project.service<MrReviewService>().discussionsFor(mr.iid, mr.updatedAt)
+      if (discussionsResult.error != null) {
+        failures.add("!${mr.iid}: ${discussionsResult.error}")
         continue
       }
       project.service<MrReviewService>().storeDiscussions(mr.iid, mr.updatedAt, discussionsResult.discussions)

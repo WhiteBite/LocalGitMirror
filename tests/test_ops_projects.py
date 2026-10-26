@@ -282,6 +282,7 @@ def _prepare_sync(tmp_path, monkeypatch):
 
     ctx = _ctx()
     uploaded = []
+    ctx.client.sync_negotiate = lambda repo, commits, probe=False: {"known": []}
     ctx.client.gitlab_list_mrs = lambda project="": [
         {"iid": 24, "title": "Llm-core", "source_branch": "llm-core",
          "updated_at": "2026-10-03T11:38:04.050Z"},
@@ -667,8 +668,8 @@ def test_gitlab_list_discussions_pagination(monkeypatch):
 
     def fake_get(url, token):
         page = int(url.split("&page=")[1])
-        return pages.get(page, [])
+        return pages.get(page, []), "2" if page == 1 else ""
 
-    monkeypatch.setattr(c, "_gitlab_get", fake_get)
+    monkeypatch.setattr(c, "_gitlab_get_paged", fake_get)
     out = c.gitlab_list_discussions(7)
     assert len(out) == 101

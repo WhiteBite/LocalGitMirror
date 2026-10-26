@@ -130,6 +130,7 @@ object HttpClient {
   }
 
   fun open(url: URL, insecureTls: Boolean): HttpURLConnection {
+    Cancellation.check()
     val conn = openWithIdeProxy(url)
     conn.instanceFollowRedirects = false
     conn.setRequestProperty("User-Agent", userAgent)
@@ -146,7 +147,7 @@ object HttpClient {
         TlsDecision.Default -> {}
       }
     }
-    return conn
+    return CancellableConnection(conn)
   }
 
   fun readBody(conn: HttpURLConnection): String {
@@ -168,7 +169,8 @@ object HttpClient {
     val code = conn.responseCode
     val stream: InputStream? = try {
       if (code in 200..299) conn.inputStream else conn.errorStream
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Cancellation.rethrow(e)
       null
     }
     if (stream == null) return ""
@@ -208,7 +210,8 @@ object HttpClient {
     val code = conn.responseCode
     val stream: InputStream? = try {
       if (code in 200..299) conn.inputStream else conn.errorStream
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+      Cancellation.rethrow(e)
       null
     }
     if (stream == null) return 0L
@@ -232,6 +235,7 @@ object HttpClient {
   }
 
   fun classifyError(t: Throwable, isMirror: Boolean = true): ErrorInfo {
+    Cancellation.rethrow(t)
     findPinMismatch(t)?.let { return ErrorInfo("tls-pin", it.message ?: "TLS certificate pin mismatch") }
     return when (t) {
       is ConnectException -> ErrorInfo("connect", "Cannot connect to server. Check URL/port and that server is running.")

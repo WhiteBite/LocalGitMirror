@@ -1,11 +1,12 @@
 """X-Next-Page pagination for gitlab_list_mrs."""
 import sys
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lgm_core import config as config_mod
-from lgm_core.client import MirrorClient
+from lgm_core.client import LgmError, MirrorClient
 from lgm_core.config import Config
 
 
@@ -37,7 +38,7 @@ def test_gitlab_list_mrs_follows_next_page(monkeypatch):
     assert "page=1" in calls[0] and "page=2" in calls[1]
 
 
-def test_gitlab_list_mrs_caps_at_ten_pages(monkeypatch):
+def test_gitlab_list_mrs_refuses_repeated_page(monkeypatch):
     c = _client(monkeypatch)
     calls = []
 
@@ -46,9 +47,9 @@ def test_gitlab_list_mrs_caps_at_ten_pages(monkeypatch):
         return [{"iid": len(calls)}], "9"
 
     monkeypatch.setattr(c, "_gitlab_get_paged", fake_paged)
-    result = c.gitlab_list_mrs()
-    assert len(calls) == 10
-    assert len(result) == 10
+    with pytest.raises(LgmError, match="pagination"):
+        c.gitlab_list_mrs()
+    assert len(calls) == 2
 
 
 def test_gitlab_list_mrs_empty_first_page(monkeypatch):

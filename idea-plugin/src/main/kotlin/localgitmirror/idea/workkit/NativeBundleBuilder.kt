@@ -4,7 +4,6 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
 import java.util.UUID
-import java.util.concurrent.TimeUnit
 import localgitmirror.idea.git.GitDirCache
 import localgitmirror.idea.sync.SyncLogger
 
@@ -144,12 +143,16 @@ object NativeBundleBuilder {
     val errSb = StringBuilder()
     val errT = Thread { errSb.append(p.errorStream.bufferedReader().readText()) }.apply { isDaemon = true }
     errT.start()
-    val stdout = p.inputStream.bufferedReader().readText().trim()
-    if (!p.waitFor(60, TimeUnit.SECONDS)) {
+    val outSb = StringBuilder()
+    val outT = Thread { outSb.append(p.inputStream.bufferedReader().readText()) }.apply { isDaemon = true }
+    outT.start()
+    if (!localgitmirror.idea.net.Cancellation.waitFor(p, 60)) {
       p.destroyForcibly()
       SyncLogger.log(workDir, "Git TIMEOUT (60s): git ${args.joinToString(" ")}")
-      return CmdResult(124, stdout, "timeout")
+      return CmdResult(124, "", "timeout")
     }
+    outT.join(2000)
+    val stdout = outSb.toString().trim()
     errT.join(2000)
     val stderr = errSb.toString().trim()
     if (p.exitValue() != 0) {
@@ -177,7 +180,7 @@ object NativeBundleBuilder {
     val baos = ByteArrayOutputStream()
     val outT = Thread { p.inputStream.use { it.copyTo(baos) } }.apply { isDaemon = true }
     outT.start()
-    if (!p.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+    if (!localgitmirror.idea.net.Cancellation.waitFor(p, timeoutSeconds)) {
       p.destroyForcibly()
       SyncLogger.log(workDir, "Git TIMEOUT (${timeoutSeconds}s): git ${args.joinToString(" ")}")
       return null

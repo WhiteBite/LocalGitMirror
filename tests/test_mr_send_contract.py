@@ -51,10 +51,14 @@ class _FakeGit:
             return ok()
         if args[0] == "fetch":
             return ok()
-        if args[0] == "update-ref":
+        if args[0] == "branch":
             return ok()
+        if args[0] == "symbolic-ref":
+            return fail()
         if args[0] == "remote":
             return fail()
+        if args[0] == "rev-list":
+            return ok("\n".join(self.tips.values()))
         if args[:2] == ["rev-parse", "--verify"]:
             ref = args[2]
             if ref.startswith("refs/remotes/origin/"):
