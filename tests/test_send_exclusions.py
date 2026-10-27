@@ -82,7 +82,7 @@ def test_send_branch_refuses_when_mirror_already_holds_tip(monkeypatch, tmp_path
     assert calls == []
 
 
-def test_send_branches_translates_git_empty_bundle_error(monkeypatch, tmp_path):
+def test_send_all_translates_git_empty_bundle_error(monkeypatch, tmp_path):
     def fake_run(cmd, **kw):
         assert cmd[1:3] == ["bundle", "create"]
         return subprocess.CompletedProcess(
@@ -90,7 +90,7 @@ def test_send_branches_translates_git_empty_bundle_error(monkeypatch, tmp_path):
 
     monkeypatch.setattr("lgm_core.ops_git.subprocess.run", fake_run)
     with pytest.raises(LgmError) as excinfo:
-        ops_git.send_branches(_ctx(), "r", str(tmp_path), ["feature"], ["t1"])
+        ops_git.send_branches(_ctx(), "r", str(tmp_path), [], ["t1"])
     assert excinfo.value.code == "config"
     assert "nothing to send" in excinfo.value.message
     assert "Refusing" not in excinfo.value.message

@@ -150,7 +150,7 @@ def test_op_mr_send_all_divergent_sends_nothing(tmp_path, monkeypatch):
 
     assert res["sent"] == []
     assert res["warnings"] == [_diverged_warning("feat")]
-    assert "nothing new" in res["message"]
+    assert "blocked" in res["message"]
     assert sent_calls == []
     assert _git(work, "rev-parse", "refs/heads/feat") == l1
 
@@ -174,7 +174,7 @@ def test_op_mr_send_blocked_carries_the_mr_iid(tmp_path, monkeypatch):
     assert res["blocked"] == [{"iid": 41, "branch": "feat",
                                "reason": "diverged from origin"}]
     assert res["sent"] == []
-    assert "nothing new" in res["message"]
+    assert "blocked" in res["message"]
     assert sent_calls == []
     out = render("mr_send", res)
     assert "[blocked] feat !41" in out

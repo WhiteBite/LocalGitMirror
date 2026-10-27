@@ -269,6 +269,31 @@ def send_branches(ctx: Ctx, repo: str, project: str, branches: list[str],
         proc = subprocess.run(cmd, cwd=str(proj), capture_output=True, text=True, timeout=300)
         if proc.returncode != 0:
             stderr = proc.stderr.strip()
+            if "empty bundle" in stderr and branches:
+                heads = subprocess.run(
+                    ["git", "for-each-ref", "--format=%(refname:strip=2) %(objectname)", "refs/heads/"],
+                    cwd=str(proj), capture_output=True, text=True, timeout=60,
+                )
+                if heads.returncode != 0:
+                    raise LgmError("git", heads.stderr.strip())
+                tips = {name: sha for name, sha in (
+                    line.split(" ", 1) for line in heads.stdout.splitlines()
+                ) if name in branches}
+                if set(tips) != set(branches):
+                    raise LgmError("git", "requested branches disappeared before applying known refs")
+                if dry_run:
+                    return {"repo": repo, "branch": ",".join(branches), "bundle_size": 0,
+                            "excluded_bases": len(excludes), "pointer_only": True, "dry_run": True}
+                response = c.sync_apply_known(repo, next(iter(tips.values())), branches=tips)
+                if not response.get("success"):
+                    raise LgmError("network", str(response.get("message") or "mirror rejected known refs"))
+                missing = set(tips) - set(response.get("branches") or [])
+                if missing:
+                    raise LgmError(
+                        "config", "mirror did not update branches: " + ", ".join(sorted(missing)),
+                        machine_code="diverged" if response.get("rejected_branches") else "apply-incomplete")
+                return {"repo": repo, "branch": ",".join(branches), "bundle_size": 0,
+                        "excluded_bases": len(excludes), "pointer_only": True, "response": response}
             if "empty bundle" in stderr:
                 raise LgmError(
                     "config",

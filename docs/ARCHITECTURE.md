@@ -61,7 +61,7 @@ HOME ──edits, builds, commits directly in the mirror workspace──▶ comm
 WORK ──"Pull back…" / MCP pull──▶ incremental bundle download ──▶ fast-forward local branch + working tree
 ```
 
-Negotiation: `check` reports known commits; `link` applies pointer-only updates when the target commit already exists (`apply-known` semantics in `backend/app/routers/sync.py`). Incremental bundles use mirror tips as `^` prerequisites (`send_branches` in `lgm_core/ops_git.py`).
+Negotiation: `check` reports known commits; `link` applies pointer-only updates when the target commit already exists (`apply-known` semantics in `backend/app/routers/sync.py`). Incremental bundles use mirror tips as `^` prerequisites (`send_branches` in `lgm_core/ops_git.py`). An empty branch bundle in MCP MR sends uses `link` to update the requested refs instead of returning `already-held`; missing or rejected ref updates are failures. A pointer-only update preserves the current home branch unless that branch is explicitly included in the request.
 
 CLI/MCP `pull` imports bundle heads into `refs/remotes/lgm/*` first. The current branch is merged with `--ff-only`, keeping its index and files aligned; other branches are fetched without force, in an atomic ref update. A dirty tracked working tree or divergent current branch is refused before local branch updates. No local branch is force-reset.
 

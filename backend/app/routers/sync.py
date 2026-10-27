@@ -254,7 +254,7 @@ def sync_apply_known(request: EnvelopeRequest):
         current_branch = _attached_branch(workspace)
         if _is_junk_branch_name(current_branch):
             current_branch = None
-        if current_branch and current_branch not in branch_refs:
+        if current_branch and not branches_raw:
             branch_refs[current_branch] = commit
 
         # Objects may live only in bare (e.g. pushed there via git-http). Pull

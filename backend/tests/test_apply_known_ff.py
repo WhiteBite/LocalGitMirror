@@ -119,3 +119,23 @@ def test_apply_known_fast_forward_update_lands(tmp_path, monkeypatch):
     assert inner["success"] is True, inner
     assert inner["branches"] == ["main"], inner
     assert _run_git(bare, "rev-parse", "refs/heads/main").stdout.strip() == c2
+
+
+def test_apply_known_preserves_unrelated_home_branch(tmp_path, monkeypatch):
+    client, storage, rm = _make_client(tmp_path, monkeypatch)
+    ws, bare = _create_repo(client, storage, rm, "ak-preserve-home")
+    home_tip = _commit_file(ws, "home-work", "a.txt", "home\n")
+    target_tip = _commit_file(ws, "target", "a.txt", "target\n")
+    _run_git(ws, "checkout", "home-work")
+
+    response = envelope_post(client, "/api/documents/link", {
+        "repo": "ak-preserve-home", "commit": target_tip,
+        "branches": {"target": target_tip},
+    }, PASSWORD)
+
+    assert response.status_code == 200
+    assert parse_envelope(response.json(), PASSWORD)["success"] is True
+    assert parse_envelope(response.json(), PASSWORD)["branches"] == ["target"]
+    assert _run_git(ws, "rev-parse", "HEAD").stdout.strip() == home_tip
+    assert (ws / "a.txt").read_text() == "home\n"
+    assert _run_git(bare, "rev-parse", "refs/heads/target").stdout.strip() == target_tip

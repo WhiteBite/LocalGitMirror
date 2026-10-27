@@ -667,7 +667,8 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
     if not sent:
         return {"repo": repo, "project": str(proj), "sent": [], "skipped": skipped,
                 "warnings": warnings, "blocked": blocked,
-                "message": "nothing new: mirror already has all requested commits"}
+                "message": (f"no branches sent: {len(blocked)} blocked, {len(skipped)} already current"
+                            if blocked else "nothing new: mirror already has all requested commits")}
 
     mirror_shas = [info.get("sha", "") for info in mirror_refs.values()]
     known, created = _negotiate_mr_bases(c, proj, repo, [t["branch"] for t in sent])
