@@ -3,14 +3,12 @@ package localgitmirror.idea.gitlab
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.service
-import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
-import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.testFramework.LightVirtualFile
+import com.intellij.openapi.util.Disposer
 import com.intellij.ui.AnimatedIcon
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
@@ -40,14 +38,21 @@ import javax.swing.JPanel
 import javax.swing.JRadioButton
 import javax.swing.JTextArea
 import javax.swing.JTextField
+import javax.swing.JSplitPane
+import javax.swing.JToggleButton
 
-/** One discussion window for the two-sided review loop: home edits draft replies and ships the remainder to the work postbox; work checks the arrived replies and publishes only that subset to GitLab. */
-class MrReviewDialog private constructor(
+internal class MrReviewDialog(
   private val project: Project,
   cachedRow: MrReviewService.MrRowItem,
-  private var pending: MrReplyPushService.PendingReplies?,
-  private var localReplies: MrReplies.RepliesFile?,
-) : DialogWrapper(project, false) {
+) : JPanel(BorderLayout()), Disposable {
+
+  private var pending: MrReplyPushService.PendingReplies? = null
+  private var localReplies: MrReplies.RepliesFile? = readLocalRepliesFile(project, cachedRow.iid)
+  private lateinit var browser: MrReviewBrowser
+  private lateinit var codeDiff: MrReviewDiff
+  private lateinit var workspace: JSplitPane
+  private lateinit var composerContainer: JComponent
+  private var disposed = false
 
   private val isWork: Boolean =
     RoleDetector.detect(service<MirrorSettingsService>().state) == MachineRole.WORK
@@ -74,17 +79,15 @@ class MrReviewDialog private constructor(
   private lateinit var composerBox: JPanel
 
   init {
-    title = LocalGitMirrorBundle.message("mrview.title", row.iid)
     if (!isWork) {
       sentMarkers.addAll(project.getService(MirrorProjectSettingsService::class.java).state.mrHomeSent)
     }
-    init()
+    add(createCenterPanel(), BorderLayout.CENTER)
+    codeDiff.load()
     startBackgroundLoad()
   }
 
-  override fun createActions(): Array<javax.swing.Action> = emptyArray()
-
-  override fun createCenterPanel(): JComponent {
+  private fun createCenterPanel(): JComponent {
     val panel = JPanel(BorderLayout())
     contentHolder = JPanel(BorderLayout())
     contentHolder.add(buildContent(), BorderLayout.CENTER)
@@ -93,7 +96,13 @@ class MrReviewDialog private constructor(
       layout = BoxLayout(this, BoxLayout.Y_AXIS)
       isOpaque = false
     }
-    if (!isWork) south.add(buildComposer())
+    if (!isWork) {
+      composerContainer = buildComposer().apply { isVisible = false }
+      south.add(JToggleButton(LocalGitMirrorBundle.message("mrworkspace.compose")).apply {
+        addActionListener { composerContainer.isVisible = isSelected }
+      })
+      south.add(composerContainer)
+    }
     south.add(buildFooter())
     panel.add(south, BorderLayout.SOUTH)
     panel.preferredSize = Dimension(JBUI.scale(860), JBUI.scale(640))
@@ -104,51 +113,42 @@ class MrReviewDialog private constructor(
     (pending?.parsed?.replies ?: localReplies?.replies ?: emptyList())
 
   private fun buildContent(): JComponent {
+    if (!::browser.isInitialized) {
+      codeDiff = MrReviewDiff(project, row) { paths -> if (::browser.isInitialized) browser.files(paths) }
+      Disposer.register(this, codeDiff)
+      browser = MrReviewBrowser(::entryDetail) { entry -> codeDiff.showPath(entry.path, entry.line) }
+      workspace = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, browser, codeDiff).apply {
+        resizeWeight = 0.32
+        setDividerLocation(0.32)
+        border = JBUI.Borders.empty()
+        leftComponent.minimumSize = Dimension(0, 0)
+        rightComponent.minimumSize = Dimension(0, 0)
+      }
+    }
+    val keys = replies().mapTo(HashSet()) { replyKey(it) }
+    controls.keys.retainAll(keys)
+    for (reply in replies()) {
+      val key = replyKey(reply)
+      controls.getOrPut(key) {
+        JCheckBox(LocalGitMirrorBundle.message(if (isWork) "mrview.incoming.send" else "mrworkspace.include"),
+          key !in sentMarkers).apply {
+          isOpaque = false
+          isEnabled = key !in sentMarkers
+          addItemListener { updateFooter() }
+        }
+      }
+    }
+    browser.update(replies(), row.discussions)
     val outer = JPanel(BorderLayout()).apply { isOpaque = false }
     outer.add(headerPanel(), BorderLayout.NORTH)
-    val matched = MrReplies.matchThreads(row.discussions, replies())
-    val list = JPanel().apply {
-      layout = BoxLayout(this, BoxLayout.Y_AXIS)
-      isOpaque = false
-      border = JBUI.Borders.empty(0, 8, 8, 8)
-    }
-    if (replies().isEmpty() && row.discussions.isNotEmpty()) {
-      list.add(JLabel(LocalGitMirrorBundle.message(if (isWork) "mrview.waiting.work" else "mrview.waiting.home", row.iid)).apply {
-        font = JBUI.Fonts.smallFont()
-        foreground = UIUtil.getContextHelpForeground()
-        alignmentX = JLabel.LEFT_ALIGNMENT
-      })
-      list.add(Box.createRigidArea(Dimension(0, JBUI.scale(8))))
-    }
-    for (d in row.discussions.filter { it.notes.any { n -> !n.system } }) {
-      list.add(threadCard(d, matched.byThread[d.id]))
-      list.add(Box.createRigidArea(Dimension(0, JBUI.scale(8))))
-    }
-    if (matched.newSections.isNotEmpty()) {
-      if (isWork) {
-        list.add(JLabel(LocalGitMirrorBundle.message("mrview.new")).apply {
-          font = JBUI.Fonts.smallFont().asBold()
-          alignmentX = JLabel.LEFT_ALIGNMENT
-        })
-        list.add(Box.createRigidArea(Dimension(0, JBUI.scale(4))))
-      }
-      for (r in matched.newSections) {
-        list.add(newSectionCard(r))
-        list.add(Box.createRigidArea(Dimension(0, JBUI.scale(8))))
-      }
-    }
-    if (row.discussions.isEmpty() && matched.newSections.isEmpty()) {
-      list.add(JLabel(LocalGitMirrorBundle.message("mrview.none")).apply {
-        foreground = UIUtil.getContextHelpForeground()
-        alignmentX = JLabel.LEFT_ALIGNMENT
-      })
-    }
-    list.add(Box.createVerticalGlue())
-    outer.add(JBScrollPane(list).apply {
-      border = BorderFactory.createEmptyBorder()
-      viewportBorder = BorderFactory.createEmptyBorder()
-    }, BorderLayout.CENTER)
+    outer.add(workspace, BorderLayout.CENTER)
     return outer
+  }
+
+  private fun entryDetail(entry: MrReviewEntry): JComponent = when {
+    entry.discussion != null -> threadCard(entry.discussion, entry.reply)
+    entry.reply != null -> newSectionCard(entry.reply)
+    else -> bodyArea(entry.path.orEmpty())
   }
 
   private fun headerPanel(): JComponent {
@@ -219,22 +219,13 @@ class MrReviewDialog private constructor(
       isOpaque = false
       border = JBUI.Borders.empty(4, 0, 0, 0)
     }
-    codeSnippet(d)?.let { body.add(it) }
     for (n in d.notes.filter { !it.system }) {
       body.add(JLabel("${n.author} \u00b7 ${n.createdAt}").apply {
         font = JBUI.Fonts.smallFont().asBold()
         foreground = MUTED
         alignmentX = JLabel.LEFT_ALIGNMENT
       })
-      body.add(JTextArea(n.body).apply {
-        isEditable = false
-        lineWrap = true
-        wrapStyleWord = true
-        isOpaque = false
-        font = JBUI.Fonts.smallFont()
-        rows = n.body.lines().size.coerceIn(1, 8)
-        alignmentX = JTextArea.LEFT_ALIGNMENT
-      })
+      body.add(bodyArea(n.body))
       body.add(Box.createRigidArea(Dimension(0, JBUI.scale(4))))
     }
     if (reply != null) {
@@ -251,7 +242,6 @@ class MrReviewDialog private constructor(
       body.add(acts)
     }
     card.add(body, BorderLayout.CENTER)
-    card.maximumSize = Dimension(Int.MAX_VALUE, card.preferredSize.height + JBUI.scale(4))
     return card
   }
 
@@ -273,7 +263,6 @@ class MrReviewDialog private constructor(
     })
     card.add(Box.createRigidArea(Dimension(0, JBUI.scale(4))))
     card.add(if (isWork) incomingBlock(r) else draftBlock(r))
-    card.maximumSize = Dimension(Int.MAX_VALUE, card.preferredSize.height + JBUI.scale(4))
     return card
   }
 
@@ -283,10 +272,7 @@ class MrReviewDialog private constructor(
       layout = BoxLayout(this, BoxLayout.Y_AXIS)
       isOpaque = true
       background = DRAFT_BG
-      border = BorderFactory.createCompoundBorder(
-        JBUI.Borders.customLine(ACCENT, 0, 3, 0, 0),
-        JBUI.Borders.empty(6, 8),
-      )
+      border = JBUI.Borders.empty(8)
       alignmentX = JPanel.LEFT_ALIGNMENT
     }
     box.add(JLabel(LocalGitMirrorBundle.message(if (sent) "mrview.draft.labelSent" else "mrview.draft.label")).apply {
@@ -295,6 +281,7 @@ class MrReviewDialog private constructor(
       alignmentX = JLabel.LEFT_ALIGNMENT
     })
     box.add(bodyArea(reply.body))
+    box.add(controls.getValue(replyKey(reply)))
     val acts = JPanel(FlowLayout(FlowLayout.LEFT, JBUI.scale(10), 0)).apply {
       isOpaque = false
       alignmentX = JPanel.LEFT_ALIGNMENT
@@ -302,7 +289,6 @@ class MrReviewDialog private constructor(
     acts.add(linkButton(LocalGitMirrorBundle.message("mrview.draft.edit"), MUTED) { editDraft(reply) })
     acts.add(linkButton(LocalGitMirrorBundle.message("mrview.draft.delete"), ERROR_FG) { deleteDraft(reply) })
     box.add(acts)
-    box.maximumSize = Dimension(Int.MAX_VALUE, box.preferredSize.height)
     return box
   }
 
@@ -313,10 +299,7 @@ class MrReviewDialog private constructor(
       layout = BoxLayout(this, BoxLayout.Y_AXIS)
       isOpaque = true
       background = INCOMING_BG
-      border = BorderFactory.createCompoundBorder(
-        JBUI.Borders.customLine(AMBER, 0, 3, 0, 0),
-        JBUI.Borders.empty(6, 8),
-      )
+      border = JBUI.Borders.empty(8)
       alignmentX = JPanel.LEFT_ALIGNMENT
     }
     box.add(JLabel(LocalGitMirrorBundle.message("mrview.incoming.label")).apply {
@@ -336,29 +319,17 @@ class MrReviewDialog private constructor(
         isOpaque = false
         alignmentX = JPanel.LEFT_ALIGNMENT
       }
-      val check = JCheckBox(LocalGitMirrorBundle.message("mrview.incoming.send"), true).apply {
-        isOpaque = false
-        font = JBUI.Fonts.smallFont().asBold()
-      }
-      check.addItemListener { updateFooter() }
+      val check = controls.getValue(key)
       acts.add(check)
       acts.add(linkButton(LocalGitMirrorBundle.message("mrview.incoming.skip"), MUTED) { check.isSelected = false })
-      controls[key] = check
       box.add(acts)
     }
-    box.maximumSize = Dimension(Int.MAX_VALUE, box.preferredSize.height)
     return box
   }
 
-  private fun bodyArea(text: String): JComponent = JTextArea(text).apply {
-    isEditable = false
-    lineWrap = true
-    wrapStyleWord = true
-    isOpaque = false
-    font = JBUI.Fonts.smallFont()
+  private fun bodyArea(text: String): JComponent = MrReviewText(text).apply {
+    font = JBUI.Fonts.label()
     foreground = NOTE_FG
-    rows = text.lines().size.coerceIn(1, 8)
-    alignmentX = JTextArea.LEFT_ALIGNMENT
   }
 
   private fun buildComposer(): JComponent {
@@ -464,6 +435,7 @@ class MrReviewDialog private constructor(
   }
 
   private fun startReply(d: GitLabApi.MrDiscussion, resolve: Boolean) {
+    composerContainer.isVisible = true
     composerThread = d
     targetThread.isSelected = true
     resolveCheck.isSelected = resolve
@@ -562,56 +534,7 @@ class MrReviewDialog private constructor(
   }
 
   private fun openAnchor(file: String, line: Int?) {
-    // Anchors point at lines of the MR source branch; the working tree may be on another branch.
-    branchFileText(file)?.let { branchText ->
-      val vf = LightVirtualFile(file.substringAfterLast('/'), branchText).apply { isWritable = false }
-      FileEditorManager.getInstance(project).openFile(vf, true)
-      if (line != null) OpenFileDescriptor(project, vf, line - 1, 0).navigate(true)
-      return
-    }
-    val base = project.basePath ?: return
-    val vf = LocalFileSystem.getInstance().refreshAndFindFileByIoFile(File(base, file)) ?: return
-    FileEditorManager.getInstance(project).openFile(vf, true)
-    if (line != null) OpenFileDescriptor(project, vf, line - 1, 0).navigate(true)
-  }
-
-  private fun branchFileText(file: String): String? {
-    val branch = row.sourceBranch.takeIf { it.isNotBlank() } ?: return null
-    val base = project.basePath ?: return null
-    return runCatching {
-      val proc = ProcessBuilder("git", "-C", base, "show", "$branch:$file").start()
-      val text = proc.inputStream.readBytes().toString(Charsets.UTF_8)
-      if (proc.waitFor(10, java.util.concurrent.TimeUnit.SECONDS) && proc.exitValue() == 0) text else null
-    }.getOrNull()
-  }
-
-  private fun codeSnippet(d: GitLabApi.MrDiscussion): JComponent? {
-    val file = d.anchorFile ?: return null
-    val line = d.anchorLine ?: return null
-    val lines = branchFileText(file)?.lines()
-      ?: project.basePath?.let { base ->
-        runCatching { File(base, file).takeIf { it.isFile }?.readLines(Charsets.UTF_8) }.getOrNull()
-      }
-    if (lines == null) {
-      return JLabel(LocalGitMirrorBundle.message("mrview.codeMissing")).apply {
-        font = JBUI.Fonts.smallFont()
-        foreground = UIUtil.getContextHelpForeground()
-        alignmentX = JLabel.LEFT_ALIGNMENT
-      }
-    }
-    val start = (line - 2).coerceAtLeast(1)
-    val end = (line + 2).coerceAtMost(lines.size)
-    val sb = StringBuilder()
-    for (i in start..end) {
-      sb.appendLine((if (i == line) ">" else " ") + "$i: " + lines.getOrNull(i - 1).orEmpty())
-    }
-    return JTextArea(sb.toString().trimEnd()).apply {
-      isEditable = false
-      isOpaque = false
-      font = Font("JetBrains Mono", Font.PLAIN, JBUI.scale(11))
-      rows = (end - start + 1).coerceAtLeast(1)
-      alignmentX = JTextArea.LEFT_ALIGNMENT
-    }
+    codeDiff.showPath(file, line)
   }
 
   private fun linkButton(text: String, color: Color, onClick: () -> Unit): JButton =
@@ -658,7 +581,7 @@ class MrReviewDialog private constructor(
       border = JBUI.Borders.empty(8, 8, 4, 8)
     }
     countLabel = JLabel("").apply { foreground = if (isWork) MUTED else AMBER }
-    panel.add(countLabel, BorderLayout.WEST)
+    panel.add(countLabel, BorderLayout.NORTH)
     val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply { isOpaque = false }
     right.add(subtleButton(LocalGitMirrorBundle.message("mrview.refresh")) { reload() })
     if (isWork) {
@@ -680,7 +603,7 @@ class MrReviewDialog private constructor(
         addActionListener { sendRemainder() }
       })
     }
-    panel.add(right, BorderLayout.EAST)
+    panel.add(right, BorderLayout.CENTER)
     updateFooter()
     return panel
   }
@@ -692,7 +615,8 @@ class MrReviewDialog private constructor(
       countLabel?.text = LocalGitMirrorBundle.message("mrview.footer.publishCount", selected, total)
       publishButton?.text = LocalGitMirrorBundle.message("mrview.publish.selected", selected)
     } else {
-      countLabel?.text = LocalGitMirrorBundle.message("mrview.footer.drafts", replies().size)
+      val selected = approvedReplies().size
+      countLabel?.text = LocalGitMirrorBundle.message("mrworkspace.sendCount", selected, replies().size)
     }
   }
 
@@ -702,7 +626,7 @@ class MrReviewDialog private constructor(
   }
 
   private fun sendRemainder() {
-    val remainder = replies()
+    val remainder = approvedReplies()
     if (remainder.isEmpty()) {
       notify(LocalGitMirrorBundle.message("mrview.send.noDrafts"), NotificationType.WARNING)
       return
@@ -805,17 +729,12 @@ class MrReviewDialog private constructor(
         check.isEnabled = false
       }
     }
-    if (isWork) {
-      updateFooter()
-      contentHolder.revalidate()
-      contentHolder.repaint()
-    } else {
-      rebuildContent()
-    }
+    rebuildContent()
   }
 
   private fun reload() {
     applyLoadState(loadState.refreshStarted())
+    codeDiff.load()
     startBackgroundLoad()
   }
 
@@ -837,7 +756,7 @@ class MrReviewDialog private constructor(
       }
       val discussions = project.getService(MrReviewService::class.java).discussionsFor(iid, stamp)
       ApplicationManager.getApplication().invokeLater {
-        if (project.isDisposed) return@invokeLater
+        if (project.isDisposed || disposed) return@invokeLater
         pendingFailure?.let { notify(LocalGitMirrorBundle.message("mrreplies.list.fail", it), NotificationType.WARNING) }
         if (isWork) pending = freshPending else localReplies = freshLocal
         val next = discussions.error?.let { loadState.refreshFailed(it) }
@@ -890,24 +809,24 @@ class MrReviewDialog private constructor(
     fun draftText(): String = area.text.trim()
   }
 
+  override fun dispose() { disposed = true }
+
   companion object {
     private const val LEDGER_CAP = 500
 
-    private val AMBER = JBColor(Color(0xE3, 0xAE, 0x4D), Color(0xE3, 0xAE, 0x4D))
-    private val GREEN_ICON = JBColor(Color(0x5F, 0xAD, 0x65), Color(0x5F, 0xAD, 0x65))
-    private val MUTED = JBColor(Color(0x6F, 0x72, 0x77), Color(0x6F, 0x72, 0x77))
-    private val NOTE_FG = JBColor(Color(0xCE, 0xD0, 0xD6), Color(0xCE, 0xD0, 0xD6))
+    private val AMBER = JBColor(Color(0x8A, 0x57, 0x00), Color(0xE3, 0xAE, 0x4D))
+    private val GREEN_ICON = JBColor(Color(0x2E, 0x7D, 0x32), Color(0x5F, 0xAD, 0x65))
+    private val MUTED = UIUtil.getContextHelpForeground()
+    private val NOTE_FG = UIUtil.getLabelForeground()
     private val ERROR_FG = JBColor(Color(0xC6, 0x28, 0x28), Color(0xEF, 0x53, 0x50))
     private val ACCENT = JBColor(Color(0x35, 0x74, 0xF0), Color(0x35, 0x74, 0xF0))
-    private val CARD_BG = JBColor(Color(0xF7, 0xF8, 0xFA), Color(0x2B, 0x2D, 0x30))
-    private val DRAFT_BG = JBColor(Color(0xEC, 0xF2, 0xFD), Color(0x23, 0x26, 0x2B))
-    private val INCOMING_BG = JBColor(Color(0xFA, 0xF3, 0xE3), Color(0x23, 0x26, 0x2B))
+    private val CARD_BG = UIUtil.getPanelBackground()
+    private val DRAFT_BG = UIUtil.getPanelBackground()
+    private val INCOMING_BG = UIUtil.getPanelBackground()
     private val BORDER = JBColor(Color(0xC9, 0xCC, 0xD1), Color(0x39, 0x3B, 0x40))
 
     fun openFor(project: Project, row: MrReviewService.MrRowItem) {
-      val isWork = RoleDetector.detect(service<MirrorSettingsService>().state) == MachineRole.WORK
-      val local = if (!isWork) readLocalRepliesFile(project, row.iid) else null
-      MrReviewDialog(project, row, null, local).show()
+      openMrReviewEditor(project, row)
     }
   }
 }

@@ -96,6 +96,7 @@ tasks {
 
   test {
     useJUnitPlatform()
+    if (providers.gradleProperty("reviewUiQa").isPresent) systemProperty("review.ui.qa", "true")
   }
 }
 

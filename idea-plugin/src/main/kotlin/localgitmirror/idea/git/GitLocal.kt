@@ -33,6 +33,11 @@ object GitLocal {
   }
 
   fun run(project: Project, workDir: File, timeoutSeconds: Long, vararg args: String): Result {
+    val result = runRaw(workDir, timeoutSeconds, *args)
+    return result.copy(stdout = result.stdout.trim(), stderr = result.stderr.trim())
+  }
+
+  fun runRaw(workDir: File, timeoutSeconds: Long, vararg args: String): Result {
     localgitmirror.idea.net.Cancellation.check()
     val cmd = mutableListOf("git")
     cmd.addAll(args)
@@ -64,7 +69,7 @@ object GitLocal {
     }
     outT.join(2000)
     errT.join(2000)
-    return Result(proc.exitValue(), outSb.toString().trim(), errSb.toString().trim())
+    return Result(proc.exitValue(), outSb.toString(), errSb.toString())
   }
 
   fun currentBranch(project: Project, workDir: File): String? {

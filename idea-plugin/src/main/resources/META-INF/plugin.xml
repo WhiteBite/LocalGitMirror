@@ -12,6 +12,7 @@
   <resource-bundle>messages.LocalGitMirrorBundle</resource-bundle>
 
   <extensions defaultExtensionNs="com.intellij">
+    <fileEditorProvider implementation="localgitmirror.idea.gitlab.MrReviewEditorProvider"/>
     <applicationService serviceImplementation="localgitmirror.idea.settings.MirrorSettingsService"/>
     <applicationService serviceImplementation="localgitmirror.idea.settings.OperationsHistoryService"/>
     <projectService serviceImplementation="localgitmirror.idea.settings.MirrorProjectSettingsService"/>
