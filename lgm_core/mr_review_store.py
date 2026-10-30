@@ -261,6 +261,7 @@ class MrReviewStore:
         self._repo = repo
         self._key = repo_key(gitlab_url, target_project_id, repo)
         self.root = (reviews_home(home) / self._key).resolve()
+        self.repo_key = self._key
         self._snapshots_dir = self.root / "snapshots"
         self._environments_dir = self.root / "environments"
         self.db_path = self.root / "review.sqlite3"
@@ -349,26 +350,31 @@ class MrReviewStore:
             return expected_revision + 1
 
 
-    def import_snapshot(self, manifest: dict, bundle_path: Path,
+    def import_snapshot(self, manifest: dict, bundle_path: Path | None,
                         *, lock_timeout: float = 60.0,
                         stale_after: float = 600.0) -> ImportResult:
+        """``bundle_path=None`` imports from objects already present in
+        objects.git (same code_id imported before): every labeled tip and
+        merge base is still verified as a commit, so a missing object fails
+        with review-object-missing instead of a silent partial import."""
         snap = verify_snapshot(manifest)
         self._check_identity(snap)
         with _ImportLock(self.root, timeout=lock_timeout, stale_after=stale_after):
-            return self._import_locked(snap, Path(bundle_path))
+            return self._import_locked(snap, bundle_path)
 
-    def _import_locked(self, snap: dict, bundle_path: Path) -> ImportResult:
+    def _import_locked(self, snap: dict, bundle_path: Path | None) -> ImportResult:
         snapshot_id = snap["snapshot_id"]
         if self._snapshot_row(snapshot_id) is not None \
                 and self._snapshot_file(snapshot_id) is not None:
             return ImportResult(snapshot_id, "already-imported", self._key, self.root)
-        if not bundle_path.is_file():
-            raise MrReviewError(
-                "review-object-missing", f"code bundle not found: {bundle_path}")
-        self.git.verify_bundle(bundle_path)
-        heads = self.git.bundle_heads(bundle_path)
         namespace = f"refs/mr-review/{snapshot_id}"
-        self.git.fetch_bundle(bundle_path, namespace, [ref for _, ref in heads])
+        if bundle_path is not None:
+            if not bundle_path.is_file():
+                raise MrReviewError(
+                    "review-object-missing", f"code bundle not found: {bundle_path}")
+            self.git.verify_bundle(bundle_path)
+            heads = self.git.bundle_heads(bundle_path)
+            self.git.fetch_bundle(bundle_path, namespace, [ref for _, ref in heads])
         refs = snap["gitlab_diff_refs"]
         labeled_tips = {
             "source": snap["source_sha"],
@@ -489,6 +495,27 @@ class MrReviewStore:
             conn.close()
         return row["snapshot_id"] if row is not None else None
 
+    def has_code_id(self, code_id: str) -> bool:
+        """True when at least one imported snapshot carries this code_id."""
+        if not isinstance(code_id, str) or not _HEX64_RE.fullmatch(code_id):
+            raise MrReviewError(
+                "invalid-schema", f"code_id must be 64-char lowercase hex, got {code_id!r}")
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT 1 FROM snapshots WHERE code_id = ? LIMIT 1", (code_id,)).fetchone()
+        finally:
+            conn.close()
+        return row is not None
+
+    def has_snapshot(self, snapshot_id: str) -> bool:
+        """True when the snapshot is fully imported (DB row and file)."""
+        if not isinstance(snapshot_id, str) or not _HEX64_RE.fullmatch(snapshot_id):
+            raise MrReviewError(
+                "invalid-schema", f"snapshot_id must be 64-char lowercase hex, got {snapshot_id!r}")
+        return self._snapshot_row(snapshot_id) is not None \
+            and self._snapshot_file(snapshot_id) is not None
+
     def environment_path(self, environment_id: str) -> Path:
         """Reserved environments/<id>/ layout; creation is task 9. Rejects
         traversal/option-like ids and links that escape or dangle."""
@@ -504,10 +531,10 @@ class MrReviewStore:
         return resolved
 
 
-def import_snapshot(manifest: dict, bundle_path: Path, *,
-                     home: Path | str | None = None,
-                     lock_timeout: float = 60.0,
-                     stale_after: float = 600.0) -> ImportResult:
+def import_snapshot(manifest: dict, bundle_path: Path | None, *,
+                    home: Path | str | None = None,
+                    lock_timeout: float = 60.0,
+                    stale_after: float = 600.0) -> ImportResult:
     """Import one validated snapshot manifest plus its code bundle into the
     store derived from the manifest identity. Returns the typed result
     (snapshot_id, status); nothing is installed on any validation failure."""

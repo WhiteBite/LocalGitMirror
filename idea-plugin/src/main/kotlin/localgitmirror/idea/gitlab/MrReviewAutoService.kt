@@ -16,7 +16,9 @@ import localgitmirror.idea.git.GitLocal
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.OperationsHistoryService
+import localgitmirror.idea.sync.v2.SyncFacadeService
 import java.io.File
+import java.nio.file.Files
 import java.util.concurrent.ThreadLocalRandom
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -42,6 +44,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
   private var lastPushSignature = ""
   private var lastPendingSignature = ""
   private var lastNotesSignature = ""
+  private var lastReviewSignature = ""
   private var lastHomeErrorSignature = ""
   private val homeCycleDeduper = AutomationFailureDeduper()
   private val workCycleDeduper = AutomationFailureDeduper()
@@ -107,6 +110,7 @@ class MrReviewAutoService(private val project: Project) : Disposable {
     if (inventory.code !in 200..299) return
     pollNotesSync(inventory)
     autoSendBranches(inventory)
+    autoPrepareReviewSnapshots(inventory)
     val service = MrReplyPushService(project)
     if (settings.autoPushReplies) {
       val reports = service.pushOnce()
@@ -175,6 +179,64 @@ class MrReviewAutoService(private val project: Project) : Disposable {
       return
     }
     GitLabMrSender.sendAll(project, targets, quiet = true)
+  }
+
+  /** Snapshot preparation rides the registered WORK sync: a full run (autoMrBranches on,
+   * code sync requested) uploads bundle + envelope; a notes-only run never uploads code —
+   * it refreshes the envelope only when the code artifact is already in the postbox and
+   * records a limitation otherwise. */
+  private fun autoPrepareReviewSnapshots(inventory: GitLabApi.MrsResult) {
+    if (disposed || project.isDisposed) return
+    if (inventory.code !in 200..299) return
+    val conf = GitLabConfig.resolve(project)
+    if (!GitLabConfig.hasApi(conf)) return
+    val baseDir = project.basePath ?: return
+    val projectDir = File(baseDir)
+    if (!projectDir.exists()) return
+    val remoteUrl = runCatching {
+      val remote = GitLocal.defaultRemote(project, projectDir)
+      GitLocal.remoteUrl(project, projectDir, remote)
+    }.getOrNull() ?: return
+    if (remoteUrl.isBlank()) return
+    val repo = runCatching {
+      project.getService(SyncFacadeService::class.java).resolveRepo(projectDir, settings).sanitized
+    }.getOrNull() ?: return
+    if (repo.isBlank()) return
+    val allowCodeUpload = settings.autoMrBranches
+    val outputDir = Files.createTempDirectory("lgm-review-auto-").toFile()
+    val postbox = PluginMrReviewPostbox(project)
+    val outcomes = mutableListOf<String>()
+    var failures = 0
+    try {
+      for (mr in inventory.mrs) {
+        when (val prep = MrReviewSnapshotSync.prepare(conf, remoteUrl, repo, mr.iid, outputDir)) {
+          is MrReviewSnapshotSync.Failed -> {
+            failures++
+            outcomes += "!${mr.iid}: ${prep.message}"
+          }
+          is MrReviewSnapshotSync.Ready -> {
+            when (val transfer = MrReviewTransport.transfer(postbox, prep, allowCodeUpload = allowCodeUpload)) {
+              is MrReviewTransport.Transferred -> outcomes += "!${mr.iid}:${transfer.bundleAction}"
+              is MrReviewTransport.Skipped -> outcomes += "!${mr.iid}:skipped"
+              is MrReviewTransport.TransferFailed -> {
+                failures++
+                outcomes += "!${mr.iid}: ${transfer.message}"
+              }
+            }
+          }
+        }
+      }
+    } finally {
+      runCatching { outputDir.deleteRecursively() }
+    }
+    val signature = "$allowCodeUpload|${outcomes.joinToString(";")}"
+    if (signature == lastReviewSignature) return
+    lastReviewSignature = signature
+    service<OperationsHistoryService>().add(
+      LocalGitMirrorBundle.message("history.op.autoMrReview"),
+      failures == 0,
+      "review=${outcomes.joinToString(",")}",
+    )
   }
 
   private fun pollNotesSync(inventory: GitLabApi.MrsResult) {

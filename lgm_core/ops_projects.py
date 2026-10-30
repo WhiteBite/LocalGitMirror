@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -19,8 +20,11 @@ from .client import LgmError
 from .config import cfg
 from .git_remote import gitlab_project_for
 from .mr_notes_render import parse_discussions, render_markdown
+from .mr_review_collect import _discard_tree
+from .mr_review_models import MrReviewError
 from .op_models import Ctx, _client
 from .ops_git import send_branches
+from .ops_review import mr_review_prepare
 from .ops_mr import (
     _fetch_mr_branches, _local_tip, _mirror_refs_safe, _existing_shas,
     _diverged_warning, send_exclusions, _negotiate_mr_bases,
@@ -171,6 +175,42 @@ def op_mr_projects_list(ctx: Ctx, args: dict) -> dict:
     return {"success": True, "count": len(projects), "projects": projects}
 
 
+def _prepare_review_snapshots(c, repo: str, gitlab: str, proj: Path,
+                              mrs: list, notes_only: bool) -> list[dict]:
+    """Prepare review snapshots for every open MR of a registered project.
+
+    A full sync (code requested) uploads bundle + envelope; a notes-only
+    sync never uploads code — it refreshes the envelope only when the code
+    artifact is already in the postbox and records a limitation otherwise.
+    Per-MR failures are reported in the result, never in the shared
+    failures/errors summary (ordinary sync semantics stay unchanged).
+    """
+    out: list[dict] = []
+    work_dir = Path(tempfile.mkdtemp(prefix="lgm-review-sync-"))
+    try:
+        for m in mrs:
+            iid = m.get("iid")
+            if not iid:
+                continue
+            try:
+                prepared = mr_review_prepare(
+                    c, repo, int(iid), gitlab, proj,
+                    allow_code_upload=not notes_only, work_dir=work_dir)
+                out.append({
+                    "iid": iid, "status": prepared["status"],
+                    "snapshot_id": prepared.get("snapshot_id", ""),
+                    "code_id": prepared.get("code_id", ""),
+                    "bundle_action": prepared["bundle"]["action"],
+                    "manifest_path": prepared.get("manifest_path", ""),
+                    "limitations": prepared.get("limitations", []),
+                })
+            except (LgmError, MrReviewError) as e:
+                out.append({"iid": iid, "status": "failed", "error": str(e)})
+    finally:
+        _discard_tree(work_dir)
+    return out
+
+
 def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
                   dry_run: bool, notes_only: bool = False) -> dict:
     repo = entry.get("repo", "")
@@ -239,6 +279,9 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
             res["branches_skipped"] = skipped
         except LgmError as e:
             res["branches_error"] = e.message
+
+    res["review_snapshots"] = _prepare_review_snapshots(
+        c, repo, gitlab, proj, mrs, notes_only)
 
     for m in mrs:
         iid = m.get("iid")
@@ -389,6 +432,15 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
     closed_marked = sum(
         1 for r in results for m in (r.get("closed") or []) if m.get("marker") == "uploaded")
     blocked = [b for r in results for b in (r.get("blocked") or [])]
+    review_prepared = sum(
+        1 for r in results for e in (r.get("review_snapshots") or [])
+        if e.get("status") == "prepared")
+    review_skipped = sum(
+        1 for r in results for e in (r.get("review_snapshots") or [])
+        if e.get("status") == "skipped")
+    review_failed = sum(
+        1 for r in results for e in (r.get("review_snapshots") or [])
+        if e.get("status") == "failed")
     result = {"success": not errors, "dry_run": dry_run, "notes_only": notes_only,
               "repos": results,
               "blocked": blocked,
@@ -401,6 +453,9 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
                   "notes_uploaded": notes_uploaded,
                   "notes_unchanged": notes_unchanged,
                   "closed_marked": closed_marked,
+                  "review_prepared": review_prepared,
+                  "review_skipped": review_skipped,
+                  "review_failed": review_failed,
                   "failures": failures,
                   "errors": errors,
               }}

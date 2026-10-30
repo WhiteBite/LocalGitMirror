@@ -360,6 +360,56 @@ Manifest загружается последним и содержит digest/si
 128 MiB (`CODE_ARTIFACT_MAX_BYTES`), превышение — `review-package-too-large`.
 Legacy `.md` пути `mr-replies/` не меняются.
 
+### 10.1. Transfer envelope
+
+Артефакт по пути `mr-review/snapshots/<snapshot_id>.json` — transfer envelope:
+snapshot-схема (раздел 3) закрыта и не имеет поля для digest бандла, а план A
+требует, чтобы manifest нёс digest/size code bundle. Envelope — единственный
+manifest этого транспорта; отдельного «голого» snapshot-артефакта в postbox нет.
+
+```
+envelope = {
+  "schema_version": 1,
+  "snapshot_id": hex64,          # == snapshot.snapshot_id
+  "code_id": hex64,              # == snapshot.code_id
+  "code": {
+    "bundle_sha256": hex64,      # SHA-256 байтов mr-review/code/<code_id>.bundle
+    "bundle_size": int >= 1
+  },
+  "snapshot": <полный snapshot payload раздела 3>,
+  "prepared_at": iso,
+  "limitations": [string]        # transport-ограничения (не snapshot-ные)
+}
+```
+
+Правила:
+
+- закрытый набор ключей; `schema_version` вне `{1}` — `unknown-schema-version`;
+- `snapshot` проходит полный `verify_snapshot` (digest-цепочка snapshot);
+  расхождение envelope-identity (`snapshot_id`/`code_id`) со snapshot —
+  `invalid-schema`;
+- `code.bundle_sha256`/`code.bundle_size` проверяются HOME против скачанного
+  бандла ДО `import_snapshot`; несовпадение — `hash-mismatch`, ничего не
+  импортируется;
+- WORK загружает бандл ПЕРВЫМ, envelope ПОСЛЕДНИМ: HOME не должен увидеть
+  manifest, чей bundle отсутствует. Если bundle всё же отсутствует/истёк —
+  типизированный not-ready (`review-object-missing`), ранее импортированный
+  current остаётся читаемым;
+- dedup: существующий bundle с тем же `code_id` (path + size совпадают) не
+  пере-выгружается — передаётся только metadata/discussions (новый envelope);
+  bundle старше 6 дней (postbox TTL 7 дней) пере-выгружается, чтобы новый HOME
+  consumer мог его получить; TTL самого postbox не меняется;
+- notes-only режим никогда не выгружает код: без доступного code artifact
+  подготовка пропускается с limitation, вместо скрытой загрузки;
+- после импорта HOME не зависит от TTL postbox: imported snapshot читается из
+  review-store, повторный open того же snapshot — `already-imported` без
+  скачивания бандла;
+- receipt транспортного артефакта ≠ завершение ревью: prepare сообщает ровно
+  то, что выгружено (пути, digest, action), и никогда не заявляет import;
+- canonical JSON и дайджесты — через общий serializer (раздел 1); Python и
+  Kotlin обязаны давать байт-идентичный canonical envelope для одинаковых
+  входов (fixture `tests/fixtures/mr_review_transfer/envelope_parity.json`).
+
 ## 11. Fixtures
 
 Каталог `tests/fixtures/mr_review_protocol/` — единственный общий источник для

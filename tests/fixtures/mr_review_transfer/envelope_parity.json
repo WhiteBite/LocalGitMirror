@@ -1,0 +1,15 @@
+{
+  "fixture": "envelope_parity",
+  "object_kind": "envelope",
+  "expect": "valid",
+  "snapshot_fixture": "snapshot_fork_mr",
+  "params": {
+    "bundle_sha256": "a3f5d1c02b74e89fa0c1d2b3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3",
+    "bundle_size": 4096,
+    "prepared_at": "2026-10-30T12:00:00Z",
+    "limitations": [
+      "demo transfer limitation"
+    ]
+  },
+  "expected_canonical_sha256": "79e202854188c4f9f2949f76d10074932f14e0721a6812404e527e8937392f9f"
+}

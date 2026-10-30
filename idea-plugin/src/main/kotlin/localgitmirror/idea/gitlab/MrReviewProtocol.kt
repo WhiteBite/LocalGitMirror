@@ -7,6 +7,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.math.BigInteger
 import java.security.MessageDigest
 
@@ -94,6 +95,11 @@ object MrReviewProtocol {
   val SUBMITTED_REFS_FIELDS = setOf(
     "source_sha", "target_tip_sha", "base_sha", "start_sha", "head_sha",
   )
+  val ENVELOPE_FIELDS = setOf(
+    "schema_version", "snapshot_id", "code_id", "code", "snapshot",
+    "prepared_at", "limitations",
+  )
+  val ENVELOPE_CODE_FIELDS = setOf("bundle_sha256", "bundle_size")
 
   private val IDENTITY_KEYS = listOf("snapshot_id", "code_id", "version_fingerprint")
   private val SHA_RE = Regex("[0-9a-f]{40}")
@@ -539,6 +545,67 @@ object MrReviewProtocol {
       }
     }
     return snap
+  }
+
+  // ── Transfer envelope ─────────────────────────────────────────────────────
+
+  /**
+   * Envelope stored at mr-review/snapshots/<snapshot_id>.json: the validated
+   * snapshot plus the code bundle digest/size (the closed snapshot schema has
+   * no bundle digest field). Byte-identical to Python
+   * build_transfer_envelope for the same inputs.
+   */
+  fun buildTransferEnvelope(
+    snapshot: JsonObject,
+    bundleSha256: String,
+    bundleSize: Long,
+    preparedAt: String,
+    limitations: List<String>,
+  ): JsonObject {
+    verifySnapshot(snapshot)
+    if (!HEX64_RE.matches(bundleSha256)) {
+      throw err("invalid-schema", "bundle_sha256 must be a 64-char lowercase hex SHA-256, got $bundleSha256")
+    }
+    if (bundleSize < 1) {
+      throw err("invalid-schema", "bundle_size must be an integer >= 1, got $bundleSize")
+    }
+    if (!ISO_RE.matches(preparedAt)) {
+      throw err("invalid-schema", "prepared_at must be an ISO-8601 timestamp, got $preparedAt")
+    }
+    return buildJsonObject {
+      put("schema_version", 1)
+      put("snapshot_id", snapshot.getValue("snapshot_id"))
+      put("code_id", snapshot.getValue("code_id"))
+      put("code", buildJsonObject {
+        put("bundle_sha256", bundleSha256)
+        put("bundle_size", bundleSize)
+      })
+      put("snapshot", snapshot)
+      put("prepared_at", preparedAt)
+      put("limitations", JsonArray(limitations.map { JsonPrimitive(it) }))
+    }
+  }
+
+  /** Validate the envelope and its digest chain (snapshot digests plus the identity binding) before any use. */
+  fun verifyTransferEnvelope(value: JsonElement): JsonObject {
+    val env = asObject(value, "envelope")
+    exactKeys(env, ENVELOPE_FIELDS, "envelope")
+    checkSchemaVersion(env, "envelope")
+    env.reqHex64("snapshot_id", "envelope")
+    env.reqHex64("code_id", "envelope")
+    val code = asObject(env.getValue("code"), "envelope.code")
+    exactKeys(code, ENVELOPE_CODE_FIELDS, "envelope.code")
+    code.reqHex64("bundle_sha256", "envelope.code")
+    code.reqInt("bundle_size", "envelope.code", BigInteger.ONE)
+    val snap = verifySnapshot(env.getValue("snapshot"))
+    if (primitiveContent(env, "snapshot_id", "envelope") != primitiveContent(snap, "snapshot_id", "snapshot") ||
+      primitiveContent(env, "code_id", "envelope") != primitiveContent(snap, "code_id", "snapshot")
+    ) {
+      throw err("invalid-schema", "envelope identity does not match the snapshot")
+    }
+    env.reqIso("prepared_at", "envelope")
+    env.reqStrList("limitations", "envelope")
+    return env
   }
 
   // ── Findings ───────────────────────────────────────────────────────────────

@@ -97,6 +97,11 @@ RECEIPT_FIELDS = frozenset({
 SUBMITTED_REFS_FIELDS = frozenset({
     "source_sha", "target_tip_sha", "base_sha", "start_sha", "head_sha",
 })
+ENVELOPE_FIELDS = frozenset({
+    "schema_version", "snapshot_id", "code_id", "code", "snapshot",
+    "prepared_at", "limitations",
+})
+ENVELOPE_CODE_FIELDS = frozenset({"bundle_sha256", "bundle_size"})
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}")
 _HEX64_RE = re.compile(r"[0-9a-f]{64}")
@@ -513,6 +518,60 @@ def verify_snapshot(value: Any) -> dict:
             raise MrReviewError(
                 "hash-mismatch", f"snapshot.{key} does not match the recomputed digest")
     return snap
+
+
+# ── Transfer envelope ─────────────────────────────────────────────────────────
+
+def build_transfer_envelope(snapshot: dict, bundle_sha256: str, bundle_size: int,
+                            prepared_at: str,
+                            limitations: list[str] | tuple[str, ...] = ()) -> dict:
+    """Envelope stored at mr-review/snapshots/<snapshot_id>.json: the validated
+    snapshot plus the code bundle digest/size, so HOME can verify the bundle
+    before import (the snapshot schema itself is closed and carries no bundle
+    digest field)."""
+    snap = verify_snapshot(snapshot)
+    if not isinstance(bundle_sha256, str) or not _HEX64_RE.fullmatch(bundle_sha256):
+        raise MrReviewError(
+            "invalid-schema", "bundle_sha256 must be a 64-char lowercase hex SHA-256")
+    if not _is_int(bundle_size) or bundle_size < 1:
+        raise MrReviewError(
+            "invalid-schema", f"bundle_size must be an integer >= 1, got {bundle_size!r}")
+    if not isinstance(prepared_at, str) or not _ISO_RE.fullmatch(prepared_at):
+        raise MrReviewError(
+            "invalid-schema", f"prepared_at must be an ISO-8601 timestamp, got {prepared_at!r}")
+    if not isinstance(limitations, (list, tuple)) \
+            or any(not isinstance(item, str) for item in limitations):
+        raise MrReviewError("invalid-schema", "limitations must be an array of strings")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "snapshot_id": snap["snapshot_id"],
+        "code_id": snap["code_id"],
+        "code": {"bundle_sha256": bundle_sha256, "bundle_size": bundle_size},
+        "snapshot": snap,
+        "prepared_at": prepared_at,
+        "limitations": list(limitations),
+    }
+
+
+def verify_transfer_envelope(value: Any) -> dict:
+    """Validate the envelope and its full digest chain (snapshot digests plus
+    the identity binding between envelope and snapshot) before any use."""
+    env = _obj(value, "envelope")
+    _exact_keys(env, ENVELOPE_FIELDS, "envelope")
+    _check_schema_version(env, "envelope")
+    _hex64(env, "snapshot_id", "envelope")
+    _hex64(env, "code_id", "envelope")
+    code = _obj(env["code"], "envelope.code")
+    _exact_keys(code, ENVELOPE_CODE_FIELDS, "envelope.code")
+    _hex64(code, "bundle_sha256", "envelope.code")
+    _int(code, "bundle_size", "envelope.code", minimum=1)
+    snap = verify_snapshot(env["snapshot"])
+    if env["snapshot_id"] != snap["snapshot_id"] or env["code_id"] != snap["code_id"]:
+        raise MrReviewError(
+            "invalid-schema", "envelope identity does not match the snapshot")
+    _iso(env, "prepared_at", "envelope")
+    _str_list(env, "limitations", "envelope")
+    return env
 
 
 # ── Findings ─────────────────────────────────────────────────────────────────
