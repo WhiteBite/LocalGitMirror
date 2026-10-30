@@ -36,6 +36,10 @@ from .mr_review_reader import (
     open_reader,
     peek_cursor_snapshot,
 )
+from .mr_review_search import (
+    mr_review_context as _search_context,
+    mr_review_search as _search_hits,
+)
 from .mr_review_store import MrReviewStore
 
 # postbox TTL is 7 days (backend/app/routers/file_sync.py); refresh one day before expiry
@@ -391,3 +395,30 @@ def mr_review_read(repo: str, snapshot_id: str, view: str, *,
     return reader.read_page(view=view, paths=paths, group=group, side=side,
                             cursor=cursor, budget_bytes=budget_bytes,
                             context_lines=context_lines)
+
+
+def mr_review_search(repo: str, snapshot_id: str, query: str, *,
+                     side: str | None = None, scope: str = "tree",
+                     paths: list[str] | tuple[str, ...] | None = None,
+                     cursor: str = "",
+                     budget_bytes: int = DEFAULT_BUDGET_BYTES,
+                     home: Path | str | None = None) -> dict:
+    """HOME: bounded literal search over an imported snapshot's Git objects."""
+    if not isinstance(repo, str) or not repo:
+        raise LgmError("config", "repo must be a non-empty mirror repository name")
+    return _search_hits(repo, snapshot_id, query, side=side, scope=scope,
+                        paths=paths, cursor=cursor, budget_bytes=budget_bytes,
+                        home=home)
+
+
+def mr_review_context(repo: str, snapshot_id: str, path: str, *,
+                      line: int = 0, side: str = "new",
+                      budget_bytes: int = DEFAULT_BUDGET_BYTES,
+                      context_lines: int = DEFAULT_CONTEXT_LINES,
+                      home: Path | str | None = None) -> dict:
+    """HOME: bounded textual context around one line of a snapshot side."""
+    if not isinstance(repo, str) or not repo:
+        raise LgmError("config", "repo must be a non-empty mirror repository name")
+    return _search_context(repo, snapshot_id, path, line=line, side=side,
+                           budget_bytes=budget_bytes,
+                           context_lines=context_lines, home=home)
