@@ -1,5 +1,6 @@
 package localgitmirror.idea.gitlab
 
+import com.intellij.openapi.project.Project
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -75,5 +76,76 @@ class MrNotesWriterBranchSourceTest {
     assertTrue(block.contains(" 1: l1"), block)
     assertTrue(block.contains(" 5: l5"), block)
     assertTrue(!block.contains("WORKTREE_ONLY"), block)
+  }
+
+  private fun projectWithBase(dir: File): Project =
+    java.lang.reflect.Proxy.newProxyInstance(
+      Project::class.java.classLoader,
+      arrayOf(Project::class.java),
+    ) { _, method, _ -> if (method.name == "getBasePath") dir.absolutePath else null } as Project
+
+  private fun discussionAt(file: String, line: Int) = GitLabApi.MrDiscussion(
+    id = "t1", resolved = false, notes = listOf(
+      GitLabApi.MrNote(
+        author = "Ivan", createdAt = "t", system = false,
+        body = "fix this", resolved = false, filePath = file, line = line,
+      ),
+    )
+  )
+
+  @Test
+  fun `renderMarkdown shows unavailable marker instead of worktree when source branch missing`() {
+    val repo = repoWithBranchDivergence()
+    File(repo, "src/OnlyLocal.java").writeText("LOCAL_DIRTY_TEXT")
+    val md = MrNotesWriter.renderMarkdown(
+      project = projectWithBase(repo), iid = 9, title = "T", sourceBranch = "no-such-branch",
+      updatedAt = "u", unresolved = 2, totalThreads = 2,
+      discussions = listOf(discussionAt("src/Foo.java", 3), discussionAt("src/OnlyLocal.java", 1)),
+    )
+    assertTrue(md.contains(
+      "**Контекст:** недоступен — в локальном репозитории нет " +
+        "`no-such-branch:src/Foo.java`, фрагмент кода не показан."), md)
+    assertTrue(md.contains("`no-such-branch:src/OnlyLocal.java`"), md)
+    assertTrue(!md.contains("WORKTREE_ONLY"), md)
+    assertTrue(!md.contains("LOCAL_DIRTY_TEXT"), md)
+    assertTrue(!md.contains("```"), md)
+  }
+
+  @Test
+  fun `renderMarkdown shows unavailable marker when file absent on the source branch`() {
+    val repo = repoWithBranchDivergence()
+    File(repo, "src/Untracked.java").writeText("UNTRACKED_LOCAL_TEXT")
+    val md = MrNotesWriter.renderMarkdown(
+      project = projectWithBase(repo), iid = 9, title = "T", sourceBranch = "feature",
+      updatedAt = "u", unresolved = 1, totalThreads = 1,
+      discussions = listOf(discussionAt("src/Untracked.java", 1)),
+    )
+    assertTrue(md.contains(
+      "**Контекст:** недоступен — в локальном репозитории нет " +
+        "`feature:src/Untracked.java`, фрагмент кода не показан."), md)
+    assertTrue(!md.contains("UNTRACKED_LOCAL_TEXT"), md)
+  }
+
+  @Test
+  fun `renderMarkdown renders branch content when the revision is available`() {
+    val repo = repoWithBranchDivergence()
+    val md = MrNotesWriter.renderMarkdown(
+      project = projectWithBase(repo), iid = 9, title = "T", sourceBranch = "feature",
+      updatedAt = "u", unresolved = 1, totalThreads = 1,
+      discussions = listOf(discussionAt("src/Foo.java", 3)),
+    )
+    assertTrue(md.contains(">3: BRANCH_ONLY"), md)
+    assertTrue(!md.contains("WORKTREE_ONLY"), md)
+    assertTrue(!md.contains("**Контекст:** недоступен"), md)
+  }
+
+  @Test
+  fun `contextUnavailableLine matches the python marker and hides blank branch`() {
+    assertEquals(
+      "**Контекст:** недоступен — в локальном репозитории нет " +
+        "`feature:src/Foo.java`, фрагмент кода не показан.",
+      MrNotesWriter.contextUnavailableLine("feature", "src/Foo.java"),
+    )
+    assertTrue(MrNotesWriter.contextUnavailableLine("", "F.txt").contains("`?:F.txt`"))
   }
 }

@@ -14,6 +14,8 @@ GitLab:
 - Send **GitLab MR/PR code** to Mirror (fetch MR source branches, дедупликация по зеркальным tips через `MrSendPlanner`, один бандл)
 - MR picker of open MRs (fallback to manual IID input)
 - Перенос заметок ревью и ответов через почтовый ящик (`mr-notes/`, `mr-replies/`)
+- Snapshot review (WORK only, нативно — без MCP): кнопка подготовки снапшота в Review tab собирает выбранные MR в один согласованный snapshot (метаданные, дискуссии, code bundle) и передаёт его на домашний ПК (`MrReviewSnapshotAction`, `review.tip.prepareSnapshot`)
+- Диалог MR показывает v2 review batches с гейтом: `ready · snapshot · fingerprint`, `stale-snapshot: … drifted — publication refused` (публикация блокируется до нового снапшота, кнопка «Prepare a new snapshot») или `not verified — publication blocked`; батч публикуется целиком как неизменяемый документ, невыбранные батчи остаются pending в почтовом ящике
 
 Deps (gradle/npm):
 - Request недостающих артефактов с домашней машины, respond с рабочей, apply полученных ZIP в локальные кэши, publish защищённых артефактов в vault

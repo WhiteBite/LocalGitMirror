@@ -119,11 +119,16 @@ def test_render_markdown_full_format(tmp_path):
     (proj / "src").mkdir(parents=True)
     (proj / "src" / "Foo.java").write_text(
         "\n".join(f"line {i}" for i in range(1, 81)), encoding="utf-8")
+    subprocess.run(["git", "-C", str(proj), "init", "-q", "-b", "llm-core"], check=True)
+    subprocess.run(["git", "-C", str(proj), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(proj), "config", "user.name", "t"], check=True)
+    subprocess.run(["git", "-C", str(proj), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(proj), "commit", "-q", "-m", "i"], check=True)
 
     md = render_markdown(
         24, "Llm-core", "llm-core", "2026-10-03T11:38:04.050Z",
         1, 2, parse_discussions(_raw_discussions()),
-        project_dir=proj, branch="",
+        project_dir=proj, branch="llm-core",
     )
     lines = md.splitlines()
     assert lines[0].startswith("<!-- Сгенерировано плагином DocCache")
@@ -149,6 +154,9 @@ def test_render_markdown_full_format(tmp_path):
     assert "**Место:** `src/Bar.java:10`" in lines
     bar_idx = lines.index("**Место:** `src/Bar.java:10`")
     assert "```java" not in lines[bar_idx:bar_idx + 3]
+    assert lines[bar_idx + 2] == (
+        "**Контекст:** недоступен — в локальном репозитории нет "
+        "`llm-core:src/Bar.java`, фрагмент кода не показан.")
 
     assert "## ✓ системные события (свёрнуто · 1)" in lines
     assert "- assigned to @i.spirkov · 2026-09-01T09:00:00Z" in lines
@@ -182,6 +190,74 @@ def test_render_markdown_reads_code_from_branch(tmp_path):
                          project_dir=proj, branch="master")
     assert ">3: c" in md
     assert "CHANGED" not in md
+
+
+def _git_repo_with_commit(proj: Path) -> None:
+    proj.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "-C", str(proj), "init", "-q", "-b", "master"], check=True)
+    subprocess.run(["git", "-C", str(proj), "config", "user.email", "t@t"], check=True)
+    subprocess.run(["git", "-C", str(proj), "config", "user.name", "t"], check=True)
+
+
+def _anchored_discussion(file_path: str, line: int) -> dict:
+    return {"id": "d", "resolved": False, "notes": [
+        {"author": "A", "created_at": "t", "system": False,
+         "body": "b", "file_path": file_path, "line": line},
+    ]}
+
+
+def test_render_markdown_missing_branch_never_shows_worktree(tmp_path):
+    proj = tmp_path / "proj"
+    (proj / "src").mkdir(parents=True)
+    _git_repo_with_commit(proj)
+    (proj / "src" / "Foo.java").write_text("COMMITTED\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(proj), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(proj), "commit", "-q", "-m", "i"], check=True)
+    (proj / "src" / "Foo.java").write_text("DIRTY_WORKTREE_TEXT\n", encoding="utf-8")
+    (proj / "src" / "OnlyLocal.java").write_text("UNTRACKED_WORKTREE_TEXT\n", encoding="utf-8")
+
+    md = render_markdown(
+        7, "T", "feature", "u", 2, 2,
+        [_anchored_discussion("src/Foo.java", 1),
+         _anchored_discussion("src/OnlyLocal.java", 1)],
+        project_dir=proj, branch="feature")
+    assert "DIRTY_WORKTREE_TEXT" not in md
+    assert "UNTRACKED_WORKTREE_TEXT" not in md
+    assert "COMMITTED" not in md
+    assert ("**Контекст:** недоступен — в локальном репозитории нет "
+            "`feature:src/Foo.java`, фрагмент кода не показан.") in md
+    assert ("**Контекст:** недоступен — в локальном репозитории нет "
+            "`feature:src/OnlyLocal.java`, фрагмент кода не показан.") in md
+
+
+def test_render_markdown_file_missing_on_branch_never_shows_worktree(tmp_path):
+    proj = tmp_path / "proj"
+    (proj / "src").mkdir(parents=True)
+    _git_repo_with_commit(proj)
+    (proj / "src" / "Foo.java").write_text("COMMITTED\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(proj), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(proj), "commit", "-q", "-m", "i"], check=True)
+    (proj / "src" / "Untracked.java").write_text("UNTRACKED_WORKTREE_TEXT\n", encoding="utf-8")
+
+    md = render_markdown(7, "T", "master", "u", 1, 1,
+                         [_anchored_discussion("src/Untracked.java", 1)],
+                         project_dir=proj, branch="master")
+    assert "UNTRACKED_WORKTREE_TEXT" not in md
+    assert ("**Контекст:** недоступен — в локальном репозитории нет "
+            "`master:src/Untracked.java`, фрагмент кода не показан.") in md
+
+
+def test_render_markdown_blank_branch_never_shows_worktree(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "F.txt").write_text("LIVE_WORKTREE_TEXT\n", encoding="utf-8")
+
+    md = render_markdown(7, "T", "", "u", 1, 1,
+                         [_anchored_discussion("F.txt", 1)],
+                         project_dir=proj, branch="")
+    assert "LIVE_WORKTREE_TEXT" not in md
+    assert ("**Контекст:** недоступен — в локальном репозитории нет "
+            "`?:F.txt`, фрагмент кода не показан.") in md
 
 
 

@@ -75,22 +75,29 @@ def _anchor_line(d: dict) -> int | None:
 
 def _read_file_lines(project_dir: Path | None, branch: str,
                      rel_path: str) -> list[str] | None:
-    if project_dir is None or not project_dir.is_dir():
+    """Content of rel_path at refs/heads/branch; None when unavailable.
+
+    Never reads the live worktree: a dirty checkout would render a snippet
+    that does not exist at the revision the notes reference.
+    """
+    if project_dir is None or not project_dir.is_dir() or not branch:
         return None
-    if branch:
+    try:
         proc = subprocess.run(
             ["git", "-C", str(project_dir), "show", f"refs/heads/{branch}:{rel_path}"],
             capture_output=True, timeout=30,
         )
-        if proc.returncode == 0:
-            return proc.stdout.decode("utf-8", errors="replace").splitlines()
-    try:
-        f = project_dir / rel_path
-        if f.is_file():
-            return f.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         return None
-    return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.decode("utf-8", errors="replace").splitlines()
+
+
+def _context_unavailable(branch: str, rel_path: str) -> str:
+    rev = branch or "?"
+    return (f"**Контекст:** недоступен — в локальном репозитории нет "
+            f"`{rev}:{rel_path}`, фрагмент кода не показан.")
 
 
 def render_markdown(iid: int, title: str, source_branch: str, updated_at: str,
@@ -181,6 +188,9 @@ def _render_thread(a, n: int, d: dict, unresolved: bool,
 def _render_code_block(a, project_dir: Path, branch: str,
                        anchor_file: str, anchor_line: int) -> None:
     lines = _read_file_lines(project_dir, branch, anchor_file)
+    if lines is None:
+        a(_context_unavailable(branch, anchor_file))
+        return
     if not lines:
         return
     ext = anchor_file.rsplit(".", 1)[-1] if "." in anchor_file else ""

@@ -587,36 +587,69 @@ CORPORATE DEPS (gradle/npm):
   Extras: scan (inspect local gradle cache), fetch-poms (public poms),
           publish / vault_status (corporate artifact vault).
 
-MR REVIEW REPLIES (home agent -> work PC -> GitLab):
+MR REVIEW (home agent <- work PC <- GitLab; full map: docs/MR_REVIEW_WORKFLOW.md):
   WORK preparation: mr_projects_scan root=<checkouts root>, then mr_sync_all.
     mr_sync_all sends open MR source branches and notes, including MRs without
     comments. notes_only=true refreshes notes without sending branches.
-    For a whole-MR review, also transfer its target branch with mr_send
-    repo=<name> project=<git root> branch=<target>; do not guess the base.
-  0. mr_list [repo=<name>]                — open MRs; without GitLab config lists MRs from transferred notes.
-  1. mr_notes repo=<name> [iid=<N>]       — read reviewer threads transferred from work.
-  2. Write answers, then EITHER:
-     mr_replies_send repo=<name> iid=<N> file=<path to replies-!N.md>
-     mr_replies_send repo=<name> iid=<N> text=<inline markdown>
-   Replies format: sections '## thread <id>' / '## new <file>:<line>' / '## new',
-   optional 'resolve: yes' as the first line of a section.
-   mr_replies_send prechecks the reply against the newest mr-notes: '## new'
-   anchors within +-3 lines of an unresolved thread and '## thread' ids missing
-   from the notes are rejected as duplicates/hallucinations (force=true skips).
-   Comment style: as a human reviewer — issues only (bug, bad call, miss),
-   1-3 sentences, long only when a scenario needs it; anchored at the offending
-   line, imperative, concrete; no praise, no code restating, no filler openers.
-    3. mr_replies_status repo=<name> [iid=<N>] — work PC's publish report
-       (posted/failed counts); empty means not published yet.
-    4. mr_pending repo=<name> — one pipeline view per MR: notes age, replies
-       pending, last publish outcome, closed state with evidence.
-    The work PC posts approved replies to GitLab; a human may approve them in
-    the IDE first, so a pending send is normal — poll mr_replies_status.
-    WORK: mr_replies_push repo=<name> iid=<N> dry_run=true previews publication;
-    omit dry_run to publish. When replies describe code fixes, pull and push
-    those commits to GitLab BEFORE publishing the replies or resolving threads.
-    For review-only comments no code push is required. The reply receipt proves
-    comment publication, not code delivery or test success.
+  WORK snapshot for a whole-MR review: mr_review_prepare repo=<name> iid=<N>
+    project=<git root> checkout=<path> — one consistent snapshot (metadata,
+    discussions, self-contained code bundle, 128 MiB artifact cap) into the
+    encrypted postbox. Do NOT transfer branches and diff the whole MR by hand:
+    the snapshot carries both sides and every read is paged.
+  HOME review — bounded pages, never one giant diff, never whole files unless
+    you explicitly page them:
+    mr_review_open repo=<name> iid=<N> — import the snapshot into
+      ~/.lgm/reviews, get identity, limitations and the first inventory page;
+      continue with cursor= (no postbox access after import).
+    mr_review_read repo=<name> snapshot_id=<hex> view=diff|file|discussions
+      [paths= group= side=old|new|target cursor= context_lines=]
+    mr_review_search ... query=<literal text> scope=tree|added|removed|changed
+    mr_review_context ... path=<p> line=<L> — textual window around one line.
+    Every result fits budget_bytes (4096..48000, default 24000) and carries
+    complete/next_cursor. Context is TEXTUAL only (semantic_complete=false):
+    a complete page is not a semantic-completeness claim.
+  HOME record: mr_review_progress action=list|mark (CAS via expected_revision).
+    Optional probe: mr_review_materialize action=create — detached worktree at
+    the snapshot source_sha; run your own command with it as cwd (the probe is
+    NOT a registry op) and cite probe:<env_id>:<probe_id> as evidence. The
+    worktree isolates files only — processes, network and caches are NOT
+    isolated; it is not a security sandbox. Dirty/busy envs are never reset.
+  HOME findings: mr_review_findings action=save|list|create_batch —
+    create_batch writes the v2 batch JSON for mr_replies_send review_file=.
+    After a newer snapshot import run mr_review_refresh: it migrates progress
+    and invalidates stale findings (publication blocked until re-checked).
+  Send (HOME): mr_replies_send repo=<name> iid=<N> review_file=<batch.json>
+    (v2) OR file=<replies-!N.md> / text=<inline markdown> (legacy v1 path).
+    Replies format: sections '## thread <id>' / '## new <file>:<line>' /
+    '## new', optional 'resolve: yes' as the first line of a section.
+    mr_replies_send prechecks the reply against the newest mr-notes: '## new'
+    anchors within +-3 lines of an unresolved thread and '## thread' ids
+    missing from the notes are rejected as duplicates/hallucinations
+    (force=true skips; check=true validates without uploading).
+    Comment style: as a human reviewer — issues only (bug, bad call, miss),
+    1-3 sentences, long only when a scenario needs it; anchored at the
+    offending line, imperative, concrete; no praise, no code restating, no
+    filler openers.
+  Publish (WORK ONLY — HOME never posts to GitLab): mr_replies_push
+    repo=<name> iid=<N> dry_run=true previews; omit dry_run to publish.
+    A v2 batch is fingerprint-gated: any drift since the snapshot refuses
+    publication (stale-snapshot, zero posts) — prepare a fresh snapshot and
+    re-check findings. When replies describe code fixes, pull and push those
+    commits to GitLab BEFORE publishing the replies or resolving threads.
+    For review-only comments no code push is required.
+  Receipts: mr_review_receipts action=handoff (WORK uploads receipt artifacts,
+    acks only after an all-terminal attempt) / action=import (HOME stores
+    them, updates finding delivery). mr_replies_status repo=<name> [iid=<N>]
+    — work PC's publish report; empty means not published yet. mr_pending
+    repo=<name> — one pipeline view per MR: notes age, replies pending, last
+    publish outcome, closed state with evidence. A human may approve replies
+    in the IDE first, so a pending send is normal — poll mr_replies_status.
+    A receipt proves comment publication, not code delivery or test success.
+  Legacy notes: mr_list [repo=<name>] — open MRs (without GitLab config, from
+    transferred notes); mr_notes repo=<name> [iid=<N>] — reviewer threads as
+    markdown (legacy v1 surface). Note snippets come from the MR source-branch
+    revision; when it is not available locally the note shows an explicit
+    'Контекст: недоступен' marker — never the live worktree file.
 
 DIAGNOSTICS: status, repos, debug.
 

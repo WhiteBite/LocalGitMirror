@@ -127,15 +127,10 @@ object MrNotesWriter {
     anchorLine: Int,
   ) {
     val base = project.basePath ?: return
-    val baseDir = File(base)
-    val lines = branchFileLines(baseDir, sourceBranch, anchorFile) ?: run {
-      val file = File(baseDir, anchorFile)
-      if (!file.isFile) return
-      try {
-        file.readLines(Charsets.UTF_8)
-      } catch (_: Throwable) {
-        return
-      }
+    val lines = branchFileLines(File(base), sourceBranch, anchorFile)
+    if (lines == null) {
+      sb.appendLine(contextUnavailableLine(sourceBranch, anchorFile))
+      return
     }
     if (lines.isEmpty()) return
 
@@ -145,6 +140,13 @@ object MrNotesWriter {
     sb.appendLine("```")
   }
 
+  /** Marker text must stay byte-identical to lgm_core/mr_notes_render.py::_context_unavailable. */
+  internal fun contextUnavailableLine(branch: String, relPath: String): String {
+    val rev = branch.ifBlank { "?" }
+    return "**Контекст:** недоступен — в локальном репозитории нет `$rev:$relPath`, фрагмент кода не показан."
+  }
+
+  /** Content at refs/heads/branch; null when unavailable. Never reads the live worktree. */
   internal fun branchFileLines(baseDir: File, branch: String, relPath: String): List<String>? {
     if (branch.isBlank()) return null
     return try {
@@ -252,7 +254,7 @@ object MrNotesWriter {
     sb.appendLine()
     sb.appendLine("## Как использовать (для агента)")
     sb.appendLine("1. Открой файлы MR с нерешёнными тредами (колонка «Нерешённых» > 0).")
-    sb.appendLine("2. Каждый тред помечен `## ⚠ НЕ РЕШЕНО` и содержит `файл:строка` + фрагмент кода.")
+    sb.appendLine("2. Каждый тред помечен `## ⚠ НЕ РЕШЕНО` и содержит `файл:строка` + фрагмент кода из ветки MR (или отметку «Контекст: недоступен», если ревизии нет локально).")
     sb.appendLine("3. Внеси правки по замечаниям. Решённые треды (`## ✓ решено`) — уже закрыты, трогать не нужно.")
     sb.appendLine()
     sb.appendLine("## Как ответить и оставить новые замечания")
