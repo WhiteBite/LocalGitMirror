@@ -122,6 +122,17 @@ REALISTIC = {
         {"iid": 42, "notes": None, "replies_pending": True,
          "reply_ids": ["b" * 32], "last_publish": None,
          "state": "unknown", "state_evidence": "expired"}]},
+    "mr_review_receipts": {"success": True, "repo": "phonyx",
+                           "action": "import", "dry_run": False, "count": 1,
+                           "artifacts": [
+                               {"path": "mr-review/receipts/mr-!41-"
+                                        "0e1d2c3b-4a59-4837-2615-0f4e3d2c1b09"
+                                        ".attempt-1.receipt.json",
+                                "iid": 41,
+                                "batch_id": "0e1d2c3b-4a59-4837-2615-0f4e3d2c1b09",
+                                "attempt": 1, "imported": 2, "skipped": 0,
+                                "delivery_updates": 2, "acked": True,
+                                "errors": []}]},
     "mr_replies_push": {"success": True, "repo": "phonyx", "dry_run": False,
                         "count": 1,
                         "totals": {"posted": 2, "duplicates": 1, "skipped": 0,

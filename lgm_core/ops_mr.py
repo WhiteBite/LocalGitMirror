@@ -18,6 +18,13 @@ from .mr_review_models import (
     parse_review_markers,
     receipt_note_url,
 )
+from .mr_review_receipts import (
+    open_journal,
+    receipt_artifact_match,
+    run_receipt_handoff,
+    run_receipt_import,
+    summarize_receipt_artifacts,
+)
 from .op_models import Ctx, _client, _repo_arg
 from .ops_git import send_branches
 
@@ -866,7 +873,10 @@ def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:
             statuses.append(entry)
         except Exception:
             statuses.append({"iid": n, "path": i["path"], "error": "fetch/decrypt failed (v3 relay)"})
-    return {"success": True, "repo": repo, "count": len(statuses), "statuses": statuses}
+    review_receipts = [s for s in summarize_receipt_artifacts(c, repo, lst.get("items") or [])
+                       if not iid or s["iid"] == iid]
+    return {"success": True, "repo": repo, "count": len(statuses),
+            "statuses": statuses, "review_receipts": review_receipts}
 
 
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -1191,7 +1201,7 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
                 continue
             if s["id"] != newest["id"]:
                 rep["ack_superseded"].append(s["id"])
-    if not dry_run and (posted > 0 or failed > 0):
+    if not dry_run and (posted > 0 or failed > 0 or duplicates > 0):
         data = _render_replies_status(iid, rep).encode("utf-8")
         status_path = f"mr-replies-status/mr-!{iid}.md"
         try:
@@ -1310,7 +1320,8 @@ def _v2_result(label: str, entry: dict, outcome: str, *, code: str = "",
 
 def _v2_dup_result(label: str, entry: dict, dup: dict, web_url: str) -> dict:
     note_id = dup["note_id"]
-    url = receipt_note_url(web_url, note_id) if web_url and note_id is not None else None
+    url = dup.get("url") or (
+        receipt_note_url(web_url, note_id) if web_url and note_id is not None else None)
     return _v2_result(
         label, entry, "skipped-duplicate", code="possible-duplicate",
         note=(f"finding revision already posted (discussion {dup['discussion_id']}, "
@@ -1347,7 +1358,8 @@ def _v2_halt(report: dict, entries: list, posted_map: dict, web_url: str,
 
 def _v2_post_entry(c: MirrorClient, iid: int, refs: dict, entry: dict, label: str,
                    thread_ids: set, web_url: str, dry_run: bool, project: str,
-                   details: list) -> tuple[dict, bool]:
+                   details: list, journal=None,
+                   attempt: dict | None = None) -> tuple[dict, bool]:
     """Post one non-duplicate entry; returns (result, write_attempted)."""
     kind = entry["kind"]
     target = _v2_target(entry)
@@ -1366,6 +1378,8 @@ def _v2_post_entry(c: MirrorClient, iid: int, refs: dict, entry: dict, label: st
             "anchor has no side line; GitLab diff notes require one and v2 "
             "anchored entries never fall back to a general note"), False
     body = f"<!-- {entry['marker']} -->\n\n{entry['body']}"
+    if journal is not None:
+        journal.record_post_start(attempt, entry)
     try:
         if kind == "anchored":
             resp = c.gitlab_post_new_discussion_positioned(
@@ -1402,74 +1416,166 @@ def _v2_post_entry(c: MirrorClient, iid: int, refs: dict, entry: dict, label: st
     return result, True
 
 
+def _v2_backfill_ids(c: MirrorClient, iid: int, project: str, results: list,
+                     web_url: str, journal, attempt: dict | None) -> None:
+    """One read-only re-scan for posted/duplicate entries missing a discussion
+    id or permalink (general notes carry only a note id in the POST response);
+    fills only what the live marker scan proves, never invents ids."""
+    missing = [r for r in results
+               if r["outcome"] in ("posted", "skipped-duplicate")
+               and r.get("note_id") is not None
+               and (not r.get("discussion_id") or not r.get("url"))]
+    if not missing:
+        return
+    try:
+        raw = c.gitlab_list_discussions(iid, project=project)
+    except LgmError:
+        return
+    scanned, _ = _v2_marker_scan(raw)
+    for r in missing:
+        hit = scanned.get((r["finding_id"], r["revision"]))
+        if hit is None or hit.get("note_id") != r["note_id"]:
+            continue
+        if not r.get("discussion_id") and hit.get("discussion_id"):
+            r["discussion_id"] = hit["discussion_id"]
+        if not r.get("url") and web_url:
+            r["url"] = receipt_note_url(web_url, r["note_id"])
+        if journal is not None:
+            journal.update_entry_ids(attempt, r["finding_id"], r["revision"],
+                                     r.get("discussion_id"), r.get("url"))
+
+
 def _publish_review_batch(c: MirrorClient, doc: dict, report: dict,
-                          dry_run: bool, project: str) -> dict:
+                          dry_run: bool, project: str, journal=None,
+                          postbox_item_id: str = "", postbox_path: str = "") -> dict:
     """Fresh-fingerprint gate + publication of one validated v2 batch.
 
     Read-only marker scan first, then the gate; any drift or unreachable API
     halts the whole batch with zero writes. The gate re-runs before every
     entry whose predecessor attempted a write, so a mid-batch head change
     blocks the remainder while posted entries keep their ids. Anchored v2
-    entries never downgrade to general notes; the batch is never acked.
+    entries never downgrade to general notes; the batch is never acked here.
+    With a journal, the attempt and every entry outcome (discussion/note ids
+    and the note permalink included) are persisted before any receipt step:
+    entries a previous attempt posted are never re-POSTed, and an entry whose
+    previous POST ended without a recorded response is re-looked-up through
+    its marker only — a second POST is refused and the entry stays blocked.
     """
     iid = doc["iid"]
     entries = doc["entries"]
+    attempt = None
+    if journal is not None:
+        attempt = journal.begin_attempt(postbox_item_id, postbox_path)
+        report["attempt"] = attempt["attempt"]
+    journal_keys: set[tuple[str, int]] = set()
+
+    def finish(rep: dict) -> dict:
+        if journal is not None:
+            journal.complete_attempt(attempt)
+        return rep
+
+    def blocked(label: str, entry: dict, code: str, error: str) -> dict:
+        result = _v2_blocked(label, entry, code, error)
+        if journal is not None:
+            journal.record_result(attempt, result, post_attempted=False)
+        return result
+
+    def halt_journalled(posted_map: dict, web_url: str, error: str,
+                        code: str = "") -> dict:
+        rep = _v2_halt(report, entries, posted_map, web_url, error, code)
+        if journal is not None:
+            for result in rep["replies"]:
+                key = (result["finding_id"], result["revision"])
+                recovered_from = None
+                if result["outcome"] == "skipped-duplicate":
+                    recovered_from = "journal" if key in journal_keys else "scan"
+                journal.record_result(attempt, result, post_attempted=False,
+                                      recovered_from=recovered_from)
+        return finish(rep)
+
     try:
         raw = c.gitlab_list_discussions(iid, project=project)
     except LgmError as e:
-        return _v2_halt(report, entries, {}, "", f"list discussions: {e.message}")
+        known = journal.posted_entries() if journal is not None else {}
+        journal_keys.update(known)
+        return halt_journalled(known, "", f"list discussions: {e.message}")
     posted_map, thread_ids = _v2_marker_scan(raw)
+    if journal is not None:
+        for key, dup in journal.posted_entries().items():
+            if key not in posted_map:
+                posted_map[key] = dup
+                journal_keys.add(key)
+    uncertain = journal.uncertain_entries() if journal is not None else {}
     web_url = ""
     try:
         expected, fresh, drift, web_url = _review_gate(c, doc, project)
+        if journal is not None:
+            journal.set_web_url(attempt, web_url)
     except LgmError as e:
-        return _v2_halt(report, entries, posted_map, web_url,
-                        f"freshness gate: {e.message}")
+        return halt_journalled(posted_map, web_url, f"freshness gate: {e.message}")
     if drift:
         report["stale"] = {"expected": expected, "fresh": fresh, "drift": drift}
-        return _v2_halt(report, entries, posted_map, web_url,
-                        f"stale-snapshot: {', '.join(drift)} drifted since the "
-                        f"snapshot — zero posts/resolves",
-                        code="stale-snapshot")
+        return halt_journalled(posted_map, web_url,
+                               f"stale-snapshot: {', '.join(drift)} drifted since the "
+                               f"snapshot — zero posts/resolves",
+                               code="stale-snapshot")
     results: list[dict] = []
     details: list[str] = []
     halt: tuple[str, str] | None = None
     need_recheck = False
     for idx, entry in enumerate(entries):
         label = f"entry {idx + 1}"
-        dup = posted_map.get((entry["finding_id"], entry["revision"]))
+        key = (entry["finding_id"], entry["revision"])
+        dup = posted_map.get(key)
         if dup is not None:
-            results.append(_v2_dup_result(label, entry, dup, web_url))
+            result = _v2_dup_result(label, entry, dup, web_url)
+            results.append(result)
+            if journal is not None:
+                journal.record_result(attempt, result, post_attempted=False,
+                                      recovered_from="journal" if key in journal_keys
+                                      else "scan")
             continue
         if halt is not None:
-            results.append(_v2_blocked(label, entry, halt[0], halt[1]))
+            results.append(blocked(label, entry, halt[0], halt[1]))
+            continue
+        if key in uncertain:
+            results.append(blocked(
+                label, entry, "",
+                f"uncertain publication outcome: attempt {uncertain[key]} started a "
+                f"POST without a recorded response and the marker re-lookup found "
+                f"nothing — refusing a second POST"))
             continue
         if need_recheck:
             try:
                 expected, fresh, drift, web_url = _review_gate(c, doc, project)
+                if journal is not None:
+                    journal.set_web_url(attempt, web_url)
             except LgmError as e:
                 halt = ("", f"freshness gate: {e.message}")
-                results.append(_v2_blocked(label, entry, halt[0], halt[1]))
+                results.append(blocked(label, entry, halt[0], halt[1]))
                 continue
             if drift:
                 report["stale"] = {"expected": expected, "fresh": fresh,
-                                   "drift": drift}
+                                    "drift": drift}
                 halt = ("stale-snapshot",
                         f"stale-snapshot: {', '.join(drift)} drifted mid-batch — "
                         f"remaining entries not posted")
-                results.append(_v2_blocked(label, entry, halt[0], halt[1]))
+                results.append(blocked(label, entry, halt[0], halt[1]))
                 continue
             need_recheck = False
         result, attempted = _v2_post_entry(c, iid, doc["refs"], entry, label,
                                            thread_ids, web_url, dry_run, project,
-                                           details)
+                                           details, journal, attempt)
         results.append(result)
+        if journal is not None:
+            journal.record_result(attempt, result, post_attempted=attempted)
         need_recheck = attempted
+    _v2_backfill_ids(c, iid, project, results, web_url, journal, attempt)
     details.insert(0, f"v2 batch {doc['batch_id']}: "
                       f"{sum(1 for r in results if r['outcome'] == 'posted')} posted, "
                       f"{sum(1 for r in results if r['outcome'] == 'skipped-duplicate')} duplicate, "
                       f"{sum(1 for r in results if r['outcome'] == 'blocked')} blocked")
-    return _v2_finish(report, results, details)
+    return finish(_v2_finish(report, results, details))
 
 
 def _push_review_batch(c: MirrorClient, repo: str, item: dict,
@@ -1477,8 +1583,10 @@ def _push_review_batch(c: MirrorClient, repo: str, item: dict,
     """Document-level handling of one v2 batch artifact (mr-!<iid>-<batch_id>
     .review.json) in the postbox: full pipeline validation, then the
     snapshot-bound publication gate. Batches are immutable, coexist per IID,
-    are never superseded and never acked here (receipts own the ack, task 13);
-    a malformed batch is refused with zero side effects."""
+    are never superseded and never acked here (the receipt handoff owns the
+    ack); a malformed batch is refused with zero side effects. Unless this is
+    a dry run, the publication is journalled per entry so the receipt handoff
+    and restart recovery can run without ever re-POSTing."""
     path = item.get("path") or ""
     m = _MR_REVIEW_BATCH_FILE.search(path)
     iid = int(m.group(1))
@@ -1501,7 +1609,10 @@ def _push_review_batch(c: MirrorClient, repo: str, item: dict,
         return report
     report["batch_id"] = doc["batch_id"]
     report["identity"] = doc["identity"]
-    return _publish_review_batch(c, doc, report, dry_run, project)
+    item_id = item.get("id") or ""
+    journal = None if dry_run else open_journal(repo, iid, doc, item_id, path)
+    return _publish_review_batch(c, doc, report, dry_run, project, journal=journal,
+                                 postbox_item_id=item_id, postbox_path=path)
 
 
 def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
@@ -1522,7 +1633,11 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
     post with full side-aware positions from the batch and never fall back to
     general notes, already-posted finding revisions are recovered through
     protocol markers instead of re-posted, and batches are never superseded
-    and never acked here.
+    and never acked here. Every non-dry-run v2 publication is journalled per
+    entry; before the postbox is listed, the receipt handoff of previously
+    journalled batches runs (persist journal -> upload the detailed receipt to
+    mr-review/receipts/ -> ack the batch item only when the upload succeeded
+    and every entry is terminal) and is reported under ``receipt_handoff``.
     --dry-run plans without touching GitLab, the postbox or the status files.
 
     The GitLab project comes from the registry entry for ``repo`` so one work
@@ -1552,6 +1667,7 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
                        machine_code="role-unset")
     dry_run = bool(args.get("dry_run"))
     iid_filter = int(args.get("iid") or 0)
+    handoff = run_receipt_handoff(c, repo, iid=iid_filter, dry_run=dry_run)
     items = (c.file_sync_list(repo).get("items") or [])
     groups: dict[int, list] = {}
     v2_items: list[dict] = []
@@ -1608,7 +1724,8 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
               for k in ("posted", "duplicates", "skipped", "failed")}
     totals["not_anchored"] = sum(len(r.get("not_anchored") or []) for r in reports)
     result = {"success": True, "repo": repo, "dry_run": dry_run,
-              "count": len(reports), "reports": reports, "totals": totals}
+              "count": len(reports), "reports": reports, "totals": totals,
+              "receipt_handoff": handoff}
     if dry_run:
         result["message"] = "dry-run: nothing posted, no acks, no status upload"
     elif not reports:
@@ -1633,6 +1750,10 @@ def op_mr_pending(ctx: Ctx, args: dict) -> dict:
     ``marker`` (closed marker at least as new as the note), ``note-mtime``
     (note newer than the marker, or no marker at all), ``expired``
     (neither note nor marker — the postbox TTL ate them).
+
+    ``review_batches`` carries the newest v2 receipt artifact per batch of
+    that MR: outcome counts plus per-finding states (finding, revision,
+    outcome, note id, permalink).
     """
     c = _client(ctx)
     repo = _repo_arg(args)
@@ -1643,6 +1764,7 @@ def op_mr_pending(ctx: Ctx, args: dict) -> dict:
     markers: dict[int, dict] = {}
     replies: dict[int, list] = {}
     statuses: dict[int, dict] = {}
+    receipt_iids: set[int] = set()
     for i in items:
         eff = i.get("path") or ""
         if eff.startswith("mr-notes/"):
@@ -1666,13 +1788,21 @@ def op_mr_pending(ctx: Ctx, args: dict) -> dict:
                 iid = int(sm.group(1))
                 if iid not in statuses or (i.get("mtime") or 0) > (statuses[iid].get("mtime") or 0):
                     statuses[iid] = i
+        else:
+            rcm = receipt_artifact_match(eff)
+            if rcm:
+                receipt_iids.add(int(rcm.group(1)))
+    batch_summaries = summarize_receipt_artifacts(c, repo, items) if receipt_iids else []
 
     gitlab_usable = True
     gitlab_project = _repo_gitlab_project(repo)
     out: list[dict] = []
-    for iid in sorted(set(notes) | set(markers) | set(replies) | set(statuses)):
+    for iid in sorted(set(notes) | set(markers) | set(replies) | set(statuses)
+                      | receipt_iids):
         entry: dict = {"iid": iid, "notes": None, "replies_pending": False,
                        "reply_ids": [], "last_publish": None,
+                       "review_batches": [s for s in batch_summaries
+                                          if s["iid"] == iid],
                        "state": "unknown", "state_evidence": "expired"}
         note = notes.get(iid)
         if note is not None:
@@ -1716,3 +1846,65 @@ def op_mr_pending(ctx: Ctx, args: dict) -> dict:
                 note, markers.get(iid))
         out.append(entry)
     return {"success": True, "repo": repo, "count": len(out), "items": out}
+
+
+def op_mr_review_receipts(ctx: Ctx, args: dict) -> dict:
+    """Detailed v2 review publication receipts across the two machines.
+
+    ``action=handoff`` (work side): upload the immutable per-(batch, attempt)
+    receipt artifact for every completed journal attempt of ``repo`` that has
+    no receipt in the postbox yet, to
+    ``mr-review/receipts/mr-!<iid>-<batch_id>.attempt-<n>.receipt.json``, and
+    ack the batch's postbox item only when the upload succeeded and every
+    entry reached a terminal outcome (posted/recovered). An upload failure
+    means no ack; blocked or failed entries keep the batch pending for a
+    protected retry — journaled-posted entries are never re-POSTed.
+
+    ``action=import`` (home side): fetch receipt artifacts in (batch, attempt)
+    order, validate every receipt, store them immutably in the review store's
+    receipts table (a differing payload for the same key is a hash-mismatch)
+    and append finding delivery revisions through the findings save service
+    along legal transitions with note/discussion evidence refs — the artifact
+    is acked only when all of its receipts imported. Re-imports are
+    idempotent: stored receipts are skipped and findings already at (or
+    terminal past) the target delivery state stay untouched.
+
+    --dry-run plans without uploads, acks or store writes.
+    """
+    c = _client(ctx)
+    repo = _repo_arg(args)
+    action = str(args.get("action") or "").strip().lower()
+    if action not in ("handoff", "import"):
+        raise LgmError("config",
+                       "action must be 'handoff' (work side) or 'import' (home side)")
+    iid = int(args.get("iid") or 0)
+    dry_run = bool(args.get("dry_run"))
+    role = cfg("LGM_MACHINE_ROLE").strip().lower()
+    if action == "handoff":
+        if role == "home":
+            raise LgmError("config",
+                           "receipt handoff uploads work-side publication receipts; "
+                           "this machine is home (LGM_MACHINE_ROLE=home)",
+                           machine_code="wrong-machine")
+        if role != "work":
+            raise LgmError("config",
+                           "LGM_MACHINE_ROLE is neither home nor work — receipt "
+                           "handoff needs to know this is the work machine; set "
+                           "LGM_MACHINE_ROLE=work",
+                           machine_code="role-unset")
+        result = run_receipt_handoff(c, repo, iid=iid, dry_run=dry_run)
+        return {"success": True, "repo": repo, "action": action,
+                "dry_run": dry_run, **result}
+    if role == "work":
+        raise LgmError("config",
+                       "receipt import writes the home-side review store; "
+                       "this machine is work (LGM_MACHINE_ROLE=work)",
+                       machine_code="wrong-machine")
+    if role != "home":
+        raise LgmError("config",
+                       "LGM_MACHINE_ROLE is neither home nor work — receipt "
+                       "import needs to know this is the home machine; set "
+                       "LGM_MACHINE_ROLE=home",
+                       machine_code="role-unset")
+    return {**run_receipt_import(c, repo, iid=iid, dry_run=dry_run),
+            "action": action}

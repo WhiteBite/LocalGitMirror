@@ -629,6 +629,40 @@ def _render_mr_pending(r: dict) -> list[str]:
     return out
 
 
+def _render_mr_review_receipts(r: dict) -> list[str]:
+    action = r.get("action") or "?"
+    mode = " (dry-run)" if r.get("dry_run") else ""
+    out = [f"MR review receipts repo='{r.get('repo', '?')}' action={action}{mode}"]
+    if action == "import":
+        artifacts = r.get("artifacts") or []
+        for art in artifacts:
+            ack = " [acked]" if art.get("acked") else ""
+            out.append(
+                f"  !{art.get('iid')} batch {art.get('batch_id')} "
+                f"attempt {art.get('attempt')}: imported={art.get('imported', 0)} "
+                f"skipped={art.get('skipped', 0)} "
+                f"delivery_updates={art.get('delivery_updates', 0)}{ack}")
+            out.append(f"    {art.get('path', '?')}")
+            for e in art.get("errors") or []:
+                out.append(f"    [FAILED] {e}")
+        if not artifacts:
+            out.append("  no receipt artifacts in the postbox")
+        return out
+    for p in r.get("uploaded") or []:
+        out.append(f"  [uploaded] {p}")
+    for a in r.get("acked") or []:
+        out.append(f"  [acked] batch item {a}")
+    for p in r.get("pending") or []:
+        out.append(f"  [pending] would {p.get('would', '?')} batch "
+                   f"{p.get('batch_id', '?')} attempt {p.get('attempt', '?')}")
+    for f in r.get("failed") or []:
+        out.append(f"  [FAILED] batch {f.get('batch_id') or f.get('journal', '?')} "
+                   f"attempt {f.get('attempt', '?')}: {f.get('error', '')}")
+    if not any(r.get(k) for k in ("uploaded", "acked", "pending", "failed")):
+        out.append("  nothing to hand off")
+    return out
+
+
 def _render_mr_sync_all(r: dict) -> list[str]:
     s = r.get("summary") or {}
     out = ["MR sync all:"]
@@ -681,6 +715,7 @@ _RENDERERS = {
     "mr_replies_status": _render_mr_replies_status,
     "mr_replies_push": _render_mr_replies_push,
     "mr_pending": _render_mr_pending,
+    "mr_review_receipts": _render_mr_review_receipts,
     "guide": _render_guide,
     "update": _render_update,
     "chat_send": _render_chat_send,

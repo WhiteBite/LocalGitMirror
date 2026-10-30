@@ -151,6 +151,7 @@ _FROZEN_OPS = {
     "mr_replies_status": ["repo", "iid"],
     "mr_replies_push": ["repo", "iid", "dry_run"],
     "mr_pending": ["repo"],
+    "mr_review_receipts": ["action", "repo", "iid", "dry_run"],
     "guide": [],
     "update": [],
     "chat_send": ["text"],
@@ -168,7 +169,7 @@ _FROZEN_OPS = {
 
 
 def test_registry_matches_frozen_baseline():
-    assert len(REGISTRY) == len(_FROZEN_OPS) == 39
+    assert len(REGISTRY) == len(_FROZEN_OPS) == 40
     assert [op.name for op in REGISTRY] == list(_FROZEN_OPS)
     for op in REGISTRY:
         assert callable(op.run), f"Op '{op.name}' run is not callable"
@@ -179,6 +180,6 @@ def test_registry_matches_frozen_baseline():
 
 def test_facade_reexports_public_api():
     from lgm_core.ops import REGISTRY, Param, Op, Ctx, get_op, op_names
-    assert REGISTRY is not None and len(REGISTRY) == 39
+    assert REGISTRY is not None and len(REGISTRY) == 40
     assert callable(get_op) and callable(op_names)
     assert Param is not None and Op is not None and Ctx is not None

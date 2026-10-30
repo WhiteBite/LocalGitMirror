@@ -67,7 +67,7 @@ from .ops_mr import (
     op_mr_list, _resolve_mr_targets, _fetch_mr_branches, _local_tip,
     _mirror_refs_safe, _existing_shas, op_mr_send,
     op_mr_notes, op_mr_replies_send, op_mr_replies_status, op_mr_replies_push,
-    op_mr_pending,
+    op_mr_pending, op_mr_review_receipts,
 )
 from .ops_chat import (
     op_chat_send, op_chat_list,
@@ -378,6 +378,24 @@ REGISTRY: list[Op] = [
             Param("repo", "str", "", "Mirror repository name", required=True),
         ],
         run=op_mr_pending,
+    ),
+    Op(
+        name="mr_review_receipts",
+        summary=("Detailed v2 review publication receipts: action=handoff (work) uploads "
+                 "the immutable per-(batch, attempt) receipt artifact for every completed "
+                 "journal attempt to mr-review/receipts/ and acks the batch item only "
+                 "after a successful upload of an all-terminal attempt; action=import "
+                 "(home) stores receipt artifacts in the review store, appends finding "
+                 "delivery revisions and acks the artifact only after a full import."),
+        params=[
+            Param("action", "str", "", "handoff (work side) or import (home side)",
+                  required=True, pattern=r"^(handoff|import)$"),
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "Only this MR iid (0 = all)", minimum=0),
+            Param("dry_run", "bool", False,
+                  "Plan only: no uploads, no acks, no store writes"),
+        ],
+        run=op_mr_review_receipts,
     ),
     Op(
         name="guide",
