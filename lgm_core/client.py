@@ -574,6 +574,26 @@ class MirrorClient:
             raise LgmError("network", f"GitLab returned non-dict for merge_request: {type(data).__name__}")
         return data
 
+    def gitlab_base_url(self, project: str = "") -> str:
+        """Normalized GitLab base URL (no trailing slash) for identity payloads."""
+        url, _token, _project = self._gitlab_config(project)
+        return url
+
+    def gitlab_branch_tip(self, branch: str, project: str = "") -> str:
+        """GET /api/v4/projects/<id>/repository/branches/<branch> — the branch's
+        current tip commit SHA (target-tip resolution for review snapshots)."""
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
+        data = self._gitlab_get(
+            f"{url}/api/v4/projects/{proj_id}/repository/branches/"
+            f"{urllib.parse.quote(str(branch), safe='')}", token)
+        if not isinstance(data, dict):
+            raise LgmError("network", f"GitLab returned non-dict for branch: {type(data).__name__}")
+        tip = (data.get("commit") or {}).get("id") or ""
+        if not tip:
+            raise LgmError("network", f"GitLab branch {branch!r} response has no commit id")
+        return tip
+
     def gitlab_list_discussions(self, iid: int, project: str = "") -> list:
         """GET .../merge_requests/<iid>/discussions — every thread of the MR
         (open and resolved, system notes included), paginated until an empty
