@@ -6,6 +6,16 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.UIUtil
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.mirror.MirrorPostboxApi
 import localgitmirror.idea.settings.MirrorProjectSettingsService
@@ -47,6 +57,7 @@ class MrReplyPushService(private val project: Project) {
     val quiet: Boolean = false,
     val outcomes: Map<MrReplies.Reply, Outcome> = emptyMap(),
     val notAnchored: List<String> = emptyList(),
+    val batch: MrReviewBatchPublisher.BatchResult? = null,
   ) {
     val clean: Boolean get() = failed == 0 && parseErrors == 0
   }
@@ -54,7 +65,11 @@ class MrReplyPushService(private val project: Project) {
   data class SkippedItem(val path: String, val reason: String)
 
   sealed interface PendingRepliesResult {
-    data class Available(val items: List<PendingReplies>, val skipped: List<SkippedItem>) : PendingRepliesResult
+    data class Available(
+      val items: List<PendingReplies>,
+      val skipped: List<SkippedItem>,
+      val batches: List<PendingBatch> = emptyList(),
+    ) : PendingRepliesResult
     data class Unavailable(val reason: String) : PendingRepliesResult
   }
 
@@ -87,7 +102,16 @@ class MrReplyPushService(private val project: Project) {
     val siblings: List<MirrorPostboxApi.FileSyncItem>,
   )
 
-  /** Newest mr-replies item per MR, downloaded and parsed, without posting anything. */
+  data class PendingBatch(
+    val item: MirrorPostboxApi.FileSyncItem,
+    val path: String,
+    val iid: Int,
+    val batchId: String,
+    val parsed: MrReviewHandoff.Document,
+  )
+
+  /** Newest mr-replies item per MR plus every v2 review batch, downloaded and
+   *  parsed, without posting anything. */
   internal fun fetchPendingReplies(): PendingRepliesResult {
     val settings = service<MirrorSettingsService>().state
     val repo = resolveRepo(settings) ?: return PendingRepliesResult.Unavailable("repo not resolved")
@@ -96,8 +120,23 @@ class MrReplyPushService(private val project: Project) {
       return PendingRepliesResult.Unavailable("HTTP ${listResult.code} ${listResult.message}")
     }
     val skipped = mutableListOf<SkippedItem>()
-    val items = listResult.items
-      .filter { it.path.startsWith("mr-replies/") }
+    val batches = mutableListOf<PendingBatch>()
+    val legacyItems = mutableListOf<MirrorPostboxApi.FileSyncItem>()
+    for (item in listResult.items.filter { it.path.startsWith("mr-replies/") }) {
+      val m = REVIEW_BATCH_RE.find(item.path)
+      if (m == null) {
+        legacyItems.add(item)
+        continue
+      }
+      val iid = m.groupValues[1].toIntOrNull() ?: 0
+      val batchId = m.groupValues[2]
+      when (val parsed = downloadAndParseV2(item, settings, repo, iid, batchId)) {
+        is Downloaded.Batch -> batches.add(PendingBatch(item, item.path, iid, batchId, parsed.doc))
+        is Downloaded.Skipped -> skipped.add(SkippedItem(item.path, parsed.reason))
+        is Downloaded.Parsed -> Unit
+      }
+    }
+    val items = legacyItems
       .groupBy { item -> replyIid(item.path) }
       .mapNotNull { (iid, group) ->
         if (iid == null) {
@@ -111,9 +150,10 @@ class MrReplyPushService(private val project: Project) {
             skipped.add(SkippedItem(newest.path, parsed.reason))
             null
           }
+          is Downloaded.Batch -> null
         }
       }.sortedByDescending { it.item.mtime }
-    return PendingRepliesResult.Available(items, skipped)
+    return PendingRepliesResult.Available(items, skipped, batches)
   }
 
   internal fun countPending(): PendingCount {
@@ -162,7 +202,41 @@ class MrReplyPushService(private val project: Project) {
 
   private sealed interface Downloaded {
     data class Parsed(val replies: MrReplies.RepliesFile) : Downloaded
+    data class Batch(val doc: MrReviewHandoff.Document) : Downloaded
     data class Skipped(val reason: String) : Downloaded
+  }
+
+  private fun downloadAndParseV2(
+    item: MirrorPostboxApi.FileSyncItem,
+    settings: MirrorSettingsService.State,
+    repo: String,
+    iid: Int,
+    batchId: String,
+  ): Downloaded {
+    val tmpEnc = File.createTempFile("mr-review-batch-", ".bin")
+    return try {
+      val dl = MirrorPostboxApi.fileSyncDownload(
+        settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls,
+        item.id, tmpEnc,
+      )
+      if (dl.code !in 200..299 || dl.file == null) {
+        return Downloaded.Skipped("download: HTTP ${dl.code} ${dl.message}")
+      }
+      val doc = MrReviewHandoff.parseAndValidate(
+        tmpEnc.readText(Charsets.UTF_8),
+        expectedIid = iid,
+        expectedBatchId = batchId,
+        want = "v2",
+      )
+      Downloaded.Batch(doc)
+    } catch (e: MrReviewHandoff.HandoffRejection) {
+      val refusal = if (e.code.isNotEmpty()) "${e.code}: ${e.message}" else (e.message ?: "")
+      Downloaded.Skipped("rejected: $refusal")
+    } catch (e: Throwable) {
+      Downloaded.Skipped("decrypt/parse: ${e.message ?: "error"}")
+    } finally {
+      runCatching { tmpEnc.delete() }
+    }
   }
 
   private fun downloadAndParse(
@@ -210,6 +284,9 @@ class MrReplyPushService(private val project: Project) {
           }
           for (p in pending.items) {
             reports.add(pushParsed(p, p.parsed, conf, settings, repo))
+          }
+          for (b in pending.batches) {
+            reports.add(markQuiet(pushReviewBatch(b, conf)))
           }
           reports
         }
@@ -369,6 +446,20 @@ class MrReplyPushService(private val project: Project) {
     return markQuiet(report)
   }
 
+  /** v2 review batch: gated publication, never acked, no status upload (receipts own the ack). */
+  private fun pushReviewBatch(pending: PendingBatch, conf: GitLabConfig.GitLabConf): FileReport {
+    val result = MrReviewBatchPublisher.publish(conf, pending.parsed)
+    return FileReport(
+      path = pending.path,
+      posted = result.posted,
+      dupSkipped = result.duplicates,
+      skipped = 0,
+      failed = result.blocked,
+      details = result.details,
+      batch = result,
+    )
+  }
+
   private fun persistReceipt(iid: Int, report: FileReport) {
     val at = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
     val receipt = MrPublishReceipt(
@@ -434,6 +525,7 @@ class MrReplyPushService(private val project: Project) {
 
   companion object {
     private val MARKER_RE = Regex("<!-- lgm:[0-9a-f]{8} -->")
+    internal val REVIEW_BATCH_RE = Regex("mr-!(\\d+)-([^/]+)\\.review\\.json$")
     private const val LEDGER_CAP = 500
     private const val ANCHOR_WINDOW = 3
 
@@ -523,4 +615,356 @@ internal class ReportDedup(private val cap: Int = 200) {
 
   @Synchronized
   fun isNew(key: String, signature: String): Boolean = seen.put(key, signature) != signature
+}
+
+/**
+ * Snapshot-bound publication of validated v2 review batches (Python twin:
+ * lgm_core/ops_mr.py _publish_review_batch). Read-only marker scan first, then
+ * the fresh-fingerprint gate; any drift or unreachable API halts the whole
+ * batch with zero writes. The gate re-runs before every entry whose
+ * predecessor attempted a write, so a mid-batch head change blocks the
+ * remainder while posted entries keep their ids. Anchored entries post with
+ * full side-aware positions built from the BATCH refs and never downgrade to
+ * general notes; already-posted finding revisions are recovered through
+ * protocol markers instead of re-posted.
+ */
+object MrReviewBatchPublisher {
+
+  data class EntryResult(
+    val label: String,
+    val kind: String,
+    val target: String,
+    val findingId: String,
+    val revision: Long,
+    val marker: String,
+    val outcome: String,
+    val code: String,
+    val error: String?,
+    val note: String,
+    val discussionId: String?,
+    val noteId: Long?,
+    val url: String?,
+  )
+
+  data class StaleInfo(
+    val expected: Map<String, String>,
+    val fresh: Map<String, String>,
+    val drift: List<String>,
+  )
+
+  data class BatchResult(
+    val iid: Int,
+    val batchId: String,
+    val posted: Int,
+    val duplicates: Int,
+    val blocked: Int,
+    val entries: List<EntryResult>,
+    val details: List<String>,
+    val stale: StaleInfo?,
+  )
+
+  private data class Recovered(val discussionId: String, val noteId: Long?, val batchId: String)
+
+  private data class GateRead(
+    val expected: Map<String, String>,
+    val fresh: Map<String, String>,
+    val drift: List<String>,
+    val webUrl: String,
+    val error: String?,
+  )
+
+  private val GATE_FIELDS = listOf(
+    "state", "source_sha", "target_tip_sha", "target_project_id",
+    "gitlab_url", "diff_refs", "version_fingerprint",
+  )
+
+  fun publish(conf: GitLabConfig.GitLabConf, doc: MrReviewHandoff.Document): BatchResult {
+    val batchId = requireNotNull(doc.batchId) { "v2 document carries a batch id" }
+    val refs = requireNotNull(doc.refs) { "v2 document carries refs" }
+    val raw = GitLabApi.listMrDiscussionsRaw(conf, doc.iid)
+    if (raw.code !in 200..299) {
+      return halt(doc, batchId, emptyMap(), "", "list discussions: HTTP ${raw.code} ${raw.message}", "", null)
+    }
+    val postedMap = LinkedHashMap<Pair<String, Long>, Recovered>()
+    val threadIds = HashSet<String>()
+    for (d in raw.discussions) {
+      val did = d["id"]?.jsonPrimitive?.contentOrNull ?: ""
+      threadIds.add(did)
+      for (n in d["notes"]?.jsonArray ?: emptyList()) {
+        val noteObj = n.jsonObject
+        val noteId = noteObj["id"]?.jsonPrimitive?.longOrNull
+        val body = noteObj["body"]?.jsonPrimitive?.contentOrNull ?: ""
+        for (m in MrReviewProtocol.parseReviewMarkers(body)) {
+          postedMap.putIfAbsent(m.findingId to m.revision, Recovered(did, noteId, m.batchId))
+        }
+      }
+    }
+    val g = gate(conf, doc, refs)
+    if (g.error != null) return halt(doc, batchId, postedMap, g.webUrl, g.error, "", null)
+    if (g.drift.isNotEmpty()) {
+      val error = "stale-snapshot: ${g.drift.joinToString(", ")} drifted since the snapshot — zero posts/resolves"
+      return halt(doc, batchId, postedMap, g.webUrl, error, "stale-snapshot", StaleInfo(g.expected, g.fresh, g.drift))
+    }
+    val results = mutableListOf<EntryResult>()
+    val details = mutableListOf<String>()
+    var webUrl = g.webUrl
+    var stale: StaleInfo? = null
+    var haltWith: Pair<String, String>? = null
+    var needRecheck = false
+    for ((idx, entry) in doc.entries.withIndex()) {
+      val label = "entry ${idx + 1}"
+      val dup = postedMap[(entry.findingId ?: "") to entry.revision]
+      if (dup != null) {
+        results.add(dupResult(label, entry, dup, webUrl))
+        continue
+      }
+      val h = haltWith
+      if (h != null) {
+        results.add(blockedResult(label, entry, h.first, h.second))
+        continue
+      }
+      if (needRecheck) {
+        val rg = gate(conf, doc, refs)
+        if (rg.error != null) {
+          haltWith = "" to rg.error
+          results.add(blockedResult(label, entry, "", rg.error))
+          continue
+        }
+        if (rg.drift.isNotEmpty()) {
+          stale = StaleInfo(rg.expected, rg.fresh, rg.drift)
+          val error = "stale-snapshot: ${rg.drift.joinToString(", ")} drifted mid-batch — remaining entries not posted"
+          haltWith = "stale-snapshot" to error
+          results.add(blockedResult(label, entry, "stale-snapshot", error))
+          continue
+        }
+        webUrl = rg.webUrl
+        needRecheck = false
+      }
+      val (result, attempted) = postEntry(conf, doc, refs, entry, label, threadIds, webUrl, details)
+      results.add(result)
+      needRecheck = attempted
+    }
+    val summary = "v2 batch $batchId: ${results.count { it.outcome == "posted" }} posted, " +
+      "${results.count { it.outcome == "skipped-duplicate" }} duplicate, " +
+      "${results.count { it.outcome == "blocked" }} blocked"
+    return finish(doc, batchId, results, listOf(summary) + details, stale)
+  }
+
+  private fun gate(conf: GitLabConfig.GitLabConf, doc: MrReviewHandoff.Document, refs: JsonObject): GateRead {
+    val detail = GitLabApi.getMrReviewDetail(conf, doc.iid)
+    if (detail.code !in 200..299) {
+      return GateRead(emptyMap(), emptyMap(), emptyList(), "", "freshness gate: HTTP ${detail.code} ${detail.message}")
+    }
+    val targetBranch = detail.targetBranch
+    if (targetBranch.isBlank()) {
+      return GateRead(emptyMap(), emptyMap(), emptyList(), detail.webUrl, "freshness gate: MR detail has no target branch")
+    }
+    val tipRes = GitLabApi.getBranchTip(conf, targetBranch)
+    if (tipRes.code !in 200..299 || tipRes.tip == null) {
+      return GateRead(emptyMap(), emptyMap(), emptyList(), detail.webUrl, "freshness gate: HTTP ${tipRes.code} ${tipRes.message}")
+    }
+    val tip = tipRes.tip
+    val liveDiffJson = buildJsonObject {
+      put("base_sha", detail.diffRefs?.baseSha ?: "")
+      put("start_sha", detail.diffRefs?.startSha ?: "")
+      put("head_sha", detail.diffRefs?.headSha ?: "")
+    }
+    val baseUrl = conf.url.trimEnd('/')
+    val fingerprint = MrReviewProtocol.computeVersionFingerprint(buildJsonObject {
+      put("gitlab_url", baseUrl)
+      put("iid", doc.iid.toLong())
+      put("source_project_id", detail.sourceProjectId)
+      put("target_project_id", detail.targetProjectId)
+      put("source_sha", detail.sourceSha)
+      put("target_tip_sha", tip)
+      put("target_branch", targetBranch)
+      put("gitlab_diff_refs", liveDiffJson)
+    })
+    val batch = requireNotNull(doc.batch) { "v2 document carries a batch" }
+    val expected = linkedMapOf(
+      "state" to "opened",
+      "source_sha" to primitive(refs, "source_sha"),
+      "target_tip_sha" to primitive(refs, "target_tip_sha"),
+      "target_project_id" to primitive(batch, "target_project_id"),
+      "gitlab_url" to primitive(batch, "gitlab_url"),
+      "diff_refs" to MrReviewProtocol.canonicalJson(refs.getValue("diff_refs")),
+      "version_fingerprint" to (doc.identity["version_fingerprint"] ?: ""),
+    )
+    val fresh = linkedMapOf(
+      "state" to detail.state,
+      "source_sha" to detail.sourceSha,
+      "target_tip_sha" to tip,
+      "target_branch" to targetBranch,
+      "target_project_id" to detail.targetProjectId.toString(),
+      "gitlab_url" to baseUrl,
+      "diff_refs" to MrReviewProtocol.canonicalJson(liveDiffJson),
+      "version_fingerprint" to fingerprint,
+    )
+    val drift = GATE_FIELDS.filter { fresh[it] != expected[it] }
+    return GateRead(expected, fresh, drift, detail.webUrl, null)
+  }
+
+  private fun postEntry(
+    conf: GitLabConfig.GitLabConf,
+    doc: MrReviewHandoff.Document,
+    refs: JsonObject,
+    entry: MrReviewHandoff.Entry,
+    label: String,
+    threadIds: Set<String>,
+    webUrl: String,
+    details: MutableList<String>,
+  ): Pair<EntryResult, Boolean> {
+    val kind = entry.kind
+    val threadId = entry.threadId
+    if (kind == "thread" && (threadId == null || threadId !in threadIds)) {
+      return blockedResult(label, entry, "", "thread $threadId no longer exists") to false
+    }
+    if (kind == "anchored") {
+      val line = entry.anchor?.get("line")
+      if (line == null || line is JsonNull) {
+        return blockedResult(
+          label, entry, "invalid-line",
+          "anchor has no side line; GitLab diff notes require one and v2 " +
+            "anchored entries never fall back to a general note",
+        ) to false
+      }
+    }
+    val body = "<!-- ${entry.marker} -->\n\n${entry.body}"
+    val res: GitLabApi.WriteBodyResult
+    val discussionId: String?
+    val noteId: Long?
+    when (kind) {
+      "anchored" -> {
+        val a = requireNotNull(entry.anchor) { "anchored v2 entry carries an anchor" }
+        val diffRefs = refs.getValue("diff_refs").jsonObject
+        val oldPath = primitiveOrNull(a, "old_path") ?: primitiveOrNull(a, "new_path") ?: ""
+        res = GitLabApi.postNewDiscussionPositioned(
+          conf, doc.iid, body,
+          GitLabApi.ReviewPosition(
+            baseSha = primitive(diffRefs, "base_sha"),
+            startSha = primitive(diffRefs, "start_sha"),
+            headSha = primitive(diffRefs, "head_sha"),
+            oldPath = oldPath,
+            newPath = primitiveOrNull(a, "new_path") ?: oldPath,
+            side = primitive(a, "side"),
+            line = a.getValue("line").jsonPrimitive.long.toInt(),
+          ),
+        )
+        discussionId = res.body?.get("id")?.jsonPrimitive?.contentOrNull
+        noteId = res.body?.get("notes")?.jsonArray?.firstOrNull()?.jsonObject?.get("id")?.jsonPrimitive?.longOrNull
+      }
+      "thread" -> {
+        val tid = requireNotNull(threadId) { "thread v2 entry carries a thread id" }
+        res = GitLabApi.postThreadNoteBody(conf, doc.iid, tid, body)
+        discussionId = tid
+        noteId = res.body?.get("id")?.jsonPrimitive?.longOrNull
+      }
+      else -> {
+        res = GitLabApi.postMrNoteBody(conf, doc.iid, body)
+        discussionId = null
+        noteId = res.body?.get("id")?.jsonPrimitive?.longOrNull
+      }
+    }
+    if (!res.ok()) {
+      val error = if (kind == "anchored" && (res.code == 400 || res.code == 422)) {
+        "GitLab rejected the anchor: HTTP ${res.code} ${res.message} — no general fallback for v2"
+      } else {
+        "HTTP ${res.code} ${res.message}"
+      }
+      return blockedResult(label, entry, "", error) to true
+    }
+    val url = if (webUrl.isNotBlank() && noteId != null) MrReviewProtocol.receiptNoteUrl(webUrl, noteId) else null
+    var note = "posted $kind at ${target(entry)}"
+    if (kind == "thread" && entry.resolve) {
+      val tid = requireNotNull(threadId) { "thread v2 entry carries a thread id" }
+      val r = GitLabApi.resolveDiscussion(conf, doc.iid, tid)
+      if (r.ok()) {
+        note += " (resolved)"
+      } else {
+        note += " (resolve failed HTTP ${r.code})"
+        details.add("$label: posted, resolve failed HTTP ${r.code}")
+      }
+    }
+    return EntryResult(
+      label = label, kind = kind, target = target(entry),
+      findingId = entry.findingId.orEmpty(), revision = entry.revision,
+      marker = entry.marker.orEmpty(), outcome = "posted", code = "", error = null,
+      note = note, discussionId = discussionId, noteId = noteId, url = url,
+    ) to true
+  }
+
+  private fun dupResult(label: String, entry: MrReviewHandoff.Entry, dup: Recovered, webUrl: String): EntryResult {
+    val url = if (webUrl.isNotBlank() && dup.noteId != null) MrReviewProtocol.receiptNoteUrl(webUrl, dup.noteId) else null
+    return EntryResult(
+      label = label, kind = entry.kind, target = target(entry),
+      findingId = entry.findingId.orEmpty(), revision = entry.revision,
+      marker = entry.marker.orEmpty(), outcome = "skipped-duplicate", code = "possible-duplicate",
+      error = null,
+      note = "finding revision already posted (discussion ${dup.discussionId}, note ${dup.noteId}, " +
+        "batch ${dup.batchId}) — ids recovered, no new POST",
+      discussionId = dup.discussionId, noteId = dup.noteId, url = url,
+    )
+  }
+
+  private fun blockedResult(label: String, entry: MrReviewHandoff.Entry, code: String, error: String): EntryResult =
+    EntryResult(
+      label = label, kind = entry.kind, target = target(entry),
+      findingId = entry.findingId.orEmpty(), revision = entry.revision,
+      marker = entry.marker.orEmpty(), outcome = "blocked", code = code, error = error,
+      note = error, discussionId = null, noteId = null, url = null,
+    )
+
+  private fun halt(
+    doc: MrReviewHandoff.Document,
+    batchId: String,
+    postedMap: Map<Pair<String, Long>, Recovered>,
+    webUrl: String,
+    error: String,
+    code: String,
+    stale: StaleInfo?,
+  ): BatchResult {
+    val results = doc.entries.mapIndexed { idx, entry ->
+      val label = "entry ${idx + 1}"
+      val dup = postedMap[(entry.findingId ?: "") to entry.revision]
+      if (dup != null) dupResult(label, entry, dup, webUrl) else blockedResult(label, entry, code, error)
+    }
+    return finish(doc, batchId, results, listOf(error), stale)
+  }
+
+  private fun finish(
+    doc: MrReviewHandoff.Document,
+    batchId: String,
+    results: List<EntryResult>,
+    details: List<String>,
+    stale: StaleInfo?,
+  ): BatchResult = BatchResult(
+    iid = doc.iid,
+    batchId = batchId,
+    posted = results.count { it.outcome == "posted" },
+    duplicates = results.count { it.outcome == "skipped-duplicate" },
+    blocked = results.count { it.outcome == "blocked" },
+    entries = results,
+    details = details,
+    stale = stale,
+  )
+
+  private fun target(entry: MrReviewHandoff.Entry): String = when (entry.kind) {
+    "anchored" -> {
+      val a = entry.anchor
+      if (a == null) {
+        "anchored"
+      } else {
+        val path = primitiveOrNull(a, "new_path") ?: primitiveOrNull(a, "old_path") ?: ""
+        val line = a["line"]?.takeIf { it !is JsonNull }?.jsonPrimitive?.contentOrNull ?: "null"
+        "$path:$line (${primitiveOrNull(a, "side") ?: "?"} side)"
+      }
+    }
+    "thread" -> entry.threadId ?: ""
+    else -> "general"
+  }
+
+  private fun primitive(obj: JsonObject, key: String): String = obj.getValue(key).jsonPrimitive.content
+
+  private fun primitiveOrNull(obj: JsonObject, key: String): String? =
+    obj[key]?.takeIf { it !is JsonNull }?.jsonPrimitive?.contentOrNull
 }

@@ -171,6 +171,22 @@ object GitLabApi {
     fun ok(): Boolean = code in 200..299
   }
 
+  /** Full side-aware position for v2 review publication (protocol section 3.1):
+   *  refs come from the checked snapshot, exactly one line field is sent, chosen by [side]. */
+  data class ReviewPosition(
+    val baseSha: String,
+    val startSha: String,
+    val headSha: String,
+    val oldPath: String,
+    val newPath: String,
+    val side: String,
+    val line: Int,
+  )
+
+  data class WriteBodyResult(val code: Int, val message: String, val body: JsonObject?) {
+    fun ok(): Boolean = code in 200..299
+  }
+
   data class CompareRangesResult(val code: Int, val ranges: Map<String, List<IntRange>>, val message: String)
 
   /**
@@ -518,6 +534,12 @@ object GitLabApi {
   }
 
   private fun writeFollowing(url: String, token: String, method: String, body: String): WriteResult {
+    val (code, message, _) = writeRaw(url, token, method, body)
+    return WriteResult(code, message)
+  }
+
+  /** (code, message, response body text) with the shipped redirect policy. */
+  private fun writeRaw(url: String, token: String, method: String, body: String): Triple<Int, String, String> {
     var current = url
     repeat(MAX_REDIRECT_HOPS + 1) {
       val conn = openWrite(current, token, method, body)
@@ -525,18 +547,37 @@ object GitLabApi {
       val location = conn.getHeaderField("Location")
       if (code !in REDIRECT_CODES || location.isNullOrBlank()) {
         val text = HttpClient.readBody(conn)
-        return if (code in 200..299) WriteResult(code, "OK") else WriteResult(code, redirectHint(conn, code, text))
+        return if (code in 200..299) {
+          Triple(code, "OK", text)
+        } else {
+          Triple(code, redirectHint(conn, code, text), text)
+        }
       }
       val from = URL(current)
       val next = URL(from, location)
       if (!next.host.equals(from.host, ignoreCase = true) && next.protocol != "https") {
         val text = HttpClient.readBody(conn)
-        return WriteResult(code, redirectHint(conn, code, text))
+        return Triple(code, redirectHint(conn, code, text), text)
       }
       conn.disconnect()
       current = next.toExternalForm()
     }
-    return WriteResult(301, "too many redirects (more than $MAX_REDIRECT_HOPS)")
+    return Triple(301, "too many redirects (more than $MAX_REDIRECT_HOPS)", "")
+  }
+
+  private fun writeBody(url: String, conf: GitLabConfig.GitLabConf, method: String, payload: JsonObject): WriteBodyResult {
+    return try {
+      val (code, message, text) = writeRaw(url, conf.token, method, payload.toString())
+      val parsed = if (code in 200..299) {
+        runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+      } else {
+        null
+      }
+      WriteBodyResult(code, message, parsed)
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t, isMirror = false)
+      WriteBodyResult(0, "${e.type}: ${e.message}", null)
+    }
   }
 
   /** POST a note into an existing discussion thread. */
@@ -583,6 +624,51 @@ object GitLabApi {
       }
     }
     return write(url, conf, "POST", payload)
+  }
+
+  /**
+   * POST a brand-new discussion with a full side-aware [ReviewPosition].
+   * The response JSON (discussion id + created notes) is returned unchanged.
+   * There is no general-note fallback: a 400/422 means the anchor is not valid
+   * on this diff and the caller must block the entry.
+   */
+  fun postNewDiscussionPositioned(
+    conf: GitLabConfig.GitLabConf,
+    iid: Int,
+    body: String,
+    position: ReviewPosition,
+  ): WriteBodyResult {
+    val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+      "/merge_requests/$iid/discussions"
+    val payload = buildJsonObject {
+      put("body", body)
+      putJsonObject("position") {
+        put("base_sha", position.baseSha)
+        put("start_sha", position.startSha)
+        put("head_sha", position.headSha)
+        put("position_type", "text")
+        put("old_path", position.oldPath)
+        put("new_path", position.newPath)
+        if (position.side == "new") put("new_line", position.line) else put("old_line", position.line)
+      }
+    }
+    return writeBody(url, conf, "POST", payload)
+  }
+
+  /** POST a note into an existing discussion thread, returning the created note JSON. */
+  fun postThreadNoteBody(conf: GitLabConfig.GitLabConf, iid: Int, discussionId: String, body: String): WriteBodyResult {
+    val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+      "/merge_requests/$iid/discussions/$discussionId/notes"
+    val payload = buildJsonObject { put("body", body) }
+    return writeBody(url, conf, "POST", payload)
+  }
+
+  /** POST a general (non-anchored) note on the MR, returning the created note JSON. */
+  fun postMrNoteBody(conf: GitLabConfig.GitLabConf, iid: Int, body: String): WriteBodyResult {
+    val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+      "/merge_requests/$iid/notes"
+    val payload = buildJsonObject { put("body", body) }
+    return writeBody(url, conf, "POST", payload)
   }
 
   /** PUT resolved=true on a discussion thread. */

@@ -1,0 +1,141 @@
+{
+  "fixture": "publish_batch",
+  "live": {
+    "detail": {
+      "iid": 30,
+      "source_project_id": 41,
+      "target_project_id": 42,
+      "web_url": "https://gitlab.example.com/group/proj/-/merge_requests/30",
+      "title": "Add review workspace",
+      "description": "First cut",
+      "state": "opened",
+      "draft": false,
+      "source_branch": "feature-review",
+      "target_branch": "release/2.5",
+      "sha": "a3f2f5776061456af480f096cdd574b8f9763581",
+      "updated_at": "2026-10-30T09:00:00Z",
+      "diff_refs": {
+        "base_sha": "63415b3ec98b03f0cc151a796a3860e62d2c7832",
+        "start_sha": "7f7d9525182250ac9ebef1f797da41b7ad5b0a6d",
+        "head_sha": "71271c3f978a70bc267fb0292ff83d51c17f4ed7"
+      }
+    },
+    "target_tip": "e9c406f66d6637d8f7c25f90b98af5632c90451b",
+    "discussions": [
+      {
+        "id": "eabfc0f11eb800b18b9af858000646e7498aaa7c",
+        "notes": [
+          {
+            "id": 501,
+            "body": "Исходное замечание ревьюера",
+            "author": {
+              "name": "Reviewer"
+            },
+            "created_at": "2026-10-30T08:00:00Z",
+            "system": false,
+            "resolvable": true,
+            "resolved": false,
+            "position": null
+          }
+        ]
+      }
+    ]
+  },
+  "batch": {
+    "schema_version": 1,
+    "batch_id": "0b7a2f10-4c9d-4e21-8f6a-9c3d5e7f1a2b",
+    "repo": "phonyx",
+    "gitlab_url": "https://gitlab.example.com",
+    "target_project_id": 42,
+    "iid": 30,
+    "created_at": "2026-10-30T11:00:00Z",
+    "items": [
+      {
+        "finding_id": "a11ce000-1111-4222-8333-444455556666",
+        "revision": 1,
+        "kind": "anchored",
+        "thread_id": null,
+        "resolve": false,
+        "body": "Миграция не описана; проверить upgrade-путь",
+        "anchor": {
+          "old_path": "src/config.py",
+          "new_path": "src/config.py",
+          "side": "new",
+          "line": 12
+        },
+        "snapshot_id": "1aeb70792d6314f6e5973990bfcce4c45af0d368350260541e371d6990fa9838",
+        "code_id": "debda918f098c7d862f5ed525bc15c5284e4fe303aa0701365b1492fd42aed6d",
+        "version_fingerprint": "3dd480d5d99c5ae70f5cc2a5ec6c51cf85657a919cd863d27b210ec1623c9c0b",
+        "source_sha": "a3f2f5776061456af480f096cdd574b8f9763581",
+        "target_tip_sha": "e9c406f66d6637d8f7c25f90b98af5632c90451b",
+        "diff_refs": {
+          "base_sha": "63415b3ec98b03f0cc151a796a3860e62d2c7832",
+          "start_sha": "7f7d9525182250ac9ebef1f797da41b7ad5b0a6d",
+          "head_sha": "71271c3f978a70bc267fb0292ff83d51c17f4ed7"
+        }
+      },
+      {
+        "finding_id": "b0b00000-aaaa-4bbb-8ccc-ddddeeeeffff",
+        "revision": 3,
+        "kind": "anchored",
+        "thread_id": null,
+        "resolve": false,
+        "body": "Удалённую строку всё ещё читает старый обработчик",
+        "anchor": {
+          "old_path": "src/legacy.py",
+          "new_path": "src/renamed.py",
+          "side": "old",
+          "line": 7
+        },
+        "snapshot_id": "1aeb70792d6314f6e5973990bfcce4c45af0d368350260541e371d6990fa9838",
+        "code_id": "debda918f098c7d862f5ed525bc15c5284e4fe303aa0701365b1492fd42aed6d",
+        "version_fingerprint": "3dd480d5d99c5ae70f5cc2a5ec6c51cf85657a919cd863d27b210ec1623c9c0b",
+        "source_sha": "a3f2f5776061456af480f096cdd574b8f9763581",
+        "target_tip_sha": "e9c406f66d6637d8f7c25f90b98af5632c90451b",
+        "diff_refs": {
+          "base_sha": "63415b3ec98b03f0cc151a796a3860e62d2c7832",
+          "start_sha": "7f7d9525182250ac9ebef1f797da41b7ad5b0a6d",
+          "head_sha": "71271c3f978a70bc267fb0292ff83d51c17f4ed7"
+        }
+      },
+      {
+        "finding_id": "c3c30000-1234-4abc-8def-000011112222",
+        "revision": 1,
+        "kind": "thread",
+        "thread_id": "eabfc0f11eb800b18b9af858000646e7498aaa7c",
+        "resolve": true,
+        "body": "Готово, поправил в новой версии",
+        "anchor": null,
+        "snapshot_id": "1aeb70792d6314f6e5973990bfcce4c45af0d368350260541e371d6990fa9838",
+        "code_id": "debda918f098c7d862f5ed525bc15c5284e4fe303aa0701365b1492fd42aed6d",
+        "version_fingerprint": "3dd480d5d99c5ae70f5cc2a5ec6c51cf85657a919cd863d27b210ec1623c9c0b",
+        "source_sha": "a3f2f5776061456af480f096cdd574b8f9763581",
+        "target_tip_sha": "e9c406f66d6637d8f7c25f90b98af5632c90451b",
+        "diff_refs": {
+          "base_sha": "63415b3ec98b03f0cc151a796a3860e62d2c7832",
+          "start_sha": "7f7d9525182250ac9ebef1f797da41b7ad5b0a6d",
+          "head_sha": "71271c3f978a70bc267fb0292ff83d51c17f4ed7"
+        }
+      },
+      {
+        "finding_id": "d4d40000-5678-4def-8abc-333344445555",
+        "revision": 2,
+        "kind": "general",
+        "thread_id": null,
+        "resolve": false,
+        "body": "Итог: два замечания к конфигурации",
+        "anchor": null,
+        "snapshot_id": "1aeb70792d6314f6e5973990bfcce4c45af0d368350260541e371d6990fa9838",
+        "code_id": "debda918f098c7d862f5ed525bc15c5284e4fe303aa0701365b1492fd42aed6d",
+        "version_fingerprint": "3dd480d5d99c5ae70f5cc2a5ec6c51cf85657a919cd863d27b210ec1623c9c0b",
+        "source_sha": "a3f2f5776061456af480f096cdd574b8f9763581",
+        "target_tip_sha": "e9c406f66d6637d8f7c25f90b98af5632c90451b",
+        "diff_refs": {
+          "base_sha": "63415b3ec98b03f0cc151a796a3860e62d2c7832",
+          "start_sha": "7f7d9525182250ac9ebef1f797da41b7ad5b0a6d",
+          "head_sha": "71271c3f978a70bc267fb0292ff83d51c17f4ed7"
+        }
+      }
+    ]
+  }
+}

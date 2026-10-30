@@ -11,7 +11,13 @@ from .client import MirrorClient, LgmError
 from .config import cfg
 from .git_remote import gitlab_project_for
 from .mr_review_handoff import HandoffRejection, looks_like_json, parse_and_validate
-from .mr_review_models import batch_artifact_path, canonical_json
+from .mr_review_models import (
+    batch_artifact_path,
+    canonical_json,
+    compute_version_fingerprint,
+    parse_review_markers,
+    receipt_note_url,
+)
 from .op_models import Ctx, _client, _repo_arg
 from .ops_git import send_branches
 
@@ -1196,12 +1202,283 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
     return rep
 
 
-def _push_review_batch(c: MirrorClient, repo: str, item: dict) -> dict:
+_V2_GATE_FIELDS = ("state", "source_sha", "target_tip_sha", "target_project_id",
+                   "gitlab_url", "diff_refs", "version_fingerprint")
+
+
+def _review_gate(c: MirrorClient, doc: dict,
+                 project: str) -> tuple[dict, dict, list, str]:
+    """One fresh-fingerprint read of the live MR against a v2 batch's refs.
+
+    Returns ``(expected, fresh, drift, web_url)``; ``drift`` lists every field
+    whose live GitLab value differs from the batch document. The recomputed
+    ``version_fingerprint`` additionally covers ``target_branch``, which the
+    batch itself does not carry. Raises LgmError when GitLab cannot be read.
+    """
+    batch, refs = doc["batch"], doc["refs"]
+    detail = c.gitlab_get_mr(doc["iid"], project=project)
+    live_refs = detail.get("diff_refs") or {}
+    target_branch = (detail.get("target_branch") or "").strip()
+    tip = c.gitlab_branch_tip(target_branch, project=project) if target_branch else ""
+    live_diff = {k: (live_refs.get(k) or "") for k in ("base_sha", "start_sha", "head_sha")}
+    base_url = c.gitlab_base_url(project)
+    fresh = {
+        "state": detail.get("state") or "",
+        "source_sha": detail.get("sha") or "",
+        "target_tip_sha": tip,
+        "target_branch": target_branch,
+        "target_project_id": detail.get("target_project_id") or 0,
+        "gitlab_url": base_url,
+        "diff_refs": live_diff,
+        "version_fingerprint": compute_version_fingerprint({
+            "gitlab_url": base_url,
+            "iid": doc["iid"],
+            "source_project_id": detail.get("source_project_id") or 0,
+            "target_project_id": detail.get("target_project_id") or 0,
+            "source_sha": detail.get("sha") or "",
+            "target_tip_sha": tip,
+            "target_branch": target_branch,
+            "gitlab_diff_refs": live_diff,
+        }),
+    }
+    expected = {
+        "state": "opened",
+        "source_sha": refs["source_sha"],
+        "target_tip_sha": refs["target_tip_sha"],
+        "target_project_id": batch["target_project_id"],
+        "gitlab_url": batch["gitlab_url"],
+        "diff_refs": dict(refs["diff_refs"]),
+        "version_fingerprint": doc["identity"]["version_fingerprint"],
+    }
+    drift = [f for f in _V2_GATE_FIELDS if fresh[f] != expected[f]]
+    return expected, fresh, drift, detail.get("web_url") or ""
+
+
+def _v2_marker_scan(raw_discussions: list) -> tuple[dict, set]:
+    """(finding_id, revision) -> recovery info of already-posted v2 markers
+    (matched independently of batch_id), plus every live thread id."""
+    posted: dict[tuple[str, int], dict] = {}
+    thread_ids: set[str] = set()
+    for d in raw_discussions:
+        did = d.get("id") or ""
+        thread_ids.add(did)
+        for n in d.get("notes") or []:
+            for batch_id, finding_id, revision in parse_review_markers(n.get("body") or ""):
+                posted.setdefault((finding_id, revision),
+                                  {"discussion_id": did, "note_id": n.get("id"),
+                                   "batch_id": batch_id})
+    return posted, thread_ids
+
+
+def _v2_target(entry: dict) -> str:
+    if entry["kind"] == "anchored":
+        a = entry["anchor"]
+        return f"{a['new_path'] or a['old_path']}:{a['line']} ({a['side']} side)"
+    if entry["kind"] == "thread":
+        return entry["thread_id"]
+    return "general"
+
+
+def _v2_position(refs: dict, anchor: dict) -> dict:
+    """Full side-aware GitLab position from the BATCH diff refs (never live);
+    exactly one of old_line/new_line, chosen by the anchor side."""
+    position = {
+        "base_sha": refs["diff_refs"]["base_sha"],
+        "start_sha": refs["diff_refs"]["start_sha"],
+        "head_sha": refs["diff_refs"]["head_sha"],
+        "position_type": "text",
+        "old_path": anchor["old_path"] or anchor["new_path"],
+        "new_path": anchor["new_path"] or anchor["old_path"],
+    }
+    position["new_line" if anchor["side"] == "new" else "old_line"] = anchor["line"]
+    return position
+
+
+def _v2_result(label: str, entry: dict, outcome: str, *, code: str = "",
+               error: str | None = None, note: str = "",
+               discussion_id=None, note_id=None, url: str | None = None,
+               response: dict | None = None) -> dict:
+    out = {"label": label, "kind": entry["kind"], "target": _v2_target(entry),
+           "finding_id": entry["finding_id"], "revision": entry["revision"],
+           "marker": entry["marker"], "outcome": outcome, "code": code,
+           "error": error, "note": note,
+           "discussion_id": discussion_id, "note_id": note_id, "url": url}
+    if response is not None:
+        out["response"] = response
+    return out
+
+
+def _v2_dup_result(label: str, entry: dict, dup: dict, web_url: str) -> dict:
+    note_id = dup["note_id"]
+    url = receipt_note_url(web_url, note_id) if web_url and note_id is not None else None
+    return _v2_result(
+        label, entry, "skipped-duplicate", code="possible-duplicate",
+        note=(f"finding revision already posted (discussion {dup['discussion_id']}, "
+              f"note {note_id}, batch {dup['batch_id']}) — ids recovered, no new POST"),
+        discussion_id=dup["discussion_id"], note_id=note_id, url=url)
+
+
+def _v2_blocked(label: str, entry: dict, code: str, error: str) -> dict:
+    return _v2_result(label, entry, "blocked", code=code, error=error, note=error)
+
+
+def _v2_finish(report: dict, results: list, details: list) -> dict:
+    report["posted"] = sum(1 for r in results if r["outcome"] == "posted")
+    report["duplicates"] = sum(1 for r in results if r["outcome"] == "skipped-duplicate")
+    report["failed"] = sum(1 for r in results if r["outcome"] == "blocked")
+    report["skipped"] = 0
+    report["replies"] = results
+    report["details"] = details
+    return report
+
+
+def _v2_halt(report: dict, entries: list, posted_map: dict, web_url: str,
+             error: str, code: str = "") -> dict:
+    """Whole-batch stop before any write: duplicates keep their recovered ids,
+    every other entry ends blocked with the same typed reason."""
+    results = []
+    for idx, entry in enumerate(entries):
+        label = f"entry {idx + 1}"
+        dup = posted_map.get((entry["finding_id"], entry["revision"]))
+        results.append(_v2_dup_result(label, entry, dup, web_url) if dup is not None
+                       else _v2_blocked(label, entry, code, error))
+    return _v2_finish(report, results, [error])
+
+
+def _v2_post_entry(c: MirrorClient, iid: int, refs: dict, entry: dict, label: str,
+                   thread_ids: set, web_url: str, dry_run: bool, project: str,
+                   details: list) -> tuple[dict, bool]:
+    """Post one non-duplicate entry; returns (result, write_attempted)."""
+    kind = entry["kind"]
+    target = _v2_target(entry)
+    if dry_run:
+        plan = ("would post anchored discussion" if kind == "anchored"
+                else "would reply into thread" if kind == "thread"
+                else "would post general note")
+        suffix = f" at {target}" if kind != "general" else ""
+        return _v2_result(label, entry, "posted", note=f"{plan}{suffix}"), False
+    if kind == "thread" and entry["thread_id"] not in thread_ids:
+        return _v2_blocked(label, entry, "",
+                           f"thread {entry['thread_id']} no longer exists"), False
+    if kind == "anchored" and entry["anchor"]["line"] is None:
+        return _v2_blocked(
+            label, entry, "invalid-line",
+            "anchor has no side line; GitLab diff notes require one and v2 "
+            "anchored entries never fall back to a general note"), False
+    body = f"<!-- {entry['marker']} -->\n\n{entry['body']}"
+    try:
+        if kind == "anchored":
+            resp = c.gitlab_post_new_discussion_positioned(
+                iid, body, _v2_position(refs, entry["anchor"]), project=project)
+            discussion_id = resp.get("id")
+            notes = resp.get("notes") or []
+            note_id = notes[0].get("id") if notes else None
+        elif kind == "thread":
+            resp = c.gitlab_post_thread_note(iid, entry["thread_id"], body,
+                                             project=project)
+            discussion_id, note_id = entry["thread_id"], resp.get("id")
+        else:
+            resp = c.gitlab_post_mr_note(iid, body, project=project)
+            discussion_id, note_id = None, resp.get("id")
+    except LgmError as e:
+        if kind == "anchored" and e.code in (400, 422):
+            return _v2_blocked(
+                label, entry, "",
+                f"GitLab rejected the anchor: HTTP {e.code} {e.message} — "
+                f"no general fallback for v2"), True
+        return _v2_blocked(label, entry, "", f"HTTP {e.code} {e.message}"), True
+    url = receipt_note_url(web_url, note_id) if web_url and note_id is not None else None
+    result = _v2_result(label, entry, "posted",
+                        note=f"posted {kind} at {target}",
+                        discussion_id=discussion_id, note_id=note_id, url=url,
+                        response=resp)
+    if kind == "thread" and entry["resolve"]:
+        try:
+            c.gitlab_resolve_discussion(iid, entry["thread_id"], project=project)
+            result["note"] += " (resolved)"
+        except LgmError as e:
+            result["note"] += f" (resolve failed HTTP {e.code})"
+            details.append(f"{label}: posted, resolve failed HTTP {e.code}")
+    return result, True
+
+
+def _publish_review_batch(c: MirrorClient, doc: dict, report: dict,
+                          dry_run: bool, project: str) -> dict:
+    """Fresh-fingerprint gate + publication of one validated v2 batch.
+
+    Read-only marker scan first, then the gate; any drift or unreachable API
+    halts the whole batch with zero writes. The gate re-runs before every
+    entry whose predecessor attempted a write, so a mid-batch head change
+    blocks the remainder while posted entries keep their ids. Anchored v2
+    entries never downgrade to general notes; the batch is never acked.
+    """
+    iid = doc["iid"]
+    entries = doc["entries"]
+    try:
+        raw = c.gitlab_list_discussions(iid, project=project)
+    except LgmError as e:
+        return _v2_halt(report, entries, {}, "", f"list discussions: {e.message}")
+    posted_map, thread_ids = _v2_marker_scan(raw)
+    web_url = ""
+    try:
+        expected, fresh, drift, web_url = _review_gate(c, doc, project)
+    except LgmError as e:
+        return _v2_halt(report, entries, posted_map, web_url,
+                        f"freshness gate: {e.message}")
+    if drift:
+        report["stale"] = {"expected": expected, "fresh": fresh, "drift": drift}
+        return _v2_halt(report, entries, posted_map, web_url,
+                        f"stale-snapshot: {', '.join(drift)} drifted since the "
+                        f"snapshot — zero posts/resolves",
+                        code="stale-snapshot")
+    results: list[dict] = []
+    details: list[str] = []
+    halt: tuple[str, str] | None = None
+    need_recheck = False
+    for idx, entry in enumerate(entries):
+        label = f"entry {idx + 1}"
+        dup = posted_map.get((entry["finding_id"], entry["revision"]))
+        if dup is not None:
+            results.append(_v2_dup_result(label, entry, dup, web_url))
+            continue
+        if halt is not None:
+            results.append(_v2_blocked(label, entry, halt[0], halt[1]))
+            continue
+        if need_recheck:
+            try:
+                expected, fresh, drift, web_url = _review_gate(c, doc, project)
+            except LgmError as e:
+                halt = ("", f"freshness gate: {e.message}")
+                results.append(_v2_blocked(label, entry, halt[0], halt[1]))
+                continue
+            if drift:
+                report["stale"] = {"expected": expected, "fresh": fresh,
+                                   "drift": drift}
+                halt = ("stale-snapshot",
+                        f"stale-snapshot: {', '.join(drift)} drifted mid-batch — "
+                        f"remaining entries not posted")
+                results.append(_v2_blocked(label, entry, halt[0], halt[1]))
+                continue
+            need_recheck = False
+        result, attempted = _v2_post_entry(c, iid, doc["refs"], entry, label,
+                                           thread_ids, web_url, dry_run, project,
+                                           details)
+        results.append(result)
+        need_recheck = attempted
+    details.insert(0, f"v2 batch {doc['batch_id']}: "
+                      f"{sum(1 for r in results if r['outcome'] == 'posted')} posted, "
+                      f"{sum(1 for r in results if r['outcome'] == 'skipped-duplicate')} duplicate, "
+                      f"{sum(1 for r in results if r['outcome'] == 'blocked')} blocked")
+    return _v2_finish(report, results, details)
+
+
+def _push_review_batch(c: MirrorClient, repo: str, item: dict,
+                       dry_run: bool = False, project: str = "") -> dict:
     """Document-level handling of one v2 batch artifact (mr-!<iid>-<batch_id>
-    .review.json) in the postbox: full pipeline validation, per-batch report,
-    no sibling supersede and no ack. Batches are immutable and coexist per
-    IID; the snapshot-bound GitLab publication gate validates and posts them
-    separately, so a malformed batch here is refused with zero side effects."""
+    .review.json) in the postbox: full pipeline validation, then the
+    snapshot-bound publication gate. Batches are immutable, coexist per IID,
+    are never superseded and never acked here (receipts own the ack, task 13);
+    a malformed batch is refused with zero side effects."""
     path = item.get("path") or ""
     m = _MR_REVIEW_BATCH_FILE.search(path)
     iid = int(m.group(1))
@@ -1223,9 +1500,8 @@ def _push_review_batch(c: MirrorClient, repo: str, item: dict) -> dict:
         report["details"] = [f"rejected: {refusal}"]
         return report
     report["batch_id"] = doc["batch_id"]
-    report["details"] = [(f"v2 batch {doc['batch_id']} validated; "
-                          f"snapshot-bound publication not wired yet")]
-    return report
+    report["identity"] = doc["identity"]
+    return _publish_review_batch(c, doc, report, dry_run, project)
 
 
 def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
@@ -1240,8 +1516,13 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
     ``ack_superseded``; a status report lands in mr-replies-status/mr-!N.md.
     Legacy files run the shared handoff pipeline before anything is posted:
     a document with malformed sections is rejected whole (zero GitLab calls,
-    zero acks). V2 batch artifacts (mr-!<iid>-<batch_id>.review.json) are
-    validated per batch, never superseded and never acked here.
+    zero acks). V2 batch artifacts (mr-!<iid>-<batch_id>.review.json) pass
+    the snapshot-bound publication gate: the live MR fingerprint must match
+    the batch refs (any drift = stale-snapshot, zero posts/resolves), anchors
+    post with full side-aware positions from the batch and never fall back to
+    general notes, already-posted finding revisions are recovered through
+    protocol markers instead of re-posted, and batches are never superseded
+    and never acked here.
     --dry-run plans without touching GitLab, the postbox or the status files.
 
     The GitLab project comes from the registry entry for ``repo`` so one work
@@ -1322,7 +1603,7 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
                   "replies": doc["entries"], "errors": []}
         reports.append(_push_replies_file(c, repo, group, parsed, dry_run, project))
     for i in sorted(v2_items, key=lambda x: x.get("path") or ""):
-        reports.append(_push_review_batch(c, repo, i))
+        reports.append(_push_review_batch(c, repo, i, dry_run, project))
     totals = {k: sum(r.get(k, 0) for r in reports)
               for k in ("posted", "duplicates", "skipped", "failed")}
     totals["not_anchored"] = sum(len(r.get("not_anchored") or []) for r in reports)

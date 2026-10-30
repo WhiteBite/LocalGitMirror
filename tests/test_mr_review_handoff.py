@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from test_mr_replies_push import FakeClient, _empty_registry, work_env  # noqa: F401
+from test_mr_review_publish import PublishClient
 
 from lgm_core.mr_review_handoff import (
     HandoffRejection,
@@ -500,15 +501,16 @@ class TestPushRejections:
         assert rep["posted"] == 1
         assert client.mr_notes[0][0] == 8
 
-    def test_valid_v2_batch_is_validated_without_publishing(self, work_env):  # noqa: F811
-        client = FakeClient()
+    def test_valid_v2_batch_enters_the_publication_gate(self, work_env):  # noqa: F811
+        client = PublishClient()
         _add_v2_file(client, "b1", _BATCH_ID, json.dumps(_BATCH).encode("utf-8"))
         res = _push(client)
         rep = next(r for r in res["reports"] if r.get("format") == "v2")
         assert rep["iid"] == 30 and rep["batch_id"] == _BATCH_ID
-        assert rep["posted"] == 0 and rep["skipped"] == 1
+        assert rep["posted"] == 0 and rep["failed"] == 2
         assert rep["acked"] is False and rep["parse_errors"] == 0
-        assert "validated" in rep["details"][0]
+        assert "stale-snapshot" in rep["details"][0]
+        assert client.positioned == []
         _assert_no_gitlab_no_writes(client)
 
     def test_malformed_v2_batch_is_rejected_with_its_code(self, work_env):  # noqa: F811
@@ -533,7 +535,7 @@ class TestPushRejections:
         _assert_no_gitlab_no_writes(client)
 
     def test_two_v2_batches_for_one_iid_are_both_reported(self, work_env):  # noqa: F811
-        client = FakeClient()
+        client = PublishClient()
         second_id = str(uuid.uuid4())
         _add_v2_file(client, "b1", _BATCH_ID, json.dumps(_BATCH).encode("utf-8"))
         _add_v2_file(client, "b2", second_id,
@@ -545,7 +547,7 @@ class TestPushRejections:
         _assert_no_gitlab_no_writes(client)
 
     def test_iid_filter_applies_to_v2_batches(self, work_env):  # noqa: F811
-        client = FakeClient()
+        client = PublishClient()
         _add_v2_file(client, "b1", _BATCH_ID, json.dumps(_BATCH).encode("utf-8"))
         res = _push(client, {"iid": 31})
         assert res["reports"] == []

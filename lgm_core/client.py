@@ -678,6 +678,22 @@ class MirrorClient:
             token, "POST", payload,
         )
 
+    def gitlab_post_new_discussion_positioned(self, iid: int, body: str,
+                                              position: dict, project: str = "") -> dict:
+        """POST .../merge_requests/<iid>/discussions — new thread with a full
+        side-aware position object: ``base_sha``/``start_sha``/``head_sha``,
+        ``position_type``, ``old_path``/``new_path`` and exactly one of
+        ``old_line``/``new_line``. Returns the response JSON unchanged. There is
+        no general-note fallback: a 400/422 means the anchor is not valid on
+        this diff and the caller must block the entry."""
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
+        payload = {"body": body, "position": position}
+        return self._gitlab_write(
+            f"{url}/api/v4/projects/{proj_id}/merge_requests/{int(iid)}/discussions",
+            token, "POST", payload,
+        )
+
     def gitlab_resolve_discussion(self, iid: int, discussion_id: str,
                                   project: str = "") -> dict:
         """PUT .../discussions/<id> with resolved=true — close a thread."""
