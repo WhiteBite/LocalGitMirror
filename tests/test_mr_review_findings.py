@@ -77,11 +77,16 @@ def _save(home, finding, expected_revision=0):
 def _listed(home, finding_id, iid=30):
     query = {"repo": "phonyx", "gitlab_url": GITLAB_URL,
              "target_project_id": 42, "iid": iid}
-    result = mr_review_findings("list", text=json.dumps(query), home=home)
-    for doc in result["findings"]:
-        if doc["finding_id"] == finding_id:
-            return doc
-    return None
+    cursor = 0
+    while True:
+        result = mr_review_findings("list", text=json.dumps({**query, "cursor": cursor}),
+                                    home=home)
+        for doc in result["findings"]:
+            if doc["finding_id"] == finding_id:
+                return doc
+        if result["next_cursor"] is None:
+            return None
+        cursor = result["next_cursor"]
 
 
 def _batch(home, items, iid=30):
