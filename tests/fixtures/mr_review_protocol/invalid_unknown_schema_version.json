@@ -1,0 +1,44 @@
+{
+  "fixture": "invalid_unknown_schema_version",
+  "object_kind": "snapshot",
+  "expect": "invalid",
+  "expected_error": "unknown-schema-version",
+  "object": {
+    "schema_version": 2,
+    "repo": "phonyx",
+    "gitlab_url": "https://gitlab.example.com",
+    "source_project_id": 42,
+    "target_project_id": 42,
+    "iid": 30,
+    "mr_url": "https://gitlab.example.com/groups/phonyx/-/merge_requests/30",
+    "title": "Backport review workspace to release/2.5",
+    "description": "First cut",
+    "state": "opened",
+    "draft": false,
+    "source_branch": "feature/review",
+    "target_branch": "release/2.5",
+    "source_sha": "cef36c93dd570a4b5399b167fb09f5ef431a0ff5",
+    "target_tip_sha": "07dce7ce5267d7471f2b150558004871b4f07f25",
+    "source_fetch_ref": null,
+    "gitlab_diff_refs": {
+      "base_sha": "0030a8771914798d390afca6028c01108eaa4090",
+      "start_sha": "2422964556f282f310b4d47200f348fb301fd47f",
+      "head_sha": "73d31ba009a1de04fa8d1a8bbf4801558bc18fc3"
+    },
+    "computed_merge_bases": [
+      "69bcb25a733a79e07d5cecfcf1d340c0aab7d56e"
+    ],
+    "comparison_base_sha": "0030a8771914798d390afca6028c01108eaa4090",
+    "comparison_kind": "gitlab-diff",
+    "observed_started_at": "2026-10-30T09:00:00Z",
+    "observed_finished_at": "2026-10-30T09:00:05Z",
+    "mr_updated_at": "2026-10-30T08:59:00Z",
+    "discussions_fetched_at": "2026-10-30T09:00:04Z",
+    "discussions_complete": true,
+    "limitations": [],
+    "discussions": [],
+    "snapshot_id": "9a89c0c18d7b0f20abd4570a2666c76e5987d5baf4f2e4a82e26e710388465b7",
+    "code_id": "f52f339a32088063a4ee9c30ce62d075e34cefe7b002687f9d507e7382488432",
+    "version_fingerprint": "2bfec7a92471640c6edc4f08cf4786193b4cfe49e72fd7e36c30d1cd69a4e171"
+  }
+}

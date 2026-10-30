@@ -1,0 +1,105 @@
+{
+  "fixture": "finding_stale",
+  "object_kind": "finding",
+  "expect": "stale",
+  "expected_digests": {
+    "snapshot_id": "0b10b978ca236635fbe1d40c68002c6de4c97ca648eb9a3aa576d8fc742e1600",
+    "code_id": "bd13e7f7fe53f616222afe009672e49d326d9b6f03ff161e3822f6878fc0b727",
+    "version_fingerprint": "004173c64ee412f4a762e07aa788f7a5ccc63ced5114b49c6e294354ccc29553"
+  },
+  "object": {
+    "schema_version": 1,
+    "finding_id": "7d444840-9dc0-11d1-b245-5ffdce74fad2",
+    "repo": "phonyx",
+    "gitlab_url": "https://gitlab.example.com",
+    "target_project_id": 42,
+    "iid": 30,
+    "revisions": [
+      {
+        "revision": 1,
+        "created_at": "2026-10-30T10:00:00Z",
+        "snapshot_id": "2f54a19cba3d52771ed53f0725742bc9a9ef28a030dd08c748d1a22ab2fdce3e",
+        "code_id": "f52f339a32088063a4ee9c30ce62d075e34cefe7b002687f9d507e7382488432",
+        "version_fingerprint": "2bfec7a92471640c6edc4f08cf4786193b4cfe49e72fd7e36c30d1cd69a4e171",
+        "anchor": {
+          "old_path": "src/config.py",
+          "new_path": "src/config.py",
+          "side": "new",
+          "line": 12
+        },
+        "thread_id": null,
+        "comment": "Миграция не описана",
+        "trigger": "reading src/config.py at snapshot page 1",
+        "evidence": [],
+        "limitations": [],
+        "verification": "hypothesis",
+        "applicability": "current",
+        "delivery": "local"
+      },
+      {
+        "revision": 2,
+        "created_at": "2026-10-30T10:20:00Z",
+        "snapshot_id": "2f54a19cba3d52771ed53f0725742bc9a9ef28a030dd08c748d1a22ab2fdce3e",
+        "code_id": "f52f339a32088063a4ee9c30ce62d075e34cefe7b002687f9d507e7382488432",
+        "version_fingerprint": "2bfec7a92471640c6edc4f08cf4786193b4cfe49e72fd7e36c30d1cd69a4e171",
+        "anchor": {
+          "old_path": "src/config.py",
+          "new_path": "src/config.py",
+          "side": "new",
+          "line": 12
+        },
+        "thread_id": null,
+        "comment": "Миграция не описана; проверить upgrade-путь",
+        "trigger": "reading src/config.py at snapshot page 1",
+        "evidence": [
+          "snapshot page 1",
+          "probe exit 1"
+        ],
+        "limitations": [
+          "semantic impact not proven"
+        ],
+        "verification": "confirmed",
+        "applicability": "current",
+        "delivery": "local"
+      }
+    ]
+  },
+  "context_snapshot": {
+    "schema_version": 1,
+    "repo": "phonyx",
+    "gitlab_url": "https://gitlab.example.com",
+    "source_project_id": 42,
+    "target_project_id": 42,
+    "iid": 30,
+    "mr_url": "https://gitlab.example.com/groups/phonyx/-/merge_requests/30",
+    "title": "Backport review workspace to release/2.5",
+    "description": "First cut",
+    "state": "opened",
+    "draft": false,
+    "source_branch": "feature/review",
+    "target_branch": "release/2.5",
+    "source_sha": "e4c3946d406a5dbcf9fb6d724023556b04af65bf",
+    "target_tip_sha": "07dce7ce5267d7471f2b150558004871b4f07f25",
+    "source_fetch_ref": null,
+    "gitlab_diff_refs": {
+      "base_sha": "0030a8771914798d390afca6028c01108eaa4090",
+      "start_sha": "2422964556f282f310b4d47200f348fb301fd47f",
+      "head_sha": "73d31ba009a1de04fa8d1a8bbf4801558bc18fc3"
+    },
+    "computed_merge_bases": [
+      "69bcb25a733a79e07d5cecfcf1d340c0aab7d56e"
+    ],
+    "comparison_base_sha": "0030a8771914798d390afca6028c01108eaa4090",
+    "comparison_kind": "gitlab-diff",
+    "observed_started_at": "2026-10-30T09:00:00Z",
+    "observed_finished_at": "2026-10-30T09:00:05Z",
+    "mr_updated_at": "2026-10-30T08:59:00Z",
+    "discussions_fetched_at": "2026-10-30T09:00:04Z",
+    "discussions_complete": true,
+    "limitations": [],
+    "discussions": [],
+    "snapshot_id": "0b10b978ca236635fbe1d40c68002c6de4c97ca648eb9a3aa576d8fc742e1600",
+    "code_id": "bd13e7f7fe53f616222afe009672e49d326d9b6f03ff161e3822f6878fc0b727",
+    "version_fingerprint": "004173c64ee412f4a762e07aa788f7a5ccc63ced5114b49c6e294354ccc29553"
+  }
+}

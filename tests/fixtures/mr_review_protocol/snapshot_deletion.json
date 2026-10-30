@@ -1,0 +1,73 @@
+{
+  "fixture": "snapshot_deletion",
+  "object_kind": "snapshot",
+  "expect": "valid",
+  "expected_digests": {
+    "snapshot_id": "235050b791208982c5fe096b79d52c18cfafb2df4ad4a7db07404cbcef7f1a29",
+    "code_id": "a6f1cbeff533b96a05501b04d55946e782a8a4c0b793e26f699a3fb9c4a820c7",
+    "version_fingerprint": "04ba476b30332c5261ca21370462077909a283f2213c3fdbd0e261fb13065bd7"
+  },
+  "object": {
+    "schema_version": 1,
+    "repo": "phonyx",
+    "gitlab_url": "https://gitlab.example.com",
+    "source_project_id": 42,
+    "target_project_id": 42,
+    "iid": 30,
+    "mr_url": "https://gitlab.example.com/groups/phonyx/-/merge_requests/30",
+    "title": "Add review workspace",
+    "description": "First cut",
+    "state": "opened",
+    "draft": false,
+    "source_branch": "feature/review",
+    "target_branch": "master",
+    "source_sha": "6a5095c272ccb35eac94a5a3fe405025fc62cb10",
+    "target_tip_sha": "9ebebaf6a9b16c2014bb2d7dfcf3e8a759530dcb",
+    "source_fetch_ref": null,
+    "gitlab_diff_refs": {
+      "base_sha": "6d10d3823100c784c2c914a4858d710e6614181e",
+      "start_sha": "69c07150f4c49c370c42ad09c04514e5e33d79ab",
+      "head_sha": "88567bcf9c51a42c03a16a99255b9869dc6a76b7"
+    },
+    "computed_merge_bases": [
+      "64c63dcbe2b18d9f746cde8cb99292bb86c4f2ea"
+    ],
+    "comparison_base_sha": "6d10d3823100c784c2c914a4858d710e6614181e",
+    "comparison_kind": "gitlab-diff",
+    "observed_started_at": "2026-10-30T09:00:00Z",
+    "observed_finished_at": "2026-10-30T09:00:05Z",
+    "mr_updated_at": "2026-10-30T08:59:00Z",
+    "discussions_fetched_at": "2026-10-30T09:00:04Z",
+    "discussions_complete": true,
+    "limitations": [],
+    "discussions": [
+      {
+        "discussion_id": "d27565f8d5295efda721ea260fe856857966f418",
+        "notes": [
+          {
+            "note_id": 902,
+            "body": "Удалённый файл: проверка стороны old",
+            "author": "Reviewer",
+            "created_at": "2026-10-30T09:10:00Z",
+            "system": false,
+            "resolvable": true,
+            "resolved": false,
+            "position": {
+              "old_path": "legacy/removed.py",
+              "new_path": "legacy/removed.py",
+              "old_line": 12,
+              "new_line": null,
+              "side": "old",
+              "base_sha": "6d10d3823100c784c2c914a4858d710e6614181e",
+              "start_sha": "69c07150f4c49c370c42ad09c04514e5e33d79ab",
+              "head_sha": "88567bcf9c51a42c03a16a99255b9869dc6a76b7"
+            }
+          }
+        ]
+      }
+    ],
+    "snapshot_id": "235050b791208982c5fe096b79d52c18cfafb2df4ad4a7db07404cbcef7f1a29",
+    "code_id": "a6f1cbeff533b96a05501b04d55946e782a8a4c0b793e26f699a3fb9c4a820c7",
+    "version_fingerprint": "04ba476b30332c5261ca21370462077909a283f2213c3fdbd0e261fb13065bd7"
+  }
+}

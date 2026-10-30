@@ -1,0 +1,36 @@
+{
+  "fixture": "receipt_recovery",
+  "object_kind": "receipt",
+  "expect": "valid",
+  "expected_digests": {
+    "snapshot_id": "2f54a19cba3d52771ed53f0725742bc9a9ef28a030dd08c748d1a22ab2fdce3e",
+    "code_id": "f52f339a32088063a4ee9c30ce62d075e34cefe7b002687f9d507e7382488432",
+    "version_fingerprint": "2bfec7a92471640c6edc4f08cf4786193b4cfe49e72fd7e36c30d1cd69a4e171"
+  },
+  "object": {
+    "schema_version": 1,
+    "batch_id": "9f1e8d7c-6b5a-4938-2716-05f4e3d2c1b0",
+    "finding_id": "7d444840-9dc0-11d1-b245-5ffdce74fad2",
+    "revision": 2,
+    "outcome": "recovered",
+    "kind": "anchored",
+    "snapshot_id": "2f54a19cba3d52771ed53f0725742bc9a9ef28a030dd08c748d1a22ab2fdce3e",
+    "code_id": "f52f339a32088063a4ee9c30ce62d075e34cefe7b002687f9d507e7382488432",
+    "version_fingerprint": "2bfec7a92471640c6edc4f08cf4786193b4cfe49e72fd7e36c30d1cd69a4e171",
+    "discussion_id": "dd0f6760776f47a597d4d6aeb1b4f5c22d960663",
+    "note_id": 123456,
+    "mr_url": "https://gitlab.example.com/groups/phonyx/-/merge_requests/30",
+    "url": "https://gitlab.example.com/groups/phonyx/-/merge_requests/30#note_123456",
+    "submitted_refs": {
+      "source_sha": "cef36c93dd570a4b5399b167fb09f5ef431a0ff5",
+      "target_tip_sha": "07dce7ce5267d7471f2b150558004871b4f07f25",
+      "base_sha": "0030a8771914798d390afca6028c01108eaa4090",
+      "start_sha": "2422964556f282f310b4d47200f348fb301fd47f",
+      "head_sha": "73d31ba009a1de04fa8d1a8bbf4801558bc18fc3"
+    },
+    "fallback": false,
+    "attempted_at": "2026-10-30T11:05:00Z",
+    "finished_at": "2026-10-30T11:09:00Z",
+    "error": null
+  }
+}

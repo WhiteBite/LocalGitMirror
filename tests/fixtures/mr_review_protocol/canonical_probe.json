@@ -1,0 +1,24 @@
+{
+  "fixture": "canonical_probe",
+  "object_kind": "probe",
+  "expect": "valid",
+  "expected_canonical": "{\"A_key\":\"plain\",\"b_key\":{\"empty\":{},\"list\":[],\"nested\":[1,0,-7]},\"controls\":\"\\u0001\\u001f\\n\\t\\r\\b\\f\",\"false_field\":false,\"null_field\":null,\"slash\":\"a/b c\",\"true_field\":true,\"unicode\":\"Ревью 检查 äöü — \\\"quoted\\\" \\\\ back\"}",
+  "object": {
+    "b_key": {
+      "nested": [
+        1,
+        0,
+        -7
+      ],
+      "empty": {},
+      "list": []
+    },
+    "A_key": "plain",
+    "unicode": "Ревью 检查 äöü — \"quoted\" \\ back",
+    "controls": "\u0001\u001f\n\t\r\b\f",
+    "null_field": null,
+    "true_field": true,
+    "false_field": false,
+    "slash": "a/b c"
+  }
+}

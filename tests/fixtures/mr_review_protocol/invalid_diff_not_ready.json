@@ -1,0 +1,40 @@
+{
+  "fixture": "invalid_diff_not_ready",
+  "object_kind": "snapshot",
+  "expect": "invalid",
+  "expected_error": "diff-not-ready",
+  "object": {
+    "schema_version": 1,
+    "repo": "phonyx",
+    "gitlab_url": "https://gitlab.example.com",
+    "source_project_id": 42,
+    "target_project_id": 42,
+    "iid": 30,
+    "mr_url": "https://gitlab.example.com/groups/phonyx/-/merge_requests/30",
+    "title": "Add review workspace",
+    "description": "First cut",
+    "state": "opened",
+    "draft": false,
+    "source_branch": "feature/review",
+    "target_branch": "master",
+    "source_sha": "5c66c66201fc55d5e831d23f561103c86e74d366",
+    "target_tip_sha": "6ccb5f0a5baac4c8d6eba002a83fe55f25d068b8",
+    "source_fetch_ref": null,
+    "gitlab_diff_refs": null,
+    "computed_merge_bases": [
+      "a8a21b522ec33e7f70fb12cb840317923e7ad020"
+    ],
+    "comparison_base_sha": "cad9e6ef4aa8a4d015a7c9878407e50e2b034766",
+    "comparison_kind": "gitlab-diff",
+    "observed_started_at": "2026-10-30T09:00:00Z",
+    "observed_finished_at": "2026-10-30T09:00:05Z",
+    "mr_updated_at": "2026-10-30T08:59:00Z",
+    "discussions_fetched_at": "2026-10-30T09:00:04Z",
+    "discussions_complete": true,
+    "limitations": [],
+    "discussions": [],
+    "snapshot_id": "bda98a6e377a8039f8fd53e1a052ff484cd2c36e8c82d93bc777593d10124b7e",
+    "code_id": "e93efb0e61be55bd18b1c07ecf76b10aa8dddaba02d40dc66c65394594418209",
+    "version_fingerprint": "e4723cfe6b6af96f35bae04f5a4031e91f8379f87d4663d6131374d45fab4eee"
+  }
+}

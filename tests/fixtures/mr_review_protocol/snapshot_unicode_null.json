@@ -1,0 +1,83 @@
+{
+  "fixture": "snapshot_unicode_null",
+  "object_kind": "snapshot",
+  "expect": "valid",
+  "expected_digests": {
+    "snapshot_id": "8ed2c0a6927fcd5972abca0ed9459a98a0712bdd3c11bbae40610e5a55309311",
+    "code_id": "7b431803b873f64932e30df184b65510116631aecce707ac505a1f67ecb7846e",
+    "version_fingerprint": "a3af7c7ab4dd947ae451d5498bf4e4a980f7dfb2974d5bdc64693522be1619d2"
+  },
+  "object": {
+    "schema_version": 1,
+    "repo": "phonyx",
+    "gitlab_url": "https://gitlab.example.com",
+    "source_project_id": 42,
+    "target_project_id": 42,
+    "iid": 30,
+    "mr_url": "https://gitlab.example.com/groups/phonyx/-/merge_requests/30",
+    "title": "Ревью: 检查 äöü — \"quoted\" \\ backslash",
+    "description": null,
+    "state": "opened",
+    "draft": false,
+    "source_branch": "feature/review",
+    "target_branch": "master",
+    "source_sha": "7d6eb107d44a0f796e8d2ac6aa9f906bb4cb2a17",
+    "target_tip_sha": "f56934b8cd8f75fc10d7fa4afa92e7c738944c9b",
+    "source_fetch_ref": null,
+    "gitlab_diff_refs": {
+      "base_sha": "cdf4148bffe637c94667d2db3f7c74bd09395295",
+      "start_sha": "97aac7020dfbfea2bd174d4edf73428659f8fb9f",
+      "head_sha": "929accc2cdac18c60ef1fb26125a1aa540fdf39c"
+    },
+    "computed_merge_bases": [
+      "7d22ec6dd6d674a60f8162c9eb4c69dd7dae022d"
+    ],
+    "comparison_base_sha": "cdf4148bffe637c94667d2db3f7c74bd09395295",
+    "comparison_kind": "gitlab-diff",
+    "observed_started_at": "2026-10-30T09:00:00Z",
+    "observed_finished_at": "2026-10-30T09:00:05Z",
+    "mr_updated_at": "2026-10-30T08:59:00Z",
+    "discussions_fetched_at": "2026-10-30T09:00:04Z",
+    "discussions_complete": true,
+    "limitations": [],
+    "discussions": [
+      {
+        "discussion_id": "979caf1076fda1f434a472633a448b751a599d72",
+        "notes": [
+          {
+            "note_id": 904,
+            "body": "Строка с \u0001\u001f control \n\t символами и   разделителем",
+            "author": "Автор Ё",
+            "created_at": "2026-10-30T09:10:00Z",
+            "system": false,
+            "resolvable": true,
+            "resolved": false,
+            "position": {
+              "old_path": "docs/обзор.md",
+              "new_path": "docs/обзор.md",
+              "old_line": 1,
+              "new_line": 2,
+              "side": "new",
+              "base_sha": "cdf4148bffe637c94667d2db3f7c74bd09395295",
+              "start_sha": "97aac7020dfbfea2bd174d4edf73428659f8fb9f",
+              "head_sha": "929accc2cdac18c60ef1fb26125a1aa540fdf39c"
+            }
+          },
+          {
+            "note_id": 905,
+            "body": "",
+            "author": "system",
+            "created_at": "2026-10-30T09:10:00Z",
+            "system": true,
+            "resolvable": false,
+            "resolved": false,
+            "position": null
+          }
+        ]
+      }
+    ],
+    "snapshot_id": "8ed2c0a6927fcd5972abca0ed9459a98a0712bdd3c11bbae40610e5a55309311",
+    "code_id": "7b431803b873f64932e30df184b65510116631aecce707ac505a1f67ecb7846e",
+    "version_fingerprint": "a3af7c7ab4dd947ae451d5498bf4e4a980f7dfb2974d5bdc64693522be1619d2"
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "fixture": "snapshot_rename",
+  "object_kind": "snapshot",
+  "expect": "valid",
+  "expected_digests": {
+    "snapshot_id": "4326af23bd0dae5fa814c3c8ca3a6f8ed85f110417c79dce34f1a30c82e0c6c0",
+    "code_id": "4f18f3aa123b88e98129ea2d8695d3ad3b65e90f73bab77bab46fb9b7e628b3a",
+    "version_fingerprint": "8115af75a10fe341dcd4adbf1e2c6a13f42a79ab6d1f07b93984bcb338e3dbee"
+  },
+  "object": {
+    "schema_version": 1,
+    "repo": "phonyx",
+    "gitlab_url": "https://gitlab.example.com",
+    "source_project_id": 42,
+    "target_project_id": 42,
+    "iid": 30,
+    "mr_url": "https://gitlab.example.com/groups/phonyx/-/merge_requests/30",
+    "title": "Add review workspace",
+    "description": "First cut",
+    "state": "opened",
+    "draft": false,
+    "source_branch": "feature/review",
+    "target_branch": "master",
+    "source_sha": "6a0d25103d54a26ebae1c3756ebc8a8e6922d61f",
+    "target_tip_sha": "f3e035fb4b52678fbda9fed3a2d66fd8e6a8835e",
+    "source_fetch_ref": null,
+    "gitlab_diff_refs": {
+      "base_sha": "101b91e9c31ae0511a232c5bd0b06287d2e69e0b",
+      "start_sha": "cd81e4320ba6cc0a7d5b52fa9f810baac2dc65a9",
+      "head_sha": "2266f0b6f35af2dddfdead9d919c76abc983f484"
+    },
+    "computed_merge_bases": [
+      "5d5b3aff76a5250a91a349cb3461e103796af83e"
+    ],
+    "comparison_base_sha": "101b91e9c31ae0511a232c5bd0b06287d2e69e0b",
+    "comparison_kind": "gitlab-diff",
+    "observed_started_at": "2026-10-30T09:00:00Z",
+    "observed_finished_at": "2026-10-30T09:00:05Z",
+    "mr_updated_at": "2026-10-30T08:59:00Z",
+    "discussions_fetched_at": "2026-10-30T09:00:04Z",
+    "discussions_complete": true,
+    "limitations": [],
+    "discussions": [
+      {
+        "discussion_id": "303c5d0957cf6fec267d31c036c31c615bd56722",
+        "notes": [
+          {
+            "note_id": 903,
+            "body": "После переименования строка другая",
+            "author": "Reviewer",
+            "created_at": "2026-10-30T09:10:00Z",
+            "system": false,
+            "resolvable": true,
+            "resolved": false,
+            "position": {
+              "old_path": "src/old_name.py",
+              "new_path": "src/new_name.py",
+              "old_line": 3,
+              "new_line": 5,
+              "side": "new",
+              "base_sha": "101b91e9c31ae0511a232c5bd0b06287d2e69e0b",
+              "start_sha": "cd81e4320ba6cc0a7d5b52fa9f810baac2dc65a9",
+              "head_sha": "2266f0b6f35af2dddfdead9d919c76abc983f484"
+            }
+          }
+        ]
+      }
+    ],
+    "snapshot_id": "4326af23bd0dae5fa814c3c8ca3a6f8ed85f110417c79dce34f1a30c82e0c6c0",
+    "code_id": "4f18f3aa123b88e98129ea2d8695d3ad3b65e90f73bab77bab46fb9b7e628b3a",
+    "version_fingerprint": "8115af75a10fe341dcd4adbf1e2c6a13f42a79ab6d1f07b93984bcb338e3dbee"
+  }
+}

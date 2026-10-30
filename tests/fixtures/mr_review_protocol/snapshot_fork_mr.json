@@ -1,0 +1,50 @@
+{
+  "fixture": "snapshot_fork_mr",
+  "object_kind": "snapshot",
+  "expect": "valid",
+  "expected_digests": {
+    "snapshot_id": "d5e13451bea15402a4c7badd454b2f502269fcd0a5c3925e8007b7ae9c80de9f",
+    "code_id": "001d55effda5478ed6b6fc282782ab46cea3e72dd024ba5cdf5bc0efb47da687",
+    "version_fingerprint": "c4c57e0047e106c1844b43f0dda024cb7a14dca51dba5e6240bc0569ace4267f"
+  },
+  "object": {
+    "schema_version": 1,
+    "repo": "phonyx",
+    "gitlab_url": "https://gitlab.example.com",
+    "source_project_id": 77,
+    "target_project_id": 42,
+    "iid": 30,
+    "mr_url": "https://gitlab.example.com/groups/phonyx/-/merge_requests/30",
+    "title": "Add review workspace",
+    "description": "First cut",
+    "state": "opened",
+    "draft": false,
+    "source_branch": "feature/review",
+    "target_branch": "master",
+    "source_sha": "971e552095b9b02677c83fcaa88d68684d85e4d7",
+    "target_tip_sha": "345b2335ece1344a352fa55af1faecf13a1ade73",
+    "source_fetch_ref": "refs/merge-requests/30/head",
+    "gitlab_diff_refs": {
+      "base_sha": "8e98955fa64f16413589da6fa0cd95027e01e00a",
+      "start_sha": "1a892dbf68cb00ceedd248bf087ce37bd3cced50",
+      "head_sha": "d6985756962513316e4035bbd805d87cc68e5abf"
+    },
+    "computed_merge_bases": [
+      "5bb36afcf8f5e18158fc110d94c253aeb0398707"
+    ],
+    "comparison_base_sha": "8e98955fa64f16413589da6fa0cd95027e01e00a",
+    "comparison_kind": "gitlab-diff",
+    "observed_started_at": "2026-10-30T09:00:00Z",
+    "observed_finished_at": "2026-10-30T09:00:05Z",
+    "mr_updated_at": "2026-10-30T08:59:00Z",
+    "discussions_fetched_at": "2026-10-30T09:00:04Z",
+    "discussions_complete": true,
+    "limitations": [
+      "source branch fetched through target-project MR ref"
+    ],
+    "discussions": [],
+    "snapshot_id": "d5e13451bea15402a4c7badd454b2f502269fcd0a5c3925e8007b7ae9c80de9f",
+    "code_id": "001d55effda5478ed6b6fc282782ab46cea3e72dd024ba5cdf5bc0efb47da687",
+    "version_fingerprint": "c4c57e0047e106c1844b43f0dda024cb7a14dca51dba5e6240bc0569ace4267f"
+  }
+}
