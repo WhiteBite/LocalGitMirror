@@ -45,7 +45,7 @@ from .mr_review_models import (
     validate_batch,
     validate_finding,
 )
-from .mr_review_store import MrReviewStore, normalize_gitlab_url
+from .mr_review_store import MrReviewStore, normalize_gitlab_url, _now
 
 LIST_PAGE_MAX = 50
 LIST_PAGE_DEFAULT = 50
@@ -180,6 +180,14 @@ def _bind_snapshot(store: MrReviewStore, revision: dict, iid: int) -> dict:
     return snap
 
 
+def _insert_revision(conn, finding_id: str, revision: int, payload: str,
+                     created_at: str) -> None:
+    conn.execute(
+        "INSERT INTO finding_revisions (finding_id, revision, payload, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (finding_id, revision, payload, created_at))
+
+
 def _save(finding_input: dict, expected_revision: int,
           home: Path | str | None) -> dict:
     if not _is_int(expected_revision) or expected_revision < 0:
@@ -231,23 +239,48 @@ def _save(finding_input: dict, expected_revision: int,
     latest = revisions[-1]
     _bind_snapshot(store, latest, finding["iid"])
     latest_json = canonical_json(latest)
-    store.cas_write("findings", {"finding_id": finding_id}, expected_revision, {
+    key = {"finding_id": finding_id}
+    assignments = {
         "repo": finding["repo"],
         "gitlab_url": gitlab_url,
         "target_project_id": finding["target_project_id"],
         "iid": finding["iid"],
         "payload": latest_json,
-    })
-    try:
-        with store.transaction() as conn:
-            conn.execute(
-                "INSERT INTO finding_revisions (finding_id, revision, payload, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (finding_id, expected_revision + 1, latest_json, latest["created_at"]))
-    except sqlite3.IntegrityError:
-        raise MrReviewError(
-            "revision-conflict",
-            f"finding {finding_id} revision {expected_revision + 1} already exists") from None
+    }
+    now = _now()
+    with store.transaction() as conn:
+        try:
+            if expected_revision == 0:
+                columns = [*key, *assignments, "revision", "updated_at"]
+                placeholders = ",".join("?" for _ in columns)
+                values = [*key.values(), *assignments.values(), 1, now]
+                conn.execute(
+                    f"INSERT INTO findings ({','.join(columns)}) VALUES ({placeholders})",
+                    values)
+            else:
+                set_clause = ",".join(f"{col} = ?" for col in assignments)
+                where_clause = " AND ".join(f"{col} = ?" for col in key)
+                params = [*assignments.values(), now, *key.values(),
+                          expected_revision]
+                cursor = conn.execute(
+                    f"UPDATE findings SET {set_clause}, revision = revision + 1, "
+                    f"updated_at = ? WHERE {where_clause} AND revision = ?",
+                    params)
+                if cursor.rowcount != 1:
+                    raise MrReviewError(
+                        "revision-conflict",
+                        f"findings row {key!r} is not at revision {expected_revision}")
+        except sqlite3.IntegrityError:
+            raise MrReviewError(
+                "revision-conflict",
+                f"findings row {key!r} already exists") from None
+        try:
+            _insert_revision(conn, finding_id, expected_revision + 1,
+                             latest_json, latest["created_at"])
+        except sqlite3.IntegrityError:
+            raise MrReviewError(
+                "revision-conflict",
+                f"finding {finding_id} revision {expected_revision + 1} already exists") from None
     return {"status": "saved", "finding_id": finding_id,
             "revision": expected_revision + 1}
 

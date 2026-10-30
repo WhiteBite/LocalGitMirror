@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lgm_core.client import LgmError
 from lgm_core.mr_review_models import MrReviewError, mcp_result_bytes
-from lgm_core.mr_review_reader import open_reader
+from lgm_core.mr_review_reader import _cursor_digest, open_reader
 from lgm_core.mr_review_search import mr_review_context, mr_review_search
 from lgm_core import ops_review
 from test_mr_review_reader import _fixture, _init_repo, big, huge, rich
@@ -234,6 +234,22 @@ def test_cursor_tampered_and_foreign(big, rich):
     with pytest.raises(MrReviewError) as exc:
         mr_review_search(rrepo, rsid, "value = ", cursor=token,
                          budget_bytes=4096, scope="tree", side="new", home=rich.home)
+    assert exc.value.code == "invalid-schema"
+
+
+def test_cursor_malformed_state_is_typed(big):
+    repo, sid = _ids(big)
+    first = mr_review_search(repo, sid, "value = ", budget_bytes=4096,
+                             scope="tree", side="new", home=big.home)
+    payload = json.loads(
+        base64.urlsafe_b64decode(first["next_cursor"].encode("ascii")))
+    payload["s"] = {"unexpected": 1}
+    payload["d"] = _cursor_digest({k: payload[k] for k in ("v", "sid", "q", "s")})
+    forged = base64.urlsafe_b64encode(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).decode()
+    with pytest.raises(MrReviewError) as exc:
+        mr_review_search(repo, sid, "value = ", cursor=forged,
+                         budget_bytes=4096, scope="tree", side="new", home=big.home)
     assert exc.value.code == "invalid-schema"
 
 

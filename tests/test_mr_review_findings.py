@@ -126,6 +126,36 @@ def test_save_and_list_roundtrip(base):
     m.validate_finding(doc)
 
 
+def test_crash_between_findings_and_revision_write_does_not_wedge(tmp_path, monkeypatch):
+    import lgm_core.mr_review_findings as fmod
+    mirror, manifest, home = _own_setup(tmp_path)
+    finding = _finding(manifest, [_rev(manifest)])
+    _save(home, finding)
+    rev2 = _rev(manifest, 2, verification="confirmed",
+                created_at="2026-10-30T11:00:00Z")
+    finding2 = {**finding, "revisions": [finding["revisions"][0], rev2]}
+
+    def exploding_insert(conn, finding_id, revision, payload, created_at):
+        raise RuntimeError("crash between the two writes")
+
+    monkeypatch.setattr(fmod, "_insert_revision", exploding_insert)
+    with pytest.raises(RuntimeError):
+        _save(home, finding2, expected_revision=1)
+    monkeypatch.undo()
+
+    fid = finding["finding_id"]
+    assert _store_rows(home, "SELECT revision FROM findings WHERE finding_id = ?",
+                       (fid,)) == [(1,)]
+    assert _store_rows(
+        home, "SELECT COUNT(*) FROM finding_revisions WHERE finding_id = ?",
+        (fid,)) == [(1,)]
+
+    result = _save(home, finding2, expected_revision=1)
+    assert result == {"status": "saved", "finding_id": fid, "revision": 2}
+    assert _store_rows(home, "SELECT revision FROM findings WHERE finding_id = ?",
+                       (fid,)) == [(2,)]
+
+
 def test_save_from_file_input_and_input_source_rules(base, tmp_path):
     root, manifest = base
     home = root / "reviews"

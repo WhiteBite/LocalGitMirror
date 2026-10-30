@@ -273,6 +273,8 @@ def mr_review_search(repo: str, snapshot_id: str, query: str, *,
             "paths": sorted(wanted) if wanted else [], "budget": budget}
     state = decode_cursor(cursor, snapshot_id, bind) if cursor else \
         {"fi": 0, "bo": 0, "ln": 0, "hs": 0}
+    if set(state) != {"fi", "bo", "ln", "hs"}:
+        raise MrReviewError("invalid-schema", "search cursor state is malformed")
     files, limited = _files_for(git, snap, scope, sides, wanted)
     page: dict[str, Any] = {
         "repo": repo, "snapshot_id": snapshot_id, "query": query,
