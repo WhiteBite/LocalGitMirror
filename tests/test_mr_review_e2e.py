@@ -1393,3 +1393,134 @@ def test_stage5_expired_transport_items_leave_imported_snapshot_readable(
     assert page["complete"] is True
     text = b"".join(_chunk_bytes(chunk) for chunk in page["chunks"])
     assert b"new = 12" in text
+
+
+# ── stage 6: cross-language fixture, mirror invariance ──────────────────────
+
+
+def _normalized_batch(published):
+    batch = json.loads(json.dumps(published.batch["batch"]))
+    sc = published.sc
+    batch["gitlab_url"] = WEB_BASE
+    fingerprint = m.compute_version_fingerprint({
+        "gitlab_url": WEB_BASE,
+        "iid": sc.iid,
+        "source_project_id": sc.source_pid,
+        "target_project_id": sc.pid,
+        "source_sha": sc.shas["head"],
+        "target_tip_sha": sc.shas["tip"],
+        "target_branch": sc.target_branch,
+        "gitlab_diff_refs": {"base_sha": sc.shas["base"],
+                             "start_sha": sc.shas["start"],
+                             "head_sha": sc.shas["head"]},
+    })
+    for item in batch["items"]:
+        item["version_fingerprint"] = fingerprint
+    return batch
+
+
+def _build_fixture(world, published) -> dict:
+    sc = published.sc
+    envelope = json.loads(json.dumps(published.receipt_envelope))
+    envelope["gitlab_url"] = WEB_BASE
+    outcomes = [{
+        "kind": reply["kind"],
+        "outcome": reply["outcome"],
+        "finding_id": reply["finding_id"],
+        "revision": reply["revision"],
+        "marker": reply["marker"],
+        "discussion_id": reply["discussion_id"],
+        "note_id": reply["note_id"],
+        "url": reply["url"],
+    } for reply in published.push1["reports"][0]["replies"]]
+    return {
+        "fixture": "mr_review_e2e",
+        "batch": _normalized_batch(published),
+        "live": {
+            "detail": json.loads(json.dumps(sc.detail)),
+            "target_tip": sc.shas["tip"],
+            "discussions": _seed_discussions(sc, sc.shas),
+        },
+        "receipt_envelope": envelope,
+        "expected": {"outcomes": outcomes},
+    }
+
+
+def test_stage6_shared_fixture_matches_runtime_chain(world, published):
+    path = FIXTURE_DIR / "e2e_batch.json"
+    if not path.exists() or os.environ.get("LGM_E2E_REGEN") == "1":
+        FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(_build_fixture(world, published), ensure_ascii=False,
+                       indent=2) + "\n", encoding="utf-8")
+    fixture = json.loads(path.read_text(encoding="utf-8"))
+    runtime_batch = published.batch["batch"]
+    assert fixture["batch"]["iid"] == runtime_batch["iid"] == 30
+    assert [item["kind"] for item in fixture["batch"]["items"]] == \
+        [item["kind"] for item in runtime_batch["items"]] == \
+        ["anchored", "thread", "general"]
+    assert [item["body"] for item in fixture["batch"]["items"]] == \
+        [item["body"] for item in runtime_batch["items"]]
+    assert fixture["batch"]["gitlab_url"] == WEB_BASE
+    detail = fixture["live"]["detail"]
+    items = fixture["batch"]["items"]
+    assert detail["sha"] == items[0]["source_sha"]
+    assert fixture["live"]["target_tip"] == items[0]["target_tip_sha"]
+    assert detail["diff_refs"] == items[0]["diff_refs"]
+    expected_fingerprint = m.compute_version_fingerprint({
+        "gitlab_url": WEB_BASE,
+        "iid": detail["iid"],
+        "source_project_id": detail["source_project_id"],
+        "target_project_id": detail["target_project_id"],
+        "source_sha": detail["sha"],
+        "target_tip_sha": fixture["live"]["target_tip"],
+        "target_branch": detail["target_branch"],
+        "gitlab_diff_refs": detail["diff_refs"],
+    })
+    assert all(item["version_fingerprint"] == expected_fingerprint
+               for item in items)
+
+    expected = fixture["expected"]["outcomes"]
+    replies = published.push1["reports"][0]["replies"]
+    assert len(expected) == len(replies) == 3
+    for outcome, reply in zip(expected, replies):
+        assert reply["kind"] == outcome["kind"]
+        assert reply["outcome"] == outcome["outcome"] == "posted"
+        assert reply["discussion_id"] == outcome["discussion_id"]
+        assert reply["note_id"] == outcome["note_id"]
+        assert reply["url"] == outcome["url"]
+        assert reply["marker"] == m.review_marker(
+            published.batch["batch_id"], reply["finding_id"],
+            reply["revision"])
+        assert outcome["marker"] == m.review_marker(
+            fixture["batch"]["batch_id"], outcome["finding_id"],
+            outcome["revision"])
+
+    envelope = fixture["receipt_envelope"]
+    assert envelope["batch_id"] == fixture["batch"]["batch_id"]
+    assert envelope["attempt"] == 1
+    assert envelope["iid"] == 30
+    by_finding = {receipt["finding_id"]: receipt
+                  for receipt in envelope["receipts"]}
+    for outcome in expected:
+        receipt = by_finding[outcome["finding_id"]]
+        m.validate_receipt(receipt)
+        assert receipt["outcome"] == "posted"
+        assert receipt["note_id"] == outcome["note_id"]
+        assert receipt["discussion_id"] == outcome["discussion_id"]
+        assert receipt["url"] == outcome["url"]
+
+
+def test_stage6_origins_clones_and_mirror_state_survive_the_chain(world):
+    after = {}
+    for name, sc in world.scenarios.items():
+        after[f"{name}-origin"] = _mirror_state(sc.origin)
+        after[f"{name}-checkout"] = _mirror_state(sc.checkout)
+    drifted = world.gitlab.state.details[35]["sha"] != \
+        world.scenarios["stale"].shas["head"]
+    for key, before in world.digests_before.items():
+        if key == "stale-origin" and drifted:
+            assert after[key] != before, \
+                "stale-drift injection must advance the stale origin"
+        else:
+            assert after[key] == before, key

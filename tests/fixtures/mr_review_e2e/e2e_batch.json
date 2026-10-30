@@ -1,0 +1,265 @@
+{
+  "fixture": "mr_review_e2e",
+  "batch": {
+    "schema_version": 1,
+    "batch_id": "d361d85a-bfd7-42cf-9914-75169190db49",
+    "repo": "e2e-main",
+    "gitlab_url": "https://gitlab.corp",
+    "target_project_id": 42,
+    "iid": 30,
+    "created_at": "2026-10-30T17:26:06+00:00",
+    "items": [
+      {
+        "finding_id": "b5b6131a-8f14-430b-9767-fa9c4e89cd0f",
+        "revision": 1,
+        "kind": "anchored",
+        "thread_id": null,
+        "resolve": false,
+        "body": "anchored body from e2e",
+        "anchor": {
+          "line": 12,
+          "new_path": "src/config.py",
+          "old_path": "src/config.py",
+          "side": "new"
+        },
+        "snapshot_id": "6575867e0b088eb1aa31dc3f19572a489b198b070389164bb6e630674cf510c0",
+        "code_id": "e51385fac26823dad6ec8fc48034b8c07df117950538fbd1e5a63981b718b42f",
+        "version_fingerprint": "b6c297af9ba3f96fa75ee6ed5bfd8b20424ad288df5193cb96635bd6a8921de3",
+        "source_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+        "target_tip_sha": "74faa9994af8670c7534139213f4eb69aaf4564f",
+        "diff_refs": {
+          "base_sha": "e2ff9bab3d5f0f27073ee3932e0a2229b8107158",
+          "head_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+          "start_sha": "74faa9994af8670c7534139213f4eb69aaf4564f"
+        }
+      },
+      {
+        "finding_id": "f8196a81-6c87-4b2c-9a66-be5c72a3145f",
+        "revision": 1,
+        "kind": "thread",
+        "thread_id": "d-thread-1",
+        "resolve": true,
+        "body": "thread body from e2e",
+        "anchor": null,
+        "snapshot_id": "6575867e0b088eb1aa31dc3f19572a489b198b070389164bb6e630674cf510c0",
+        "code_id": "e51385fac26823dad6ec8fc48034b8c07df117950538fbd1e5a63981b718b42f",
+        "version_fingerprint": "b6c297af9ba3f96fa75ee6ed5bfd8b20424ad288df5193cb96635bd6a8921de3",
+        "source_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+        "target_tip_sha": "74faa9994af8670c7534139213f4eb69aaf4564f",
+        "diff_refs": {
+          "base_sha": "e2ff9bab3d5f0f27073ee3932e0a2229b8107158",
+          "head_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+          "start_sha": "74faa9994af8670c7534139213f4eb69aaf4564f"
+        }
+      },
+      {
+        "finding_id": "06ab1836-206e-4f08-87eb-8ff61448782a",
+        "revision": 1,
+        "kind": "general",
+        "thread_id": null,
+        "resolve": false,
+        "body": "general body from e2e",
+        "anchor": null,
+        "snapshot_id": "6575867e0b088eb1aa31dc3f19572a489b198b070389164bb6e630674cf510c0",
+        "code_id": "e51385fac26823dad6ec8fc48034b8c07df117950538fbd1e5a63981b718b42f",
+        "version_fingerprint": "b6c297af9ba3f96fa75ee6ed5bfd8b20424ad288df5193cb96635bd6a8921de3",
+        "source_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+        "target_tip_sha": "74faa9994af8670c7534139213f4eb69aaf4564f",
+        "diff_refs": {
+          "base_sha": "e2ff9bab3d5f0f27073ee3932e0a2229b8107158",
+          "head_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+          "start_sha": "74faa9994af8670c7534139213f4eb69aaf4564f"
+        }
+      }
+    ]
+  },
+  "live": {
+    "detail": {
+      "iid": 30,
+      "project_id": 42,
+      "source_project_id": 42,
+      "target_project_id": 42,
+      "title": "E2E main",
+      "description": "First cut",
+      "state": "opened",
+      "draft": false,
+      "source_branch": "feature",
+      "target_branch": "master",
+      "sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+      "updated_at": "2026-10-30T08:59:00Z",
+      "web_url": "https://gitlab.corp/dev/onyx/main/-/merge_requests/30",
+      "diff_refs": {
+        "base_sha": "e2ff9bab3d5f0f27073ee3932e0a2229b8107158",
+        "start_sha": "74faa9994af8670c7534139213f4eb69aaf4564f",
+        "head_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4"
+      }
+    },
+    "target_tip": "74faa9994af8670c7534139213f4eb69aaf4564f",
+    "discussions": [
+      {
+        "id": "d-thread-1",
+        "notes": [
+          {
+            "id": 11,
+            "author": {
+              "name": "Reviewer"
+            },
+            "created_at": "2026-10-01T10:00:00Z",
+            "system": false,
+            "body": "seed thread on config.py",
+            "resolvable": true,
+            "resolved": false,
+            "position": {
+              "old_path": "src/config.py",
+              "new_path": "src/config.py",
+              "old_line": null,
+              "new_line": 12,
+              "base_sha": "e2ff9bab3d5f0f27073ee3932e0a2229b8107158",
+              "start_sha": "74faa9994af8670c7534139213f4eb69aaf4564f",
+              "head_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4"
+            }
+          }
+        ]
+      },
+      {
+        "id": "d-sys",
+        "notes": [
+          {
+            "id": 12,
+            "author": {
+              "name": "GitLab"
+            },
+            "created_at": "2026-10-01T09:00:00Z",
+            "system": true,
+            "body": "assigned to @reviewer"
+          }
+        ]
+      }
+    ]
+  },
+  "receipt_envelope": {
+    "attempt": 1,
+    "batch_id": "d361d85a-bfd7-42cf-9914-75169190db49",
+    "created_at": "2026-10-30T17:26:06+00:00",
+    "gitlab_url": "https://gitlab.corp",
+    "iid": 30,
+    "kind": "review-receipts",
+    "receipts": [
+      {
+        "attempted_at": "2026-10-30T17:26:06+00:00",
+        "batch_id": "d361d85a-bfd7-42cf-9914-75169190db49",
+        "code_id": "e51385fac26823dad6ec8fc48034b8c07df117950538fbd1e5a63981b718b42f",
+        "discussion_id": "disc-1",
+        "error": null,
+        "fallback": false,
+        "finding_id": "b5b6131a-8f14-430b-9767-fa9c4e89cd0f",
+        "finished_at": "2026-10-30T17:26:06+00:00",
+        "kind": "anchored",
+        "mr_url": "https://gitlab.corp/dev/onyx/main/-/merge_requests/30",
+        "note_id": 901,
+        "outcome": "posted",
+        "revision": 1,
+        "schema_version": 1,
+        "snapshot_id": "6575867e0b088eb1aa31dc3f19572a489b198b070389164bb6e630674cf510c0",
+        "submitted_refs": {
+          "base_sha": "e2ff9bab3d5f0f27073ee3932e0a2229b8107158",
+          "head_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+          "source_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+          "start_sha": "74faa9994af8670c7534139213f4eb69aaf4564f",
+          "target_tip_sha": "74faa9994af8670c7534139213f4eb69aaf4564f"
+        },
+        "url": "https://gitlab.corp/dev/onyx/main/-/merge_requests/30#note_901",
+        "version_fingerprint": "135548d3f04bffb7cf75a040018f4139a577650b3c06360a717d64eddae84e42"
+      },
+      {
+        "attempted_at": "2026-10-30T17:26:06+00:00",
+        "batch_id": "d361d85a-bfd7-42cf-9914-75169190db49",
+        "code_id": "e51385fac26823dad6ec8fc48034b8c07df117950538fbd1e5a63981b718b42f",
+        "discussion_id": "d-thread-1",
+        "error": null,
+        "fallback": false,
+        "finding_id": "f8196a81-6c87-4b2c-9a66-be5c72a3145f",
+        "finished_at": "2026-10-30T17:26:06+00:00",
+        "kind": "thread",
+        "mr_url": "https://gitlab.corp/dev/onyx/main/-/merge_requests/30",
+        "note_id": 701,
+        "outcome": "posted",
+        "revision": 1,
+        "schema_version": 1,
+        "snapshot_id": "6575867e0b088eb1aa31dc3f19572a489b198b070389164bb6e630674cf510c0",
+        "submitted_refs": {
+          "base_sha": "e2ff9bab3d5f0f27073ee3932e0a2229b8107158",
+          "head_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+          "source_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+          "start_sha": "74faa9994af8670c7534139213f4eb69aaf4564f",
+          "target_tip_sha": "74faa9994af8670c7534139213f4eb69aaf4564f"
+        },
+        "url": "https://gitlab.corp/dev/onyx/main/-/merge_requests/30#note_701",
+        "version_fingerprint": "135548d3f04bffb7cf75a040018f4139a577650b3c06360a717d64eddae84e42"
+      },
+      {
+        "attempted_at": "2026-10-30T17:26:06+00:00",
+        "batch_id": "d361d85a-bfd7-42cf-9914-75169190db49",
+        "code_id": "e51385fac26823dad6ec8fc48034b8c07df117950538fbd1e5a63981b718b42f",
+        "discussion_id": "d-gen-1",
+        "error": null,
+        "fallback": false,
+        "finding_id": "06ab1836-206e-4f08-87eb-8ff61448782a",
+        "finished_at": "2026-10-30T17:26:06+00:00",
+        "kind": "general",
+        "mr_url": "https://gitlab.corp/dev/onyx/main/-/merge_requests/30",
+        "note_id": 801,
+        "outcome": "posted",
+        "revision": 1,
+        "schema_version": 1,
+        "snapshot_id": "6575867e0b088eb1aa31dc3f19572a489b198b070389164bb6e630674cf510c0",
+        "submitted_refs": {
+          "base_sha": "e2ff9bab3d5f0f27073ee3932e0a2229b8107158",
+          "head_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+          "source_sha": "fcbd15d61833c0cf7aebc2b56b2905fabeb304d4",
+          "start_sha": "74faa9994af8670c7534139213f4eb69aaf4564f",
+          "target_tip_sha": "74faa9994af8670c7534139213f4eb69aaf4564f"
+        },
+        "url": "https://gitlab.corp/dev/onyx/main/-/merge_requests/30#note_801",
+        "version_fingerprint": "135548d3f04bffb7cf75a040018f4139a577650b3c06360a717d64eddae84e42"
+      }
+    ],
+    "repo": "e2e-main",
+    "schema_version": 1,
+    "target_project_id": 42
+  },
+  "expected": {
+    "outcomes": [
+      {
+        "kind": "anchored",
+        "outcome": "posted",
+        "finding_id": "b5b6131a-8f14-430b-9767-fa9c4e89cd0f",
+        "revision": 1,
+        "marker": "lgm-review:d361d85a-bfd7-42cf-9914-75169190db49:b5b6131a-8f14-430b-9767-fa9c4e89cd0f:1",
+        "discussion_id": "disc-1",
+        "note_id": 901,
+        "url": "https://gitlab.corp/dev/onyx/main/-/merge_requests/30#note_901"
+      },
+      {
+        "kind": "thread",
+        "outcome": "posted",
+        "finding_id": "f8196a81-6c87-4b2c-9a66-be5c72a3145f",
+        "revision": 1,
+        "marker": "lgm-review:d361d85a-bfd7-42cf-9914-75169190db49:f8196a81-6c87-4b2c-9a66-be5c72a3145f:1",
+        "discussion_id": "d-thread-1",
+        "note_id": 701,
+        "url": "https://gitlab.corp/dev/onyx/main/-/merge_requests/30#note_701"
+      },
+      {
+        "kind": "general",
+        "outcome": "posted",
+        "finding_id": "06ab1836-206e-4f08-87eb-8ff61448782a",
+        "revision": 1,
+        "marker": "lgm-review:d361d85a-bfd7-42cf-9914-75169190db49:06ab1836-206e-4f08-87eb-8ff61448782a:1",
+        "discussion_id": "d-gen-1",
+        "note_id": 801,
+        "url": "https://gitlab.corp/dev/onyx/main/-/merge_requests/30#note_801"
+      }
+    ]
+  }
+}
