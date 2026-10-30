@@ -59,6 +59,27 @@ class LgmError(Exception):
         super().__init__(f"[{code}] {message}")
 
 
+class ResponseTooLargeError(LgmError):
+    """A capped download exceeded its ``max_bytes`` limit."""
+
+
+_DOWNLOAD_CHUNK = 1 << 20
+# sealed-response framing slack; the exact cap applies to the opened plaintext
+_RELAY_SEAL_SLACK = 4096
+
+
+def _read_capped(r, max_bytes: int) -> bytes:
+    buf = bytearray()
+    while True:
+        chunk = r.read(min(_DOWNLOAD_CHUNK, max_bytes + 1 - len(buf)))
+        if not chunk:
+            return bytes(buf)
+        buf += chunk
+        if len(buf) > max_bytes:
+            raise ResponseTooLargeError(
+                "server", f"download exceeds the {max_bytes} byte cap")
+
+
 _ssl_ctx_cache: dict[bool, ssl.SSLContext] = {}
 
 
@@ -258,14 +279,19 @@ class MirrorClient:
         except Exception:
             return False
 
-    def _download_bytes(self, path: str, headers: Optional[dict] = None) -> bytes:
+    def _download_bytes(self, path: str, headers: Optional[dict] = None,
+                        max_bytes: Optional[int] = None) -> bytes:
         url = self._url(path)
         req = urllib.request.Request(
             url, headers={**_auth_headers(self.api_key), **(headers or {})})
         try:
             with self._open(req, timeout=120) as r:
+                if max_bytes is not None:
+                    return _read_capped(r, max_bytes)
                 return r.read()
         except TlsPinMismatchError:
+            raise
+        except ResponseTooLargeError:
             raise
         except urllib.error.HTTPError as e:
             body = e.read().decode(errors="replace")
@@ -820,14 +846,21 @@ class MirrorClient:
         """GET /api/documents/attachment-list — list items for a repo."""
         return self._get_json(f"/api/documents/attachment-list?rid={repo_to_rid(repo)}")
 
-    def file_sync_fetch(self, repo: str, item_id: str) -> bytes:
+    def file_sync_fetch(self, repo: str, item_id: str,
+                        max_bytes: Optional[int] = None) -> bytes:
         """GET /api/documents/attachment-get — relay-sealed blob, opened via X-LGM-Epk."""
         session = self._relay_session()
+        cap = {} if max_bytes is None else {"max_bytes": max_bytes + _RELAY_SEAL_SLACK}
         blob = self._download_bytes(
             f"/api/documents/attachment-get?rid={repo_to_rid(repo)}&id={item_id}",
             headers={"X-LGM-Epk": session.epk_b64()},
+            **cap,
         )
-        return session.open(blob, RELAY_AAD_POSTBOX)
+        data = session.open(blob, RELAY_AAD_POSTBOX)
+        if max_bytes is not None and len(data) > max_bytes:
+            raise ResponseTooLargeError(
+                "server", f"download exceeds the {max_bytes} byte cap")
+        return data
 
     def file_sync_ack(self, repo: str, item_id: str) -> dict:
         """DELETE /api/documents/attachment-ack — confirm applied, server deletes."""

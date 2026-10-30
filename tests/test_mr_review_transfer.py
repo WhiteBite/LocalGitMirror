@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lgm_core import config as config_mod
 from lgm_core import mr_review_collect as collect
 from lgm_core import ops_review
-from lgm_core.client import LgmError, MirrorClient
+from lgm_core.client import LgmError, MirrorClient, ResponseTooLargeError
 from lgm_core.config import Config
 from lgm_core.mr_review_models import (
     CODE_ARTIFACT_MAX_BYTES,
@@ -196,10 +196,14 @@ class FakePostbox:
                            "mtime": time.time() + self._next})
         return {"success": True, "id": item_id, "path": path}
 
-    def fetch(self, repo, item_id):
+    def fetch(self, repo, item_id, max_bytes=None):
         if item_id not in self.data:
             raise LgmError("server", f"postbox holds no item {item_id}")
-        return self.data[item_id]
+        data = self.data[item_id]
+        if max_bytes is not None and len(data) > max_bytes:
+            raise ResponseTooLargeError(
+                "server", f"download exceeds the {max_bytes} byte cap")
+        return data
 
     def paths(self) -> list[str]:
         return [path for path, _ in self.uploads]
@@ -666,6 +670,40 @@ def test_oversized_transport_bundle_rejected_before_download(tmp_path, monkeypat
         _open(client, home)
     assert excinfo.value.code == "review-package-too-large"
     assert bundle_ids.isdisjoint(fetched)
+
+
+def test_missing_metadata_oversized_stream_rejected(tmp_path, monkeypatch):
+    client, origin, shas, checkout, postbox = _env(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    prepared = _prepare(client, checkout, tmp_path / "work")
+    declared = prepared["bundle"]["size"]
+    for item in postbox.bundle_items(prepared["code_id"]):
+        item.pop("plain_size", None)
+        item.pop("size", None)
+        postbox.data[item["id"]] = b"x" * (declared + 1024)
+
+    with pytest.raises(MrReviewError) as excinfo:
+        _open(client, home)
+    assert excinfo.value.code == "review-package-too-large"
+    assert str(declared) in excinfo.value.message
+    assert not _store(home).has_snapshot(prepared["snapshot_id"])
+
+
+def test_missing_metadata_short_stream_still_hash_mismatch(tmp_path, monkeypatch):
+    client, origin, shas, checkout, postbox = _env(tmp_path, monkeypatch)
+    home = tmp_path / "home"
+    prepared = _prepare(client, checkout, tmp_path / "work")
+    declared = prepared["bundle"]["size"]
+    for item in postbox.bundle_items(prepared["code_id"]):
+        item.pop("plain_size", None)
+        item.pop("size", None)
+        postbox.data[item["id"]] = postbox.data[item["id"]][:declared - 10]
+
+    result = _open(client, home)
+    assert result["status"] == "not-ready"
+    assert result["code"] == "hash-mismatch"
+    assert "downloaded bundle is" in result["message"]
+    assert not _store(home).has_snapshot(prepared["snapshot_id"])
 
 
 def test_corrupt_envelope_rejected(tmp_path, monkeypatch):

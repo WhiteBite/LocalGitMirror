@@ -10,6 +10,7 @@ from pathlib import Path
 from .client import LgmError
 from .mr_review_findings import DELIVERY_TRANSITIONS, mr_review_findings
 from .mr_review_models import (
+    CODE_ARTIFACT_MAX_BYTES,
     SCHEMA_VERSION,
     MrReviewError,
     canonical_json,
@@ -593,7 +594,13 @@ def run_receipt_import(c, repo: str, *, home: Path | str | None = None,
                        "delivery_updates": 0, "acked": False, "errors": []}
         results.append(entry)
         try:
-            raw = c.file_sync_fetch(repo, item["id"]).decode("utf-8")
+            data = c.file_sync_fetch(repo, item["id"])
+            if len(data) > CODE_ARTIFACT_MAX_BYTES:
+                raise LgmError(
+                    "server",
+                    f"receipt envelope is {len(data)} bytes, above the "
+                    f"{CODE_ARTIFACT_MAX_BYTES} byte cap")
+            raw = data.decode("utf-8")
             envelope = validate_receipt_envelope(json.loads(raw))
         except (LgmError, ValueError, UnicodeDecodeError, MrReviewError) as e:
             entry["errors"].append(f"envelope: {getattr(e, 'message', None) or e}")

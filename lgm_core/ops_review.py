@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .client import LgmError, MirrorClient
+from .client import LgmError, MirrorClient, ResponseTooLargeError
 from .mr_review_collect import collect_mr_snapshot
 from .mr_review_models import (
     CODE_ARTIFACT_MAX_BYTES,
@@ -289,6 +289,11 @@ def mr_review_open(client: MirrorClient, repo: str, iid: int, *,
     env: dict | None = None
     for item in candidates:
         data = client.file_sync_fetch(repo, item["id"])
+        if len(data) > CODE_ARTIFACT_MAX_BYTES:
+            raise MrReviewError(
+                "review-package-too-large",
+                f"envelope {item.get('path')} is {len(data)} bytes, above the "
+                f"{CODE_ARTIFACT_MAX_BYTES} byte cap")
         try:
             candidate = verify_transfer_envelope(json.loads(data.decode("utf-8")))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -350,7 +355,14 @@ def mr_review_open(client: MirrorClient, repo: str, iid: int, *,
             repo, iid, "hash-mismatch",
             f"bundle size in transport ({plain}) does not match the envelope "
             f"({env['code']['bundle_size']})", previous)
-    data = client.file_sync_fetch(repo, bundle_item["id"])
+    declared = env["code"].get("bundle_size") or 0
+    cap = min(declared, CODE_ARTIFACT_MAX_BYTES) if declared else CODE_ARTIFACT_MAX_BYTES
+    try:
+        data = client.file_sync_fetch(repo, bundle_item["id"], max_bytes=cap)
+    except ResponseTooLargeError as e:
+        raise MrReviewError(
+            "review-package-too-large",
+            f"code bundle download exceeds the {cap} byte cap: {e.message}") from None
     if len(data) != env["code"]["bundle_size"]:
         return _not_ready(
             repo, iid, "hash-mismatch",
