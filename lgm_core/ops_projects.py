@@ -206,6 +206,8 @@ def _prepare_review_snapshots(c, repo: str, gitlab: str, proj: Path,
                 })
             except (LgmError, MrReviewError) as e:
                 out.append({"iid": iid, "status": "failed", "error": str(e)})
+            except Exception as e:
+                out.append({"iid": iid, "status": "failed", "error": repr(e)})
     finally:
         _discard_tree(work_dir)
     return out

@@ -578,6 +578,27 @@ def test_mr_sync_all_collects_per_mr_note_failures(tmp_path, monkeypatch):
                for e in res["summary"]["errors"])
 
 
+def test_mr_sync_all_review_oserror_stays_per_mr(tmp_path, monkeypatch):
+    opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
+
+    def broken_get_mr(iid, project=""):
+        raise OSError("git fetch died")
+
+    monkeypatch.setattr(ctx.client, "gitlab_get_mr", broken_get_mr)
+
+    res = opmod.op_mr_sync_all(ctx, {})
+    assert res["success"] is True
+    assert res["summary"]["notes_uploaded"] == 1
+    assert res["summary"]["branches_sent"] == 1
+    assert res["summary"]["failures"] == []
+    assert res["summary"]["errors"] == []
+    assert res["summary"]["review_failed"] == 1
+    reviews = res["repos"][0]["review_snapshots"]
+    assert reviews[0]["status"] == "failed"
+    assert "OSError" in reviews[0]["error"]
+    assert "git fetch died" in reviews[0]["error"]
+
+
 def test_mr_sync_all_blocked_carries_iids_for_diverged_branches(tmp_path, monkeypatch):
     opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
     monkeypatch.setattr(opmod, "_fetch_mr_branches",
