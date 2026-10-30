@@ -2,6 +2,8 @@ package localgitmirror.idea.gitlab
 
 import com.intellij.openapi.components.service
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -139,6 +141,30 @@ object GitLabApi {
     val message: String,
     val targetBranch: String = "",
   )
+
+  /** Full MR detail for the review snapshot collector; diffRefs is null when GitLab has not computed them yet. */
+  data class MrReviewDetail(
+    val code: Int,
+    val message: String,
+    val iid: Long,
+    val sourceProjectId: Long,
+    val targetProjectId: Long,
+    val webUrl: String,
+    val title: String,
+    val description: String?,
+    val state: String,
+    val draft: Boolean,
+    val sourceBranch: String,
+    val targetBranch: String,
+    val sourceSha: String,
+    val updatedAt: String,
+    val diffRefs: DiffRefs?,
+  )
+
+  data class BranchTipResult(val code: Int, val tip: String?, val message: String)
+
+  /** Raw discussion objects with positions untouched; the snapshot collector maps them itself. */
+  data class RawDiscussionsResult(val code: Int, val discussions: List<JsonObject>, val message: String)
 
   data class DiffPosition(val newPath: String, val newLine: Int)
   data class WriteResult(val code: Int, val message: String) {
@@ -314,6 +340,111 @@ object GitLabApi {
     } catch (t: Throwable) {
       val e = HttpClient.classifyError(t, isMirror = false)
       MrDetail(0, "", null, "${e.type}: ${e.message}")
+    }
+  }
+
+  /** GET {url}/api/v4/projects/{project}/merge_requests/{iid} → every identity field the review snapshot needs. */
+  fun getMrReviewDetail(conf: GitLabConfig.GitLabConf, iid: Int): MrReviewDetail {
+    return try {
+      val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+        "/merge_requests/$iid"
+      val conn = open(url, conf.token)
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+      if (code !in 200..299) return detailError(code, body.take(300))
+
+      val o = Json.parseToJsonElement(body).jsonObject
+      fun str(key: String): String = o[key]?.jsonPrimitive?.contentOrNull ?: ""
+      fun long(key: String): Long = o[key]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: 0L
+      MrReviewDetail(
+        code = code,
+        message = "OK",
+        iid = long("iid"),
+        sourceProjectId = long("source_project_id"),
+        targetProjectId = long("target_project_id"),
+        webUrl = str("web_url"),
+        title = str("title"),
+        description = if (o["description"] is JsonNull) null else str("description"),
+        state = str("state"),
+        draft = o["draft"]?.jsonPrimitive?.booleanOrNull
+          ?: o["work_in_progress"]?.jsonPrimitive?.booleanOrNull
+          ?: false,
+        sourceBranch = str("source_branch"),
+        targetBranch = str("target_branch"),
+        sourceSha = str("sha"),
+        updatedAt = str("updated_at"),
+        diffRefs = (o["diff_refs"] as? JsonObject)?.let { refs ->
+          DiffRefs(
+            baseSha = refs["base_sha"]?.jsonPrimitive?.contentOrNull ?: "",
+            headSha = refs["head_sha"]?.jsonPrimitive?.contentOrNull ?: "",
+            startSha = refs["start_sha"]?.jsonPrimitive?.contentOrNull ?: "",
+          )
+        },
+      )
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t, isMirror = false)
+      detailError(0, "${e.type}: ${e.message}")
+    }
+  }
+
+  private fun detailError(code: Int, message: String) = MrReviewDetail(
+    code, message, 0, 0, 0, "", "", null, "", false, "", "", "", "", null,
+  )
+
+  /** GET {url}/api/v4/projects/{project}/repository/branches/{branch} → current tip commit id. */
+  fun getBranchTip(conf: GitLabConfig.GitLabConf, branch: String): BranchTipResult {
+    return try {
+      val encoded = URLEncoder.encode(branch, "UTF-8").replace("+", "%20")
+      val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+        "/repository/branches/$encoded"
+      val conn = open(url, conf.token)
+      val code = conn.responseCode
+      val body = HttpClient.readBody(conn)
+      if (code !in 200..299) return BranchTipResult(code, null, body.take(300))
+      val tip = Json.parseToJsonElement(body).jsonObject["commit"]?.jsonObject
+        ?.get("id")?.jsonPrimitive?.contentOrNull
+      BranchTipResult(code, tip, "OK")
+    } catch (t: Throwable) {
+      val e = HttpClient.classifyError(t, isMirror = false)
+      BranchTipResult(0, null, "${e.type}: ${e.message}")
+    }
+  }
+
+  /**
+   * GET {url}/api/v4/projects/{project}/merge_requests/{iid}/discussions — raw JSON
+   * objects with full positions, paginated via X-Next-Page until GitLab stops
+   * advertising a next page.
+   */
+  fun listMrDiscussionsRaw(conf: GitLabConfig.GitLabConf, iid: Int): RawDiscussionsResult {
+    if (conf.url.isBlank() || conf.project.isBlank() || conf.token.isBlank()) {
+      return RawDiscussionsResult(0, emptyList(), "not-detected")
+    }
+    return try {
+      val out = mutableListOf<JsonObject>()
+      var page = 1
+      while (true) {
+        val url = "${conf.url.trimEnd('/')}/api/v4/projects/${projectPathEncoded(conf.project)}" +
+          "/merge_requests/$iid/discussions?per_page=100&page=$page"
+        val conn = open(url, conf.token)
+        val code = conn.responseCode
+        if (code !in 200..299) {
+          val err = conn.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+          return RawDiscussionsResult(code, out, redirectHint(conn, code, err))
+        }
+        val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        val arr = Json.parseToJsonElement(body).jsonArray
+        if (arr.isEmpty()) break
+        for (d in arr) out.add(d.jsonObject)
+        val next = conn.getHeaderField("X-Next-Page")?.trim().orEmpty()
+        if (next.isEmpty()) break
+        val nextPage = next.toIntOrNull()
+        require(nextPage != null && nextPage > page) { "GitLab returned invalid pagination" }
+        page = nextPage
+      }
+      RawDiscussionsResult(200, out, "")
+    } catch (t: Throwable) {
+      localgitmirror.idea.net.Cancellation.rethrow(t)
+      RawDiscussionsResult(0, emptyList(), t.message ?: "error")
     }
   }
 
