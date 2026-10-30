@@ -58,6 +58,53 @@ class MrReviewBrowserTest {
     assertEquals(2, browser.descendants().filterIsInstance<JTabbedPane>().single().selectedIndex)
   }
 
+  @Test
+  fun `batch entries get their own tab and the general kind stays visible`() = onEdt {
+    val received = mutableListOf<MrReviewEntry>()
+    val browser = MrReviewBrowser({ JTextArea(it.text) }, received::add)
+    browser.update(emptyList(), emptyList())
+    val tabs = browser.descendants().filterIsInstance<JTabbedPane>().single()
+    assertEquals(3, tabs.tabCount)
+
+    browser.updateBatches(listOf(
+      MrReviewEntry("batch:b1:f1:1", "Anchored finding", "src/A.kt", 12, badge = "anchored",
+        batchEntry = MrBatchEntryPreview("b1", "f1", 1, "anchored", null, false, "src/A.kt", 12, "new", "Anchored finding")),
+      MrReviewEntry("batch:b1:f2:1", "General finding", badge = "general",
+        batchEntry = MrBatchEntryPreview("b1", "f2", 1, "general", null, false, null, null, null, "General finding")),
+    ))
+
+    assertEquals(4, tabs.tabCount)
+    assertEquals(3, tabs.selectedIndex)
+    assertEquals("Anchored finding", received.last().text)
+    val list = (tabs.getComponentAt(3) as javax.swing.JScrollPane).viewport.view as JList<*>
+    assertEquals(2, list.model.size)
+    list.selectedIndex = 1
+    assertEquals("general", received.last().badge)
+    assertEquals("General finding", received.last().text)
+
+    browser.updateBatches(emptyList())
+    assertEquals(3, tabs.tabCount)
+  }
+
+  @Test
+  fun `drafts stay on their tab when batches arrive`() = onEdt {
+    val received = mutableListOf<MrReviewEntry>()
+    val browser = MrReviewBrowser({ JTextArea(it.text) }, received::add)
+    val reply = MrReplies.Reply(MrReplies.Kind.NEW_GENERAL, "", "", 0, false, "Draft body")
+    browser.update(listOf(reply), emptyList())
+    assertEquals(0, browser.descendants().filterIsInstance<JTabbedPane>().single().selectedIndex)
+
+    browser.updateBatches(listOf(
+      MrReviewEntry("batch:b1:f1:1", "Finding", badge = "general",
+        batchEntry = MrBatchEntryPreview("b1", "f1", 1, "general", null, false, null, null, null, "Finding")),
+    ))
+
+    val tabs = browser.descendants().filterIsInstance<JTabbedPane>().single()
+    assertEquals(4, tabs.tabCount)
+    assertEquals(0, tabs.selectedIndex)
+    assertEquals("Draft body", received.last().text)
+  }
+
   private fun onEdt(action: () -> Unit) = SwingUtilities.invokeAndWait(action)
 
   private fun Component.descendants(): Sequence<Component> = sequence {

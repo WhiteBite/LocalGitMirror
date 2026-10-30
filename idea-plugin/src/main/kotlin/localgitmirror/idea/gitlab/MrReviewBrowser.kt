@@ -26,6 +26,8 @@ internal data class MrReviewEntry(
   val line: Int? = null,
   val reply: MrReplies.Reply? = null,
   val discussion: GitLabApi.MrDiscussion? = null,
+  val badge: String? = null,
+  val batchEntry: MrBatchEntryPreview? = null,
 )
 
 internal class MrReviewBrowser(
@@ -37,6 +39,8 @@ internal class MrReviewBrowser(
   private val drafts = entryList()
   private val discussions = entryList()
   private val files = entryList()
+  private val batches = entryList()
+  private var batchesTabShown = false
   private var changing = false
   private var selectedKey: String? = null
 
@@ -45,6 +49,7 @@ internal class MrReviewBrowser(
       tabs.addTab("", JBScrollPane(list))
       list.addListSelectionListener { if (!changing && !it.valueIsAdjusting) showSelected(list) }
     }
+    batches.addListSelectionListener { if (!changing && !it.valueIsAdjusting) showSelected(batches) }
     tabs.addChangeListener { if (!changing) showSelected(activeList()) }
     add(JSplitPane(JSplitPane.VERTICAL_SPLIT, tabs, JBScrollPane(detail).apply {
       horizontalScrollBarPolicy = JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
@@ -79,6 +84,37 @@ internal class MrReviewBrowser(
     showSelected(active)
   }
 
+  fun updateBatches(items: List<MrReviewEntry>) {
+    if (items.isEmpty() && !batchesTabShown) return
+    changing = true
+    if (items.isNotEmpty() && !batchesTabShown) {
+      tabs.addTab("", JBScrollPane(batches))
+      batchesTabShown = true
+    }
+    if (items.isEmpty() && batchesTabShown) {
+      val idx = batchTabIndex()
+      if (idx >= 0) tabs.removeTabAt(idx)
+      batchesTabShown = false
+    }
+    batches.setListData(items.toTypedArray())
+    if (batchesTabShown) {
+      tabs.setTitleAt(batchTabIndex(), message("mrworkspace.batches", items.size))
+      if (selectedKey == null && drafts.model.size == 0 && discussions.model.size == 0 && items.isNotEmpty()) {
+        tabs.selectedIndex = batchTabIndex()
+      }
+      val index = (0 until batches.model.size).firstOrNull { batches.model.getElementAt(it).key == selectedKey }
+      if (batches.model.size > 0 && tabs.selectedIndex == batchTabIndex()) batches.selectedIndex = index ?: 0
+    }
+    changing = false
+    if (batchesTabShown && tabs.selectedIndex == batchTabIndex()) showSelected(batches)
+    else if (!batchesTabShown && selectedKey?.startsWith("batch:") == true) {
+      selectedKey = null
+      showSelected(activeList())
+    }
+  }
+
+  private fun batchTabIndex(): Int = if (batchesTabShown) tabs.tabCount - 1 else -1
+
   fun files(paths: List<String>) {
     changing = true
     files.setListData(paths.map { MrReviewEntry("file:$it", it, it) }.toTypedArray())
@@ -111,9 +147,10 @@ internal class MrReviewBrowser(
     detail.repaint()
   }
 
-  private fun activeList(): JList<MrReviewEntry> = when (tabs.selectedIndex) {
-    1 -> discussions
-    2 -> files
+  private fun activeList(): JList<MrReviewEntry> = when {
+    tabs.selectedIndex == 1 -> discussions
+    tabs.selectedIndex == 2 -> files
+    batchesTabShown && tabs.selectedIndex == batchTabIndex() -> batches
     else -> drafts
   }
 
@@ -127,7 +164,8 @@ internal class MrReviewBrowser(
         val label = super.getListCellRendererComponent(list, value, index, selected, focus) as JLabel
         val entry = value as MrReviewEntry
         val location = entry.path?.let { it.substringAfterLast('/') + (entry.line?.let { n -> ":$n" } ?: "") }
-        label.text = (location?.let { "$it  " }.orEmpty() + entry.text.lineSequence().firstOrNull().orEmpty()).take(180)
+        val badge = entry.badge?.let { "[$it] " }.orEmpty()
+        label.text = (badge + location?.let { "$it  " }.orEmpty() + entry.text.lineSequence().firstOrNull().orEmpty()).take(180)
         label.toolTipText = entry.path ?: message("mrworkspace.general")
         label.border = JBUI.Borders.empty(8)
         return label

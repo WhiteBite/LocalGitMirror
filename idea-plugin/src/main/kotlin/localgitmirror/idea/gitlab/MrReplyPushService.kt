@@ -193,6 +193,29 @@ class MrReplyPushService(private val project: Project) {
     }
   }
 
+  /** Publishes user-selected v2 batches; each selected batch is posted as a whole
+   *  immutable document, unselected batches stay pending in the postbox. */
+  internal fun pushSelectedBatches(batches: List<PendingBatch>): List<FileReport> {
+    if (batches.isEmpty()) return emptyList()
+    if (!PUSH_GATE.tryEnter()) return batches.map { busyReport(it.path) }
+    try {
+      val settings = service<MirrorSettingsService>().state
+      val conf = GitLabConfig.resolve(project)
+      if (!GitLabConfig.hasApi(conf)) {
+        return batches.map { FileReport(it.path, 0, 0, 0, 1, listOf("GitLab URL/project/token not configured")) }
+      }
+      val repo = resolveRepo(settings)
+        ?: return batches.map { FileReport(it.path, 0, 0, 0, 1, listOf("repo not resolved")) }
+      val reports = batches.map { pushReviewBatch(it, conf, repo) }
+      runReceiptHandoff(repo, settings)
+      return reports
+    } finally {
+      PUSH_GATE.exit()
+    }
+  }
+
+  internal fun repoName(): String? = resolveRepo(service<MirrorSettingsService>().state)
+
   private fun resolveRepo(settings: MirrorSettingsService.State): String? {
     val baseDir = project.basePath ?: return null
     return runCatching {
@@ -710,6 +733,20 @@ object MrReviewBatchPublisher {
     "state", "source_sha", "target_tip_sha", "target_project_id",
     "gitlab_url", "diff_refs", "version_fingerprint",
   )
+
+  data class Precheck(val stale: StaleInfo?, val error: String?, val webUrl: String)
+
+  /** Read-only freshness gate for UI previews: same check [publish] runs before
+   *  any write, without posting anything. */
+  fun precheck(conf: GitLabConfig.GitLabConf, doc: MrReviewHandoff.Document): Precheck {
+    val refs = requireNotNull(doc.refs) { "v2 document carries refs" }
+    val g = gate(conf, doc, refs)
+    return Precheck(
+      stale = if (g.drift.isNotEmpty()) StaleInfo(g.expected, g.fresh, g.drift) else null,
+      error = g.error,
+      webUrl = g.webUrl,
+    )
+  }
 
   fun publish(conf: GitLabConfig.GitLabConf, doc: MrReviewHandoff.Document,
               journal: MrReviewJournal? = null): BatchResult {
