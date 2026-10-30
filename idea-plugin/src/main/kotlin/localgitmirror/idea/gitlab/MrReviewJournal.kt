@@ -86,6 +86,8 @@ class MrReviewJournal private constructor(val file: File, private var state: Sta
   private var pendingPath: String = ""
 
   val readable: Boolean get() = state != null
+  var replacedCorrupt: Boolean = false
+    private set
   val iid: Int get() = requireState().iid
   val batchId: String get() = requireState().batchId
   val attempts: List<AttemptRecord> get() = requireState().attempts
@@ -384,6 +386,7 @@ class MrReviewJournal private constructor(val file: File, private var state: Sta
       journal.pendingItemId = postboxItemId
       journal.pendingPath = postboxPath
       if (journal.state == null) {
+        journal.replacedCorrupt = file.isFile
         val batch = requireNotNull(doc.batch) { "v2 document carries a batch" }
         val refs = requireNotNull(doc.refs) { "v2 document carries refs" }
         journal.state = State(

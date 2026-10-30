@@ -182,10 +182,8 @@ class MrReviewEditorIntegrationTest {
         val files = manager.openFiles.filterIsInstance<MrReviewVirtualFile>()
         val editor = manager.getEditors(files.single()).single()
         val dialog = editor.component as MrReviewDialog
-        PlatformTestUtil.waitWithEventsDispatching("background load did not settle", {
-          dialog.descendants().none {
-            it is javax.swing.JLabel && it.icon === com.intellij.ui.AnimatedIcon.Default.INSTANCE
-          }
+        PlatformTestUtil.waitWithEventsDispatching("Review diff did not load", {
+          dialog.descendants().filterIsInstance<com.intellij.openapi.editor.impl.EditorComponentImpl>().any()
         }, 30)
 
         val doc = fixtureDoc()
@@ -205,7 +203,6 @@ class MrReviewEditorIntegrationTest {
         val tabs = dialog.descendants().filterIsInstance<JTabbedPane>().single()
         assertEquals(4, tabs.tabCount)
         assertTrue(tabs.getTitleAt(3).endsWith("(8)"), "batches tab title: ${tabs.getTitleAt(3)}")
-        tabs.selectedIndex = 3
 
         val publish = dialog.descendants().filterIsInstance<JButton>()
           .single { it.getClientProperty("JButton.buttonType") == "default" }
@@ -214,7 +211,11 @@ class MrReviewEditorIntegrationTest {
         val footerText = LocalGitMirrorBundle.message("mrview.footer.batches", 1, 2, 4, 8, 4)
         assertTrue(dialog.descendants().filterIsInstance<JLabel>().any { it.text == footerText })
 
+        PlatformTestUtil.waitWithEventsDispatching("Review diff did not load", {
+          dialog.descendants().filterIsInstance<com.intellij.openapi.editor.impl.EditorComponentImpl>().any()
+        }, 30)
         if (!GraphicsEnvironment.isHeadless()) capture(dialog, "review-work")
+        tabs.selectedIndex = 3
 
         dialog.applyBatchStates(listOf(stale))
         val publishAfter = dialog.descendants().filterIsInstance<JButton>()

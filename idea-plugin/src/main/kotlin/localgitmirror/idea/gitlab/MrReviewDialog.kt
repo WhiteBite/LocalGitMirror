@@ -585,7 +585,8 @@ internal class MrReviewDialog(
       isFocusPainted = false
       isBorderPainted = false
       isContentAreaFilled = false
-      foreground = MUTED
+      foreground = JBColor(0x1565C0, 0x548AF7)
+      cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
       addActionListener { onClick() }
     }
 

@@ -472,7 +472,7 @@ class MrReplyPushService(private val project: Project) {
 
   /** v2 review batch: gated publication with a per-entry journal; the receipt
    *  handoff at the end of the pass uploads receipts and acks terminal batches. */
-  private fun pushReviewBatch(pending: PendingBatch, conf: GitLabConfig.GitLabConf, repo: String): FileReport {
+  internal fun pushReviewBatch(pending: PendingBatch, conf: GitLabConfig.GitLabConf, repo: String): FileReport {
     val journal = pending.batchId.takeIf { it.isNotBlank() }?.let { bid ->
       project.basePath?.let { base ->
         runCatching {
@@ -483,14 +483,25 @@ class MrReplyPushService(private val project: Project) {
         }.getOrNull()
       }
     }
+    if (journal == null) {
+      return FileReport(
+        path = pending.path, posted = 0, dupSkipped = 0, skipped = 0, failed = 1,
+        details = listOf("publication journal unavailable; batch not published journal-less; postbox item left unacked for retry"),
+      )
+    }
     val result = MrReviewBatchPublisher.publish(conf, pending.parsed, journal)
+    val details = if (journal.replacedCorrupt) {
+      result.details + "publication journal was unreadable and has been replaced; prior attempt records lost; marker scan remains the duplicate backstop"
+    } else {
+      result.details
+    }
     return FileReport(
       path = pending.path,
       posted = result.posted,
       dupSkipped = result.duplicates,
       skipped = 0,
       failed = result.blocked,
-      details = result.details,
+      details = details,
       batch = result,
     )
   }
