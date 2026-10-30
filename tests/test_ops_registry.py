@@ -152,6 +152,24 @@ _FROZEN_OPS = {
     "mr_replies_push": ["repo", "iid", "dry_run"],
     "mr_pending": ["repo"],
     "mr_review_receipts": ["action", "repo", "iid", "dry_run"],
+    "mr_review_prepare": ["repo", "iid", "project", "checkout", "notes_only",
+                          "work_dir"],
+    "mr_review_open": ["repo", "iid", "snapshot_id", "cursor", "budget_bytes",
+                       "home"],
+    "mr_review_read": ["repo", "snapshot_id", "view", "paths", "group", "side",
+                       "cursor", "budget_bytes", "context_lines", "home"],
+    "mr_review_search": ["repo", "snapshot_id", "query", "side", "scope",
+                         "paths", "cursor", "budget_bytes", "home"],
+    "mr_review_context": ["repo", "snapshot_id", "path", "line", "side",
+                          "budget_bytes", "context_lines", "home"],
+    "mr_review_progress": ["repo", "iid", "action", "file", "text",
+                           "expected_revision", "home"],
+    "mr_review_refresh": ["repo", "iid", "previous_snapshot_id", "home"],
+    "mr_review_materialize": ["repo", "gitlab_url", "target_project_id",
+                              "action", "environment_id", "purpose", "fresh",
+                              "snapshot_id", "home"],
+    "mr_review_findings": ["action", "file", "text", "expected_revision",
+                           "home"],
     "guide": [],
     "update": [],
     "chat_send": ["text"],
@@ -169,7 +187,7 @@ _FROZEN_OPS = {
 
 
 def test_registry_matches_frozen_baseline():
-    assert len(REGISTRY) == len(_FROZEN_OPS) == 40
+    assert len(REGISTRY) == len(_FROZEN_OPS) == 49
     assert [op.name for op in REGISTRY] == list(_FROZEN_OPS)
     for op in REGISTRY:
         assert callable(op.run), f"Op '{op.name}' run is not callable"
@@ -180,6 +198,6 @@ def test_registry_matches_frozen_baseline():
 
 def test_facade_reexports_public_api():
     from lgm_core.ops import REGISTRY, Param, Op, Ctx, get_op, op_names
-    assert REGISTRY is not None and len(REGISTRY) == 40
+    assert REGISTRY is not None and len(REGISTRY) == 49
     assert callable(get_op) and callable(op_names)
     assert Param is not None and Op is not None and Ctx is not None

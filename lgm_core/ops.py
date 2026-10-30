@@ -77,6 +77,180 @@ from .ops_chat import (
 from .ops_projects import (
     op_mr_projects_scan, op_mr_projects_list, op_mr_sync_all,
 )
+from .mr_review_models import (
+    BUDGET_BYTES_MAX, BUDGET_BYTES_MIN, MrReviewError, validate_budget,
+)
+from .mr_review_reader import DEFAULT_BUDGET_BYTES, DEFAULT_CONTEXT_LINES
+from .mr_review_store import MrReviewStore
+from .mr_review_progress import mr_review_progress, mr_review_refresh
+from .mr_review_environment import mr_review_materialize
+from .mr_review_findings import mr_review_findings
+from .ops_review import (
+    mr_review_prepare, mr_review_open, mr_review_read, mr_review_search,
+    mr_review_context,
+)
+
+_BUDGET_HELP = ("Upper bound in UTF-8 bytes for the fully serialized result "
+                f"({BUDGET_BYTES_MIN}..{BUDGET_BYTES_MAX})")
+_HOME_HELP = ("Review store root override (default: LGM_REVIEWS_HOME or "
+              "~/.lgm/reviews)")
+_HEX64 = r"^$|^[0-9a-f]{64}$"
+_HEX64_REQUIRED = r"^[0-9a-f]{64}$"
+
+
+def _review_failure(exc: MrReviewError) -> dict:
+    return {"success": False, "code": exc.code, "error": exc.message}
+
+
+def _review_home(args: dict) -> str | None:
+    return str(args.get("home") or "") or None
+
+
+def _review_paths(args: dict) -> list[str]:
+    paths = args.get("paths") or []
+    if not isinstance(paths, list) \
+            or any(not isinstance(p, str) or not p for p in paths):
+        raise MrReviewError("invalid-schema",
+                            "paths must be an array of non-empty strings")
+    return paths
+
+
+def op_mr_review_prepare(ctx: Ctx, args: dict) -> dict:
+    c = _client(ctx)
+    repo = _repo_arg(args)
+    project = str(args.get("project") or "")
+    checkout = str(args.get("checkout") or "")
+    if not project or not checkout:
+        raise LgmError("config", "project and checkout are required paths")
+    try:
+        return mr_review_prepare(
+            c, repo, int(args.get("iid") or 0), project, checkout,
+            allow_code_upload=not bool(args.get("notes_only")),
+            work_dir=str(args.get("work_dir") or "") or None)
+    except MrReviewError as exc:
+        return _review_failure(exc)
+
+
+def op_mr_review_open(ctx: Ctx, args: dict) -> dict:
+    c = _client(ctx)
+    repo = _repo_arg(args)
+    try:
+        budget = validate_budget(args.get("budget_bytes"))
+        return mr_review_open(
+            c, repo, int(args.get("iid") or 0),
+            snapshot_id=str(args.get("snapshot_id") or ""),
+            cursor=str(args.get("cursor") or ""),
+            budget_bytes=budget, home=_review_home(args))
+    except MrReviewError as exc:
+        return _review_failure(exc)
+
+
+def op_mr_review_read(ctx: Ctx, args: dict) -> dict:
+    repo = _repo_arg(args)
+    try:
+        budget = validate_budget(args.get("budget_bytes"))
+        paths = _review_paths(args)
+        return mr_review_read(
+            repo, str(args.get("snapshot_id") or ""),
+            str(args.get("view") or ""),
+            paths=paths, group=str(args.get("group") or ""),
+            side=str(args.get("side") or "new"),
+            cursor=str(args.get("cursor") or ""),
+            budget_bytes=budget,
+            context_lines=int(args.get("context_lines") or 0),
+            home=_review_home(args))
+    except MrReviewError as exc:
+        return _review_failure(exc)
+
+
+def op_mr_review_search(ctx: Ctx, args: dict) -> dict:
+    repo = _repo_arg(args)
+    try:
+        budget = validate_budget(args.get("budget_bytes"))
+        paths = _review_paths(args)
+        side = str(args.get("side") or "")
+        return mr_review_search(
+            repo, str(args.get("snapshot_id") or ""),
+            str(args.get("query") or ""),
+            side=side or None, scope=str(args.get("scope") or "tree"),
+            paths=paths or None, cursor=str(args.get("cursor") or ""),
+            budget_bytes=budget, home=_review_home(args))
+    except MrReviewError as exc:
+        return _review_failure(exc)
+
+
+def op_mr_review_context(ctx: Ctx, args: dict) -> dict:
+    repo = _repo_arg(args)
+    try:
+        budget = validate_budget(args.get("budget_bytes"))
+        return mr_review_context(
+            repo, str(args.get("snapshot_id") or ""),
+            str(args.get("path") or ""),
+            line=int(args.get("line") or 0),
+            side=str(args.get("side") or "new"),
+            budget_bytes=budget,
+            context_lines=int(args.get("context_lines") or 0),
+            home=_review_home(args))
+    except MrReviewError as exc:
+        return _review_failure(exc)
+
+
+def op_mr_review_progress(ctx: Ctx, args: dict) -> dict:
+    repo = _repo_arg(args)
+    try:
+        return mr_review_progress(
+            repo, int(args.get("iid") or 0),
+            action=str(args.get("action") or "list"),
+            file=str(args.get("file") or ""), text=str(args.get("text") or ""),
+            expected_revision=int(args.get("expected_revision") or 0),
+            home=_review_home(args))
+    except MrReviewError as exc:
+        return _review_failure(exc)
+
+
+def op_mr_review_refresh(ctx: Ctx, args: dict) -> dict:
+    repo = _repo_arg(args)
+    try:
+        return mr_review_refresh(
+            repo, int(args.get("iid") or 0),
+            previous_snapshot_id=str(args.get("previous_snapshot_id") or ""),
+            home=_review_home(args))
+    except MrReviewError as exc:
+        return _review_failure(exc)
+
+
+def op_mr_review_materialize(ctx: Ctx, args: dict) -> dict:
+    repo = _repo_arg(args)
+    action = str(args.get("action") or "")
+    try:
+        if action not in ("create", "status", "release"):
+            raise MrReviewError(
+                "invalid-schema",
+                "action must be one of ['create', 'release', 'status'], "
+                f"got {action!r}")
+        store = MrReviewStore(str(args.get("gitlab_url") or ""),
+                              int(args.get("target_project_id") or 0), repo,
+                              home=_review_home(args))
+        return mr_review_materialize(
+            store, action,
+            environment_id=str(args.get("environment_id") or ""),
+            purpose=str(args.get("purpose") or ""),
+            fresh=bool(args.get("fresh")),
+            snapshot_id=str(args.get("snapshot_id") or ""))
+    except MrReviewError as exc:
+        return _review_failure(exc)
+
+
+def op_mr_review_findings(ctx: Ctx, args: dict) -> dict:
+    try:
+        return mr_review_findings(
+            str(args.get("action") or ""),
+            file=str(args.get("file") or ""),
+            text=str(args.get("text") or ""),
+            expected_revision=int(args.get("expected_revision") or 0),
+            home=_review_home(args))
+    except MrReviewError as exc:
+        return _review_failure(exc)
 
 
 # ── REGISTRY ─────────────────────────────────────────────────────────────────
@@ -396,6 +570,221 @@ REGISTRY: list[Op] = [
                   "Plan only: no uploads, no acks, no store writes"),
         ],
         run=op_mr_review_receipts,
+    ),
+    Op(
+        name="mr_review_prepare",
+        summary=("WORK: collect one consistent MR review snapshot (metadata, discussions "
+                 "and a self-contained code bundle) and place its artifacts in the "
+                 "encrypted postbox: bundle first, transfer envelope last. Deduplicated "
+                 "by code_id; an aged bundle is refreshed so HOME can still fetch it."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "GitLab MR iid", required=True, minimum=1),
+            Param("project", "str", "",
+                  "Local GitLab checkout used to resolve the origin remote",
+                  required=True),
+            Param("checkout", "str", "",
+                  "Checkout path the snapshot is collected from", required=True),
+            Param("notes_only", "bool", False,
+                  "Skip the code artifact upload (metadata/discussions only); an "
+                  "absent or aged bundle is reported as a limitation instead"),
+            Param("work_dir", "str", "",
+                  "Directory for temporary bundle artifacts (default: system temp)"),
+        ],
+        run=op_mr_review_prepare,
+    ),
+    Op(
+        name="mr_review_open",
+        summary=("HOME: import the requested (or latest) complete snapshot of an MR from "
+                 "the postbox into the persistent review store and return its identity, "
+                 "limitations and the first bounded inventory page. Call again with the "
+                 "page's next_cursor for subsequent inventory pages (no postbox access); "
+                 "an already-imported snapshot never depends on the postbox TTL. A "
+                 "missing/expired bundle or digest drift returns a typed not-ready "
+                 "result and leaves the current snapshot readable."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "GitLab MR iid", required=True, minimum=1),
+            Param("snapshot_id", "str", "",
+                  "Exact snapshot to import (64-char hex; default: latest in the postbox)",
+                  pattern=_HEX64),
+            Param("cursor", "str", "",
+                  "Inventory page cursor from a previous open (exclusive with snapshot_id)"),
+            Param("budget_bytes", "int", DEFAULT_BUDGET_BYTES, _BUDGET_HELP,
+                  minimum=BUDGET_BYTES_MIN, maximum=BUDGET_BYTES_MAX),
+            Param("home", "str", "", _HOME_HELP),
+        ],
+        run=op_mr_review_open,
+    ),
+    Op(
+        name="mr_review_read",
+        summary=("HOME: read one bounded page of an imported snapshot: view=diff (changed "
+                 "files with old/new coordinates and OIDs), view=file (literal file "
+                 "content of one side) or view=discussions (review threads). Pages carry "
+                 "complete/next_cursor/totals/shown range; reads come only from the "
+                 "store's Git objects, never a worktree. This is the bounded snapshot "
+                 "reader, not the legacy mr_notes full-text dump."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("snapshot_id", "str", "",
+                  "Imported snapshot to read (64-char hex)", required=True,
+                  pattern=_HEX64_REQUIRED),
+            Param("view", "str", "", "Page view", required=True,
+                  enum=["diff", "file", "discussions"]),
+            Param("paths", "list", None,
+                  "Restrict to these paths (repeatable; exclusive with group)"),
+            Param("group", "str", "",
+                  "Restrict to one top-level module/group (exclusive with paths)"),
+            Param("side", "str", "new", "Which side to read",
+                  enum=["old", "new", "target"]),
+            Param("cursor", "str", "", "Page cursor from a previous read"),
+            Param("budget_bytes", "int", DEFAULT_BUDGET_BYTES, _BUDGET_HELP,
+                  minimum=BUDGET_BYTES_MIN, maximum=BUDGET_BYTES_MAX),
+            Param("context_lines", "int", DEFAULT_CONTEXT_LINES,
+                  "Diff context lines per hunk", minimum=0),
+            Param("home", "str", "", _HOME_HELP),
+        ],
+        run=op_mr_review_read,
+        needs_client=False,
+    ),
+    Op(
+        name="mr_review_search",
+        summary=("HOME: bounded literal search over an imported snapshot's Git objects "
+                 "(never a worktree, no regex): scope=tree searches whole file contents, "
+                 "added/removed/changed search the corresponding changed lines. Stable "
+                 "hits carry path/side/line/column plus a reader handle; pages carry "
+                 "complete/next_cursor/totals."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("snapshot_id", "str", "",
+                  "Imported snapshot to search (64-char hex)", required=True,
+                  pattern=_HEX64_REQUIRED),
+            Param("query", "str", "", "Literal text to find", required=True),
+            Param("side", "str", "", "Side to search (empty: derived from scope)",
+                  enum=["", "old", "new", "target"]),
+            Param("scope", "str", "tree", "What to search",
+                  enum=["tree", "added", "removed", "changed"]),
+            Param("paths", "list", None, "Restrict to these paths (repeatable)"),
+            Param("cursor", "str", "", "Page cursor from a previous search"),
+            Param("budget_bytes", "int", DEFAULT_BUDGET_BYTES, _BUDGET_HELP,
+                  minimum=BUDGET_BYTES_MIN, maximum=BUDGET_BYTES_MAX),
+            Param("home", "str", "", _HOME_HELP),
+        ],
+        run=op_mr_review_search,
+        needs_client=False,
+    ),
+    Op(
+        name="mr_review_context",
+        summary=("HOME: bounded textual context around one line of an imported snapshot's "
+                 "side (line=0 returns the file head window); huge lines are split with "
+                 "byte continuation, never silently truncated."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("snapshot_id", "str", "",
+                  "Imported snapshot to read (64-char hex)", required=True,
+                  pattern=_HEX64_REQUIRED),
+            Param("path", "str", "", "File path inside the snapshot", required=True),
+            Param("line", "int", 0, "1-based line to center on (0: file head)",
+                  minimum=0),
+            Param("side", "str", "new", "Which side to read",
+                  enum=["old", "new", "target"]),
+            Param("budget_bytes", "int", DEFAULT_BUDGET_BYTES, _BUDGET_HELP,
+                  minimum=BUDGET_BYTES_MIN, maximum=BUDGET_BYTES_MAX),
+            Param("context_lines", "int", DEFAULT_CONTEXT_LINES,
+                  "Lines of context around the target line", minimum=0),
+            Param("home", "str", "", _HOME_HELP),
+        ],
+        run=op_mr_review_context,
+        needs_client=False,
+    ),
+    Op(
+        name="mr_review_progress",
+        summary=("HOME: list or mark per-unit review progress of one MR in the review "
+                 "store. action=list pages the current (or requested) snapshot's units "
+                 "with their states (optional JSON query via file/text: {snapshot_id?, "
+                 "cursor?, limit?}); action=mark writes one unit state (JSON input "
+                 "{snapshot_id?, path, state, reason?, evidence?} in exactly one of "
+                 "file/text) with compare-and-swap on expected_revision."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "GitLab MR iid", required=True, minimum=1),
+            Param("action", "str", "list", "list or mark", enum=["list", "mark"]),
+            Param("file", "str", "", "Path to a JSON input file"),
+            Param("text", "str", "", "Inline JSON input"),
+            Param("expected_revision", "int", 0,
+                  "CAS revision for action=mark (0 inserts a fresh row)", minimum=0),
+            Param("home", "str", "", _HOME_HELP),
+        ],
+        run=op_mr_review_progress,
+        needs_client=False,
+    ),
+    Op(
+        name="mr_review_refresh",
+        summary=("HOME: compare the previous installed snapshot of one MR with the current "
+                 "one and migrate review progress plus finding applicability (unchanged "
+                 "units carry their state over; changed units fall back to delivered; "
+                 "stale findings are invalidated). Run after mr_review_open imported a "
+                 "newer snapshot; the current pointer is never moved."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "GitLab MR iid", required=True, minimum=1),
+            Param("previous_snapshot_id", "str", "",
+                  "Explicit previous snapshot (64-char hex; default: most recently "
+                  "imported other snapshot of the MR)", pattern=_HEX64),
+            Param("home", "str", "", _HOME_HELP),
+        ],
+        run=op_mr_review_refresh,
+        needs_client=False,
+    ),
+    Op(
+        name="mr_review_materialize",
+        summary=("HOME: manage detached worktree environments at a snapshot's exact "
+                 "source_sha for local probes: action=create (one reusable clean "
+                 "environment per snapshot; fresh=true creates an independent one), "
+                 "action=status (clean/dirty/busy/missing plus tracked-diff digest and "
+                 "untracked/ignored summaries), action=release (explicit removal of a "
+                 "clean environment). A dirty or busy environment is never reset."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("gitlab_url", "str", "",
+                  "GitLab base URL of the MR's project", required=True),
+            Param("target_project_id", "int", 0, "GitLab target project id",
+                  required=True, minimum=1),
+            Param("action", "str", "", "create, status or release", required=True,
+                  enum=["create", "status", "release"]),
+            Param("environment_id", "str", "",
+                  "Environment id (required for status/release; create issues its own)"),
+            Param("purpose", "str", "",
+                  "Free-form purpose recorded with the environment (create)"),
+            Param("fresh", "bool", False,
+                  "Create an independent environment even if a reusable clean one exists"),
+            Param("snapshot_id", "str", "",
+                  "Snapshot to materialize (64-char hex; required for create)",
+                  pattern=_HEX64),
+            Param("home", "str", "", _HOME_HELP),
+        ],
+        run=op_mr_review_materialize,
+        needs_client=False,
+    ),
+    Op(
+        name="mr_review_findings",
+        summary=("HOME: save, list or batch-select revisioned review findings in the "
+                 "review store. action=save appends one finding revision (full finding "
+                 "document via file/text, CAS on expected_revision); action=list pages "
+                 "the findings of one identity; action=create_batch validates the "
+                 "selection and writes a v2 review batch artifact for mr_replies_send "
+                 "review_file."),
+        params=[
+            Param("action", "str", "", "list, save or create_batch", required=True,
+                  enum=["list", "save", "create_batch"]),
+            Param("file", "str", "", "Path to a JSON input file"),
+            Param("text", "str", "", "Inline JSON input"),
+            Param("expected_revision", "int", 0,
+                  "CAS revision count for action=save (0 for a new finding)", minimum=0),
+            Param("home", "str", "", _HOME_HELP),
+        ],
+        run=op_mr_review_findings,
+        needs_client=False,
     ),
     Op(
         name="guide",

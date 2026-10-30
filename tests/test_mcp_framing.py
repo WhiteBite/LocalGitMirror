@@ -1,7 +1,9 @@
 """Test MCP stdio transport (NDJSON out; NDJSON + Content-Length in) and dispatch."""
+import base64
 import io
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -428,3 +430,231 @@ def test_tools_call_success_result_has_no_is_error():
     assert "isError" not in res
     data = json.loads(res["content"][0]["text"])
     assert "roots" in data
+
+
+# ── review ops: one CLI/MCP result contract, bounded surfaces ────────────────
+
+REVIEW_OPS = ["mr_review_prepare", "mr_review_open", "mr_review_read",
+              "mr_review_search", "mr_review_context", "mr_review_progress",
+              "mr_review_refresh", "mr_review_materialize",
+              "mr_review_findings"]
+
+BOUNDED_OPS = ["mr_review_open", "mr_review_read", "mr_review_search",
+               "mr_review_context"]
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SNAP64 = "ab" * 32
+
+
+def _mcp_subprocess(messages: list[dict]) -> list[dict]:
+    payload = "".join(json.dumps(m) + "\n" for m in messages)
+    proc = subprocess.run(
+        [sys.executable, str(_REPO_ROOT / "lgm_mcp.py")],
+        input=payload.encode("utf-8"), capture_output=True, timeout=120,
+        cwd=str(_REPO_ROOT))
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    responses = []
+    for line in proc.stdout.decode("utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            responses.append(json.loads(line))
+    return responses
+
+
+def test_cli_help_subprocess_lists_the_nine_review_ops():
+    proc = subprocess.run(
+        [sys.executable, str(_REPO_ROOT / "lgm.py"), "--help"],
+        capture_output=True, text=True, timeout=120, cwd=str(_REPO_ROOT))
+    assert proc.returncode == 0, proc.stderr
+    for name in REVIEW_OPS:
+        assert name in proc.stdout, f"{name} missing from lgm.py --help"
+
+
+def test_mcp_subprocess_tools_list_exposes_bounded_review_ops():
+    responses = _mcp_subprocess([
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    ])
+    assert len(responses) == 2
+    assert responses[0]["result"]["serverInfo"]["name"] == "doccache-tools"
+    tools = {t["name"]: t for t in responses[1]["result"]["tools"]}
+    from lgm_core.ops import REGISTRY
+    assert len(tools) == len(REGISTRY), "tools/list must derive from REGISTRY"
+    for name in REVIEW_OPS:
+        assert name in tools, f"{name} missing from MCP tools/list"
+    for name in BOUNDED_OPS:
+        props = tools[name]["inputSchema"]["properties"]
+        assert props["budget_bytes"]["minimum"] == 4096
+        assert props["budget_bytes"]["maximum"] == 48000
+        assert props["budget_bytes"]["default"] == 24000
+    read = tools["mr_review_read"]["inputSchema"]
+    assert read["properties"]["view"]["enum"] == ["diff", "file", "discussions"]
+    assert read["properties"]["side"]["enum"] == ["old", "new", "target"]
+    assert read["properties"]["snapshot_id"]["pattern"] == "^[0-9a-f]{64}$"
+    assert read["properties"]["context_lines"]["minimum"] == 0
+    assert set(read["required"]) == {"repo", "snapshot_id", "view"}
+    search = tools["mr_review_search"]["inputSchema"]
+    assert search["properties"]["scope"]["enum"] == \
+        ["tree", "added", "removed", "changed"]
+    assert search["properties"]["side"]["enum"] == ["", "old", "new", "target"]
+    materialize = tools["mr_review_materialize"]["inputSchema"]
+    assert materialize["properties"]["action"]["enum"] == \
+        ["create", "status", "release"]
+    assert materialize["properties"]["target_project_id"]["minimum"] == 1
+    findings = tools["mr_review_findings"]["inputSchema"]
+    assert findings["properties"]["action"]["enum"] == \
+        ["list", "save", "create_batch"]
+    progress = tools["mr_review_progress"]["inputSchema"]
+    assert progress["properties"]["action"]["enum"] == ["list", "mark"]
+    assert progress["properties"]["expected_revision"]["minimum"] == 0
+    assert tools["mr_review_open"]["inputSchema"]["properties"]["snapshot_id"] \
+        ["pattern"] == "^$|^[0-9a-f]{64}$"
+    assert tools["mr_review_refresh"]["inputSchema"]["properties"] \
+        ["previous_snapshot_id"]["pattern"] == "^$|^[0-9a-f]{64}$"
+
+
+def test_mcp_invalid_budget_is_schema_error_and_writes_nothing(tmp_path):
+    home = tmp_path / "reviews"
+    res = lgm_mcp._call_tool("mr_review_read", {
+        "repo": "r1", "snapshot_id": _SNAP64, "view": "diff",
+        "budget_bytes": 100, "home": str(home)})
+    env = _envelope(res)
+    assert env["success"] is False
+    assert env["error"]["kind"] == "schema"
+    assert env["error"]["code"] == "invalid-arguments"
+    assert "budget_bytes" in env["error"]["message"]
+    assert not home.exists()
+
+
+def test_mcp_invalid_type_is_schema_error_and_writes_nothing(tmp_path):
+    home = tmp_path / "reviews"
+    res = lgm_mcp._call_tool("mr_review_context", {
+        "repo": "r1", "snapshot_id": _SNAP64, "path": "a.py",
+        "line": "12", "home": str(home)})
+    env = _envelope(res)
+    assert env["error"]["kind"] == "schema"
+    assert env["error"]["code"] == "invalid-arguments"
+    assert "line" in env["error"]["message"]
+    assert not home.exists()
+
+
+def test_mcp_invalid_paths_element_is_typed_and_writes_nothing(tmp_path):
+    home = tmp_path / "reviews"
+    res = lgm_mcp._call_tool("mr_review_read", {
+        "repo": "r1", "snapshot_id": _SNAP64, "view": "diff",
+        "paths": [123], "home": str(home)})
+    env = _envelope(res)
+    assert env["error"]["kind"] == "op_failure"
+    assert env["error"]["code"] == "invalid-schema"
+    assert "paths" in env["error"]["message"]
+    assert not home.exists()
+
+
+def test_mcp_invalid_cursor_is_typed_and_writes_nothing(tmp_path):
+    home = tmp_path / "reviews"
+    res = lgm_mcp._call_tool("mr_review_open", {
+        "repo": "r1", "iid": 7, "cursor": "not-a-cursor", "home": str(home)})
+    env = _envelope(res)
+    assert env["error"]["kind"] == "op_failure"
+    assert env["error"]["code"] == "invalid-schema"
+    assert "cursor" in env["error"]["message"]
+    assert not home.exists()
+
+
+def test_mcp_tampered_cursor_is_hash_mismatch_and_writes_nothing(tmp_path):
+    from lgm_core.mr_review_reader import CURSOR_VERSION
+    home = tmp_path / "reviews"
+    token = base64.urlsafe_b64encode(json.dumps({
+        "v": CURSOR_VERSION, "sid": _SNAP64, "q": "0" * 64,
+        "s": {"e": 0, "g": 0}, "d": "0" * 64}).encode("utf-8")).decode("ascii")
+    res = lgm_mcp._call_tool("mr_review_open", {
+        "repo": "r1", "iid": 7, "cursor": token, "home": str(home)})
+    env = _envelope(res)
+    assert env["error"]["kind"] == "op_failure"
+    assert env["error"]["code"] == "hash-mismatch"
+    assert not home.exists()
+
+
+def test_handler_maps_review_error_to_typed_envelope_without_writes(tmp_path):
+    from lgm_core.client import MirrorClient
+    from lgm_core.config import Config
+    from lgm_core.ops import Ctx, get_op
+    home = tmp_path / "reviews"
+    config = Config(base_url="http://localhost:1", api_key="",
+                    sync_password="")
+    client = MirrorClient(base_url=config.base_url, api_key=config.api_key)
+    ctx = Ctx(config=config, client=client)
+    result = get_op("mr_review_read").run(ctx, {
+        "repo": "r1", "snapshot_id": _SNAP64, "view": "diff", "paths": [],
+        "group": "", "side": "new", "cursor": "", "budget_bytes": 100,
+        "context_lines": 20, "home": str(home)})
+    assert result["success"] is False
+    assert result["code"] == "invalid-budget"
+    assert not home.exists()
+
+
+def test_cli_json_subprocess_shares_the_mcp_error_contract(tmp_path):
+    home = tmp_path / "reviews"
+    proc = subprocess.run(
+        [sys.executable, str(_REPO_ROOT / "lgm.py"), "--json",
+         "mr_review_read", "--repo", "r1", "--snapshot-id", _SNAP64,
+         "--view", "diff", "--budget-bytes", "100", "--home", str(home)],
+        capture_output=True, text=True, timeout=120, cwd=str(_REPO_ROOT))
+    assert proc.returncode == 5, proc.stderr
+    env = json.loads(proc.stdout)
+    assert env["success"] is False
+    assert env["error"]["kind"] == "op_failure"
+    assert env["error"]["code"] == "invalid-budget"
+    assert not home.exists()
+    mcp_env = _envelope(lgm_mcp._call_tool("mr_review_read", {
+        "repo": "r1", "snapshot_id": _SNAP64, "view": "diff",
+        "paths": [123], "home": str(home)}))
+    assert set(mcp_env) == set(env)
+    assert set(mcp_env["error"]) == set(env["error"])
+
+
+def test_budget_guard_measures_serialization_not_a_linear_surcharge(monkeypatch):
+    from lgm_core.mr_review_models import mcp_result_bytes
+    from lgm_core.ops import get_op
+    payload = {"blob": "\"" * 3000}
+    assert len(payload["blob"]) + 20 < 4096 < mcp_result_bytes(payload)
+    monkeypatch.setattr(get_op("mr_review_read"), "run",
+                        lambda ctx, args: dict(payload))
+    res = lgm_mcp._call_tool("mr_review_read", {
+        "repo": "r1", "snapshot_id": _SNAP64, "view": "diff",
+        "budget_bytes": 4096})
+    env = _envelope(res)
+    assert env["error"]["kind"] == "op_failure"
+    assert env["error"]["code"] == "budget-exceeded"
+    assert "4096" in env["error"]["message"]
+
+
+def test_budget_guard_passes_result_within_budget(monkeypatch):
+    from lgm_core.ops import get_op
+    payload = {"view": "diff", "complete": True}
+    monkeypatch.setattr(get_op("mr_review_read"), "run",
+                        lambda ctx, args: dict(payload))
+    res = lgm_mcp._call_tool("mr_review_read", {
+        "repo": "r1", "snapshot_id": _SNAP64, "view": "diff",
+        "budget_bytes": 4096})
+    assert "isError" not in res
+    assert json.loads(res["content"][0]["text"]) == payload
+
+
+def test_budget_excludes_outer_jsonrpc_framing_checked_separately(monkeypatch):
+    from lgm_core.mr_review_models import mcp_result_bytes
+    from lgm_core.ops import get_op
+    payload = {"view": "diff", "complete": True}
+    monkeypatch.setattr(get_op("mr_review_read"), "run",
+                        lambda ctx, args: dict(payload))
+    resp = lgm_mcp._handle_request({
+        "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+        "params": {"name": "mr_review_read",
+                   "arguments": {"repo": "r1", "snapshot_id": _SNAP64,
+                                 "view": "diff", "budget_bytes": 4096}}})
+    inner = json.dumps(resp["result"], ensure_ascii=False).encode("utf-8")
+    framed = json.dumps(resp, ensure_ascii=False).encode("utf-8")
+    assert len(inner) == mcp_result_bytes(payload)
+    assert len(framed) > len(inner)
+    assert set(resp) == {"jsonrpc", "id", "result"}

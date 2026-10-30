@@ -688,6 +688,302 @@ def _render_mr_sync_all(r: dict) -> list[str]:
     return out
 
 
+def _flat(value: Any) -> str:
+    if isinstance(value, dict):
+        return " ".join(f"{k}={v}" for k, v in sorted(value.items()))
+    return str(value)
+
+
+def _bounded_page_lines(page: dict, indent: str = "  ") -> list[str]:
+    out: list[str] = []
+    totals = page.get("totals")
+    if isinstance(totals, dict) and totals:
+        out.append(f"{indent}totals: " + "  ".join(f"{k}={v}" for k, v in sorted(totals.items())))
+    span = page.get("range") or page.get("shown")
+    if isinstance(span, dict) and span:
+        out.append(f"{indent}range: " + "  ".join(f"{k}={v}" for k, v in sorted(span.items())))
+    out.append(f"{indent}complete={bool(page.get('complete'))}")
+    if page.get("next_cursor"):
+        out.append(f"{indent}next_cursor={page['next_cursor']}")
+    for lim in page.get("limitations") or []:
+        out.append(f"{indent}[limitation] {lim}")
+    return out
+
+
+def _chunk_lines(chunk: dict, indent: str) -> list[str]:
+    keys = sorted(k for k in chunk if k not in ("content", "encoding", "continued"))
+    head = " ".join(f"{k}={chunk[k]}" for k in keys if chunk[k] not in (None, ""))
+    flags = []
+    encoding = chunk.get("encoding") or "utf-8"
+    if encoding != "utf-8":
+        flags.append(encoding)
+    if chunk.get("continued"):
+        flags.append("continued")
+    flag_txt = f" <{','.join(flags)}>" if flags else ""
+    out = [f"{indent}[chunk{' ' + head if head else ''}]{flag_txt}"]
+    for line in (chunk.get("content") or "").splitlines():
+        out.append(f"{indent}| {line}")
+    return out
+
+
+def _render_mr_review_prepare(r: dict) -> list[str]:
+    out = [f"MR review prepare repo='{r.get('repo', '?')}' !{r.get('iid', '?')}: "
+           f"{r.get('status', '?')}"]
+    if r.get("snapshot_id"):
+        out.append(f"  snapshot {r['snapshot_id']}")
+    if r.get("code_id"):
+        out.append(f"  code {r['code_id']}")
+    if r.get("version_fingerprint"):
+        out.append(f"  fingerprint {r['version_fingerprint']}")
+    bundle = r.get("bundle") or {}
+    if bundle:
+        out.append(f"  bundle {bundle.get('path', '?')} size={bundle.get('size', 0)} "
+                   f"action={bundle.get('action', '?')}")
+        out.append(f"    sha256 {bundle.get('sha256', '?')}")
+    if r.get("manifest_path"):
+        out.append(f"  manifest {r['manifest_path']}")
+    for lim in r.get("limitations") or []:
+        out.append(f"  [limitation] {lim}")
+    return out
+
+
+def _render_mr_review_open(r: dict) -> list[str]:
+    out = [f"MR review open repo='{r.get('repo', '?')}' !{r.get('iid', '?')}: "
+           f"{r.get('status', '?')}"]
+    if r.get("code"):
+        out.append(f"  [{r['code']}] {r.get('message', '')}")
+    if r.get("snapshot_id"):
+        out.append(f"  snapshot {r['snapshot_id']}")
+    if r.get("code_id"):
+        out.append(f"  code {r['code_id']}")
+    if r.get("version_fingerprint"):
+        out.append(f"  fingerprint {r['version_fingerprint']}")
+    identity = r.get("identity") or {}
+    if identity:
+        draft = " draft" if identity.get("draft") else ""
+        out.append(f"  {identity.get('title', '?')} [{identity.get('state', '?')}{draft}]")
+        out.append(f"    {identity.get('source_branch', '?')} -> {identity.get('target_branch', '?')}")
+        out.append(f"    source {identity.get('source_sha', '?')}")
+        out.append(f"    target {identity.get('target_tip_sha', '?')}")
+        if identity.get("mr_url"):
+            out.append(f"    {identity['mr_url']}")
+    summary = r.get("summary") or {}
+    if summary:
+        out.append(f"  discussions={summary.get('discussions', 0)} "
+                   f"notes={summary.get('notes', 0)} "
+                   f"bundle={summary.get('bundle_size', 0)}B "
+                   f"downloaded={summary.get('bundle_downloaded')}")
+        if summary.get("previous_snapshot_id"):
+            out.append(f"  previous snapshot {summary['previous_snapshot_id']}")
+    store = r.get("store") or {}
+    if store:
+        out.append(f"  store {store.get('repo_key', '?')} @ {store.get('root', '?')}")
+    inv = r.get("inventory") or {}
+    if inv:
+        out.append("  inventory:")
+        if inv.get("rename_detection_limited"):
+            out.append("    [limitation] rename detection limited")
+        for entry in inv.get("entries") or []:
+            tags = ",".join(t.get("tag", "?") for t in entry.get("tags") or [])
+            rename = entry.get("rename") or {}
+            extra = f" rename={rename.get('kind', '?')}/{rename.get('similarity', '?')}%" if rename else ""
+            out.append(f"    {entry.get('status', '?')} {entry.get('path', '?')} "
+                       f"+{entry.get('lines_added', 0)}/-{entry.get('lines_deleted', 0)}"
+                       f"{extra}{' <' + tags + '>' if tags else ''}")
+        for frag in inv.get("path_fragments") or []:
+            out.append(f"    [path-fragment] entry#{frag.get('entry_index')} "
+                       f"{frag.get('field')} part={frag.get('part')}: {frag.get('text')}")
+        out.extend(_bounded_page_lines(inv, indent="    "))
+    for lim in r.get("limitations") or []:
+        out.append(f"  [limitation] {lim}")
+    return out
+
+
+def _render_mr_review_read(r: dict) -> list[str]:
+    view = r.get("view", "?")
+    out = [f"MR review read repo='{r.get('repo', '?')}' "
+           f"snapshot={r.get('snapshot_id', '?')} view={view}"]
+    if view == "diff":
+        out.append(f"  base={r.get('base_sha', '?')} head={r.get('head_sha', '?')} "
+                   f"context_lines={r.get('context_lines', '?')}")
+        for chunk in r.get("chunks") or []:
+            out.extend(_chunk_lines(chunk, "  "))
+        for p in r.get("missing_paths") or []:
+            out.append(f"  [missing] {p}")
+    elif view == "file":
+        out.append(f"  side={r.get('side', '?')}")
+        for item in r.get("files") or []:
+            flags = []
+            if item.get("missing"):
+                flags.append("missing")
+            if item.get("path_truncated"):
+                flags.append("path-truncated")
+            oid = item.get("oid") or "-"
+            size = item.get("size")
+            mode = item.get("mode") or "-"
+            out.append(f"  {item.get('path', '?')} kind={item.get('kind', '?')} "
+                       f"oid={oid} size={'-' if size is None else size} mode={mode}"
+                       f"{' <' + ','.join(flags) + '>' if flags else ''}")
+            if item.get("limitation"):
+                out.append(f"    [limitation] {item['limitation']}")
+            for chunk in item.get("chunks") or []:
+                out.extend(_chunk_lines(chunk, "    "))
+    else:
+        for note in r.get("notes") or []:
+            pos = note.get("position") or {}
+            where = ""
+            if pos:
+                where = f" @ {pos.get('new_path') or pos.get('old_path') or '?'}"
+            out.append(f"  note {note.get('note_id', '?')} "
+                       f"(discussion {note.get('discussion_id', '?')}) "
+                       f"by {note.get('author', '?')} "
+                       f"resolved={note.get('resolved')}{where}")
+            for line in (note.get("body") or "").splitlines():
+                out.append(f"    | {line}")
+        for frag in r.get("note_fragments") or []:
+            out.append(f"  [note-fragment] discussion#{frag.get('discussion_index')} "
+                       f"note#{frag.get('note_index')} part={frag.get('part')}")
+            for line in (frag.get("text") or "").splitlines():
+                out.append(f"    | {line}")
+    out.extend(_bounded_page_lines(r))
+    return out
+
+
+def _render_mr_review_search(r: dict) -> list[str]:
+    sides = r.get("sides") or ([r["side"]] if r.get("side") else [])
+    out = [f"MR review search repo='{r.get('repo', '?')}' "
+           f"snapshot={r.get('snapshot_id', '?')}: query={r.get('query', '')!r} "
+           f"scope={r.get('scope', '?')} sides={','.join(sides) or '?'}"]
+    for hit in r.get("hits") or []:
+        out.append(f"  {hit.get('path', '?')}:{hit.get('line', '?')}:"
+                   f"{hit.get('column', '?')} ({hit.get('side', '?')}) "
+                   f"{hit.get('excerpt', '')}"
+                   + (" [truncated]" if hit.get("truncated") else ""))
+    for cand in r.get("candidates") or []:
+        out.append(f"  [candidate] {_flat(cand)}")
+    out.extend(_bounded_page_lines(r))
+    return out
+
+
+def _render_mr_review_context(r: dict) -> list[str]:
+    out = [f"MR review context {r.get('path', '?')} ({r.get('side', '?')} side) "
+           f"blob={r.get('blob', '?')} method={r.get('method', '?')}"]
+    for line in r.get("lines") or []:
+        cont = " <continued>" if line.get("continued") else ""
+        out.append(f"  {line.get('line', '?')} | {line.get('text', '')}{cont}")
+    for cand in r.get("candidates") or []:
+        out.append(f"  [candidate] {_flat(cand)}")
+    if "semantic_complete" in r:
+        out.append(f"  semantic_complete={r.get('semantic_complete')} "
+                   f"complete={bool(r.get('complete'))}")
+    for lim in r.get("limitations") or []:
+        out.append(f"  [limitation] {lim}")
+    return out
+
+
+def _render_mr_review_progress(r: dict) -> list[str]:
+    status = r.get("status", "?")
+    out = [f"MR review progress repo='{r.get('repo', '?')}' !{r.get('iid', '?')}: "
+           f"{status}"]
+    if status == "marked":
+        out.append(f"  {r.get('path', '?')} -> {r.get('state', '?')} "
+                   f"(revision {r.get('revision', '?')}, "
+                   f"snapshot {r.get('snapshot_id', '?')})")
+        return out
+    snap = r.get("snapshot") or {}
+    if snap:
+        out.append(f"  snapshot {r.get('snapshot_id', '?')} "
+                   f"code={snap.get('code_id', '?')} current={snap.get('is_current')}")
+    elif r.get("snapshot_id"):
+        out.append(f"  snapshot {r['snapshot_id']}")
+    out.append(f"  total={r.get('total', 0)} offset={r.get('offset', 0)} "
+               f"limit={r.get('limit', 0)} next_cursor={r.get('next_cursor')}")
+    totals = r.get("totals") or {}
+    if totals:
+        out.append("  totals: " + "  ".join(f"{k}={v}" for k, v in sorted(totals.items())))
+    for unit in r.get("units") or []:
+        carry = " [carryover]" if unit.get("carryover") else ""
+        absent = "" if unit.get("in_inventory", True) else " [not-in-inventory]"
+        out.append(f"  {str(unit.get('state', '?')):<14} {unit.get('path', '?')} "
+                   f"rev={unit.get('revision', 0)}{carry}{absent}")
+        if unit.get("reason"):
+            out.append(f"      reason: {unit['reason']}")
+    return out
+
+
+def _render_mr_review_refresh(r: dict) -> list[str]:
+    out = [f"MR review refresh repo='{r.get('repo', '?')}' !{r.get('iid', '?')}: "
+           f"{r.get('status', '?')}"]
+    out.append(f"  previous {r.get('previous_snapshot_id') or '-'} -> "
+               f"current {r.get('current_snapshot_id') or '-'}")
+    if r.get("previous_code_id") or r.get("current_code_id"):
+        out.append(f"  code {r.get('previous_code_id') or '-'} -> "
+                   f"{r.get('current_code_id') or '-'} "
+                   f"(changed={bool(r.get('code_changed'))})")
+    meta = r.get("metadata") or {}
+    if meta.get("changed_fields"):
+        out.append(f"  changed fields: {', '.join(meta['changed_fields'])}")
+    prog = r.get("progress") or {}
+    if prog:
+        out.append("  progress: " + "  ".join(f"{k}={v}" for k, v in sorted(prog.items())))
+    findings = r.get("findings") or {}
+    if findings:
+        out.append("  findings: " + "  ".join(f"{k}={v}" for k, v in sorted(findings.items())))
+    return out
+
+
+def _render_mr_review_materialize(r: dict) -> list[str]:
+    out = [f"MR review environment action={r.get('action', '?')}: "
+           f"{r.get('status', '?')}"]
+    if r.get("environment_id"):
+        out.append(f"  environment {r['environment_id']} ({r.get('mode', '?')})")
+    if r.get("path"):
+        out.append(f"  path {r['path']}")
+    if r.get("sha"):
+        out.append(f"  sha {r['sha']}")
+    if r.get("purpose"):
+        out.append(f"  purpose {r['purpose']}")
+    if r.get("tracked_diff_digest"):
+        out.append(f"  tracked-diff digest {r['tracked_diff_digest']}")
+    for key in ("untracked", "ignored"):
+        summary = r.get(key) or {}
+        if summary:
+            paths = summary.get("paths") or []
+            shown = ", ".join(str(p) for p in paths[:10])
+            if len(paths) > 10:
+                shown += ", ..."
+            out.append(f"  {key}: {summary.get('count', len(paths))}"
+                       + (f" ({shown})" if shown else ""))
+    for lim in r.get("limitations") or []:
+        out.append(f"  [limitation] {lim}")
+    return out
+
+
+def _render_mr_review_findings(r: dict) -> list[str]:
+    status = r.get("status", "?")
+    out = [f"MR review findings: {status}"]
+    if status == "saved":
+        out.append(f"  finding {r.get('finding_id', '?')} "
+                   f"revision {r.get('revision', '?')}")
+        return out
+    if status == "created":
+        batch = r.get("batch") or {}
+        out.append(f"  batch {r.get('batch_id', '?')} "
+                   f"items={len(batch.get('items') or [])}")
+        out.append(f"  artifact {r.get('artifact_path', '?')}")
+        out.append(f"  file {r.get('path', '?')}")
+        return out
+    if r.get("repo") or r.get("iid") is not None:
+        out.append(f"  identity repo='{r.get('repo', '?')}' iid={r.get('iid', '?')} "
+                   f"project={r.get('target_project_id', '?')}")
+    out.append(f"  total={r.get('total', 0)} offset={r.get('offset', 0)} "
+               f"limit={r.get('limit', 0)} next_cursor={r.get('next_cursor')}")
+    for finding in r.get("findings") or []:
+        out.append(f"  {finding.get('finding_id', '?')} "
+                   f"revisions={len(finding.get('revisions') or [])}")
+    return out
+
+
 _RENDERERS = {
     "scan": _render_scan,
     "pending": _render_pending,
@@ -716,6 +1012,15 @@ _RENDERERS = {
     "mr_replies_push": _render_mr_replies_push,
     "mr_pending": _render_mr_pending,
     "mr_review_receipts": _render_mr_review_receipts,
+    "mr_review_prepare": _render_mr_review_prepare,
+    "mr_review_open": _render_mr_review_open,
+    "mr_review_read": _render_mr_review_read,
+    "mr_review_search": _render_mr_review_search,
+    "mr_review_context": _render_mr_review_context,
+    "mr_review_progress": _render_mr_review_progress,
+    "mr_review_refresh": _render_mr_review_refresh,
+    "mr_review_materialize": _render_mr_review_materialize,
+    "mr_review_findings": _render_mr_review_findings,
     "guide": _render_guide,
     "update": _render_update,
     "chat_send": _render_chat_send,

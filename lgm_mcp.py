@@ -30,6 +30,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from lgm_core.config import Config
 from lgm_core.client import MirrorClient, LgmError
+from lgm_core.mr_review_models import mcp_result_bytes
 from lgm_core.ops import REGISTRY, Ctx, get_op
 
 # ── Version ──────────────────────────────────────────────────────────────────
@@ -282,6 +283,16 @@ def _call_tool(name: str, arguments: dict) -> dict:
             "kind": "op_failure",
             "code": code if isinstance(code, str) else None,
             "message": str(detail)}})
+
+    if any(p.name == "budget_bytes" for p in op.params):
+        # mcp_result_bytes measures the real re-escaping; no fixed surcharge model
+        measured = mcp_result_bytes(result)
+        budget = args.get("budget_bytes")
+        if measured > budget:
+            return _error_result({"success": False, "error": {
+                "kind": "op_failure", "code": "budget-exceeded",
+                "message": f"serialized tools/call result is {measured} bytes, "
+                           f"above the requested budget_bytes={budget}"}})
 
     text = json.dumps(result, ensure_ascii=False, indent=2, default=str)
     return {
