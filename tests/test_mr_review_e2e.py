@@ -26,7 +26,9 @@ sys.path.insert(0, str(REPO_ROOT / "tests"))
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
 from lgm_core import mr_review_models as m
+from lgm_core.mr_review_environment import mr_review_probe
 from lgm_core.mr_review_models import mcp_result_bytes
+from lgm_core.mr_review_store import MrReviewStore
 from test_mr_review_store import _git, _mirror_state
 from test_mr_review_transfer import _clone, _init_repo, _mr_detail
 
@@ -717,3 +719,280 @@ def test_stage1_open_imports_snapshot_over_real_postbox(prepared, world):
     entry_paths = {entry["path"] for entry in inventory["entries"]}
     assert {"src/config.py", "src/new.py", "README.md"} <= entry_paths
     assert mcp_result_bytes(opened) <= BUDGET
+
+
+# ── stage 2: paging, huge lines, fork, non-default target, deletion-only ────
+
+
+def _chunk_bytes(chunk: dict) -> bytes:
+    import base64
+    if chunk["encoding"] == "utf-8":
+        return chunk["content"].encode("utf-8")
+    return base64.b64decode(chunk["content"])
+
+
+@pytest.fixture(scope="module")
+def big_opened(world, mcp_home, prepared):
+    sc = world.scenarios["big"]
+    opened = _mcp_open(mcp_home, world, sc)
+    assert opened["status"] == "imported", opened
+    return opened
+
+
+def test_stage2_big_mr_inventory_fully_paged(world, mcp_home, big_opened):
+    sc = world.scenarios["big"]
+    pages = [big_opened["inventory"]]
+    cursor = big_opened["inventory"]["next_cursor"]
+    while cursor:
+        ok, data = mcp_home.call("mr_review_open", {
+            "repo": sc.repo, "iid": sc.iid, "cursor": cursor,
+            "budget_bytes": BUDGET, "home": str(world.home_reviews)})
+        assert ok, data
+        assert data["status"] == "paged"
+        pages.append(data["inventory"])
+        cursor = data["inventory"]["next_cursor"]
+    assert len(pages) > 1
+    assert [page["complete"] for page in pages] == \
+        [False] * (len(pages) - 1) + [True]
+    assert pages[-1]["next_cursor"] is None
+    paths = [entry["path"] for page in pages for entry in page["entries"]]
+    expected = {f"files/f{i:04d}.py" for i in range(1000)} | {"vocab.txt"}
+    assert len(paths) == len(set(paths)), "duplicate entries across pages"
+    assert set(paths) == expected
+    assert pages[0]["totals"]["files"] == 1001
+    for page in pages:
+        assert mcp_result_bytes(page) <= BUDGET
+
+
+def test_stage2_big_mr_diff_walk_covers_every_file_once(
+        world, mcp_home, big_opened):
+    sc = world.scenarios["big"]
+    sid = big_opened["snapshot_id"]
+    pages = []
+    cursor = ""
+    while True:
+        arguments = {"repo": sc.repo, "snapshot_id": sid, "view": "diff",
+                     "budget_bytes": BUDGET, "home": str(world.home_reviews)}
+        if cursor:
+            arguments["cursor"] = cursor
+        ok, page = mcp_home.call("mr_review_read", arguments)
+        assert ok, page
+        pages.append(page)
+        if page["complete"]:
+            break
+        cursor = page["next_cursor"]
+    assert len(pages) > 1
+    assert [page["complete"] for page in pages] == \
+        [False] * (len(pages) - 1) + [True]
+    for page in pages:
+        assert mcp_result_bytes(page) <= BUDGET
+    text = b"".join(_chunk_bytes(chunk)
+                    for page in pages for chunk in page["chunks"])
+    for i in range(1000):
+        name = f"files/f{i:04d}.py"
+        header = f"diff --git a/{name} b/{name}".encode()
+        assert text.count(header) == 1, name
+    assert b"diff --git a/vocab.txt b/vocab.txt" in text
+
+
+def test_stage2_huge_line_bounded_no_full_line_echo(world, mcp_home,
+                                                    big_opened):
+    sc = world.scenarios["big"]
+    ok, page = mcp_home.call("mr_review_read", {
+        "repo": sc.repo, "snapshot_id": big_opened["snapshot_id"],
+        "view": "file", "paths": ["vocab.txt"], "side": "new",
+        "budget_bytes": BUDGET, "home": str(world.home_reviews)})
+    assert ok, page
+    assert mcp_result_bytes(page) <= BUDGET
+    entry = [item for item in page["files"]
+             if item["path"] == "vocab.txt"][0]
+    assert entry["chunks"]
+    delivered = sum(len(_chunk_bytes(chunk)) for chunk in entry["chunks"])
+    assert delivered < entry["size"]
+    assert page["complete"] is False
+    assert "word199999" not in json.dumps(page)
+
+
+def test_stage2_search_and_context_over_real_mcp(world, mcp_home, prepared):
+    sc = world.scenarios["main"]
+    sid = prepared.open["snapshot_id"]
+    ok, page = mcp_home.call("mr_review_search", {
+        "repo": sc.repo, "snapshot_id": sid, "query": "new = 12",
+        "side": "new", "scope": "changed", "budget_bytes": BUDGET,
+        "home": str(world.home_reviews)})
+    assert ok, page
+    assert page["complete"] is True
+    assert [hit["path"] for hit in page["hits"]] == ["src/config.py"]
+    assert page["hits"][0]["side"] == "new"
+    assert mcp_result_bytes(page) <= BUDGET
+
+    ok, ctx = mcp_home.call("mr_review_context", {
+        "repo": sc.repo, "snapshot_id": sid, "path": "src/config.py",
+        "line": 12, "side": "new", "context_lines": 3,
+        "budget_bytes": BUDGET, "home": str(world.home_reviews)})
+    assert ok, ctx
+    assert [row["line"] for row in ctx["lines"]] == [9, 10, 11, 12, 13, 14, 15]
+    assert ctx["lines"][3]["text"] == "new = 12"
+    assert mcp_result_bytes(ctx) <= BUDGET
+
+
+def test_stage2_fork_mr_flows_through_merge_request_ref(world, mcp_home,
+                                                        prepared):
+    sc = world.scenarios["fork"]
+    ref_sha = _git(sc.origin, "rev-parse",
+                   "refs/merge-requests/32/head").stdout.strip()
+    assert ref_sha == sc.shas["head"]
+    opened = _mcp_open(mcp_home, world, sc)
+    assert opened["status"] == "imported", opened
+    assert opened["identity"]["source_project_id"] == 99
+    assert opened["identity"]["target_project_id"] == sc.pid
+    assert opened["identity"]["source_sha"] == sc.shas["head"]
+    assert "source branch fetched through target-project MR ref" \
+        in opened["limitations"]
+
+
+def test_stage2_non_default_target_branch(world, mcp_home, prepared):
+    sc = world.scenarios["targetbr"]
+    opened = _mcp_open(mcp_home, world, sc)
+    assert opened["status"] == "imported", opened
+    assert opened["identity"]["target_branch"] == "release/2.5"
+    assert opened["identity"]["source_sha"] == sc.shas["head"]
+    assert opened["identity"]["target_tip_sha"] == sc.shas["tip"]
+
+
+def test_stage2_deletion_only_mr(world, mcp_home, prepared):
+    sc = world.scenarios["del"]
+    opened = _mcp_open(mcp_home, world, sc)
+    assert opened["status"] == "imported", opened
+    inventory = opened["inventory"]
+    assert inventory["complete"] is True
+    entries = {entry["path"]: entry for entry in inventory["entries"]}
+    assert set(entries) == {"a.txt", "b.txt"}
+    assert all(entry["status"] == "deleted" for entry in entries.values())
+    assert inventory["totals"]["deleted"] == 2
+
+
+# ── stage 3: progress CAS, materialize + probe, dirty env refusal ───────────
+
+
+def test_stage3_materialize_probe_checked_mark(world, mcp_home, prepared):
+    sc = world.scenarios["main"]
+    sid = prepared.open["snapshot_id"]
+    ok, created = mcp_home.call("mr_review_materialize", {
+        "repo": sc.repo, "gitlab_url": world.gitlab.base_url,
+        "target_project_id": sc.pid, "action": "create",
+        "environment_id": "", "purpose": "e2e probe", "fresh": False,
+        "snapshot_id": sid, "home": str(world.home_reviews)})
+    assert ok, created
+    env_id = created["environment_id"]
+    assert created["status"] == "clean"
+    assert created["sha"] == sc.shas["head"]
+    assert Path(created["path"]).is_dir()
+
+    ok, status = mcp_home.call("mr_review_materialize", {
+        "repo": sc.repo, "gitlab_url": world.gitlab.base_url,
+        "target_project_id": sc.pid, "action": "status",
+        "environment_id": env_id, "purpose": "", "fresh": False,
+        "snapshot_id": "", "home": str(world.home_reviews)})
+    assert ok, status
+    assert status["status"] == "clean"
+
+    store = MrReviewStore(world.gitlab.base_url, sc.pid, sc.repo,
+                          home=world.home_reviews)
+    probe = mr_review_probe(
+        store, env_id,
+        [sys.executable, "-c",
+         "import sys; print('probe-out'); "
+         "sys.stderr.write('probe-err-token\\n')"],
+        test_count=1, timeout=120)
+    assert probe["exit_code"] == 0
+    assert probe["source_sha"] == sc.shas["head"]
+    assert probe["tracked_diff_digest"] == probe["tracked_diff_digest_before"]
+    stdout_path = store.root / probe["log_paths"]["stdout"]
+    stderr_path = store.root / probe["log_paths"]["stderr"]
+    assert "probe-out" in stdout_path.read_text(encoding="utf-8")
+    assert "probe-err-token" in stderr_path.read_text(encoding="utf-8")
+    probe_id = stdout_path.name.split(".")[0]
+
+    ok, refused = mcp_home.call("mr_review_progress", {
+        "repo": sc.repo, "iid": sc.iid, "action": "mark",
+        "text": json.dumps({"path": "src/config.py", "state": "checked"}),
+        "expected_revision": 0, "home": str(world.home_reviews)})
+    assert not ok
+    assert refused["error"]["code"] == "invalid-schema"
+
+    ok, marked = mcp_home.call("mr_review_progress", {
+        "repo": sc.repo, "iid": sc.iid, "action": "mark",
+        "text": json.dumps({
+            "path": "src/config.py", "state": "checked",
+            "evidence": [f"probe:{env_id}:{probe_id}", f"snapshot:{sid}"]}),
+        "expected_revision": 0, "home": str(world.home_reviews)})
+    assert ok, marked
+    assert marked["status"] == "marked"
+    assert marked["revision"] == 1
+
+
+def test_stage3_concurrent_progress_writers_one_revision_conflict(
+        world, prepared):
+    sc = world.scenarios["main"]
+    results: list[tuple[bool, dict]] = []
+    barrier = threading.Barrier(2, timeout=120)
+
+    def writer():
+        proc = _McpProcess(world.home_env)
+        proc.notify_initialized()
+        try:
+            barrier.wait()
+            results.append(proc.call("mr_review_progress", {
+                "repo": sc.repo, "iid": sc.iid, "action": "mark",
+                "text": json.dumps({"path": "src/new.py",
+                                    "state": "delivered"}),
+                "expected_revision": 0,
+                "home": str(world.home_reviews)}))
+        finally:
+            proc.close()
+
+    threads = [threading.Thread(target=writer) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=180)
+    assert len(results) == 2
+    oks = sorted(ok for ok, _ in results)
+    assert oks == [False, True]
+    loser = [data for ok, data in results if not ok][0]
+    assert loser["error"]["code"] == "revision-conflict"
+    winner = [data for ok, data in results if ok][0]
+    assert winner["revision"] == 1
+
+
+def test_stage3_dirty_env_release_refused_typed(world, mcp_home, prepared):
+    sc = world.scenarios["main"]
+    sid = prepared.open["snapshot_id"]
+    ok, created = mcp_home.call("mr_review_materialize", {
+        "repo": sc.repo, "gitlab_url": world.gitlab.base_url,
+        "target_project_id": sc.pid, "action": "create",
+        "environment_id": "", "purpose": "e2e dirty", "fresh": True,
+        "snapshot_id": sid, "home": str(world.home_reviews)})
+    assert ok, created
+    env_id = created["environment_id"]
+    env_path = Path(created["path"])
+    (env_path / "untracked-dirty.txt").write_text("dirty\n", encoding="utf-8")
+
+    ok, status = mcp_home.call("mr_review_materialize", {
+        "repo": sc.repo, "gitlab_url": world.gitlab.base_url,
+        "target_project_id": sc.pid, "action": "status",
+        "environment_id": env_id, "purpose": "", "fresh": False,
+        "snapshot_id": "", "home": str(world.home_reviews)})
+    assert ok, status
+    assert status["status"] == "dirty"
+
+    ok, refused = mcp_home.call("mr_review_materialize", {
+        "repo": sc.repo, "gitlab_url": world.gitlab.base_url,
+        "target_project_id": sc.pid, "action": "release",
+        "environment_id": env_id, "purpose": "", "fresh": False,
+        "snapshot_id": "", "home": str(world.home_reviews)})
+    assert not ok
+    assert refused["error"]["code"] == "incomplete-checkout"
+    assert (env_path / "untracked-dirty.txt").is_file()
+    assert env_path.is_dir()
