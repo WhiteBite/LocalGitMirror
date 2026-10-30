@@ -146,7 +146,7 @@ def test_error_registry_is_closed_and_kebab_case():
         "review-package-too-large", "stale-snapshot", "possible-duplicate",
         "incomplete-checkout", "invalid-schema", "unknown-schema-version",
         "invalid-side", "invalid-line", "hash-mismatch", "invalid-marker",
-        "invalid-budget",
+        "invalid-budget", "revision-conflict", "store-locked",
     })
     assert all(code == code.lower() and " " not in code for code in m.ERROR_CODES)
     with pytest.raises(ValueError):

@@ -35,6 +35,8 @@ ERROR_CODES = frozenset({
     "hash-mismatch",
     "invalid-marker",
     "invalid-budget",
+    "revision-conflict",
+    "store-locked",
 })
 
 COMPARISON_KINDS = frozenset({"gitlab-diff"})

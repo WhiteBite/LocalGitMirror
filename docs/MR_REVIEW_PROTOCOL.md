@@ -320,6 +320,8 @@ receipt = {
 | `hash-mismatch` | пересчитанный `snapshot_id`/`code_id`/`version_fingerprint` не совпал с сохранённым; отвергается до записи |
 | `invalid-marker` | компоненты marker не соответствуют грамматике раздела 6 |
 | `invalid-budget` | `budget_bytes` не integer или вне `4096..48000` |
+| `revision-conflict` | store CAS: записываемая строка не находится в заявленном `expected_revision` (или уже существует при `expected_revision=0`); перезапись чужой правки запрещена (задачи 2/8/10) |
+| `store-locked` | import-lock review-store занят дольше таймаута (задача 2); импорты сериализуются, это не молчаливое ожидание вечностью |
 
 ## 9. Budget
 
@@ -406,5 +408,5 @@ assert'ят те же значения — это и есть доказател
 handoff/publisher/receipts (11–13) строятся поверх этого контракта без его
 изменений. Runtime-коды реестра (`snapshot-raced`, `review-object-missing`,
 `review-package-too-large`, `stale-snapshot`, `possible-duplicate`,
-`incomplete-checkout`) объявлены здесь как закрытый словарь и выбрасываются
-соответствующими задачами.
+`incomplete-checkout`, `revision-conflict`, `store-locked`) объявлены здесь как
+закрытый словарь и выбрасываются соответствующими задачами.

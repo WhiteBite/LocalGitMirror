@@ -183,7 +183,7 @@ class MrReviewProtocolTest {
         "review-package-too-large", "stale-snapshot", "possible-duplicate",
         "incomplete-checkout", "invalid-schema", "unknown-schema-version",
         "invalid-side", "invalid-line", "hash-mismatch", "invalid-marker",
-        "invalid-budget",
+        "invalid-budget", "revision-conflict", "store-locked",
       ),
       MrReviewProtocol.ERROR_CODES,
     )
