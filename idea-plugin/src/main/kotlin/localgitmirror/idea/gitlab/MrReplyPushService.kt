@@ -286,8 +286,9 @@ class MrReplyPushService(private val project: Project) {
             reports.add(pushParsed(p, p.parsed, conf, settings, repo))
           }
           for (b in pending.batches) {
-            reports.add(markQuiet(pushReviewBatch(b, conf)))
+            reports.add(markQuiet(pushReviewBatch(b, conf, repo)))
           }
+          runReceiptHandoff(repo, settings)
           reports
         }
       }
@@ -446,9 +447,20 @@ class MrReplyPushService(private val project: Project) {
     return markQuiet(report)
   }
 
-  /** v2 review batch: gated publication, never acked, no status upload (receipts own the ack). */
-  private fun pushReviewBatch(pending: PendingBatch, conf: GitLabConfig.GitLabConf): FileReport {
-    val result = MrReviewBatchPublisher.publish(conf, pending.parsed)
+  /** v2 review batch: gated publication with a per-entry journal; the receipt
+   *  handoff at the end of the pass uploads receipts and acks terminal batches. */
+  private fun pushReviewBatch(pending: PendingBatch, conf: GitLabConfig.GitLabConf, repo: String): FileReport {
+    val journal = pending.batchId.takeIf { it.isNotBlank() }?.let { bid ->
+      project.basePath?.let { base ->
+        runCatching {
+          MrReviewJournal.open(
+            MrReviewJournal.journalDir(base, repo), pending.iid, bid,
+            pending.parsed, pending.item.id, pending.path,
+          )
+        }.getOrNull()
+      }
+    }
+    val result = MrReviewBatchPublisher.publish(conf, pending.parsed, journal)
     return FileReport(
       path = pending.path,
       posted = result.posted,
@@ -458,6 +470,21 @@ class MrReplyPushService(private val project: Project) {
       details = result.details,
       batch = result,
     )
+  }
+
+  private fun runReceiptHandoff(repo: String, settings: MirrorSettingsService.State) {
+    val base = project.basePath ?: return
+    runCatching {
+      MrReviewReceiptHandoff.processPending(
+        MrReviewJournal.journalDir(base, repo),
+        upload = { path, json -> MrRepliesTransport.uploadResult(project, path, json).ok },
+        ack = { id ->
+          MirrorPostboxApi.fileSyncAck(
+            settings.baseUrl, SecretsStore.mirrorApiKey, repo, settings.mirrorInsecureTls, id,
+          ).code in 200..299
+        },
+      )
+    }
   }
 
   private fun persistReceipt(iid: Int, report: FileReport) {
@@ -626,7 +653,12 @@ internal class ReportDedup(private val cap: Int = 200) {
  * remainder while posted entries keep their ids. Anchored entries post with
  * full side-aware positions built from the BATCH refs and never downgrade to
  * general notes; already-posted finding revisions are recovered through
- * protocol markers instead of re-posted.
+ * protocol markers instead of re-posted. When a journal is given, every
+ * attempt and entry outcome (ids and permalink included) is persisted before
+ * any receipt step: entries a previous attempt posted are never re-POSTed,
+ * and an entry whose previous POST ended without a recorded response is
+ * re-looked-up through its marker only — a second POST is refused and the
+ * entry stays blocked.
  */
 object MrReviewBatchPublisher {
 
@@ -663,7 +695,8 @@ object MrReviewBatchPublisher {
     val stale: StaleInfo?,
   )
 
-  private data class Recovered(val discussionId: String, val noteId: Long?, val batchId: String)
+  private data class Recovered(val discussionId: String?, val noteId: Long?, val batchId: String,
+                               val url: String? = null)
 
   private data class GateRead(
     val expected: Map<String, String>,
@@ -678,12 +711,52 @@ object MrReviewBatchPublisher {
     "gitlab_url", "diff_refs", "version_fingerprint",
   )
 
-  fun publish(conf: GitLabConfig.GitLabConf, doc: MrReviewHandoff.Document): BatchResult {
+  fun publish(conf: GitLabConfig.GitLabConf, doc: MrReviewHandoff.Document,
+              journal: MrReviewJournal? = null): BatchResult {
     val batchId = requireNotNull(doc.batchId) { "v2 document carries a batch id" }
     val refs = requireNotNull(doc.refs) { "v2 document carries refs" }
+    val attempt = journal?.beginAttempt()
+    val journalKeys = HashSet<Pair<String, Long>>()
+
+    fun finishWith(result: BatchResult): BatchResult {
+      if (journal != null && attempt != null) journal.completeAttempt(attempt)
+      return result
+    }
+
+    fun record(result: EntryResult, postAttempted: Boolean, recoveredFrom: String? = null) {
+      if (journal != null && attempt != null) {
+        journal.recordResult(attempt, result, postAttempted, recoveredFrom)
+      }
+    }
+
+    fun blocked(label: String, entry: MrReviewHandoff.Entry, code: String, error: String): EntryResult {
+      val result = blockedResult(label, entry, code, error)
+      record(result, postAttempted = false)
+      return result
+    }
+
+    fun haltJournalled(postedMap: Map<Pair<String, Long>, Recovered>, webUrl: String,
+                       error: String, code: String, stale: StaleInfo?): BatchResult {
+      val result = halt(doc, batchId, postedMap, webUrl, error, code, stale)
+      result.entries.forEach { r ->
+        val from = if (r.outcome == "skipped-duplicate") {
+          if ((r.findingId to r.revision) in journalKeys) "journal" else "scan"
+        } else {
+          null
+        }
+        record(r, postAttempted = false, recoveredFrom = from)
+      }
+      return finishWith(result)
+    }
+
     val raw = GitLabApi.listMrDiscussionsRaw(conf, doc.iid)
     if (raw.code !in 200..299) {
-      return halt(doc, batchId, emptyMap(), "", "list discussions: HTTP ${raw.code} ${raw.message}", "", null)
+      val known = LinkedHashMap<Pair<String, Long>, Recovered>()
+      journal?.postedEntries()?.forEach { (k, p) ->
+        known[k] = Recovered(p.discussionId, p.noteId, p.batchId, p.url)
+      }
+      journalKeys.addAll(known.keys)
+      return haltJournalled(known, "", "list discussions: HTTP ${raw.code} ${raw.message}", "", null)
     }
     val postedMap = LinkedHashMap<Pair<String, Long>, Recovered>()
     val threadIds = HashSet<String>()
@@ -699,11 +772,18 @@ object MrReviewBatchPublisher {
         }
       }
     }
+    journal?.postedEntries()?.forEach { (k, p) ->
+      if (postedMap.putIfAbsent(k, Recovered(p.discussionId, p.noteId, p.batchId, p.url)) == null) {
+        journalKeys.add(k)
+      }
+    }
+    val uncertain = journal?.uncertainEntries() ?: emptyMap()
     val g = gate(conf, doc, refs)
-    if (g.error != null) return halt(doc, batchId, postedMap, g.webUrl, g.error, "", null)
+    if (journal != null && attempt != null) journal.setWebUrl(attempt, g.webUrl)
+    if (g.error != null) return haltJournalled(postedMap, g.webUrl, g.error, "", null)
     if (g.drift.isNotEmpty()) {
       val error = "stale-snapshot: ${g.drift.joinToString(", ")} drifted since the snapshot — zero posts/resolves"
-      return halt(doc, batchId, postedMap, g.webUrl, error, "stale-snapshot", StaleInfo(g.expected, g.fresh, g.drift))
+      return haltJournalled(postedMap, g.webUrl, error, "stale-snapshot", StaleInfo(g.expected, g.fresh, g.drift))
     }
     val results = mutableListOf<EntryResult>()
     val details = mutableListOf<String>()
@@ -713,41 +793,95 @@ object MrReviewBatchPublisher {
     var needRecheck = false
     for ((idx, entry) in doc.entries.withIndex()) {
       val label = "entry ${idx + 1}"
-      val dup = postedMap[(entry.findingId ?: "") to entry.revision]
+      val key = (entry.findingId ?: "") to entry.revision
+      val dup = postedMap[key]
       if (dup != null) {
-        results.add(dupResult(label, entry, dup, webUrl))
+        val result = dupResult(label, entry, dup, webUrl)
+        results.add(result)
+        record(result, postAttempted = false,
+               recoveredFrom = if (key in journalKeys) "journal" else "scan")
         continue
       }
       val h = haltWith
       if (h != null) {
-        results.add(blockedResult(label, entry, h.first, h.second))
+        results.add(blocked(label, entry, h.first, h.second))
+        continue
+      }
+      val uncertainAttempt = uncertain[key]
+      if (uncertainAttempt != null) {
+        results.add(blocked(
+          label, entry, "",
+          "uncertain publication outcome: attempt $uncertainAttempt started a POST " +
+            "without a recorded response and the marker re-lookup found nothing — " +
+            "refusing a second POST",
+        ))
         continue
       }
       if (needRecheck) {
         val rg = gate(conf, doc, refs)
+        if (journal != null && attempt != null) journal.setWebUrl(attempt, rg.webUrl)
         if (rg.error != null) {
           haltWith = "" to rg.error
-          results.add(blockedResult(label, entry, "", rg.error))
+          results.add(blocked(label, entry, "", rg.error))
           continue
         }
         if (rg.drift.isNotEmpty()) {
           stale = StaleInfo(rg.expected, rg.fresh, rg.drift)
           val error = "stale-snapshot: ${rg.drift.joinToString(", ")} drifted mid-batch — remaining entries not posted"
           haltWith = "stale-snapshot" to error
-          results.add(blockedResult(label, entry, "stale-snapshot", error))
+          results.add(blocked(label, entry, "stale-snapshot", error))
           continue
         }
         webUrl = rg.webUrl
         needRecheck = false
       }
-      val (result, attempted) = postEntry(conf, doc, refs, entry, label, threadIds, webUrl, details)
+      val (result, attempted) = postEntry(conf, doc, refs, entry, label, threadIds, webUrl, details,
+                                          journal, attempt)
       results.add(result)
+      record(result, postAttempted = attempted)
       needRecheck = attempted
     }
+    backfillIds(conf, doc.iid, results, webUrl, journal, attempt)
     val summary = "v2 batch $batchId: ${results.count { it.outcome == "posted" }} posted, " +
       "${results.count { it.outcome == "skipped-duplicate" }} duplicate, " +
       "${results.count { it.outcome == "blocked" }} blocked"
-    return finish(doc, batchId, results, listOf(summary) + details, stale)
+    return finishWith(finish(doc, batchId, results, listOf(summary) + details, stale))
+  }
+
+  private fun backfillIds(conf: GitLabConfig.GitLabConf, iid: Int, results: MutableList<EntryResult>,
+                          webUrl: String, journal: MrReviewJournal?,
+                          attempt: MrReviewJournal.AttemptRecord?) {
+    val missing = results.indices.filter { i ->
+      val r = results[i]
+      (r.outcome == "posted" || r.outcome == "skipped-duplicate") && r.noteId != null &&
+        (r.discussionId.isNullOrBlank() || r.url.isNullOrBlank())
+    }
+    if (missing.isEmpty()) return
+    val raw = GitLabApi.listMrDiscussionsRaw(conf, iid)
+    if (raw.code !in 200..299) return
+    val scanned = LinkedHashMap<Pair<String, Long>, Recovered>()
+    for (d in raw.discussions) {
+      val did = d["id"]?.jsonPrimitive?.contentOrNull ?: ""
+      for (n in d["notes"]?.jsonArray ?: emptyList()) {
+        val noteObj = n.jsonObject
+        val noteId = noteObj["id"]?.jsonPrimitive?.longOrNull
+        val body = noteObj["body"]?.jsonPrimitive?.contentOrNull ?: ""
+        for (m in MrReviewProtocol.parseReviewMarkers(body)) {
+          scanned.putIfAbsent(m.findingId to m.revision, Recovered(did, noteId, m.batchId))
+        }
+      }
+    }
+    for (i in missing) {
+      val r = results[i]
+      val hit = scanned[r.findingId to r.revision] ?: continue
+      if (hit.noteId != r.noteId) continue
+      val did = if (r.discussionId.isNullOrBlank()) hit.discussionId else r.discussionId
+      val url = r.url ?: if (webUrl.isNotBlank()) MrReviewProtocol.receiptNoteUrl(webUrl, r.noteId!!) else null
+      results[i] = r.copy(discussionId = did, url = url)
+      if (journal != null && attempt != null) {
+        journal.updateEntryIds(attempt, r.findingId, r.revision, did, url)
+      }
+    }
   }
 
   private fun gate(conf: GitLabConfig.GitLabConf, doc: MrReviewHandoff.Document, refs: JsonObject): GateRead {
@@ -813,6 +947,8 @@ object MrReviewBatchPublisher {
     threadIds: Set<String>,
     webUrl: String,
     details: MutableList<String>,
+    journal: MrReviewJournal? = null,
+    attempt: MrReviewJournal.AttemptRecord? = null,
   ): Pair<EntryResult, Boolean> {
     val kind = entry.kind
     val threadId = entry.threadId
@@ -830,6 +966,7 @@ object MrReviewBatchPublisher {
       }
     }
     val body = "<!-- ${entry.marker} -->\n\n${entry.body}"
+    if (journal != null && attempt != null) journal.recordPostStart(attempt, entry)
     val res: GitLabApi.WriteBodyResult
     val discussionId: String?
     val noteId: Long?
@@ -894,7 +1031,8 @@ object MrReviewBatchPublisher {
   }
 
   private fun dupResult(label: String, entry: MrReviewHandoff.Entry, dup: Recovered, webUrl: String): EntryResult {
-    val url = if (webUrl.isNotBlank() && dup.noteId != null) MrReviewProtocol.receiptNoteUrl(webUrl, dup.noteId) else null
+    val url = dup.url
+      ?: if (webUrl.isNotBlank() && dup.noteId != null) MrReviewProtocol.receiptNoteUrl(webUrl, dup.noteId) else null
     return EntryResult(
       label = label, kind = entry.kind, target = target(entry),
       findingId = entry.findingId.orEmpty(), revision = entry.revision,
