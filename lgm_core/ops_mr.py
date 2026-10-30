@@ -1611,8 +1611,13 @@ def _push_review_batch(c: MirrorClient, repo: str, item: dict,
     report["identity"] = doc["identity"]
     item_id = item.get("id") or ""
     journal = None if dry_run else open_journal(repo, iid, doc, item_id, path)
-    return _publish_review_batch(c, doc, report, dry_run, project, journal=journal,
-                                 postbox_item_id=item_id, postbox_path=path)
+    published = _publish_review_batch(c, doc, report, dry_run, project, journal=journal,
+                                      postbox_item_id=item_id, postbox_path=path)
+    if journal is not None and journal.replaced_corrupt:
+        published.setdefault("details", []).append(
+            "journal was corrupt and has been replaced: records of prior attempts "
+            "are lost; the live marker scan remains the duplicate backstop")
+    return published
 
 
 def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:

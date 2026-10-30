@@ -427,6 +427,36 @@ def test_render_lists_superseded_acked_ids():
     assert "superseded" in out
 
 
+def test_render_appends_note_ids_and_urls_for_v2_entries():
+    payload = {
+        "success": True, "repo": "r1", "dry_run": False, "count": 1,
+        "totals": {"posted": 1, "duplicates": 1, "skipped": 0, "failed": 0,
+                   "not_anchored": 0},
+        "reports": [{
+            "iid": 30, "path": "mr-replies/mr-!30-b.review.json", "posted": 1,
+            "duplicates": 1, "skipped": 0, "failed": 0, "parse_errors": 0,
+            "acked": False, "not_anchored": [],
+            "replies": [
+                {"label": "anchored src/config.py:12", "outcome": "posted",
+                 "note": "posted new discussion", "note_id": 901,
+                 "url": "https://gitlab.corp/g/p/-/merge_requests/30#note_901"},
+                {"label": "thread t1", "outcome": "skipped-duplicate",
+                 "note": "duplicate, already in GitLab", "note_id": 701,
+                 "url": "https://gitlab.corp/g/p/-/merge_requests/30#note_701"},
+                {"label": "general", "outcome": "blocked",
+                 "note": "stale-snapshot: drifted", "note_id": None, "url": None},
+            ],
+            "details": [],
+        }],
+    }
+    out = render("mr_replies_push", payload)
+    assert ("posted new discussion note 901 "
+            "https://gitlab.corp/g/p/-/merge_requests/30#note_901") in out
+    assert "duplicate, already in GitLab note 701" in out
+    assert "stale-snapshot: drifted" in out
+    assert "stale-snapshot: drifted note" not in out
+
+
 # ── mr_replies_status: parse the v1 document once, machine fields ────────────
 
 _STATUS_MD = "\n".join([

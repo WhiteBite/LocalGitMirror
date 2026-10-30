@@ -445,7 +445,14 @@ def _render_mr_replies_push(r: dict) -> list[str]:
         if sup:
             out.append(f"    superseded reply file(s) acked: {', '.join(sup)}")
         for rline in rep.get("replies") or []:
-            out.append(f"    [{rline.get('outcome', '?')}] {rline.get('label')}: {rline.get('note', '')}")
+            tail = ""
+            if rline.get("note_id") is not None:
+                tail += f" note {rline['note_id']}"
+            if rline.get("url"):
+                tail += f" {rline['url']}"
+            out.append(
+                f"    [{rline.get('outcome', '?')}] {rline.get('label')}: "
+                f"{rline.get('note', '')}{tail}")
         for n in rep.get("not_anchored") or []:
             out.append(f"    [not-anchored] {n}")
     if r.get("message"):
@@ -673,6 +680,8 @@ def _render_mr_sync_all(r: dict) -> list[str]:
     out.append(f"  repos={s.get('repos', 0)}  open MRs={s.get('mrs', 0)}")
     out.append(f"  branches: sent={s.get('branches_sent', 0)}  skipped={s.get('branches_skipped', 0)}  warnings={s.get('branch_warnings', 0)}")
     out.append(f"  notes: uploaded={s.get('notes_uploaded', 0)}  unchanged={s.get('notes_unchanged', 0)}  closed marked={s.get('closed_marked', 0)}")
+    if any(repo.get("review_snapshots") for repo in r.get("repos") or []):
+        out.append(f"  review snapshots: prepared={s.get('review_prepared', 0)}  skipped={s.get('review_skipped', 0)}  failed={s.get('review_failed', 0)}")
     for repo in r.get("repos") or []:
         out.append(f"  {repo.get('repo', '?')} ({repo.get('gitlab', '?')}): open MRs={repo.get('open_mrs', 0)}")
         for w in repo.get("branch_warnings") or []:
@@ -683,6 +692,12 @@ def _render_mr_sync_all(r: dict) -> list[str]:
             notes = m.get("notes", "")
             if notes:
                 out.append(f"    !{m.get('iid')} {m.get('title', '')} — notes: {notes}")
+        for snap in repo.get("review_snapshots") or []:
+            out.append(f"    [review] !{snap.get('iid')}: {snap.get('status', '?')}")
+            for lim in snap.get("limitations") or []:
+                out.append(f"      [limitation] {lim}")
+            if snap.get("error"):
+                out.append(f"      [error] {snap['error']}")
     for e in s.get("errors") or []:
         out.append(f"  [FAILED] {e}")
     return out

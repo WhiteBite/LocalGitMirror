@@ -23,6 +23,7 @@ from lgm_core.client import LgmError
 from lgm_core.mr_review_models import compute_version_fingerprint, review_marker
 from lgm_core.op_models import Ctx
 from lgm_core.ops import op_mr_replies_push
+from lgm_core.mr_review_receipts import journal_path
 
 _FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "mr_review_publish"
                        / "publish_batch.json").read_text(encoding="utf-8"))
@@ -211,6 +212,32 @@ def test_fresh_batch_publishes_every_kind_with_exact_positions(work_env):  # noq
     assert entries[3]["url"] == f"{_WEB_URL}#note_801"
     assert rep["batch_id"] == _BATCH_ID
     assert rep["identity"]["version_fingerprint"] == _BATCH["items"][0]["version_fingerprint"]
+
+
+def test_corrupt_journal_replacement_is_reported(work_env):  # noqa: F811
+    client = PublishClient()
+    client.add_batch_file()
+    jp = journal_path("r1", 30, _BATCH_ID)
+    jp.parent.mkdir(parents=True, exist_ok=True)
+    jp.write_text("{corrupt", encoding="utf-8")
+
+    rep = _v2_report(_push(client))
+
+    assert rep["posted"] == 4
+    assert any("marker scan remains the duplicate backstop" in d
+               for d in rep["details"])
+
+
+def test_clean_journal_reports_no_replacement(work_env):  # noqa: F811
+    client = PublishClient()
+    client.add_batch_file()
+    _push(client)
+    second = PublishClient()
+    second.add_batch_file()
+
+    rep = _v2_report(_push(second))
+
+    assert not any("duplicate backstop" in d for d in rep["details"])
 
 
 def test_legacy_file_and_v2_batch_publish_in_one_pass(work_env):  # noqa: F811

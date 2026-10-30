@@ -268,6 +268,7 @@ def open_journal(repo: str, iid: int, doc: dict, postbox_item_id: str,
     }
     path = journal_path(repo, iid, doc["batch_id"], home)
     journal = ReviewJournal(path)
+    journal.replaced_corrupt = path.exists() and journal.data is None
     if journal.data is None:
         journal.data = header
     return journal

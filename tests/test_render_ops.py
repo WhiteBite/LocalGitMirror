@@ -378,6 +378,43 @@ def test_render_realistic_payload_is_text(name):
     assert out.strip(), f"op '{name}' renderer produced empty output"
 
 
+def test_render_mr_sync_all_shows_review_snapshots():
+    payload = {
+        "success": True, "dry_run": False, "notes_only": False,
+        "repos": [{"repo": "phonyx", "gitlab": "kryptonit/phonyx", "open_mrs": 1,
+                   "mrs": [{"iid": 41, "title": "Refactor sync",
+                            "branch": "feature/sync", "notes": "uploaded"}],
+                   "branches_sent": ["feature/sync"], "branches_skipped": [],
+                   "branch_warnings": [], "closed": [],
+                   "review_snapshots": [
+                       {"iid": 41, "status": "prepared", "snapshot_id": "a" * 64,
+                        "code_id": "b" * 64, "bundle_action": "uploaded",
+                        "manifest_path": f"mr-review/snapshots/{'a' * 64}.json",
+                        "limitations": []},
+                       {"iid": 42, "status": "skipped", "snapshot_id": "",
+                        "code_id": "", "bundle_action": "skipped",
+                        "manifest_path": "",
+                        "limitations": ["code artifact mr-review/code/x.bundle is "
+                                        "not available in the postbox; run a full "
+                                        "sync (not notes-only) to transfer it"]},
+                       {"iid": 43, "status": "failed",
+                        "error": "LgmError('network', 'GitLab unreachable')"}]}],
+        "summary": {"repos": 1, "mrs": 1, "branches_sent": 1,
+                    "branches_skipped": 0, "branch_warnings": 0,
+                    "notes_uploaded": 1, "notes_unchanged": 0,
+                    "closed_marked": 0, "review_prepared": 1,
+                    "review_skipped": 1, "review_failed": 1,
+                    "failures": [], "errors": []},
+    }
+    out = render("mr_sync_all", payload)
+    assert "review snapshots: prepared=1" in out
+    assert "[review] !41: prepared" in out
+    assert "[review] !42: skipped" in out
+    assert "[limitation] code artifact" in out
+    assert "[review] !43: failed" in out
+    assert "GitLab unreachable" in out
+
+
 @pytest.mark.parametrize("name", OP_NAMES)
 def test_render_empty_result_is_stable(name):
     first = render(name, {})
