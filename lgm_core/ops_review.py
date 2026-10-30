@@ -26,7 +26,15 @@ from .mr_review_models import (
     canonical_json,
     code_artifact_path,
     snapshot_artifact_path,
+    validate_budget,
     verify_transfer_envelope,
+)
+from .mr_review_reader import (
+    DEFAULT_BUDGET_BYTES,
+    DEFAULT_CONTEXT_LINES,
+    MrReviewReader,
+    open_reader,
+    peek_cursor_snapshot,
 )
 from .mr_review_store import MrReviewStore
 
@@ -220,10 +228,23 @@ def _open_result(status: str, repo: str, env: dict, store: MrReviewStore,
     }
 
 
+def _with_inventory(result: dict, store: MrReviewStore, snap: dict,
+                    budget_bytes: int) -> dict:
+    reader = MrReviewReader(store.git, snap)
+    result["inventory"] = reader.inventory_page(
+        budget_bytes=budget_bytes, enclosing=result)
+    return result
+
+
 def mr_review_open(client: MirrorClient, repo: str, iid: int, *,
                    snapshot_id: str = "",
+                   cursor: str = "",
+                   budget_bytes: int = DEFAULT_BUDGET_BYTES,
                    home: Path | str | None = None) -> dict:
-    """HOME: import the requested (or latest) complete snapshot for an MR.
+    """HOME: import the requested (or latest) complete snapshot for an MR and
+    return its identity plus the first inventory page. Subsequent inventory
+    pages come from calling again with the page's next_cursor: the snapshot
+    is then read straight from the store, without the postbox.
 
     The envelope digest chain (snapshot digests, identity binding, bundle
     sha256/size) is verified before store.import_snapshot. Idempotent: an
@@ -236,6 +257,17 @@ def mr_review_open(client: MirrorClient, repo: str, iid: int, *,
     _check_iid(iid)
     if not isinstance(repo, str) or not repo:
         raise LgmError("config", "repo must be a non-empty mirror repository name")
+    validate_budget(budget_bytes)
+    if cursor:
+        if snapshot_id:
+            raise MrReviewError(
+                "invalid-schema", "cursor and snapshot_id are mutually exclusive")
+        sid = peek_cursor_snapshot(cursor)
+        reader = open_reader(home, repo, sid)
+        base = {"status": "paged", "repo": repo, "iid": iid, "snapshot_id": sid}
+        inventory = reader.inventory_page(cursor=cursor, budget_bytes=budget_bytes,
+                                          enclosing=base)
+        return {**base, "inventory": inventory}
     items = _postbox_items(client, repo)
     envelopes = [item for item in items
                  if (item.get("path") or "").startswith("mr-review/snapshots/")
@@ -281,15 +313,19 @@ def mr_review_open(client: MirrorClient, repo: str, iid: int, *,
     store = MrReviewStore(snap["gitlab_url"], snap["target_project_id"],
                           snap["repo"], home=home)
     if store.has_snapshot(snap["snapshot_id"]):
-        return _open_result("already-imported", repo, env, store,
-                            store.repo_key, store.root, False,
-                            snap["snapshot_id"])
+        return _with_inventory(
+            _open_result("already-imported", repo, env, store,
+                         store.repo_key, store.root, False,
+                         snap["snapshot_id"]),
+            store, snap, budget_bytes)
     previous = store.current_snapshot_id(iid)
 
     if store.has_code_id(snap["code_id"]) and _code_objects_present(store, snap):
         result = store.import_snapshot(snap, None)
-        return _open_result(result.status, repo, env, store, result.repo_key,
-                            result.store_root, False, previous)
+        return _with_inventory(
+            _open_result(result.status, repo, env, store, result.repo_key,
+                         result.store_root, False, previous),
+            store, snap, budget_bytes)
 
     code_path = code_artifact_path(snap["code_id"])
     bundle_item = _find_item(items, code_path)
@@ -332,5 +368,26 @@ def mr_review_open(client: MirrorClient, repo: str, iid: int, *,
             tmp_path.unlink()
         except OSError:
             pass
-    return _open_result(result.status, repo, env, store, result.repo_key,
-                        result.store_root, True, previous)
+    return _with_inventory(
+        _open_result(result.status, repo, env, store, result.repo_key,
+                     result.store_root, True, previous),
+        store, snap, budget_bytes)
+
+
+def mr_review_read(repo: str, snapshot_id: str, view: str, *,
+                   paths: list[str] | tuple[str, ...] = (),
+                   group: str = "",
+                   side: str = "new",
+                   cursor: str = "",
+                   budget_bytes: int = DEFAULT_BUDGET_BYTES,
+                   context_lines: int = DEFAULT_CONTEXT_LINES,
+                   home: Path | str | None = None) -> dict:
+    """HOME: read one bounded page of an imported snapshot (diff, file or
+    discussions view). Reads only the store's objects.git; a worktree is
+    never touched and missing objects never fall back to disk."""
+    if not isinstance(repo, str) or not repo:
+        raise LgmError("config", "repo must be a non-empty mirror repository name")
+    reader = open_reader(home, repo, snapshot_id)
+    return reader.read_page(view=view, paths=paths, group=group, side=side,
+                            cursor=cursor, budget_bytes=budget_bytes,
+                            context_lines=context_lines)

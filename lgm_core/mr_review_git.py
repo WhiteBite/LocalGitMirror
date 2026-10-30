@@ -46,6 +46,63 @@ class DiffEntry:
     path: str
 
 
+RENAME_LIMIT = 1000
+
+
+@dataclass(frozen=True)
+class RawDiffEntry:
+    """One raw diff-tree record with byte-exact paths (non-UTF-8 tree paths
+    survive as raw bytes; the reader encodes them for display)."""
+
+    status: str
+    src_mode: str
+    dst_mode: str
+    src_sha: str
+    dst_sha: str
+    old_path: bytes | None
+    new_path: bytes | None
+
+
+def _parse_raw_diff(stdout: bytes) -> list[RawDiffEntry]:
+    tokens = stdout.split(b"\x00")
+    entries: list[RawDiffEntry] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if not token.startswith(b":"):
+            i += 1
+            continue
+        fields = token[1:].split(b" ")
+        if len(fields) != 5:
+            raise MrReviewError(
+                "review-object-missing", f"unexpected git diff-tree record: {token[:80]!r}")
+        status = fields[4].decode("ascii", "replace")
+        if status.startswith(("R", "C")):
+            if i + 2 >= len(tokens):
+                raise MrReviewError(
+                    "review-object-missing", f"truncated rename record: {token[:80]!r}")
+            old_path = tokens[i + 1]
+            new_path = tokens[i + 2]
+            i += 3
+        else:
+            if i + 1 >= len(tokens):
+                raise MrReviewError(
+                    "review-object-missing", f"truncated diff record: {token[:80]!r}")
+            path = tokens[i + 1]
+            old_path = path if fields[0] != b"000000" else None
+            new_path = path if fields[1] != b"000000" else None
+            i += 2
+        entries.append(RawDiffEntry(
+            status=status,
+            src_mode=fields[0].decode("ascii", "replace"),
+            dst_mode=fields[1].decode("ascii", "replace"),
+            src_sha=fields[2].decode("ascii", "replace"),
+            dst_sha=fields[3].decode("ascii", "replace"),
+            old_path=old_path,
+            new_path=new_path))
+    return entries
+
+
 def validate_sha(sha: str) -> str:
     if not isinstance(sha, str) or not _SHA_RE.fullmatch(sha):
         raise MrReviewError("invalid-schema", f"expected a 40-char lowercase hex git SHA, got {sha!r}")
@@ -401,3 +458,118 @@ class MrReviewGit:
             raise MrReviewError(
                 "review-object-missing", f"git merge-base failed: {proc.stderr.strip()}")
         return [sha for sha in proc.stdout.split() if _SHA_RE.fullmatch(sha)]
+
+    def _run_bytes(self, *args: str,
+                   timeout: int = GIT_TIMEOUT_SECONDS) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(self._git_dir), *args],
+                              capture_output=True, timeout=timeout, check=False)
+
+    def diff_tree_entries(self, base_sha: str, head_sha: str, *,
+                          renames: bool = False) -> tuple[list[RawDiffEntry], bool]:
+        """Raw recursive diff records with byte-exact paths. ``renames=True``
+        adds ``-M -l1000`` similarity detection; the returned flag is True when
+        git reported that rename detection was skipped past the rename limit
+        (exact OID matches still pair, similarity search does not)."""
+        validate_sha(base_sha)
+        validate_sha(head_sha)
+        args = ["diff-tree", "-r", "-z", "--raw"]
+        args += ["-M", f"-l{RENAME_LIMIT}"] if renames else ["--no-renames"]
+        proc = self._run_bytes(*args, base_sha, head_sha)
+        if proc.returncode != 0:
+            raise MrReviewError(
+                "review-object-missing",
+                f"git diff-tree failed: {proc.stderr.decode('utf-8', 'replace').strip()}")
+        limited = b"rename detection was skipped" in proc.stderr
+        return _parse_raw_diff(proc.stdout), limited
+
+    def ls_tree_long(self, commit_sha: str) -> dict[bytes, tuple[str, str, str, int | None]]:
+        """Full recursive tree listing with blob sizes: raw path bytes ->
+        (mode, type, oid, size). Size is None for gitlinks (git prints '-')."""
+        validate_sha(commit_sha)
+        proc = self._run_bytes("ls-tree", "-r", "-l", "-z", commit_sha)
+        if proc.returncode != 0:
+            raise MrReviewError(
+                "review-object-missing",
+                f"git ls-tree failed: {proc.stderr.decode('utf-8', 'replace').strip()}")
+        out: dict[bytes, tuple[str, str, str, int | None]] = {}
+        for record in proc.stdout.split(b"\x00"):
+            if not record:
+                continue
+            meta, _, path = record.partition(b"\t")
+            fields = meta.split()
+            if len(fields) != 4 or not _SHA_RE.fullmatch(fields[2].decode("ascii", "replace")):
+                raise MrReviewError(
+                    "review-object-missing", f"unexpected git ls-tree record: {record[:80]!r}")
+            size = None if fields[3] == b"-" else int(fields[3].decode("ascii"))
+            out[path] = (fields[0].decode("ascii", "replace"),
+                         fields[1].decode("ascii", "replace"),
+                         fields[2].decode("ascii"),
+                         size)
+        return out
+
+    def diff_numstat(self, base_sha: str, head_sha: str) -> tuple[
+            dict[bytes, tuple[int | None, int | None]],
+            dict[bytes, tuple[int | None, int | None, bytes]]]:
+        """Per-file line counts from ``git diff --numstat -z -M``: plain paths
+        -> (added, deleted) and rename new-paths -> (added, deleted, old_path).
+        Binary and gitlink files carry None counts (git prints '-')."""
+        validate_sha(base_sha)
+        validate_sha(head_sha)
+        proc = self._run_bytes("diff", "--numstat", "-z", "-M", f"-l{RENAME_LIMIT}",
+                               base_sha, head_sha)
+        if proc.returncode != 0:
+            raise MrReviewError(
+                "review-object-missing",
+                f"git diff --numstat failed: {proc.stderr.decode('utf-8', 'replace').strip()}")
+        by_path: dict[bytes, tuple[int | None, int | None]] = {}
+        renames: dict[bytes, tuple[int | None, int | None, bytes]] = {}
+        tokens = proc.stdout.split(b"\x00")
+        try:
+            i = 0
+            while i < len(tokens):
+                token = tokens[i]
+                if not token:
+                    i += 1
+                    continue
+                parts = token.split(b"\t", 2)
+                if len(parts) != 3:
+                    raise ValueError(token[:80])
+                added = None if parts[0] == b"-" else int(parts[0].decode("ascii"))
+                deleted = None if parts[1] == b"-" else int(parts[1].decode("ascii"))
+                if parts[2] == b"":
+                    if i + 2 >= len(tokens):
+                        raise ValueError(token[:80])
+                    renames[tokens[i + 2]] = (added, deleted, tokens[i + 1])
+                    i += 3
+                else:
+                    by_path[parts[2]] = (added, deleted)
+                    i += 1
+        except ValueError as exc:
+            raise MrReviewError(
+                "review-object-missing", f"unexpected git numstat record: {exc!r}") from None
+        return by_path, renames
+
+    def open_diff_patch(self, base_sha: str, head_sha: str,
+                        context_lines: int) -> subprocess.Popen:
+        """Streamed unified diff between two commits: bytes stdout, read
+        incrementally by the caller; the full patch is never materialized.
+        Flags pin quoting, algorithm and rename detection so output is
+        deterministic regardless of user git config."""
+        validate_sha(base_sha)
+        validate_sha(head_sha)
+        if not isinstance(context_lines, int) or isinstance(context_lines, bool) \
+                or context_lines < 0:
+            raise MrReviewError(
+                "invalid-schema", f"context_lines must be a non-negative integer, got {context_lines!r}")
+        args = ["-c", "core.quotepath=true", "diff", "--no-color", "--no-ext-diff",
+                "--no-textconv", "--full-index", "--diff-algorithm=myers",
+                "-M", f"-l{RENAME_LIMIT}", f"-U{context_lines}", base_sha, head_sha]
+        return subprocess.Popen(["git", "-C", str(self._git_dir), *args],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def open_blob_stream(self, sha: str) -> subprocess.Popen:
+        """Streamed blob content: bytes stdout read incrementally by the
+        caller; the blob is never fully materialized by this call."""
+        validate_sha(sha)
+        return subprocess.Popen(["git", "-C", str(self._git_dir), "cat-file", "blob", sha],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
