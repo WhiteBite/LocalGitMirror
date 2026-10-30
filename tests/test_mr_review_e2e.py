@@ -28,6 +28,7 @@ sys.path.insert(0, str(REPO_ROOT / "backend"))
 from lgm_core import mr_review_models as m
 from lgm_core.mr_review_environment import mr_review_probe
 from lgm_core.mr_review_models import mcp_result_bytes
+from lgm_core.mr_review_receipts import RECEIPT_ENVELOPE_KIND
 from lgm_core.mr_review_store import MrReviewStore
 from test_mr_review_store import _git, _mirror_state
 from test_mr_review_transfer import _clone, _init_repo, _mr_detail
@@ -146,7 +147,8 @@ def postbox(tmp_path_factory):
 
 
 def _postbox_repo_dir(postbox, repo: str) -> Path:
-    digest = hashlib.sha256(repo.encode("utf-8")).hexdigest()[:16]
+    rid = hashlib.sha256(("lgm-repo-id:" + repo).encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(rid.encode("utf-8")).hexdigest()[:16]
     return postbox.storage / ".lgm" / "files" / digest
 
 
@@ -996,3 +998,398 @@ def test_stage3_dirty_env_release_refused_typed(world, mcp_home, prepared):
     assert refused["error"]["code"] == "incomplete-checkout"
     assert (env_path / "untracked-dirty.txt").is_file()
     assert env_path.is_dir()
+
+
+# ── stage 4: findings -> batch -> send -> push -> journal -> receipts ───────
+
+
+def _finding_doc(sc, snap, *, finding_id, anchor, thread_id, comment):
+    return {
+        "schema_version": 1,
+        "finding_id": finding_id,
+        "repo": sc.repo,
+        "gitlab_url": snap["identity"]["gitlab_url"],
+        "target_project_id": sc.pid,
+        "iid": sc.iid,
+        "revisions": [{
+            "revision": 1,
+            "created_at": "2026-10-30T12:00:00Z",
+            "snapshot_id": snap["snapshot_id"],
+            "code_id": snap["code_id"],
+            "version_fingerprint": snap["version_fingerprint"],
+            "anchor": anchor,
+            "thread_id": thread_id,
+            "comment": comment,
+            "trigger": "reading the diff",
+            "evidence": [],
+            "limitations": [],
+            "verification": "confirmed",
+            "applicability": "current",
+            "delivery": "local",
+        }],
+    }
+
+
+@pytest.fixture(scope="module")
+def published(world, mcp_home, mcp_work, prepared):
+    sc = world.scenarios["main"]
+    snap = prepared.open
+    home = str(world.home_reviews)
+    out = SimpleNamespace(sc=sc, snap=snap)
+    out.finding_ids = [str(uuid.uuid4()) for _ in range(3)]
+    docs = [
+        _finding_doc(sc, snap, finding_id=out.finding_ids[0],
+                     anchor={"old_path": "src/config.py",
+                             "new_path": "src/config.py",
+                             "side": "new", "line": 12},
+                     thread_id=None, comment="anchored finding on config.py"),
+        _finding_doc(sc, snap, finding_id=out.finding_ids[1],
+                     anchor=None, thread_id="d-thread-1",
+                     comment="thread reply finding"),
+        _finding_doc(sc, snap, finding_id=out.finding_ids[2],
+                     anchor=None, thread_id=None,
+                     comment="general finding"),
+    ]
+    out.saves = []
+    for doc in docs:
+        ok, saved = mcp_home.call("mr_review_findings", {
+            "action": "save", "text": json.dumps(doc),
+            "expected_revision": 0, "home": home})
+        assert ok, saved
+        assert saved["status"] == "saved"
+        out.saves.append(saved)
+
+    selection = {
+        "repo": sc.repo,
+        "gitlab_url": snap["identity"]["gitlab_url"],
+        "target_project_id": sc.pid,
+        "iid": sc.iid,
+        "items": [
+            {"finding_id": out.finding_ids[0], "revision": 1,
+             "kind": "anchored", "body": "anchored body from e2e"},
+            {"finding_id": out.finding_ids[1], "revision": 1,
+             "kind": "thread", "thread_id": "d-thread-1", "resolve": True,
+             "body": "thread body from e2e"},
+            {"finding_id": out.finding_ids[2], "revision": 1,
+             "kind": "general", "body": "general body from e2e"},
+        ],
+    }
+    ok, batch = mcp_home.call("mr_review_findings", {
+        "action": "create_batch", "text": json.dumps(selection),
+        "expected_revision": 0, "home": home})
+    assert ok, batch
+    assert batch["status"] == "created"
+    out.batch = batch
+
+    out.send = _cli(world, "mr_replies_send", world.work_env,
+                    repo=sc.repo, iid=sc.iid,
+                    review_file=Path(batch["path"]))
+    assert out.send["success"] is True
+    assert out.send["path"] == batch["artifact_path"]
+
+    world.postbox.control.fail_uploads = True
+    try:
+        out.push1 = _cli(world, "mr_replies_push", world.work_env,
+                         repo=sc.repo, iid=sc.iid)
+        out.writes_after_push1 = len(world.gitlab.state.writes)
+        out.push2 = _cli(world, "mr_replies_push", world.work_env,
+                         repo=sc.repo, iid=sc.iid)
+        out.writes_after_push2 = len(world.gitlab.state.writes)
+        out.handoff_failed = _cli(world, "mr_review_receipts", world.work_env,
+                                  action="handoff", repo=sc.repo, iid=sc.iid)
+        ok, listing = mcp_work.call("file_list", {"repo": sc.repo})
+        assert ok, listing
+        out.list_during_outage = listing
+    finally:
+        world.postbox.control.fail_uploads = False
+    out.handoff_recovered = _cli(world, "mr_review_receipts", world.work_env,
+                                 action="handoff", repo=sc.repo, iid=sc.iid)
+    ok, listing = mcp_work.call("file_list", {"repo": sc.repo})
+    assert ok, listing
+    out.list_after_handoff = listing
+    receipt_items = [f for f in listing["files"]
+                     if f["path"].startswith("mr-review/receipts/")]
+    attempt1 = [f for f in receipt_items if ".attempt-1." in f["path"]][0]
+    receipt_file = world.root / "receipt-attempt-1.json"
+    ok, got = mcp_work.call("file_get", {
+        "repo": sc.repo, "id": attempt1["id"], "save": str(receipt_file)})
+    assert ok, got
+    out.receipt_envelope = json.loads(
+        receipt_file.read_text(encoding="utf-8"))
+    out.receipt_paths = sorted(f["path"] for f in receipt_items)
+
+    out.import_result = _cli(world, "mr_review_receipts", world.home_env,
+                             action="import", repo=sc.repo, iid=sc.iid)
+    ok, findings = mcp_home.call("mr_review_findings", {
+        "action": "list", "home": home, "expected_revision": 0,
+        "text": json.dumps({
+            "repo": sc.repo,
+            "gitlab_url": snap["identity"]["gitlab_url"],
+            "target_project_id": sc.pid, "iid": sc.iid})})
+    assert ok, findings
+    out.findings_list = findings
+    ok, status = mcp_home.call("mr_replies_status",
+                               {"repo": sc.repo, "iid": sc.iid})
+    assert ok, status
+    out.status = status
+    journal_files = list(
+        (world.work_reviews / "journal" / sc.repo).glob("mr-!30-*.journal.json"))
+    assert len(journal_files) == 1
+    out.journal_path = journal_files[0]
+    out.journal = json.loads(journal_files[0].read_text(encoding="utf-8"))
+    return out
+
+
+def _replies_by_kind(report):
+    return {reply["kind"]: reply for reply in report["replies"]}
+
+
+def test_stage4_push_posts_every_kind_with_real_note_ids(world, published):
+    sc = published.sc
+    report = published.push1["reports"][0]
+    assert published.push1["success"] is True
+    assert report["format"] == "v2"
+    assert report["batch_id"] == published.batch["batch_id"]
+    assert report["posted"] == 3
+    assert report["duplicates"] == 0
+    assert report["failed"] == 0
+    replies = _replies_by_kind(report)
+    assert replies["anchored"]["outcome"] == "posted"
+    assert replies["anchored"]["discussion_id"] == "disc-1"
+    assert replies["anchored"]["note_id"] == 901
+    assert replies["anchored"]["url"] == f"{sc.web_url}#note_901"
+    assert replies["thread"]["outcome"] == "posted"
+    assert replies["thread"]["discussion_id"] == "d-thread-1"
+    assert replies["thread"]["note_id"] == 701
+    assert replies["thread"]["url"] == f"{sc.web_url}#note_701"
+    assert "(resolved)" in replies["thread"]["note"]
+    assert replies["general"]["outcome"] == "posted"
+    assert replies["general"]["discussion_id"] == "d-gen-1"
+    assert replies["general"]["note_id"] == 801
+    assert replies["general"]["url"] == f"{sc.web_url}#note_801"
+    assert published.writes_after_push1 == 4
+    methods = sorted(method for method, _, _ in world.gitlab.state.writes)
+    assert methods == ["POST", "POST", "POST", "PUT"]
+    anchored_position = [
+        payload for method, path, payload in world.gitlab.state.writes
+        if method == "POST" and path.endswith("/discussions")
+        and "position" in payload][0]["position"]
+    assert anchored_position["new_path"] == "src/config.py"
+    assert anchored_position["new_line"] == 12
+    assert "old_line" not in anchored_position
+    assert anchored_position["base_sha"] == sc.shas["base"]
+    assert anchored_position["head_sha"] == sc.shas["head"]
+
+
+def test_stage4_duplicate_push_retry_never_reposts(world, published):
+    report = published.push2["reports"][0]
+    assert report["posted"] == 0
+    assert report["duplicates"] == 3
+    replies = _replies_by_kind(report)
+    for kind, note_id in (("anchored", 901), ("thread", 701),
+                          ("general", 801)):
+        assert replies[kind]["outcome"] == "skipped-duplicate"
+        assert replies[kind]["code"] == "possible-duplicate"
+        assert replies[kind]["note_id"] == note_id
+    assert published.writes_after_push2 == published.writes_after_push1
+
+
+def test_stage4_receipt_upload_outage_blocks_ack_then_recovers(
+        world, mcp_work, published):
+    sc = published.sc
+    failed = published.handoff_failed
+    assert failed["success"] is True
+    assert failed["uploaded"] == []
+    assert failed["acked"] == []
+    assert len(failed["failed"]) == 2
+    assert all("receipt upload" in entry["error"]
+               for entry in failed["failed"])
+    outage_paths = {f["path"] for f in published.list_during_outage["files"]}
+    assert published.batch["artifact_path"] in outage_paths
+
+    recovered = published.handoff_recovered
+    assert recovered["uploaded"] == [
+        f"mr-review/receipts/mr-!30-{published.batch['batch_id']}"
+        f".attempt-{n}.receipt.json" for n in (1, 2)]
+    assert recovered["acked"]
+    assert recovered["failed"] == []
+    after_paths = {f["path"] for f in published.list_after_handoff["files"]}
+    assert published.batch["artifact_path"] not in after_paths
+    assert set(published.receipt_paths) <= after_paths
+
+
+def test_stage4_receipt_envelope_carries_real_ids_and_permalinks(published):
+    sc = published.sc
+    envelope = published.receipt_envelope
+    assert envelope["kind"] == RECEIPT_ENVELOPE_KIND
+    assert envelope["batch_id"] == published.batch["batch_id"]
+    assert envelope["attempt"] == 1
+    assert envelope["iid"] == sc.iid
+    by_finding = {receipt["finding_id"]: receipt
+                  for receipt in envelope["receipts"]}
+    assert set(by_finding) == set(published.finding_ids)
+    expected_notes = {published.finding_ids[0]: ("disc-1", 901),
+                      published.finding_ids[1]: ("d-thread-1", 701),
+                      published.finding_ids[2]: ("d-gen-1", 801)}
+    for finding_id, (discussion_id, note_id) in expected_notes.items():
+        receipt = by_finding[finding_id]
+        assert receipt["outcome"] == "posted"
+        assert receipt["revision"] == 1
+        assert receipt["discussion_id"] == discussion_id
+        assert receipt["note_id"] == note_id
+        assert receipt["url"] == f"{sc.web_url}#note_{note_id}"
+        assert receipt["mr_url"] == sc.web_url
+        assert receipt["submitted_refs"]["source_sha"] == sc.shas["head"]
+        assert receipt["submitted_refs"]["target_tip_sha"] == sc.shas["tip"]
+
+
+def test_stage4_import_updates_findings_and_journal(published):
+    result = published.import_result
+    assert result["success"] is True
+    assert result["action"] == "import"
+    assert result["count"] == 2
+    by_attempt = {entry["attempt"]: entry for entry in result["artifacts"]}
+    assert by_attempt[1]["imported"] == 3
+    assert by_attempt[1]["delivery_updates"] == 6
+    assert by_attempt[1]["acked"] is True
+    assert by_attempt[1]["errors"] == []
+    assert by_attempt[2]["imported"] == 3
+    assert by_attempt[2]["skipped"] == 0
+    assert by_attempt[2]["delivery_updates"] == 0
+    assert by_attempt[2]["acked"] is True
+    assert by_attempt[2]["errors"] == []
+
+    findings = {doc["finding_id"]: doc
+                for doc in published.findings_list["findings"]}
+    assert set(findings) == set(published.finding_ids)
+    expected_notes = {published.finding_ids[0]: 901,
+                      published.finding_ids[1]: 701,
+                      published.finding_ids[2]: 801}
+    for finding_id, note_id in expected_notes.items():
+        latest = findings[finding_id]["revisions"][-1]
+        assert latest["delivery"] == "posted"
+        evidence = " | ".join(latest["evidence"])
+        assert f"note {note_id}" in evidence
+        assert f"{published.sc.web_url}#note_{note_id}" in evidence
+
+    journal = published.journal
+    assert journal["batch_id"] == published.batch["batch_id"]
+    attempts = journal["attempts"]
+    assert len(attempts) == 2
+    assert attempts[0]["receipt_uploaded_at"]
+    assert attempts[0]["acked_at"]
+    assert attempts[1]["receipt_uploaded_at"]
+    first = {entry["kind"]: entry for entry in attempts[0]["entries"]}
+    assert first["anchored"]["outcome"] == "posted"
+    assert first["anchored"]["note_id"] == 901
+    second = {entry["kind"]: entry for entry in attempts[1]["entries"]}
+    assert all(entry["outcome"] == "skipped-duplicate"
+               for entry in second.values())
+    assert published.status["success"] is True
+
+
+# ── stage 5: stale drift with zero writes, expired transport items ──────────
+
+
+def test_stage5_source_and_target_advance_makes_push_stale(
+        world, mcp_home):
+    sc = world.scenarios["stale"]
+    prepare = _cli(world, "mr_review_prepare", world.work_env,
+                   repo=sc.repo, iid=sc.iid, project=sc.project,
+                   checkout=sc.checkout, work_dir=world.root / "artifacts")
+    assert prepare["status"] == "prepared"
+    opened = _mcp_open(mcp_home, world, sc)
+    assert opened["status"] == "imported", opened
+
+    finding_id = str(uuid.uuid4())
+    doc = _finding_doc(sc, opened, finding_id=finding_id,
+                       anchor={"old_path": "F.txt", "new_path": "F.txt",
+                               "side": "new", "line": 2},
+                       thread_id=None, comment="stale scenario finding")
+    ok, saved = mcp_home.call("mr_review_findings", {
+        "action": "save", "text": json.dumps(doc),
+        "expected_revision": 0, "home": str(world.home_reviews)})
+    assert ok, saved
+    ok, batch = mcp_home.call("mr_review_findings", {
+        "action": "create_batch", "expected_revision": 0,
+        "home": str(world.home_reviews),
+        "text": json.dumps({
+            "repo": sc.repo,
+            "gitlab_url": opened["identity"]["gitlab_url"],
+            "target_project_id": sc.pid, "iid": sc.iid,
+            "items": [{"finding_id": finding_id, "revision": 1,
+                       "kind": "anchored", "body": "stale body"}]})})
+    assert ok, batch
+    send = _cli(world, "mr_replies_send", world.work_env,
+                repo=sc.repo, iid=sc.iid, review_file=Path(batch["path"]))
+    assert send["success"] is True
+
+    _git(sc.origin, "checkout", "-q", "feature")
+    (sc.origin / "F2.txt").write_text("drift source\n", encoding="utf-8")
+    _git(sc.origin, "add", ".")
+    _git(sc.origin, "commit", "-qm", "source advanced")
+    new_head = _git(sc.origin, "rev-parse", "HEAD").stdout.strip()
+    _git(sc.origin, "checkout", "-q", "master")
+    (sc.origin / "T2.txt").write_text("drift target\n", encoding="utf-8")
+    _git(sc.origin, "add", ".")
+    _git(sc.origin, "commit", "-qm", "target advanced")
+    new_tip = _git(sc.origin, "rev-parse", "HEAD").stdout.strip()
+    state = world.gitlab.state
+    with state.lock:
+        detail = state.details[sc.iid]
+        detail["sha"] = new_head
+        detail["diff_refs"] = {**detail["diff_refs"], "head_sha": new_head,
+                               "start_sha": new_tip}
+        state.tips[(str(sc.pid), sc.target_branch)] = new_tip
+        state.tips[(sc.project, sc.target_branch)] = new_tip
+
+    writes_before = len(state.writes)
+    push = _cli(world, "mr_replies_push", world.work_env,
+                repo=sc.repo, iid=sc.iid)
+    assert push["success"] is True
+    report = push["reports"][0]
+    assert report["posted"] == 0
+    assert report["failed"] == 1
+    assert set(report["stale"]["drift"]) >= {
+        "source_sha", "target_tip_sha", "diff_refs", "version_fingerprint"}
+    assert report["stale"]["fresh"]["source_sha"] == new_head
+    assert report["stale"]["fresh"]["target_tip_sha"] == new_tip
+    assert all(reply["outcome"] == "blocked"
+               and reply["code"] == "stale-snapshot"
+               for reply in report["replies"])
+    assert len(state.writes) == writes_before
+
+
+def test_stage5_expired_transport_items_leave_imported_snapshot_readable(
+        world, mcp_home, prepared, published):
+    sc = world.scenarios["main"]
+    sid = prepared.open["snapshot_id"]
+    code_id = prepared.prepare["main"]["code_id"]
+    repo_dir = _postbox_repo_dir(world.postbox, sc.repo)
+    targets = {f"mr-review/code/{code_id}.bundle",
+               f"mr-review/snapshots/{sid}.json"}
+    aged = 0
+    old = time.time() - 8 * 24 * 3600
+    for meta in repo_dir.glob("*.json"):
+        data = json.loads(meta.read_text(encoding="utf-8"))
+        if data.get("path") in targets:
+            blob = repo_dir / f"{meta.stem}.bin"
+            os.utime(meta, (old, old))
+            os.utime(blob, (old, old))
+            aged += 1
+    assert aged == 2
+
+    ok, opened = mcp_home.call("mr_review_open", {
+        "repo": sc.repo, "iid": sc.iid, "budget_bytes": BUDGET,
+        "home": str(world.home_reviews)})
+    assert ok, opened
+    assert opened["status"] == "not-ready"
+    assert opened["code"] == "review-object-missing"
+
+    ok, page = mcp_home.call("mr_review_read", {
+        "repo": sc.repo, "snapshot_id": sid, "view": "diff",
+        "budget_bytes": BUDGET, "home": str(world.home_reviews)})
+    assert ok, page
+    assert page["complete"] is True
+    text = b"".join(_chunk_bytes(chunk) for chunk in page["chunks"])
+    assert b"new = 12" in text
