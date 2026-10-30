@@ -1,0 +1,15 @@
+{
+  "fixture": "legacy_valid",
+  "expect": "accepted",
+  "want": "",
+  "expected_iid": 42,
+  "input": "# MR !42 — answers\n- branch: refactor/x\n\n## thread 8f2e4c1d\nresolve: yes\nMoved reset before fetch, added regression test.\n\n## new backend/app/routers/sync.py:386\nDetach here strands HEAD on early returns.\n\n## new\nOverall looks good, one question below.\n",
+  "expected_format": "legacy",
+  "expected_entry_count": 3,
+  "expected_kinds": [
+    "thread",
+    "new_anchored",
+    "new_general"
+  ],
+  "expected_general_fallback": true
+}

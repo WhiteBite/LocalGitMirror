@@ -1,0 +1,9 @@
+{
+  "fixture": "v2_malformed_json_text",
+  "expect": "rejected",
+  "want": "",
+  "expected_iid": 0,
+  "input": "{not json",
+  "expected_error": "invalid-schema",
+  "expected_error_contains": "not valid JSON"
+}

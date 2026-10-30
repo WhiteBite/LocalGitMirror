@@ -1,0 +1,11 @@
+{
+  "fixture": "legacy_malformed_second_section",
+  "expect": "rejected",
+  "want": "",
+  "expected_iid": 7,
+  "input": "# MR !7\n\n## new A.java:5\nok\n\n## new B.java:0\nbad\n",
+  "expected_errors": [
+    "section 2: bad file:line, skipped"
+  ],
+  "expected_error_contains": "bad file:line"
+}

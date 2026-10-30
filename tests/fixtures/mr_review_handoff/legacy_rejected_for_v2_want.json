@@ -1,0 +1,9 @@
+{
+  "fixture": "legacy_rejected_for_v2_want",
+  "expect": "rejected",
+  "want": "v2",
+  "expected_iid": 0,
+  "input": "## new A.java:5\nok\n",
+  "expected_error": "invalid-schema",
+  "expected_error_contains": "must be a JSON document"
+}

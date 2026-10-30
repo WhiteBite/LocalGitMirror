@@ -1,0 +1,11 @@
+{
+  "fixture": "v2_unknown_json",
+  "expect": "rejected",
+  "want": "",
+  "expected_iid": 0,
+  "input_object": {
+    "hello": "world"
+  },
+  "expected_error": "invalid-schema",
+  "expected_error_contains": "missing keys"
+}

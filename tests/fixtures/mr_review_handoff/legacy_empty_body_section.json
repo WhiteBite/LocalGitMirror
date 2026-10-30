@@ -1,0 +1,11 @@
+{
+  "fixture": "legacy_empty_body_section",
+  "expect": "rejected",
+  "want": "",
+  "expected_iid": 7,
+  "input": "# MR !7\n\n## thread abc\n\n## new A.java:5\nok\n",
+  "expected_errors": [
+    "section 1: empty body, skipped"
+  ],
+  "expected_error_contains": "empty body"
+}

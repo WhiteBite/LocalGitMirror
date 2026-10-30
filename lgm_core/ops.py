@@ -315,7 +315,10 @@ REGISTRY: list[Op] = [
                  "them to GitLab. Reply markdown sections: '## thread <id>' — answer an existing "
                  "thread (id from mr_notes), '## new <file>:<line>' — new code-anchored discussion, "
                  "'## new' — general MR note; 'resolve: yes' as the first line of a thread section "
-                 "resolves it. The '# MR !N' header is injected when missing. Comments must read "
+                 "resolves it. The '# MR !N' header is injected when missing. For a v2 review "
+                 "batch (mr_review_findings create_batch JSON) pass review_file instead of "
+                 "file/text; it is validated by the same pipeline and uploaded to "
+                 "mr-replies/mr-!<iid>-<batch_id>.review.json. Comments must read "
                  "as a human reviewer's: issues only (bug / bad call / miss), 1-3 sentences, "
                  "anchored at the offending line — no praise, no code restating, no filler."),
         params=[
@@ -333,6 +336,10 @@ REGISTRY: list[Op] = [
             Param("check", "bool", False,
                   "Validate the reply grammar and run the precheck + anchor "
                   "warnings without uploading anything"),
+            Param("review_file", "str", "",
+                  "Path to a v2 review batch JSON (mr_review_findings create_batch "
+                  "output); exclusive with file/text — validated through the same "
+                  "pipeline and uploaded to mr-replies/mr-!<iid>-<batch_id>.review.json"),
         ],
         run=op_mr_replies_send,
     ),

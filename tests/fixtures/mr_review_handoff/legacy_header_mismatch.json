@@ -1,0 +1,8 @@
+{
+  "fixture": "legacy_header_mismatch",
+  "expect": "rejected",
+  "want": "",
+  "expected_iid": 7,
+  "input": "# MR !8\n\n## new A.java:5\nok\n",
+  "expected_error_contains": "content header says MR !8 but iid=7"
+}

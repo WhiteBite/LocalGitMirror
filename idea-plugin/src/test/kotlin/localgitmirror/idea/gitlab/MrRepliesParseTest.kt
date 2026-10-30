@@ -1,6 +1,7 @@
 package localgitmirror.idea.gitlab
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
@@ -100,6 +101,29 @@ class MrRepliesParseTest {
     assertEquals(approved.map { it.body }, again.replies.map { it.body })
     assertEquals(approved.map { it.resolve }, again.replies.map { it.resolve })
     assertEquals(emptyList<String>(), again.errors)
+  }
+
+  @Test
+  fun `parse delegates to the shared handoff pipeline`() {
+    assertEquals(MrReviewHandoff.parseLegacy(sample), MrReplies.parse(sample))
+  }
+
+  @Test
+  fun `handoff refuses json where legacy markdown is required`() {
+    val rej = assertThrows(MrReviewHandoff.HandoffRejection::class.java) {
+      MrReviewHandoff.parseAndValidate("{\"hello\": \"world\"}", want = "legacy")
+    }
+    assertEquals("invalid-schema", rej.code)
+    assertTrue(rej.message.orEmpty().contains("never parsed as legacy Markdown"))
+  }
+
+  @Test
+  fun `handoff refuses a malformed second section wholesale`() {
+    val rej = assertThrows(MrReviewHandoff.HandoffRejection::class.java) {
+      MrReviewHandoff.parseAndValidate("## new A.java:5\nok\n\n## new B.java:0\nbad\n")
+    }
+    assertEquals("", rej.code)
+    assertEquals(listOf("section 2: bad file:line, skipped"), rej.errors)
   }
 
   @Test

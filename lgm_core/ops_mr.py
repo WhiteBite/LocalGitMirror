@@ -10,6 +10,8 @@ from pathlib import Path
 from .client import MirrorClient, LgmError
 from .config import cfg
 from .git_remote import gitlab_project_for
+from .mr_review_handoff import HandoffRejection, looks_like_json, parse_and_validate
+from .mr_review_models import batch_artifact_path, canonical_json
 from .op_models import Ctx, _client, _repo_arg
 from .ops_git import send_branches
 
@@ -719,17 +721,59 @@ def op_mr_notes(ctx: Ctx, args: dict) -> dict:
     return {"success": True, "repo": repo, "count": len(notes), "notes": notes}
 
 
+def _handoff_refusal(e: HandoffRejection, check: bool) -> dict:
+    out = {"success": False, "check_only": check, "error": e.message}
+    if e.code:
+        out["code"] = e.code
+    return out
+
+
 def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
-    """Upload the agent's MR review replies (mr-replies/mr-!N.md) to the postbox.
-    --check runs the same grammar + precheck + anchor warnings and uploads
-    nothing (the result carries check_only: true)."""
+    """Upload the agent's MR review replies to the postbox.
+
+    Legacy Markdown (file/text) lands at mr-replies/mr-!N.md; a v2 review
+    batch (review_file — the JSON document mr_review_findings create_batch
+    produces) lands at mr-replies/mr-!<iid>-<batch_id>.review.json and never
+    supersedes siblings per IID. Both formats run the same parse -> normalize
+    -> validate pipeline (mr_review_handoff), so --check, the upload and the
+    work-side push reject identical malformed documents. --check runs the full
+    parser + validator and writes nothing (the result carries
+    check_only: true); force only skips the legacy anchor-collision precheck,
+    never validation."""
     c = _client(ctx)
     repo = _repo_arg(args)
     iid = int(args.get("iid") or 0)
     file_path = (args.get("file") or "").strip()
     text = args.get("text") or ""
+    review_file = (args.get("review_file") or "").strip()
+    check = bool(args.get("check"))
     if not iid:
         return {"success": False, "error": "iid is required"}
+    if review_file:
+        if file_path or text.strip():
+            return {"success": False, "check_only": check,
+                    "error": "review_file is exclusive with file/text: a v2 batch "
+                             "is never sent together with legacy Markdown"}
+        p = Path(review_file)
+        if not p.is_file():
+            return {"success": False, "error": f"file not found: {review_file}"}
+        try:
+            doc = parse_and_validate(p.read_text(encoding="utf-8"),
+                                     expected_iid=iid, want="v2")
+        except HandoffRejection as e:
+            return _handoff_refusal(e, check)
+        if check:
+            return {"success": True, "check_only": True, "repo": repo, "iid": iid,
+                    "format": "v2", "batch_id": doc["batch_id"],
+                    "sections": len(doc["entries"]), "identity": doc["identity"],
+                    "message": "check-only: v2 batch validated, nothing uploaded"}
+        payload = canonical_json(doc["batch"]).encode("utf-8")
+        display = batch_artifact_path(iid, doc["batch_id"])
+        res = c.file_sync_send(repo, display, len(payload), payload)
+        return {"success": True, "repo": repo, "path": display,
+                "size": len(payload), "format": "v2",
+                "batch_id": doc["batch_id"], "identity": doc["identity"],
+                "response": res}
     if file_path:
         p = Path(file_path)
         if not p.is_file():
@@ -739,6 +783,11 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
         content = text
     else:
         return {"success": False, "error": "provide file (path) or text (markdown body)"}
+    if looks_like_json(content):
+        return {"success": False, "check_only": check,
+                "error": "content is JSON: a v2 review batch must be passed via "
+                         "review_file; legacy file/text accepts Markdown replies "
+                         "only (unknown JSON is never parsed as legacy Markdown)"}
     if "## thread" not in content and "## new" not in content:
         return {"success": False, "error": "no reply sections ('## thread <id>' / '## new') found in content"}
     project = (args.get("project") or "").strip()
@@ -754,19 +803,18 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
     if precheck.get("error"):
         return {"success": False, "error": precheck["error"],
                 "code": precheck.get("code"), "precheck": precheck,
-                "check_only": bool(args.get("check"))}
+                "check_only": check}
     # The work-side parser keys off the "# MR !N" header; inject it so the file is never skipped.
-    m = re.search(r"^#\s+MR\s+!(\d+)", content, re.MULTILINE)
-    if m:
-        if int(m.group(1)) != iid:
-            return {"success": False,
-                    "check_only": bool(args.get("check")),
-                    "error": f"content header says MR !{m.group(1)} but iid={iid}"}
-    else:
+    if not re.search(r"^#\s+MR\s+!(\d+)", content, re.MULTILINE):
         content = f"# MR !{iid}\n\n{content}"
+    try:
+        doc = parse_and_validate(content, expected_iid=iid)
+    except HandoffRejection as e:
+        return _handoff_refusal(e, check)
 
-    if args.get("check"):
+    if check:
         return {"success": True, "check_only": True, "repo": repo, "iid": iid,
+                "format": doc["format"], "sections": len(doc["entries"]),
                 "precheck": precheck,
                 "anchor_warnings": precheck.get("anchor_warnings", []),
                 "message": "check-only: grammar and precheck passed, nothing uploaded"}
@@ -775,6 +823,7 @@ def op_mr_replies_send(ctx: Ctx, args: dict) -> dict:
     display = f"mr-replies/mr-!{iid}.md"
     res = c.file_sync_send(repo, display, len(data), data)
     return {"success": True, "repo": repo, "path": display, "size": len(data),
+            "format": doc["format"],
             "precheck": precheck,
             "anchor_warnings": precheck.get("anchor_warnings", []),
             "response": res}
@@ -814,87 +863,9 @@ def op_mr_replies_status(ctx: Ctx, args: dict) -> dict:
     return {"success": True, "repo": repo, "count": len(statuses), "statuses": statuses}
 
 
-_REPLY_HEADER = re.compile(r"^#\s+MR\s+!(\d+)")
-_REPLY_THREAD_LINE = re.compile(r"^##\s+thread\s+(\S+)\s*$")
-_REPLY_ANCHORED_LINE = re.compile(r"^##\s+new\s+(\S+?):(\d+)\s*$")
-_REPLY_GENERAL_LINE = re.compile(r"^##\s+new\s*$")
-_REPLY_RESOLVE_LINE = re.compile(r"^resolve:\s*(yes|no)\s*$", re.IGNORECASE)
-_REPLY_BRANCH_LINE = "- branch:"
 _HUNK_HEADER = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 _MARKER_RE = re.compile(r"<!-- lgm:[0-9a-f]{8} -->")
-
-
-def _parse_replies(markdown: str) -> dict:
-    """Parse the mr-replies v1 format (same grammar as the plugin's MrReplies):
-    '## thread <id>' / '## new <file>:<line>' / '## new' sections, an optional
-    'resolve: yes' first line per thread section, a '# MR !N' header and a
-    '- branch:' line. Malformed sections land in errors and are never sent."""
-    iid, branch = 0, ""
-    replies: list[dict] = []
-    errors: list[str] = []
-    kind: str | None = None
-    thread_id, file = "", ""
-    line_no = 0
-    resolve = False
-    resolve_seen = False
-    body: list[str] = []
-    section_no = 0
-
-    def flush() -> None:
-        nonlocal kind, thread_id, file, line_no, resolve, resolve_seen, body, section_no
-        if kind is None:
-            return
-        section_no += 1
-        text = "\n".join(body).strip()
-        if not text:
-            errors.append(f"section {section_no}: empty body, skipped")
-        elif kind == "thread" and not thread_id:
-            errors.append(f"section {section_no}: blank thread id, skipped")
-        elif kind == "new_anchored" and (not file or line_no <= 0):
-            errors.append(f"section {section_no}: bad file:line, skipped")
-        else:
-            replies.append({"kind": kind, "thread_id": thread_id, "file": file,
-                            "line": line_no, "resolve": resolve and kind == "thread",
-                            "body": text})
-        kind = None
-        thread_id = ""
-        file = ""
-        line_no = 0
-        resolve = False
-        resolve_seen = False
-        body = []
-
-    for raw in markdown.splitlines():
-        text = raw.rstrip()
-        m = _REPLY_HEADER.match(text)
-        if m:
-            iid = int(m.group(1))
-        if text.startswith(_REPLY_BRANCH_LINE):
-            branch = text.split(_REPLY_BRANCH_LINE, 1)[1].strip()
-            continue
-        tm = _REPLY_THREAD_LINE.match(text)
-        am = _REPLY_ANCHORED_LINE.match(text)
-        gm = _REPLY_GENERAL_LINE.match(text)
-        if tm or am or gm:
-            flush()
-            if tm:
-                kind, thread_id = "thread", tm.group(1)
-            elif am:
-                kind, file = "new_anchored", am.group(1)
-                line_no = int(am.group(2))
-            else:
-                kind = "new_general"
-            continue
-        if kind is None:
-            continue
-        rm = _REPLY_RESOLVE_LINE.match(text)
-        if rm and not resolve_seen and not "".join(body).strip():
-            resolve = rm.group(1).lower() == "yes"
-            resolve_seen = True
-            continue
-        body.append(text)
-    flush()
-    return {"iid": iid, "branch": branch, "replies": replies, "errors": errors}
+_MR_REVIEW_BATCH_FILE = re.compile(r"mr-!(\d+)-([^/]+)\.review\.json$")
 
 
 def _reply_marker(iid: int, reply: dict) -> str:
@@ -1225,6 +1196,38 @@ def _push_replies_file(c: MirrorClient, repo: str, group: list, parsed: dict,
     return rep
 
 
+def _push_review_batch(c: MirrorClient, repo: str, item: dict) -> dict:
+    """Document-level handling of one v2 batch artifact (mr-!<iid>-<batch_id>
+    .review.json) in the postbox: full pipeline validation, per-batch report,
+    no sibling supersede and no ack. Batches are immutable and coexist per
+    IID; the snapshot-bound GitLab publication gate validates and posts them
+    separately, so a malformed batch here is refused with zero side effects."""
+    path = item.get("path") or ""
+    m = _MR_REVIEW_BATCH_FILE.search(path)
+    iid = int(m.group(1))
+    report = {"iid": iid, "path": path, "posted": 0, "duplicates": 0,
+              "skipped": 1, "failed": 0, "parse_errors": 0, "not_anchored": [],
+              "details": [], "replies": [], "acked": False, "ack_superseded": [],
+              "format": "v2"}
+    try:
+        content = c.file_sync_fetch(repo, item["id"]).decode("utf-8")
+    except Exception as e:
+        report["details"] = [f"download/decrypt: {e}"]
+        return report
+    try:
+        doc = parse_and_validate(content, expected_iid=iid,
+                                 expected_batch_id=m.group(2), want="v2")
+    except HandoffRejection as e:
+        report["parse_errors"] = 1
+        refusal = f"{e.code}: {e.message}" if e.code else e.message
+        report["details"] = [f"rejected: {refusal}"]
+        return report
+    report["batch_id"] = doc["batch_id"]
+    report["details"] = [(f"v2 batch {doc['batch_id']} validated; "
+                          f"snapshot-bound publication not wired yet")]
+    return report
+
+
 def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
     """Publish pending mr-replies files from the postbox to GitLab (work side).
 
@@ -1235,6 +1238,10 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
     only when every parsed reply reached a terminal outcome — superseded
     sibling files for the same MR are acked with it and listed in
     ``ack_superseded``; a status report lands in mr-replies-status/mr-!N.md.
+    Legacy files run the shared handoff pipeline before anything is posted:
+    a document with malformed sections is rejected whole (zero GitLab calls,
+    zero acks). V2 batch artifacts (mr-!<iid>-<batch_id>.review.json) are
+    validated per batch, never superseded and never acked here.
     --dry-run plans without touching GitLab, the postbox or the status files.
 
     The GitLab project comes from the registry entry for ``repo`` so one work
@@ -1266,20 +1273,26 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
     iid_filter = int(args.get("iid") or 0)
     items = (c.file_sync_list(repo).get("items") or [])
     groups: dict[int, list] = {}
+    v2_items: list[dict] = []
     stray: list[dict] = []
     for i in items:
         eff = i.get("path") or ""
         if not eff.startswith("mr-replies/"):
             continue
         m = _MR_NOTES_FILE.search(eff)
-        if not m:
-            if not iid_filter:
-                stray.append(i)
+        if m:
+            n = int(m.group(1))
+            if not iid_filter or n == iid_filter:
+                groups.setdefault(n, []).append(i)
             continue
-        n = int(m.group(1))
-        if iid_filter and n != iid_filter:
+        v2 = _MR_REVIEW_BATCH_FILE.search(eff)
+        if v2:
+            n = int(v2.group(1))
+            if not iid_filter or n == iid_filter:
+                v2_items.append(i)
             continue
-        groups.setdefault(n, []).append(i)
+        if not iid_filter:
+            stray.append(i)
     reports = [{"iid": 0, "path": i.get("path"), "posted": 0, "duplicates": 0,
                 "skipped": 1, "failed": 0, "parse_errors": 0, "not_anchored": [],
                 "details": ["not an mr-!N.md reply file"], "replies": [],
@@ -1295,8 +1308,21 @@ def op_mr_replies_push(ctx: Ctx, args: dict) -> dict:
                             "not_anchored": [], "details": [f"download/decrypt: {e}"],
                             "replies": [], "acked": False, "ack_superseded": []})
             continue
-        parsed = _parse_replies(content)
+        try:
+            doc = parse_and_validate(content, want="legacy")
+        except HandoffRejection as e:
+            reports.append({"iid": path_iid, "path": newest.get("path"), "posted": 0,
+                            "duplicates": 0, "skipped": 1, "failed": 0,
+                            "parse_errors": len(e.errors) or 1, "not_anchored": [],
+                            "details": [f"rejected: {msg}"
+                                        for msg in (e.errors or [e.message])],
+                            "replies": [], "acked": False, "ack_superseded": []})
+            continue
+        parsed = {"iid": doc["iid"], "branch": doc["branch"],
+                  "replies": doc["entries"], "errors": []}
         reports.append(_push_replies_file(c, repo, group, parsed, dry_run, project))
+    for i in sorted(v2_items, key=lambda x: x.get("path") or ""):
+        reports.append(_push_review_batch(c, repo, i))
     totals = {k: sum(r.get(k, 0) for r in reports)
               for k in ("posted", "duplicates", "skipped", "failed")}
     totals["not_anchored"] = sum(len(r.get("not_anchored") or []) for r in reports)
