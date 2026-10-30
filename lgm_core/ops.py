@@ -893,7 +893,7 @@ REGISTRY: list[Op] = [
     ),
     Op(
         name="mr_sync_all",
-        summary="Sync every open MR of every registered project to the mirror: branches (mirror delta) + notes (content-hash delta).",
+        summary="Sync every open MR of every registered project to the mirror: branches (mirror delta) + notes (content-hash delta); a full sync on WORK also prepares review snapshots.",
         params=[
             Param("dry_run", "bool", False, "List the MRs without transferring anything"),
             Param("notes_only", "bool", False,

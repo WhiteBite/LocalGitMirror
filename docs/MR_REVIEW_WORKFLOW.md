@@ -24,6 +24,13 @@ refreshed so HOME can still fetch it. `notes_only=true` skips the code artifact 
 reports that as a limitation. The IDEA Review tab exposes the same action natively
 ("Prepare review snapshot", work PC only).
 
+A registered **WORK full sync also prepares review snapshots**: `mr_sync_all` runs the
+same preparation for every open MR of every registered project (extra GitLab calls and
+postbox uploads); per-MR outcomes land in the result's `review_snapshots` key and never
+fail the ordinary branch/notes sync. With `notes_only=true` no code is uploaded: the
+envelope is refreshed only when the bundle is already in the postbox, otherwise the
+snapshot is skipped with that limitation.
+
 Hard limit: one code artifact is capped at **128 MiB** before encryption
 (`CODE_ARTIFACT_MAX_BYTES`); exceeding it fails with `review-package-too-large` —
 there is no silent truncation.
@@ -105,6 +112,11 @@ your own checkout. Preparation runs no hooks, no build, no submodule update, no 
 fetch; gitlinks and LFS pointer files are reported as `incomplete-checkout`
 limitations, never as a fully ready environment.
 
+Windows note: every git call inside an environment is pinned with
+`-c core.autocrlf=false`. Restore and cleanup inside an environment must use the same
+pinned config — a plain `git checkout -- <file>` under a global `core.autocrlf=true`
+smudges the file to CRLF and the environment keeps reporting `dirty`.
+
 ## 6. Findings (HOME)
 
 ```
@@ -118,6 +130,14 @@ publication batch artifact `mr-replies/mr-!<iid>-<batch_id>.review.json` consume
 `applicability=current` may enter a batch; all items of one batch share the same
 `snapshot_id`/`code_id`/`version_fingerprint` identity triple. Batches are immutable
 and never supersede each other.
+
+JSON input (exactly one of `file`/`text`, mirroring §4): `action=list` takes one query
+`{repo, gitlab_url, target_project_id, iid}` plus optional `cursor` (integer offset)
+and `limit` (page size, max 50). `action=create_batch` takes
+`{repo, gitlab_url, target_project_id, iid, items}` where each item is
+`{finding_id, revision, kind, thread_id?, resolve?, body?}` selecting one stored
+revision. `action=save` takes the full finding document (identity + complete
+`revisions` history) with CAS on `expected_revision`.
 
 ## 7. Check / send (HOME)
 

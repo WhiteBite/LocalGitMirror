@@ -590,7 +590,9 @@ CORPORATE DEPS (gradle/npm):
 MR REVIEW (home agent <- work PC <- GitLab; full map: docs/MR_REVIEW_WORKFLOW.md):
   WORK preparation: mr_projects_scan root=<checkouts root>, then mr_sync_all.
     mr_sync_all sends open MR source branches and notes, including MRs without
-    comments. notes_only=true refreshes notes without sending branches.
+    comments, and on a full sync also prepares a review snapshot per open MR
+    (result key review_snapshots). notes_only=true refreshes notes without
+    sending branches.
   WORK snapshot for a whole-MR review: mr_review_prepare repo=<name> iid=<N>
     project=<git root> checkout=<path> — one consistent snapshot (metadata,
     discussions, self-contained code bundle, 128 MiB artifact cap) into the
