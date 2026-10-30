@@ -93,6 +93,8 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
     localgitmirror.idea.gitlab.MrReplyPushService(project).pushInBackground()
   }
   reviewPushRepliesButton = pushRepliesBtn
+  val prepareBtn = iconBtn(AllIcons.Actions.Dump, "review.tip.prepareSnapshot") { prepareSelectedSnapshots() }
+  reviewPrepareButton = prepareBtn
   val moreBtn = iconBtn(AllIcons.Actions.MoreHorizontal, "panel.toolbar.more.tooltip") {
     val popup = javax.swing.JPopupMenu()
     popup.add(javax.swing.JMenuItem(LocalGitMirrorBundle.message("review.sendSelected")).apply {
@@ -126,6 +128,7 @@ internal fun LocalGitMirrorPanel.buildReviewTab(): JComponent {
     add(fetchBtn)
     add(syncNotesBtn)
     add(pushRepliesBtn)
+    add(prepareBtn)
     add(moreBtn)
   }
 
@@ -154,6 +157,22 @@ internal fun LocalGitMirrorPanel.applyReviewWorkButtonPolicy() {
   reviewPushRepliesButton?.let { btn ->
     btn.isEnabled = policy.enabled
     btn.toolTipText = tooltipWithReason("review.tip.pushReplies", reason)
+  }
+  reviewPrepareButton?.let { btn ->
+    btn.isEnabled = policy.enabled
+    btn.toolTipText = tooltipWithReason("review.tip.prepareSnapshot", reason)
+  }
+}
+
+/** Prepares and transfers review snapshots for the selected MRs (work PC, native — no MCP, no CLI). */
+internal fun LocalGitMirrorPanel.prepareSelectedSnapshots() {
+  val rows = mrReviewList.selectedValuesList
+  if (rows.isEmpty()) {
+    notify(LocalGitMirrorBundle.message("review.prepare.none"), NotificationType.WARNING)
+    return
+  }
+  localgitmirror.idea.gitlab.MrReviewSnapshotAction.prepareInBackground(project, rows.map { it.iid }) {
+    if (!project.isDisposed) reloadReview(notify = false)
   }
 }
 

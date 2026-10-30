@@ -1,5 +1,6 @@
 package localgitmirror.idea.gitlab
 
+import com.intellij.ide.BrowserUtil
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
@@ -65,6 +66,10 @@ internal class MrReviewDialog(
   private val controls = mutableMapOf<String, JCheckBox>()
   private var countLabel: JLabel? = null
   private var publishButton: JButton? = null
+  private var batchCountLabel: JLabel? = null
+  private var pendingBatches: List<MrReplyPushService.PendingBatch> = emptyList()
+  private var batchStates: List<MrBatchPreviewState> = emptyList()
+  private val batchControls = mutableMapOf<String, JCheckBox>()
 
   private var composerThread: GitLabApi.MrDiscussion? = null
   private lateinit var targetThread: JRadioButton
@@ -139,6 +144,7 @@ internal class MrReviewDialog(
       }
     }
     browser.update(replies(), row.discussions)
+    browser.updateBatches(batchEntries())
     val outer = JPanel(BorderLayout()).apply { isOpaque = false }
     outer.add(headerPanel(), BorderLayout.NORTH)
     outer.add(workspace, BorderLayout.CENTER)
@@ -146,6 +152,7 @@ internal class MrReviewDialog(
   }
 
   private fun entryDetail(entry: MrReviewEntry): JComponent = when {
+    entry.batchEntry != null -> batchEntryCard(entry.batchEntry)
     entry.discussion != null -> threadCard(entry.discussion, entry.reply)
     entry.reply != null -> newSectionCard(entry.reply)
     else -> bodyArea(entry.path.orEmpty())
@@ -183,6 +190,15 @@ internal class MrReviewDialog(
       meta.add(JLabel(text).apply { foreground = color; font = JBUI.Fonts.smallFont() })
     }
     panel.add(meta)
+    if (isWork) {
+      batchStates.forEach { st -> panel.add(batchRow(st)) }
+    } else {
+      panel.add(JLabel(LocalGitMirrorBundle.message("mrview.home.legacy")).apply {
+        foreground = MUTED
+        font = JBUI.Fonts.smallFont()
+        alignmentX = JLabel.LEFT_ALIGNMENT
+      })
+    }
     if (loadState.refreshing) {
       panel.add(JLabel(AnimatedIcon.Default.INSTANCE).apply { alignmentX = JLabel.LEFT_ALIGNMENT })
     }
@@ -261,6 +277,13 @@ internal class MrReviewDialog(
       foreground = MUTED
       alignmentX = JLabel.LEFT_ALIGNMENT
     })
+    if (isWork && r.kind == MrReplies.Kind.NEW_ANCHORED) {
+      card.add(JLabel(LocalGitMirrorBundle.message("mrview.incoming.fallbackWarn")).apply {
+        font = JBUI.Fonts.smallFont()
+        foreground = AMBER
+        alignmentX = JLabel.LEFT_ALIGNMENT
+      })
+    }
     card.add(Box.createRigidArea(Dimension(0, JBUI.scale(4))))
     card.add(if (isWork) incomingBlock(r) else draftBlock(r))
     return card
@@ -581,10 +604,24 @@ internal class MrReviewDialog(
       border = JBUI.Borders.empty(8, 8, 4, 8)
     }
     countLabel = JLabel("").apply { foreground = if (isWork) MUTED else AMBER }
-    panel.add(countLabel, BorderLayout.NORTH)
+    val north = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      isOpaque = false
+      alignmentX = JPanel.LEFT_ALIGNMENT
+    }
+    north.add(countLabel.apply { alignmentX = JPanel.LEFT_ALIGNMENT })
+    batchCountLabel = JLabel("").apply {
+      foreground = MUTED
+      font = JBUI.Fonts.smallFont()
+      isVisible = false
+      alignmentX = JPanel.LEFT_ALIGNMENT
+    }
+    north.add(batchCountLabel)
+    panel.add(north, BorderLayout.NORTH)
     val right = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(6), 0)).apply { isOpaque = false }
     right.add(subtleButton(LocalGitMirrorBundle.message("mrview.refresh")) { reload() })
     if (isWork) {
+      right.add(subtleButton(LocalGitMirrorBundle.message("mrview.prepare.snapshot")) { prepareSnapshot() })
       right.add(JButton(LocalGitMirrorBundle.message("mrview.reject.selected")).apply {
         addActionListener { rejectSelected() }
       })
@@ -613,12 +650,23 @@ internal class MrReviewDialog(
       val total = replies().size
       val selected = approvedReplies().size
       countLabel?.text = LocalGitMirrorBundle.message("mrview.footer.publishCount", selected, total)
-      publishButton?.text = LocalGitMirrorBundle.message("mrview.publish.selected", selected)
+      val plan = batchPublishPlan(batchStates, selectedBatchIds())
+      batchCountLabel?.isVisible = batchStates.isNotEmpty()
+      batchCountLabel?.text = LocalGitMirrorBundle.message(
+        "mrview.footer.batches", plan.publishIds.size, batchStates.size,
+        plan.publishEntries, plan.totalEntries, plan.remainingEntries,
+      )
+      batchCountLabel?.toolTipText = LocalGitMirrorBundle.message("mrview.batch.whole")
+      publishButton?.text = LocalGitMirrorBundle.message("mrview.publish.selected", selected + plan.publishIds.size)
+      publishButton?.isEnabled = selected + plan.publishIds.size > 0
     } else {
       val selected = approvedReplies().size
       countLabel?.text = LocalGitMirrorBundle.message("mrworkspace.sendCount", selected, replies().size)
     }
   }
+
+  private fun selectedBatchIds(): Set<String> =
+    batchControls.filterValues { it.isSelected }.keys.toSet()
 
   private fun rejectSelected() {
     controls.values.forEach { if (it.isEnabled) it.isSelected = false }
@@ -693,24 +741,222 @@ internal class MrReviewDialog(
 
   private fun publishSelected() {
     val selected = approvedReplies()
-    if (selected.isEmpty()) {
+    val plan = batchPublishPlan(batchStates, selectedBatchIds())
+    if (selected.isEmpty() && plan.publishIds.isEmpty()) {
       notify(LocalGitMirrorBundle.message("mrreview.dialog.noneApproved"), NotificationType.WARNING)
       return
     }
+    publishButton?.isEnabled = false
     ApplicationManager.getApplication().executeOnPooledThread {
-      val target = pending
-      if (target == null) {
-        notify(LocalGitMirrorBundle.message("mrreview.dialog.empty", row.iid), NotificationType.WARNING)
-        return@executeOnPooledThread
+      val service = MrReplyPushService(project)
+      val reports = mutableListOf<MrReplyPushService.FileReport>()
+      var legacyOk = false
+      if (selected.isNotEmpty()) {
+        val target = pending
+        if (target == null) {
+          notify(LocalGitMirrorBundle.message("mrreview.dialog.empty", row.iid), NotificationType.WARNING)
+        } else {
+          val report = service.pushApproved(target, selected)
+          reports.add(report)
+          legacyOk = report.failed == 0
+        }
       }
-      val report = MrReplyPushService(project).pushApproved(target, selected)
+      if (plan.publishIds.isNotEmpty()) {
+        reports += service.pushSelectedBatches(pendingBatches.filter { it.batchId in plan.publishIds })
+      }
       ApplicationManager.getApplication().invokeLater {
-        if (project.isDisposed) return@invokeLater
-        MrReplyPushService(project).notifySummary(listOf(report))
-        markSent(selected, report.failed == 0)
+        if (project.isDisposed || disposed) return@invokeLater
+        if (reports.isNotEmpty()) service.notifySummary(reports)
+        applyBatchResults(reports.mapNotNull { it.batch })
+        if (selected.isNotEmpty() && legacyOk) markSent(selected, true) else rebuildContent()
+        startBackgroundLoad()
       }
     }
   }
+
+  private fun applyBatchResults(results: List<MrReviewBatchPublisher.BatchResult>) {
+    if (results.isEmpty()) return
+    val byId = results.associateBy { it.batchId }
+    batchStates = batchStates.map { st ->
+      val r = byId[st.batchId] ?: return@map st
+      val gate = if (r.stale != null) MrBatchGate.Stale(r.stale.drift) else st.gate
+      st.copy(result = r, gate = gate)
+    }
+  }
+
+  private fun prepareSnapshot() {
+    MrReviewSnapshotAction.prepareInBackground(project, listOf(row.iid)) { reload() }
+  }
+
+  internal fun applyBatchStates(states: List<MrBatchPreviewState>) {
+    batchStates = states
+    batchControls.keys.retainAll(states.mapTo(HashSet()) { it.batchId })
+    rebuildContent()
+  }
+
+  private fun buildBatchStates(batches: List<MrReplyPushService.PendingBatch>): List<MrBatchPreviewState> {
+    if (batches.isEmpty()) return emptyList()
+    val conf = GitLabConfig.resolve(project)
+    val hasApi = GitLabConfig.hasApi(conf)
+    val repo = runCatching { MrReplyPushService(project).repoName() }.getOrNull()
+    val base = project.basePath
+    val priorStates = batchStates
+    return batches.map { b ->
+      val gate = when {
+        !hasApi -> MrBatchGate.Unverified(LocalGitMirrorBundle.message("mrview.batch.noApi"))
+        else -> runCatching {
+          val pc = MrReviewBatchPublisher.precheck(conf, b.parsed)
+          when {
+            pc.error != null -> MrBatchGate.Unverified(pc.error)
+            pc.stale != null -> MrBatchGate.Stale(pc.stale.drift)
+            else -> MrBatchGate.Ready
+          }
+        }.getOrElse { MrBatchGate.Unverified(it.message ?: "error") }
+      }
+      val posted = if (repo != null && base != null) {
+        runCatching {
+          MrReviewJournal.load(File(MrReviewJournal.journalDir(base, repo), "mr-!${b.iid}-${b.batchId}.journal.json"))
+            .takeIf { it.readable }?.postedEntries()
+        }.getOrNull() ?: emptyMap()
+      } else {
+        emptyMap()
+      }
+      batchPreviewState(b, gate, posted, priorStates.firstOrNull { it.batchId == b.batchId }?.result)
+    }
+  }
+
+  private fun batchEntries(): List<MrReviewEntry> = batchStates.flatMap { st ->
+    st.entries.map { e ->
+      MrReviewEntry(
+        key = batchEntryKey(st.batchId, e.findingId, e.revision),
+        text = e.body,
+        path = e.anchorPath,
+        line = e.anchorLine,
+        badge = e.kind,
+        batchEntry = e,
+      )
+    }
+  }
+
+  private fun batchRow(st: MrBatchPreviewState): JComponent {
+    val rowPanel = JPanel(BorderLayout(JBUI.scale(6), 0)).apply {
+      isOpaque = false
+      alignmentX = JPanel.LEFT_ALIGNMENT
+    }
+    val ready = st.gate == MrBatchGate.Ready
+    val check = batchControls.getOrPut(st.batchId) {
+      JCheckBox(LocalGitMirrorBundle.message("mrview.batch.row", st.batchId.take(8), st.entries.size), ready).apply {
+        font = JBUI.Fonts.smallFont()
+        isOpaque = false
+        addItemListener { updateFooter() }
+      }
+    }
+    check.isEnabled = ready
+    if (!ready) check.isSelected = false
+    rowPanel.add(check, BorderLayout.WEST)
+    when (val g = st.gate) {
+      MrBatchGate.Ready -> {
+        val text = buildString {
+          append(LocalGitMirrorBundle.message(
+            "mrview.batch.ready",
+            st.identity["snapshot_id"]?.take(8).orEmpty(),
+            st.identity["version_fingerprint"]?.take(8).orEmpty(),
+          ))
+          st.result?.let { r ->
+            append(" \u00b7 ").append(LocalGitMirrorBundle.message("mrview.batch.result", r.posted, r.duplicates, r.blocked))
+          }
+        }
+        rowPanel.add(wrapLabel(text, when {
+          st.result == null -> MUTED
+          st.result.blocked > 0 -> AMBER
+          else -> GREEN_ICON
+        }), BorderLayout.CENTER)
+      }
+      is MrBatchGate.Stale -> {
+        rowPanel.add(
+          wrapLabel(LocalGitMirrorBundle.message("mrview.batch.stale", g.drift.joinToString(", ")), ERROR_FG),
+          BorderLayout.CENTER,
+        )
+        rowPanel.add(subtleButton(LocalGitMirrorBundle.message("mrview.batch.prepare")) { prepareSnapshot() }, BorderLayout.EAST)
+      }
+      is MrBatchGate.Unverified -> {
+        rowPanel.add(wrapLabel(LocalGitMirrorBundle.message("mrview.batch.unverified", g.reason), ERROR_FG), BorderLayout.CENTER)
+      }
+    }
+    return rowPanel
+  }
+
+  private fun wrapLabel(text: String, color: Color): JComponent =
+    JLabel("<html>${text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")}</html>").apply {
+      font = JBUI.Fonts.smallFont()
+      foreground = color
+      verticalAlignment = JLabel.TOP
+    }
+
+  private fun batchEntryCard(e: MrBatchEntryPreview): JComponent {
+    val card = JPanel().apply {
+      layout = BoxLayout(this, BoxLayout.Y_AXIS)
+      isOpaque = true
+      background = CARD_BG
+      border = JBUI.Borders.empty(8)
+      alignmentX = JPanel.LEFT_ALIGNMENT
+    }
+    val kindText = when (e.kind) {
+      "anchored" -> LocalGitMirrorBundle.message(
+        "mrreview.v2.kind.anchored",
+        e.anchorPath ?: "?", e.anchorLine?.toString() ?: "?", e.anchorSide ?: "?",
+      )
+      "thread" -> LocalGitMirrorBundle.message("mrreview.v2.kind.thread", e.threadId.orEmpty()) +
+        (if (e.resolve) " \u00b7 " + LocalGitMirrorBundle.message("mrreview.v2.resolves") else "")
+      else -> LocalGitMirrorBundle.message("mrreview.v2.kind.general")
+    }
+    card.add(JLabel(kindText).apply {
+      font = JBUI.Fonts.smallFont().asBold()
+      foreground = ACCENT
+      alignmentX = JLabel.LEFT_ALIGNMENT
+    })
+    card.add(wrapLabel(
+      LocalGitMirrorBundle.message("mrreview.v2.finding", e.findingId, e.revision, e.batchId.take(8)),
+      MUTED,
+    ))
+    card.add(bodyArea(e.body))
+    if (e.kind == "anchored") {
+      card.add(wrapLabel(LocalGitMirrorBundle.message("mrreview.v2.noFallback"), MUTED))
+    }
+    val st = batchStates.firstOrNull { it.batchId == e.batchId }
+    if (st != null) {
+      when (val s = entryStatus(st, e)) {
+        is MrBatchEntryStatus.Posted -> {
+          card.add(wrapLabel(LocalGitMirrorBundle.message("mrreview.v2.status.posted"), GREEN_ICON))
+          s.url?.let { card.add(noteLink(it, s.noteId)) }
+        }
+        is MrBatchEntryStatus.Recovered -> {
+          card.add(wrapLabel(LocalGitMirrorBundle.message("mrreview.v2.status.recovered"), GREEN_ICON))
+          s.url?.let { card.add(noteLink(it, s.noteId)) }
+        }
+        is MrBatchEntryStatus.Blocked -> card.add(wrapLabel(
+          if (s.code.isBlank()) LocalGitMirrorBundle.message("mrreview.v2.status.blocked", s.detail)
+          else LocalGitMirrorBundle.message("mrreview.v2.status.blocked.code", s.code, s.detail),
+          ERROR_FG,
+        ))
+        MrBatchEntryStatus.Pending -> card.add(wrapLabel(
+          LocalGitMirrorBundle.message("mrreview.v2.status.pending"), MUTED,
+        ))
+      }
+    }
+    return card
+  }
+
+  private fun noteLink(url: String, noteId: Long?): JComponent =
+    JLabel("<html><a href=''>${LocalGitMirrorBundle.message("mrreview.v2.noteLink", noteId ?: 0)}</a></html>").apply {
+      foreground = JBColor(0x1565C0, 0x548AF7)
+      font = JBUI.Fonts.smallFont()
+      cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+      alignmentX = JLabel.LEFT_ALIGNMENT
+      addMouseListener(object : java.awt.event.MouseAdapter() {
+        override fun mouseClicked(e: java.awt.event.MouseEvent) = BrowserUtil.browse(url)
+      })
+    }
 
   private fun markSent(sent: List<MrReplies.Reply>, ok: Boolean) {
     if (!ok) return
@@ -745,20 +991,31 @@ internal class MrReviewDialog(
       var pendingFailure: String? = null
       var freshPending: MrReplyPushService.PendingReplies? = null
       var freshLocal: MrReplies.RepliesFile? = null
+      var freshBatches: List<MrReplyPushService.PendingBatch> = emptyList()
       if (isWork) {
         when (val fetched = MrReplyPushService(project).fetchPendingReplies()) {
-          is MrReplyPushService.PendingRepliesResult.Available ->
+          is MrReplyPushService.PendingRepliesResult.Available -> {
             freshPending = fetched.items.firstOrNull { it.parsed.iid == iid }
+            freshBatches = fetched.batches.filter { it.iid == iid }
+          }
           is MrReplyPushService.PendingRepliesResult.Unavailable -> pendingFailure = fetched.reason
         }
       } else {
         freshLocal = readLocalRepliesFile(project, iid)
       }
+      val freshBatchStates = if (isWork) buildBatchStates(freshBatches) else emptyList()
       val discussions = project.getService(MrReviewService::class.java).discussionsFor(iid, stamp)
       ApplicationManager.getApplication().invokeLater {
         if (project.isDisposed || disposed) return@invokeLater
         pendingFailure?.let { notify(LocalGitMirrorBundle.message("mrreplies.list.fail", it), NotificationType.WARNING) }
-        if (isWork) pending = freshPending else localReplies = freshLocal
+        if (isWork) {
+          pending = freshPending
+          pendingBatches = freshBatches
+          batchStates = freshBatchStates
+          batchControls.keys.retainAll(freshBatchStates.mapTo(HashSet()) { it.batchId })
+        } else {
+          localReplies = freshLocal
+        }
         val next = discussions.error?.let { loadState.refreshFailed(it) }
           ?: loadState.refreshed(rowWithDiscussions(discussions.discussions))
         applyLoadState(next)

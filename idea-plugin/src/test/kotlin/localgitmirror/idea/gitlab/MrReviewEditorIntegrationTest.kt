@@ -12,6 +12,7 @@ import com.intellij.testFramework.EdtTestUtil
 import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.testFramework.replaceService
 import com.intellij.testFramework.fixtures.IdeaTestFixtureFactory
+import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.MirrorSettingsService
 import java.awt.Component
 import java.awt.Container
@@ -20,12 +21,18 @@ import java.awt.image.BufferedImage
 import java.io.File
 import javax.imageio.ImageIO
 import javax.swing.JTextArea
+import javax.swing.JButton
+import javax.swing.JCheckBox
 import javax.swing.JFrame
 import javax.swing.JComponent
+import javax.swing.JLabel
+import javax.swing.JTabbedPane
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.io.TempDir
 import org.junit.jupiter.api.Assertions.assertAll
 
@@ -104,7 +111,7 @@ class MrReviewEditorIntegrationTest {
     }
   }
 
-  private fun capture(panel: JComponent) {
+  private fun capture(panel: JComponent, prefix: String = "review") {
     if (System.getProperty("review.ui.qa") == null) return
     val evidence = File("build/review-qa").apply { mkdirs() }
     val frame = JFrame("DocCache Review QA").apply { contentPane.add(panel) }
@@ -126,7 +133,7 @@ class MrReviewEditorIntegrationTest {
         }
         val image = BufferedImage(panel.width, panel.height, BufferedImage.TYPE_INT_RGB)
         image.createGraphics().let { graphics -> try { panel.paint(graphics) } finally { graphics.dispose() } }
-          ImageIO.write(image, "png", File(evidence, "review-$theme-$width.png"))
+          ImageIO.write(image, "png", File(evidence, "$prefix-$theme-$width.png"))
         }
       }
     } finally {
@@ -143,4 +150,109 @@ class MrReviewEditorIntegrationTest {
     check(process.waitFor() == 0) { result }
     return result
   }
+
+  @Test
+  fun `work dialog previews v2 batches and the stale batch cannot be published`() {
+    git("init", "-b", "main")
+    git("config", "user.email", "review@example.com")
+    git("config", "user.name", "Review")
+    File(repo, "Example.java").writeText("class Example {\n  int value = 1;\n}\n")
+    commit("base")
+    git("checkout", "-b", "feature")
+    File(repo, "Example.java").writeText("class Example {\n  int value = 2;\n}\n")
+    commit("change")
+    git("checkout", "main")
+    val fixture = IdeaTestFixtureFactory.getFixtureFactory().createFixtureBuilder("DocCacheReviewWork", repo.toPath(), false).fixture
+    fixture.setUp()
+    assertAll("work batch preview", {
+      EdtTestUtil.runInEdtAndWait<RuntimeException> {
+        val nativeManager = FileEditorManagerImpl(fixture.project,
+          (fixture.project as ComponentManagerEx).getCoroutineScope().childScope())
+        fixture.project.replaceService(FileEditorManager::class.java, nativeManager, fixture.testRootDisposable)
+        Disposer.register(fixture.testRootDisposable, nativeManager)
+        val settings = com.intellij.openapi.application.ApplicationManager.getApplication()
+          .getService(MirrorSettingsService::class.java).state
+        settings.machineRole = "work"
+        settings.gitlabUrl = ""
+        val row = MrReviewService.MrRowItem(30, "Batch review", "feature", "", 0, 0,
+          emptyList(), MrReviewService.Source.GITLAB, null, repo = "review-test", targetBranch = "main")
+
+        openMrReviewEditor(fixture.project, row)
+        val manager = FileEditorManager.getInstance(fixture.project)
+        val files = manager.openFiles.filterIsInstance<MrReviewVirtualFile>()
+        val editor = manager.getEditors(files.single()).single()
+        val dialog = editor.component as MrReviewDialog
+        PlatformTestUtil.waitWithEventsDispatching("background load did not settle", {
+          dialog.descendants().none {
+            it is javax.swing.JLabel && it.icon === com.intellij.ui.AnimatedIcon.Default.INSTANCE
+          }
+        }, 30)
+
+        val doc = fixtureDoc()
+        val ready = batchPreviewState(pendingBatch(doc), MrBatchGate.Ready)
+        val stale = ready.copy(
+          batchId = "11111111-2222-3333-4444-555555555555",
+          gate = MrBatchGate.Stale(listOf("source_sha", "diff_refs")),
+        )
+        dialog.applyBatchStates(listOf(ready, stale))
+
+        val staleCheckText = LocalGitMirrorBundle.message("mrview.batch.row", stale.batchId.take(8), stale.entries.size)
+        val staleCheck = dialog.descendants().filterIsInstance<JCheckBox>().single { it.text == staleCheckText }
+        assertFalse(staleCheck.isEnabled)
+        assertFalse(staleCheck.isSelected)
+        assertTrue(dialog.descendants().filterIsInstance<JLabel>().any { it.text.contains("source_sha") })
+
+        val tabs = dialog.descendants().filterIsInstance<JTabbedPane>().single()
+        assertEquals(4, tabs.tabCount)
+        assertTrue(tabs.getTitleAt(3).endsWith("(8)"), "batches tab title: ${tabs.getTitleAt(3)}")
+        tabs.selectedIndex = 3
+
+        val publish = dialog.descendants().filterIsInstance<JButton>()
+          .single { it.getClientProperty("JButton.buttonType") == "default" }
+        assertTrue(publish.isEnabled)
+        assertEquals(LocalGitMirrorBundle.message("mrview.publish.selected", 1), publish.text)
+        val footerText = LocalGitMirrorBundle.message("mrview.footer.batches", 1, 2, 4, 8, 4)
+        assertTrue(dialog.descendants().filterIsInstance<JLabel>().any { it.text == footerText })
+
+        if (!GraphicsEnvironment.isHeadless()) capture(dialog, "review-work")
+
+        dialog.applyBatchStates(listOf(stale))
+        val publishAfter = dialog.descendants().filterIsInstance<JButton>()
+          .single { it.getClientProperty("JButton.buttonType") == "default" }
+        assertFalse(publishAfter.isEnabled)
+
+        manager.closeFile(files.single())
+        assertTrue(manager.openFiles.none { it is MrReviewVirtualFile })
+      }
+    }, {
+      EdtTestUtil.runInEdtAndWait<RuntimeException> { fixture.tearDown() }
+    })
+  }
+
+  private fun fixtureDoc(): MrReviewHandoff.Document {
+    var dir: File? = File(System.getProperty("user.dir", "."))
+    var fixture: File? = null
+    while (dir != null && fixture == null) {
+      val candidate = File(dir, "tests/fixtures/mr_review_publish/publish_batch.json")
+      if (candidate.isFile) fixture = candidate
+      dir = dir.parentFile
+    }
+    val batch = MrReviewProtocol.parse(requireNotNull(fixture).readText()).jsonObject.getValue("batch").jsonObject
+    return MrReviewHandoff.parseAndValidate(
+      MrReviewProtocol.canonicalJson(batch),
+      expectedIid = 30,
+      expectedBatchId = batch.getValue("batch_id").jsonPrimitive.content,
+      want = "v2",
+    )
+  }
+
+  private fun pendingBatch(doc: MrReviewHandoff.Document): MrReplyPushService.PendingBatch =
+    MrReplyPushService.PendingBatch(
+      item = localgitmirror.idea.mirror.MirrorPostboxApi.FileSyncItem(
+        "id-1", "mr-replies/mr-!30-${doc.batchId}.review.json", 10, 10, 0),
+      path = "mr-replies/mr-!30-${doc.batchId}.review.json",
+      iid = 30,
+      batchId = doc.batchId!!,
+      parsed = doc,
+    )
 }

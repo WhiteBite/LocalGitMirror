@@ -96,7 +96,10 @@ tasks {
 
   test {
     useJUnitPlatform()
-    if (providers.gradleProperty("reviewUiQa").isPresent) systemProperty("review.ui.qa", "true")
+    if (providers.gradleProperty("reviewUiQa").isPresent) {
+      systemProperty("review.ui.qa", "true")
+      systemProperty("java.awt.headless", "false")
+    }
   }
 }
 
