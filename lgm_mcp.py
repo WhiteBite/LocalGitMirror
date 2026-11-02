@@ -257,6 +257,7 @@ def _call_tool(name: str, arguments: dict) -> dict:
         sync_password=config.sync_password,
         pin_sha256=config.pin_sha256,
         pin_file=config.pin_file,
+        timeout=config.timeout,
     )
     ctx = Ctx(config=config, client=client)
 

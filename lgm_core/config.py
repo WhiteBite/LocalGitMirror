@@ -79,6 +79,7 @@ class Config:
     pin_file: str = ""
     deps_automation: str = "auto"
     machine_role: str = "home"
+    timeout: int = 15
     # Extra env values needed by gradle/npm scanning (GRADLE_USER_HOME, etc.)
     env: dict = field(default_factory=dict, repr=False)
 
@@ -95,6 +96,7 @@ class Config:
         pin_file: str = "",
         deps_automation: str = "",
         machine_role: str = "",
+        timeout: int = 0,
         env_path: Path | None = None,
     ) -> "Config":
         """Build a Config from .env → process env → explicit overrides.
@@ -117,6 +119,8 @@ class Config:
 
         if insecure_tls is None:
             insecure_tls = _resolve("LGM_INSECURE_TLS", "").lower() in ("1", "true")
+        timeout_raw = _resolve("LGM_HTTP_TIMEOUT", str(timeout) if timeout else "")
+        timeout = int(timeout_raw) if timeout_raw.isdigit() else 15
         return cls(
             base_url=_resolve("BASE_URL", base_url) or "https://localhost:443",
             api_key=_resolve("API_KEY", api_key),
@@ -131,6 +135,7 @@ class Config:
             machine_role=(
                 _resolve("LGM_MACHINE_ROLE", machine_role) or "home"
             ).strip().lower(),
+            timeout=timeout,
             env=local_env,
         )
 
@@ -142,6 +147,7 @@ class Config:
             "insecure_tls": self.insecure_tls,
             "pin_sha256": self.pin_sha256,
             "pin_file": self.pin_file,
+            "timeout": self.timeout,
         }
 
 

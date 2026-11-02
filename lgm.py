@@ -126,6 +126,7 @@ def _build_ctx(config: Config) -> Ctx:
         sync_password=config.sync_password,
         pin_sha256=config.pin_sha256,
         pin_file=config.pin_file,
+        timeout=config.timeout,
     )
     return Ctx(config=config, client=client)
 
