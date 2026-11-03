@@ -30,6 +30,19 @@ Not interchangeable; each covers a different slice:
 
 CLI and MCP are functionally identical because both are generated from `lgm_core/ops.py REGISTRY`; the plugin implements its own richer flows in Kotlin (`lgm_core` has no buffer or generic file-postbox ops; its MR ops ride the same postbox). CLI exit codes: 0 success, 1 crash, 2 usage, 3 config, 4 network, 5 refused-by-mirror/op; under `--json` every failure prints one envelope `{"success": false, "error": {"kind", "code", "message"}}` where `code` is a stable machine reason (`already-held`, `diverged`, `closed-mr`, `wrong-machine`, ...) and `kind` carries the error class or an HTTP status. `lgm update` stages on the tools volume, swaps with `os.replace`, keeps a `.lgm_backup` rollback copy. `mr_send --dry-run` plans without moving refs; bundle negotiation fails closed (a negotiation error raises instead of silently shipping a full bundle); `prune` never defaults bases client-side.
 
+Rich operation failures retain the complete partial operation output under an
+additional `result` field in that envelope, on both CLI and MCP. CLI exit code 5
+and MCP `isError=true` remain unchanged; plain error envelopes have no `result`.
+Without `--json`, the CLI renders the partial output on stdout and reports the
+failure on stderr.
+
+`status` includes a `runtime` block: local version, the Python machine role from
+`LGM_MACHINE_ROLE` (`undetermined` when unset — never the plugin's role
+autodetection or an assumed default), the effective default HTTP timeout per
+request, and boolean config-presence flags. The HTTP timeout is not a
+whole-operation deadline; the MCP host deadline is reported as `unknown`.
+Secret values are not included in the runtime block.
+
 ## Machine roles
 
 `MirrorSettingsService.State.machineRole` = `auto` | `home` | `work`. `auto` (default) resolves via `idea/deps/RoleDetector.kt`: host parsed from `baseUrl` is loopback or literally matches a local interface address → HOME; a non-loopback literal host → WORK. Blank/unparseable `baseUrl` or any detection failure → `UNDETERMINED` (never a silent WORK); the panel surfaces the undetermined state. Result cached per settings change.

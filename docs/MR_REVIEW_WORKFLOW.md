@@ -16,6 +16,11 @@ is the existing v3 encrypted file postbox — no cloud, no raw git protocol.
 mr_review_prepare {repo, iid, project, checkout, notes_only, work_dir}
 ```
 
+`repo` and `iid` are required. `project` is the GitLab project path or numeric
+id, while `checkout` is the local checkout path. A unique entry for `repo` in
+the MR projects registry supplies omitted values; explicit arguments win.
+Missing or ambiguous entries require explicit `project` and `checkout` values.
+
 Collects one consistent snapshot of the MR — metadata, discussions and a self-contained
 code bundle — and places the artifacts in the postbox: bundle first
 (`mr-review/code/<code_id>.bundle`), transfer envelope last
@@ -30,6 +35,15 @@ postbox uploads); per-MR outcomes land in the result's `review_snapshots` key an
 fail the ordinary branch/notes sync. With `notes_only=true` no code is uploaded: the
 envelope is refreshed only when the bundle is already in the postbox, otherwise the
 snapshot is skipped with that limitation.
+
+Each `repos[].mrs[]` item reports `branch_transfer` separately from `review`;
+`branch` remains the source branch name. A blocked branch can have a prepared
+review snapshot. `summary.review_status` describes snapshot preparation only:
+`ready`, `incomplete`, `not-run` (dry-run), or `empty` (no open MRs).
+`review_complete` is true only for `ready`; skipped or failed snapshots and an
+unknown MR inventory prevent readiness. This does not mean HOME has imported
+the snapshots, reviewed the code, or run checks. Ordinary sync `success` retains
+its branch/notes meaning, independently of snapshot preparation failures.
 
 Hard limit: one code artifact is capped at **128 MiB** before encryption
 (`CODE_ARTIFACT_MAX_BYTES`); exceeding it fails with `review-package-too-large` —
