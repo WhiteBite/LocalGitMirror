@@ -13,6 +13,7 @@ from .client import LgmError
 from .crypto import decrypt_bundle
 from .git_pull import fetch_bundle
 from .op_models import Ctx, _client, _repo_arg, _role_guess
+from .runtime_diagnostics import runtime_diagnostics
 
 
 # ── New ops ──────────────────────────────────────────────────────────────────
@@ -40,7 +41,8 @@ def op_status(ctx: Ctx, args: dict) -> dict:
     except LgmError:
         pass
     return {"capabilities": caps, "repos": repos_r, "role_guess": role,
-            "base_url": ctx.config.base_url, "tools": tools}
+            "base_url": ctx.config.base_url, "tools": tools,
+            "runtime": runtime_diagnostics(ctx.config)}
 
 
 def _local_tools_version(root: Path | None = None) -> str:

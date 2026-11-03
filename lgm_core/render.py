@@ -220,6 +220,19 @@ def _render_status(r: dict) -> list[str]:
         out.append(f"  repos: {repos.get('repos', [])}  current={repos.get('current', '?')}")
     out.append(f"  role guess: {r.get('role_guess', '?')}")
     out.append(f"  base_url: {r.get('base_url', '?')}")
+    runtime = r.get("runtime") or {}
+    if runtime:
+        out.append(f"  local version: {runtime.get('local_version', '?')}")
+        out.append(f"  machine role (configured): {runtime.get('machine_role', '?')}")
+        eff = runtime.get("effective_config") or {}
+        if eff:
+            out.append(f"  timeout: {eff.get('timeout', '?')}s ({eff.get('timeout_scope', '?')})")
+            out.append(f"  mcp host deadline: {eff.get('mcp_host_deadline', '?')}")
+            present = eff.get("present") or {}
+            if present:
+                flags = " ".join(f"{k}={'yes' if v else 'no'}"
+                                 for k, v in sorted(present.items()))
+                out.append(f"  config present: {flags}")
     return out
 
 
