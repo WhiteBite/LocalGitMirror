@@ -2,6 +2,7 @@ package localgitmirror.idea.gitlab
 
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
+import localgitmirror.idea.git.GitDirCache
 import localgitmirror.idea.i18n.LocalGitMirrorBundle
 import localgitmirror.idea.settings.OperationsHistoryService
 import java.io.File
@@ -289,17 +290,28 @@ object MrNotesWriter {
 
   fun ensureGitignore(project: Project) {
     val base = project.basePath ?: return
-    val gitignore = File(base, ".gitignore")
+    val gitDir = GitDirCache.gitDir(File(base))
+    // linked worktrees store the shared gitdir path in a commondir file
+    val commondir = File(gitDir, "commondir")
+    val commonDir = if (commondir.isFile) {
+      val raw = commondir.readText(Charsets.UTF_8).trim()
+      val f = File(raw)
+      if (f.isAbsolute) f.canonicalFile else File(gitDir, raw).canonicalFile
+    } else {
+      gitDir
+    }
+    val exclude = File(commonDir, "info/exclude")
     val entry = ".mr-notes/"
-    if (!gitignore.isFile) {
-      gitignore.writeText("$entry\n", Charsets.UTF_8)
+    if (!exclude.isFile) {
+      exclude.parentFile?.mkdirs()
+      exclude.writeText("$entry\n", Charsets.UTF_8)
       return
     }
-    val content = gitignore.readText(Charsets.UTF_8)
-    val hasLine = content.lines().any { it.trim() == entry }
+    val content = exclude.readText(Charsets.UTF_8)
+    val hasLine = content.lines().any { it.trim() == entry || it.trim() == "/$entry" }
     if (!hasLine) {
       val prefix = if (content.isNotEmpty() && !content.endsWith("\n")) "\n" else ""
-      gitignore.writeText(content + prefix + "$entry\n", Charsets.UTF_8)
+      exclude.writeText(content + prefix + "$entry\n", Charsets.UTF_8)
     }
   }
 }
