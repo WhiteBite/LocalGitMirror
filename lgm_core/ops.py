@@ -76,6 +76,7 @@ from .ops_chat import (
 )
 from .ops_projects import (
     op_mr_projects_scan, op_mr_projects_list, op_mr_sync_all,
+    _load_registry,
 )
 from .mr_review_models import (
     BUDGET_BYTES_MAX, BUDGET_BYTES_MIN, MrReviewError, validate_budget,
@@ -115,13 +116,61 @@ def _review_paths(args: dict) -> list[str]:
     return paths
 
 
+def _entry_field(entry: dict, key: str, flag: str) -> str:
+    value = str(entry.get(key) or "").strip()
+    if not value:
+        raise LgmError(
+            "config",
+            f"mr-projects registry entry for repo {entry.get('repo')!r} has no "
+            f"{key} field — pass --{flag} explicitly")
+    return value
+
+
+def _prepare_targets(repo: str, project: str, checkout: str) -> tuple[str, str]:
+    """Resolve (gitlab project, local checkout) for mr_review_prepare.
+
+    Both explicit: used verbatim, the registry is not read. Otherwise the
+    unique registry entry for --repo fills the missing fields (an explicit
+    value always wins); with several entries one explicit value may narrow
+    the choice, anything else is a config error.
+    """
+    if project and checkout:
+        return project, checkout
+    entries = [e for e in _load_registry().get("projects", [])
+               if isinstance(e, dict) and e.get("repo") == repo]
+    if len(entries) == 1:
+        entry = entries[0]
+        if not project:
+            project = _entry_field(entry, "gitlab", "project")
+        if not checkout:
+            checkout = _entry_field(entry, "path", "checkout")
+        return project, checkout
+    if project:
+        matches = [e for e in entries if e.get("gitlab") == project]
+        if len(matches) == 1:
+            return project, _entry_field(matches[0], "path", "checkout")
+    if checkout:
+        matches = [e for e in entries if e.get("path") == checkout]
+        if len(matches) == 1:
+            return _entry_field(matches[0], "gitlab", "project"), checkout
+    if not entries:
+        raise LgmError(
+            "config",
+            f"repo {repo!r} has no entry in the mr-projects registry and "
+            "project/checkout were not both given — pass --project and "
+            "--checkout, or register the checkout with mr_projects_scan")
+    raise LgmError(
+        "config",
+        f"repo {repo!r} has {len(entries)} entries in the mr-projects registry "
+        "and the given project/checkout do not identify exactly one — pass "
+        "both --project and --checkout")
+
+
 def op_mr_review_prepare(ctx: Ctx, args: dict) -> dict:
     c = _client(ctx)
     repo = _repo_arg(args)
-    project = str(args.get("project") or "")
-    checkout = str(args.get("checkout") or "")
-    if not project or not checkout:
-        raise LgmError("config", "project and checkout are required paths")
+    project, checkout = _prepare_targets(
+        repo, str(args.get("project") or ""), str(args.get("checkout") or ""))
     try:
         return mr_review_prepare(
             c, repo, int(args.get("iid") or 0), project, checkout,
@@ -581,10 +630,13 @@ REGISTRY: list[Op] = [
             Param("repo", "str", "", "Mirror repository name", required=True),
             Param("iid", "int", 0, "GitLab MR iid", required=True, minimum=1),
             Param("project", "str", "",
-                  "Local GitLab checkout used to resolve the origin remote",
-                  required=True),
+                  "GitLab project of the MR (path like group/project or "
+                  "numeric id); default: the gitlab field of the unique "
+                  "mr-projects registry entry for --repo"),
             Param("checkout", "str", "",
-                  "Checkout path the snapshot is collected from", required=True),
+                  "Local git checkout whose origin remote is used to fetch "
+                  "the MR refs; default: the path field of the unique "
+                  "mr-projects registry entry for --repo"),
             Param("notes_only", "bool", False,
                   "Skip the code artifact upload (metadata/discussions only); an "
                   "absent or aged bundle is reported as a limitation instead"),
