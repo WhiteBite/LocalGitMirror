@@ -152,14 +152,18 @@ _EXIT_CRASH = 1
 _EXIT_BY_KIND = {"config": 3, "network": 4}
 _EXIT_REFUSED = 5
 
+_FAILURE_ENVELOPE_KEYS = {"success", "error", "message", "code"}
+
 
 def _print_error(args: argparse.Namespace, kind, message: str,
-                 machine_code=None) -> int:
+                 machine_code=None, result=None) -> int:
     if getattr(args, "json", False):
         envelope = {"success": False,
                     "error": {"kind": kind, "code": machine_code,
                               "message": message}}
-        print(json.dumps(envelope, ensure_ascii=False, indent=2))
+        if result is not None:
+            envelope["result"] = result
+        print(json.dumps(envelope, ensure_ascii=False, indent=2, default=str))
     else:
         print(f"ERROR: [{kind}] {message}", file=sys.stderr)
     if kind == "crash":
@@ -195,8 +199,14 @@ def main() -> int:
     if isinstance(result, dict) and result.get("success") is False:
         detail = result.get("error") or result.get("message") or "operation reported success=false"
         code = result.get("code")
+        partial = result if set(result) - _FAILURE_ENVELOPE_KEYS else None
+        if partial is not None and not getattr(args, "json", False):
+            output = render(op.name, result)
+            if output:
+                print(output)
         return _print_error(args, "op_failure", str(detail),
-                            code if isinstance(code, str) else None)
+                            code if isinstance(code, str) else None,
+                            result=partial)
 
     if getattr(args, "json", False):
         print(json.dumps(result, ensure_ascii=False, indent=2, default=str))

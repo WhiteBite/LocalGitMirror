@@ -217,12 +217,16 @@ def _validate_arguments(op, arguments: dict) -> list[str]:
     return violations
 
 
+_FAILURE_ENVELOPE_KEYS = {"success", "error", "message", "code"}
+
+
 def _error_result(envelope: dict) -> dict:
     """An isError tool result whose text is the CLI's JSON error envelope."""
     return {
         "isError": True,
         "content": [{"type": "text",
-                     "text": json.dumps(envelope, ensure_ascii=False, indent=2)}],
+                     "text": json.dumps(envelope, ensure_ascii=False, indent=2,
+                                        default=str)}],
     }
 
 
@@ -280,10 +284,13 @@ def _call_tool(name: str, arguments: dict) -> dict:
         detail = result.get("error") or result.get("message") \
             or "operation reported success=false"
         code = result.get("code")
-        return _error_result({"success": False, "error": {
+        envelope = {"success": False, "error": {
             "kind": "op_failure",
             "code": code if isinstance(code, str) else None,
-            "message": str(detail)}})
+            "message": str(detail)}}
+        if set(result) - _FAILURE_ENVELOPE_KEYS:
+            envelope["result"] = result
+        return _error_result(envelope)
 
     if any(p.name == "budget_bytes" for p in op.params):
         # mcp_result_bytes measures the real re-escaping; no fixed surcharge model
