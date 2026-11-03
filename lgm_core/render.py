@@ -695,6 +695,8 @@ def _render_mr_sync_all(r: dict) -> list[str]:
     out.append(f"  notes: uploaded={s.get('notes_uploaded', 0)}  unchanged={s.get('notes_unchanged', 0)}  closed marked={s.get('closed_marked', 0)}")
     if any(repo.get("review_snapshots") for repo in r.get("repos") or []):
         out.append(f"  review snapshots: prepared={s.get('review_prepared', 0)}  skipped={s.get('review_skipped', 0)}  failed={s.get('review_failed', 0)}")
+    if s.get("review_status"):
+        out.append(f"  snapshot preparation: {s['review_status']}")
     for repo in r.get("repos") or []:
         out.append(f"  {repo.get('repo', '?')} ({repo.get('gitlab', '?')}): open MRs={repo.get('open_mrs', 0)}")
         for w in repo.get("branch_warnings") or []:
@@ -702,9 +704,20 @@ def _render_mr_sync_all(r: dict) -> list[str]:
         for b in repo.get("blocked") or []:
             out.append(f"    [blocked] !{b.get('iid')} {b.get('branch')}: {b.get('reason')}")
         for m in repo.get("mrs") or []:
+            line = f"    !{m.get('iid')} {m.get('title', '')}"
+            branch = m.get("branch")
+            if branch:
+                line += f" [{branch}]"
+            transfer = m.get("branch_transfer")
+            if transfer:
+                line += f"  branch_transfer={transfer}"
+            review = m.get("review") or {}
+            if review.get("status"):
+                line += f"  snapshot={review['status']}"
             notes = m.get("notes", "")
             if notes:
-                out.append(f"    !{m.get('iid')} {m.get('title', '')} — notes: {notes}")
+                line += f"  notes: {notes}"
+            out.append(line)
         for snap in repo.get("review_snapshots") or []:
             out.append(f"    [review] !{snap.get('iid')}: {snap.get('status', '?')}")
             for lim in snap.get("limitations") or []:

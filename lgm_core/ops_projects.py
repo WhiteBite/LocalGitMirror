@@ -213,6 +213,47 @@ def _prepare_review_snapshots(c, repo: str, gitlab: str, proj: Path,
     return out
 
 
+def _branch_transfer_status(branch: str, notes_only: bool, blocked: set,
+                            sent: set, skipped: set, error: str | None) -> str:
+    if notes_only or not branch:
+        return "not-requested"
+    if branch in blocked:
+        return "blocked"
+    if error:
+        return "failed"
+    if branch in sent:
+        return "sent"
+    if branch in skipped:
+        return "skipped"
+    return "not-requested"
+
+
+def _review_entry(entry: dict | None) -> dict:
+    if not entry:
+        return {"status": "not-run", "snapshot_id": "", "code_id": "",
+                "limitations": [], "error": ""}
+    return {
+        "status": entry.get("status", ""),
+        "snapshot_id": entry.get("snapshot_id", ""),
+        "code_id": entry.get("code_id", ""),
+        "limitations": list(entry.get("limitations") or []),
+        "error": entry.get("error", ""),
+    }
+
+
+def _review_aggregate(results: list[dict], dry_run: bool) -> dict:
+    if dry_run:
+        return {"review_complete": False, "review_status": "not-run"}
+    if any(r.get("error") or r.get("open_mrs") is None for r in results):
+        return {"review_complete": False, "review_status": "incomplete"}
+    listed = [m for r in results for m in (r.get("mrs") or [])]
+    if not listed:
+        return {"review_complete": False, "review_status": "empty"}
+    if all((m.get("review") or {}).get("status") == "prepared" for m in listed):
+        return {"review_complete": True, "review_status": "ready"}
+    return {"review_complete": False, "review_status": "incomplete"}
+
+
 def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
                   dry_run: bool, notes_only: bool = False) -> dict:
     repo = entry.get("repo", "")
@@ -239,7 +280,8 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
     if dry_run:
         res["mrs"] = [
             {"iid": m.get("iid"), "title": m.get("title", ""),
-             "branch": m.get("source_branch", ""), "notes": "dry-run"}
+             "branch": m.get("source_branch", ""), "notes": "dry-run",
+             "branch_transfer": "dry-run", "review": _review_entry(None)}
             for m in mrs
         ]
         res["closed"] = [{"iid": i, "marker": "dry-run"} for i in closed_iids]
@@ -285,10 +327,20 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
     res["review_snapshots"] = _prepare_review_snapshots(
         c, repo, gitlab, proj, mrs, notes_only)
 
+    blocked_branches = {b.get("branch") for b in (res.get("blocked") or [])}
+    sent_branches = set(res.get("branches_sent") or [])
+    skipped_branches = set(res.get("branches_skipped") or [])
+    branches_error = res.get("branches_error")
+    review_by_iid = {e.get("iid"): e for e in (res.get("review_snapshots") or [])}
+
     for m in mrs:
         iid = m.get("iid")
-        item = {"iid": iid, "title": m.get("title", ""),
-                "branch": m.get("source_branch", "")}
+        branch = m.get("source_branch") or ""
+        item = {"iid": iid, "title": m.get("title", ""), "branch": branch,
+                "branch_transfer": _branch_transfer_status(
+                    branch, notes_only, blocked_branches, sent_branches,
+                    skipped_branches, branches_error),
+                "review": _review_entry(review_by_iid.get(iid))}
         res["mrs"].append(item)
         seen = repo_state.setdefault(str(iid), {})
         seen["seen_at"] = now
@@ -443,6 +495,7 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
     review_failed = sum(
         1 for r in results for e in (r.get("review_snapshots") or [])
         if e.get("status") == "failed")
+    review_agg = _review_aggregate(results, dry_run)
     result = {"success": not errors, "dry_run": dry_run, "notes_only": notes_only,
               "repos": results,
               "blocked": blocked,
@@ -458,6 +511,8 @@ def op_mr_sync_all(ctx: Ctx, args: dict) -> dict:
                   "review_prepared": review_prepared,
                   "review_skipped": review_skipped,
                   "review_failed": review_failed,
+                  "review_complete": review_agg["review_complete"],
+                  "review_status": review_agg["review_status"],
                   "failures": failures,
                   "errors": errors,
               }}
