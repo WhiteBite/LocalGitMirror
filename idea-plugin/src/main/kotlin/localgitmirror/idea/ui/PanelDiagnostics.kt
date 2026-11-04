@@ -357,11 +357,6 @@ internal fun LocalGitMirrorPanel.checkPluginVersionHintInBackground() {
       pluginVersionLabel.foreground = com.intellij.ui.JBColor(0xB8860B, 0xE3AE4D)
       pluginVersionLabel.cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
       pluginVersionLabel.toolTipText = LocalGitMirrorBundle.message("pluginupdate.hint.tooltip")
-      pluginVersionLabel.addMouseListener(object : java.awt.event.MouseAdapter() {
-        override fun mouseClicked(e: java.awt.event.MouseEvent) {
-          checkPluginUpdate()
-        }
-      })
       if (updateHintNotified.add("v${decision.remote}")) {
         val notif = com.intellij.notification.NotificationGroupManager.getInstance()
           .getNotificationGroup("DocCache")

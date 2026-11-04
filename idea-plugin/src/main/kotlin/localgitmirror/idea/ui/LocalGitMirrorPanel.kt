@@ -74,6 +74,12 @@ class LocalGitMirrorPanel(val project: Project) : JPanel(BorderLayout()), Dispos
   internal val pluginVersionLabel = JBLabel(LocalGitMirrorBundle.message("panel.footer.version", pluginVersionText)).apply {
     font = JBUI.Fonts.smallFont().deriveFont(Font.PLAIN, JBUI.scale(10f).toFloat())
     foreground = UIUtil.getContextHelpForeground()
+    // bound once for the panel's lifetime: later restyling must not stack listeners
+    addMouseListener(object : java.awt.event.MouseAdapter() {
+      override fun mouseClicked(e: java.awt.event.MouseEvent) {
+        checkPluginUpdate()
+      }
+    })
   }
 
   internal val historyService = service<OperationsHistoryService>()
