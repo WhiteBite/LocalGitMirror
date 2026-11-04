@@ -14,6 +14,9 @@ import localgitmirror.idea.mirror.MirrorPluginApi
 import localgitmirror.idea.settings.MirrorSettingsService
 import localgitmirror.idea.settings.SecretsStore
 
+// one update warning per offered version per IDE session
+private val updateHintNotified = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
 // ── Diagnostics & pull/push extension functions for LocalGitMirrorPanel ──
 
 internal fun LocalGitMirrorPanel.pullBack() {
@@ -349,6 +352,8 @@ internal fun LocalGitMirrorPanel.checkPluginVersionHintInBackground() {
     com.intellij.util.ui.UIUtil.invokeLaterIfNeeded {
       if (project.isDisposed) return@invokeLaterIfNeeded
       pluginVersionLabel.text = "$pluginVersionText \u2192 v${decision.remote}"
+      pluginVersionLabel.font = com.intellij.util.ui.JBUI.Fonts.smallFont()
+        .deriveFont(java.awt.Font.BOLD, com.intellij.util.ui.JBUI.scale(10f).toFloat())
       pluginVersionLabel.foreground = com.intellij.ui.JBColor(0xB8860B, 0xE3AE4D)
       pluginVersionLabel.cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
       pluginVersionLabel.toolTipText = LocalGitMirrorBundle.message("pluginupdate.hint.tooltip")
@@ -357,6 +362,20 @@ internal fun LocalGitMirrorPanel.checkPluginVersionHintInBackground() {
           checkPluginUpdate()
         }
       })
+      if (updateHintNotified.add("v${decision.remote}")) {
+        val notif = com.intellij.notification.NotificationGroupManager.getInstance()
+          .getNotificationGroup("DocCache")
+          .createNotification(
+            LocalGitMirrorBundle.message("pluginupdate.available.title"),
+            LocalGitMirrorBundle.message("pluginupdate.available.text",
+              pluginVersionText, "v${decision.remote}"),
+            NotificationType.WARNING)
+        notif.addAction(com.intellij.notification.NotificationAction.createSimpleExpiring(
+          LocalGitMirrorBundle.message("pluginupdate.available.action")) {
+          checkPluginUpdate()
+        })
+        notif.notify(project)
+      }
     }
   }
 }
