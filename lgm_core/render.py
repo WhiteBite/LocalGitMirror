@@ -649,6 +649,55 @@ def _render_mr_pending(r: dict) -> list[str]:
     return out
 
 
+def _render_mr_status(r: dict) -> list[str]:
+    items = r.get("items") or []
+    out = [f"MR status repo='{r.get('repo', '?')}' project='{r.get('project', '?')}': "
+           f"{r.get('count', len(items))} MR(s)"]
+    for it in items:
+        merge = it.get("detailed_merge_status") or it.get("merge_status") or "?"
+        pipe = (it.get("pipeline") or {}).get("status", "none")
+        ready = "yes" if it.get("ready") else "no"
+        out.append(f"  !{it.get('iid')} {it.get('title', '')} [{it.get('state')}]  "
+                   f"ready={ready}  merge={merge}  pipeline={pipe}")
+        if not it.get("ready"):
+            for b in it.get("blockers") or []:
+                out.append(f"    [blocker] {b}")
+        approvals = it.get("approvals") or {}
+        if not approvals.get("unknown"):
+            required = approvals.get("required", 0)
+            out.append(f"    approvals: {required - approvals.get('left', 0)}/{required}")
+    for e in r.get("errors") or []:
+        out.append(f"  [error] !{e.get('iid')}: {e.get('error')}")
+    return out
+
+
+def _render_mr_overview(r: dict) -> list[str]:
+    t = r.get("totals") or {}
+    out = [f"MR overview: repos={t.get('repos', 0)}  MRs={t.get('mrs', 0)}  "
+           f"replies pending={t.get('replies_pending', 0)}  "
+           f"reviews imported={t.get('reviews_imported', 0)}"]
+    for repo in r.get("repos") or []:
+        if repo.get("error"):
+            out.append(f"  {repo.get('repo')}: [error] {repo['error']}")
+            continue
+        out.append(f"  {repo.get('repo')}: {repo.get('count', 0)} MR(s)")
+        for it in repo.get("items") or []:
+            parts = [f"state={it.get('state')}"]
+            if it.get("notes_age_seconds") is not None:
+                parts.append(f"notes {it['notes_age_seconds']}s old")
+            if it.get("replies_pending"):
+                parts.append("replies pending")
+            lp = it.get("last_publish")
+            if lp and lp.get("parsed"):
+                parts.append(f"published posted={lp.get('posted')} "
+                             f"failed={lp.get('failed')}")
+            review = it.get("review") or {}
+            parts.append("review imported" if review.get("imported")
+                         else "review not imported")
+            out.append(f"    !{it.get('iid')}  " + "  ".join(parts))
+    return out
+
+
 def _render_mr_review_receipts(r: dict) -> list[str]:
     action = r.get("action") or "?"
     mode = " (dry-run)" if r.get("dry_run") else ""
@@ -1052,6 +1101,8 @@ _RENDERERS = {
     "mr_replies_status": _render_mr_replies_status,
     "mr_replies_push": _render_mr_replies_push,
     "mr_pending": _render_mr_pending,
+    "mr_status": _render_mr_status,
+    "mr_overview": _render_mr_overview,
     "mr_review_receipts": _render_mr_review_receipts,
     "mr_review_prepare": _render_mr_review_prepare,
     "mr_review_open": _render_mr_review_open,

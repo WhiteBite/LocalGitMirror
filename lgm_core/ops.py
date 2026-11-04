@@ -67,7 +67,7 @@ from .ops_mr import (
     op_mr_list, _resolve_mr_targets, _fetch_mr_branches, _local_tip,
     _mirror_refs_safe, _existing_shas, op_mr_send,
     op_mr_notes, op_mr_replies_send, op_mr_replies_status, op_mr_replies_push,
-    op_mr_pending, op_mr_review_receipts,
+    op_mr_pending, op_mr_status, op_mr_overview, op_mr_review_receipts,
 )
 from .ops_chat import (
     op_chat_send, op_chat_list,
@@ -601,6 +601,32 @@ REGISTRY: list[Op] = [
             Param("repo", "str", "", "Mirror repository name", required=True),
         ],
         run=op_mr_pending,
+    ),
+    Op(
+        name="mr_status",
+        summary=("Read-only WORK-side merge readiness for open MRs: every blocker "
+                 "at once (state, draft, detailed_merge_status, conflicts, pipeline, "
+                 "approvals) with a ready flag; never merges or approves."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "Only this MR iid (0 = all open MRs)"),
+            Param("project", "str", "",
+                  "GitLab project path or numeric id (default: the registered "
+                  "project for --repo, else GITLAB_PROJECT)"),
+        ],
+        run=op_mr_status,
+    ),
+    Op(
+        name="mr_overview",
+        summary=("HOME: one compact cross-repo MR queue in a single call — per MR the "
+                 "notes freshness, pending replies, last publish outcome and whether its "
+                 "review snapshot is imported, plus totals. Reads only transferred notes "
+                 "and the review store; no GitLab call, no claim that a review is done."),
+        params=[
+            Param("repo", "str", "", "Limit to one mirror repository (empty = all registered)"),
+            Param("home", "str", "", _HOME_HELP),
+        ],
+        run=op_mr_overview,
     ),
     Op(
         name="mr_review_receipts",

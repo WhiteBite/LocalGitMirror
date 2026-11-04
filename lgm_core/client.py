@@ -600,6 +600,21 @@ class MirrorClient:
             raise LgmError("network", f"GitLab returned non-dict for merge_request: {type(data).__name__}")
         return data
 
+    def gitlab_mr_approvals(self, iid: int, project: str = "") -> dict:
+        """GET /api/v4/projects/<id>/merge_requests/<iid>/approvals — approval state."""
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
+        try:
+            iid_int = int(iid)
+        except (TypeError, ValueError):
+            raise LgmError("config", f"MR iid must be an integer, got: {iid!r}") from None
+        data = self._gitlab_get(
+            f"{url}/api/v4/projects/{proj_id}/merge_requests/{iid_int}/approvals", token
+        )
+        if not isinstance(data, dict):
+            raise LgmError("network", f"GitLab returned non-dict for approvals: {type(data).__name__}")
+        return data
+
     def gitlab_base_url(self, project: str = "") -> str:
         """Normalized GitLab base URL (no trailing slash) for identity payloads."""
         url, _token, _project = self._gitlab_config(project)
