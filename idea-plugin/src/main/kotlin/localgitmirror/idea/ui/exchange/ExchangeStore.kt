@@ -16,7 +16,7 @@ private const val THUMB_MAX_HEIGHT = 320
 /** Persistent home for received exchange files: <project>/.doccache/exchange, excluded via .git/info/exclude. */
 internal fun LocalGitMirrorPanel.exchangeDir(): File? {
   val base = project.basePath ?: return null
-  val dir = File(base, ".doccache/exchange")
+  val dir = exchangeDirPath() ?: return null
   if (!dir.exists() && !dir.mkdirs()) return null
   val entry = ".doccache/"
   try {
@@ -50,11 +50,31 @@ private fun gitInfoExclude(base: String): File? {
   return File(commonDir, "info/exclude")
 }
 
-internal fun LocalGitMirrorPanel.safeExchangeName(item: ExchangeItem): String {
+internal fun LocalGitMirrorPanel.exchangeDirPath(): File? =
+  project.basePath?.let { File(it, ".doccache/exchange") }
+
+internal fun safeExchangeName(item: ExchangeItem): String {
   val raw = item.displayPath.substringAfterLast('/').ifBlank { item.title }
   val safe = raw.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
   return safe.ifBlank { "file.bin" }
 }
+
+internal fun exchangeFilePath(basePath: String?, item: ExchangeItem): File? {
+  if (basePath.isNullOrBlank()) return null
+  return File(File(basePath, ".doccache/exchange"), safeExchangeName(item))
+}
+
+/** Materialized local copy of [item], or null when absent, size-mismatched, or an mr-notes entry (re-uploaded under the same name). */
+internal fun existingExchangeFile(basePath: String?, item: ExchangeItem): File? {
+  if (item.isMrNotes) return null
+  val f = exchangeFilePath(basePath, item) ?: return null
+  if (!f.isFile) return null
+  if (item.size > 0 && f.length() != item.size) return null
+  return f
+}
+
+internal fun LocalGitMirrorPanel.existingExchangeFile(item: ExchangeItem): File? =
+  existingExchangeFile(project.basePath, item)
 
 /** Decode a postbox image in the background and drop the thumbnail into its bubble. */
 internal fun LocalGitMirrorPanel.queueThumbPrefetch(item: ExchangeItem) {

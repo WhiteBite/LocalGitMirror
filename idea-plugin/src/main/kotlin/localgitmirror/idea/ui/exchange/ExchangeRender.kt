@@ -22,6 +22,7 @@ import localgitmirror.idea.ui.LocalGitMirrorPanel
 import localgitmirror.idea.ui.MrNotesDialog
 import localgitmirror.idea.ui.notify
 import java.awt.Component
+import java.awt.Desktop
 import java.awt.Dimension
 import java.awt.datatransfer.StringSelection
 import java.io.File
@@ -187,6 +188,18 @@ internal fun LocalGitMirrorPanel.saveExchangeFileAs(item: ExchangeItem) {
     } catch (t: Throwable) {
       notify(LocalGitMirrorBundle.message("panel.exchange.saveAs.fail", t.message ?: ""), NotificationType.ERROR)
     }
+  }
+}
+
+internal fun LocalGitMirrorPanel.openLocalExchangeFile(file: File) {
+  try {
+    if (!Desktop.isDesktopSupported()) {
+      notify(LocalGitMirrorBundle.message("panel.exchange.decrypt.fail", file.name), NotificationType.ERROR)
+      return
+    }
+    Desktop.getDesktop().open(file)
+  } catch (t: Throwable) {
+    notify(LocalGitMirrorBundle.message("panel.exchange.decrypt.fail", t.message ?: file.name), NotificationType.ERROR)
   }
 }
 

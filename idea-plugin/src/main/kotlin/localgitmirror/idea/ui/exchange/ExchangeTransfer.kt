@@ -1,6 +1,7 @@
 package localgitmirror.idea.ui.exchange
 
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.components.service
 import com.intellij.openapi.fileChooser.FileChooser
@@ -416,6 +417,13 @@ private fun LocalGitMirrorPanel.localMetaSide(): String =
 
 /** Download + decrypt a postbox entry off the EDT; [consume] runs on the EDT and receives a persistent file in .doccache/exchange (or a temp file when the project dir is unavailable). */
 internal fun LocalGitMirrorPanel.withDecryptedFile(item: ExchangeItem, consume: (File) -> Unit) {
+  val cached = existingExchangeFile(item)
+  if (cached != null) {
+    ApplicationManager.getApplication().invokeLater {
+      if (!project.isDisposed) consume(cached)
+    }
+    return
+  }
   val s = service<MirrorSettingsService>().state
   if (s.baseUrl.isBlank()) {
     notify(LocalGitMirrorBundle.message("notify.config.missing"), NotificationType.WARNING)

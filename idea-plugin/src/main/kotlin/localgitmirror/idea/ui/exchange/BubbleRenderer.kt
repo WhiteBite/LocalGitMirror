@@ -87,8 +87,16 @@ private fun LocalGitMirrorPanel.buildBubble(item: ExchangeItem): JComponent {
     item.isText -> content.add(fileCard(item,
       if (item.isLog) AllIcons.Debugger.Console else AllIcons.FileTypes.Text,
       LocalGitMirrorBundle.message("panel.exchange.ctx.open")) { openExchangeItem(item) })
-    else -> content.add(fileCard(item, AllIcons.FileTypes.Any_type,
-      LocalGitMirrorBundle.message("panel.exchange.chat.save")) { saveExchangeFileAs(item) })
+    else -> {
+      val local = existingExchangeFile(item)
+      if (local != null) {
+        content.add(fileCard(item, AllIcons.FileTypes.Any_type,
+          LocalGitMirrorBundle.message("panel.exchange.ctx.open")) { openLocalExchangeFile(local) })
+      } else {
+        content.add(fileCard(item, AllIcons.FileTypes.Any_type,
+          LocalGitMirrorBundle.message("panel.exchange.chat.save")) { saveExchangeFileAs(item) })
+      }
+    }
   }
   content.add(bubbleFooter(item))
   bubble.add(content, BorderLayout.CENTER)
