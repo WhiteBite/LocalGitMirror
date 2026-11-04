@@ -12,7 +12,7 @@ from lgm_core.client import MirrorClient
 from lgm_core.config import Config
 from lgm_core.op_models import Ctx
 from lgm_core.ops import op_mr_send
-from lgm_core.ops_mr import _diverged_warning, _fetch_mr_branches
+from lgm_core.ops_mr import _branch_block_warning, _fetch_mr_branches
 from lgm_core.render import render
 
 
@@ -85,15 +85,21 @@ def test_diverged_local_stays_untouched_and_is_reported(tmp_path):
     l1 = _local_feat_ahead(work, "l1.txt")
     o1 = _push_origin_feat(seed, "o1.txt")
     assert l1 != o1
-    assert _fetch_mr_branches(work, ["feat"]) == ["feat"]
+    assert _fetch_mr_branches(work, ["feat"]) == [
+        {"branch": "feat", "kind": "diverged", "ahead": 1, "behind": 1}]
     assert _git(work, "rev-parse", "refs/heads/feat") == l1
 
 
 def test_local_ahead_of_origin_stays_untouched_and_is_reported(tmp_path):
     _seed, work, _c0 = _setup(tmp_path)
     l1 = _local_feat_ahead(work, "l1.txt")
-    assert _fetch_mr_branches(work, ["feat"]) == ["feat"]
+    assert _fetch_mr_branches(work, ["feat"]) == [
+        {"branch": "feat", "kind": "ahead", "ahead": 1, "behind": 0}]
     assert _git(work, "rev-parse", "refs/heads/feat") == l1
+    warning = _branch_block_warning({"branch": "feat", "kind": "ahead",
+                                     "ahead": 1, "behind": 0})
+    assert "ahead of origin" in warning
+    assert "git pull" not in warning and "rebase" not in warning
 
 
 def test_in_sync_branch_returns_nothing(tmp_path):
@@ -126,7 +132,7 @@ def _run_mr_send(monkeypatch, work: Path, branches: str):
     return res, sent_calls
 
 
-def test_op_mr_send_excludes_divergent_branch(tmp_path, monkeypatch):
+def test_op_mr_send_excludes_ahead_branch(tmp_path, monkeypatch):
     seed, work, _c0 = _setup(tmp_path)
     l1 = _local_feat_ahead(work, "l1.txt")
     _git(seed, "branch", "ok")
@@ -135,21 +141,23 @@ def test_op_mr_send_excludes_divergent_branch(tmp_path, monkeypatch):
     res, sent_calls = _run_mr_send(monkeypatch, work, "feat,ok")
 
     assert [t["branch"] for t in res["sent"]] == ["ok"]
-    assert res["warnings"] == [_diverged_warning("feat")]
+    assert res["warnings"] == [_branch_block_warning(
+        {"branch": "feat", "kind": "ahead", "ahead": 1, "behind": 0})]
     assert res["blocked"] == [{"iid": None, "branch": "feat",
-                               "reason": "diverged from origin"}]
+                               "reason": "ahead of origin"}]
     assert sent_calls == [["ok"]]
     assert _git(work, "rev-parse", "refs/heads/feat") == l1
 
 
-def test_op_mr_send_all_divergent_sends_nothing(tmp_path, monkeypatch):
+def test_op_mr_send_all_ahead_sends_nothing(tmp_path, monkeypatch):
     _seed, work, _c0 = _setup(tmp_path)
     l1 = _local_feat_ahead(work, "l1.txt")
 
     res, sent_calls = _run_mr_send(monkeypatch, work, "feat")
 
     assert res["sent"] == []
-    assert res["warnings"] == [_diverged_warning("feat")]
+    assert res["warnings"] == [_branch_block_warning(
+        {"branch": "feat", "kind": "ahead", "ahead": 1, "behind": 0})]
     assert "blocked" in res["message"]
     assert sent_calls == []
     assert _git(work, "rev-parse", "refs/heads/feat") == l1
@@ -172,10 +180,10 @@ def test_op_mr_send_blocked_carries_the_mr_iid(tmp_path, monkeypatch):
     res = op_mr_send(ctx, {"repo": "r", "project": str(work), "iid": 41})
 
     assert res["blocked"] == [{"iid": 41, "branch": "feat",
-                               "reason": "diverged from origin"}]
+                               "reason": "ahead of origin"}]
     assert res["sent"] == []
     assert "blocked" in res["message"]
     assert sent_calls == []
     out = render("mr_send", res)
     assert "[blocked] feat !41" in out
-    assert "diverged from origin" in out
+    assert "ahead of origin" in out

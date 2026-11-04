@@ -73,7 +73,9 @@ def test_blocked_branch_still_prepares_review(tmp_path, monkeypatch):
     opmod, ctx = _env(tmp_path, monkeypatch, [MR],
                       lambda *a, **k: _prepared(24))
     monkeypatch.setattr(opmod, "_fetch_mr_branches",
-                        lambda proj, branches: ["llm-core"])
+                        lambda proj, branches: [
+                            {"branch": "llm-core", "kind": "diverged",
+                             "ahead": 1, "behind": 1}])
 
     res = opmod.op_mr_sync_all(ctx, {})
 

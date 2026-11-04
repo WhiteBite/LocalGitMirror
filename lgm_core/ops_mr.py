@@ -434,16 +434,50 @@ def _resolve_mr_targets(c: MirrorClient, args: dict,
     return targets
 
 
-def _diverged_warning(branch: str) -> str:
-    return (f"local branch '{branch}' diverged from origin — not sent; "
-            f"fix with 'git pull origin {branch}' or rebase onto 'origin/{branch}'")
+def _classify_branch(proj: Path, branch: str) -> dict:
+    """Compare a local branch to origin by commit counts (local-only, origin-only)."""
+    proc = subprocess.run(
+        ["git", "-C", str(proj), "rev-list", "--left-right", "--count",
+         f"refs/heads/{branch}...refs/remotes/origin/{branch}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if proc.returncode != 0:
+        raise LgmError("git", proc.stderr.strip() or f"cannot classify branch '{branch}'")
+    counts = proc.stdout.split()
+    if len(counts) != 2:
+        raise LgmError("git", f"unexpected rev-list output for branch '{branch}'")
+    local_only, origin_only = int(counts[0]), int(counts[1])
+    if local_only == 0 and origin_only == 0:
+        kind = "synced"
+    elif local_only == 0:
+        kind = "behind"
+    elif origin_only == 0:
+        kind = "ahead"
+    else:
+        kind = "diverged"
+    return {"kind": kind, "ahead": local_only, "behind": origin_only}
 
 
-def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[str]:
-    """Fetch all branches from origin in one call, then align each local ref
-    to the origin tip: create it when missing, fast-forward when the local tip
-    is an ancestor. Local refs with own commits (ahead or diverged) are left
-    untouched and returned, so callers never ship a non-origin tip."""
+def _branch_block_warning(entry: dict) -> str:
+    branch = entry["branch"]
+    if entry["kind"] == "ahead":
+        return (f"local branch '{branch}' is ahead of origin by {entry['ahead']} "
+                f"commit(s) that origin does not have — the MR transfer ships the "
+                f"origin tip only; push those commits to origin (or confirm the "
+                f"intended tip) before transferring")
+    return (f"local '{branch}' and origin/{branch} have diverged "
+            f"({entry['ahead']} local-only, {entry['behind']} origin-only "
+            f"commit(s)) — reconcile them by hand; a blind pull or rebase can "
+            f"lose the local commits")
+
+
+def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[dict]:
+    """Fetch all branches from origin in one call, then align each local ref to
+    the origin tip: create it when missing, fast-forward when the local tip is
+    behind. Local refs with their own commits are left untouched and returned as
+    ``{"branch", "kind", "ahead", "behind"}`` (kind ``ahead`` or ``diverged``),
+    so callers never ship a non-origin tip and can tell an unpushed local branch
+    from a true divergence."""
     refspecs = [f"+refs/heads/{b}:refs/remotes/origin/{b}" for b in branches]
     fetch = subprocess.run(
         ["git", "-C", str(proj), "fetch", "origin", *refspecs],
@@ -451,7 +485,7 @@ def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[str]:
     )
     if fetch.returncode != 0:
         raise LgmError("git", fetch.stderr.strip() or "git fetch origin failed")
-    diverged: list[str] = []
+    blocked: list[dict] = []
     for b in branches:
         org = subprocess.run(
             ["git", "-C", str(proj), "rev-parse", "--verify",
@@ -482,16 +516,11 @@ def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[str]:
                     mk.stderr.strip() or f"branch '{b}' not found after fetch",
                 )
             continue
-        local_sha = chk.stdout.strip()
-        if local_sha == origin_sha:
+        if chk.stdout.strip() == origin_sha:
             continue
-        anc = subprocess.run(
-            ["git", "-C", str(proj), "merge-base", "--is-ancestor",
-             local_sha, origin_sha],
-            capture_output=True, text=True, timeout=30,
-        )
-        if anc.returncode != 0:
-            diverged.append(b)
+        state = _classify_branch(proj, b)
+        if state["kind"] in ("ahead", "diverged"):
+            blocked.append({"branch": b, **state})
             continue
         current = subprocess.run(
             ["git", "-C", str(proj), "symbolic-ref", "--short", "-q", "HEAD"],
@@ -506,7 +535,7 @@ def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[str]:
         if upd.returncode != 0:
             raise LgmError(
                 "git", upd.stderr.strip() or f"cannot fast-forward branch '{b}'")
-    return diverged
+    return blocked
 
 
 def _local_tip(proj: Path, branch: str, missing_ok: bool = False) -> str:
@@ -659,12 +688,13 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
             f"before sending MR branches: {shown}",
             machine_code="dirty-worktree")
 
-    diverged = _fetch_mr_branches(proj, [t["branch"] for t in targets])
-    warnings = [_diverged_warning(b) for b in diverged]
-    blocked = [{"iid": next((t["iid"] for t in targets if t["branch"] == b), None),
-                "branch": b, "reason": "diverged from origin"}
-               for b in diverged]
-    blocked_branches = set(diverged)
+    blocked_refs = _fetch_mr_branches(proj, [t["branch"] for t in targets])
+    warnings = [_branch_block_warning(e) for e in blocked_refs]
+    blocked = [{"iid": next((t["iid"] for t in targets if t["branch"] == e["branch"]), None),
+                "branch": e["branch"],
+                "reason": "ahead of origin" if e["kind"] == "ahead" else "diverged from origin"}
+               for e in blocked_refs]
+    blocked_branches = {e["branch"] for e in blocked_refs}
 
     sent: list[dict] = []
     skipped: list[dict] = []

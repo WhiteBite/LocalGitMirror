@@ -27,7 +27,7 @@ from .ops_git import send_branches
 from .ops_review import mr_review_prepare
 from .ops_mr import (
     _fetch_mr_branches, _local_tip, _mirror_refs_safe, _existing_shas,
-    _diverged_warning, send_exclusions, _negotiate_mr_bases,
+    _branch_block_warning, send_exclusions, _negotiate_mr_bases,
 )
 
 _LGM_DIR = Path.home() / ".lgm"
@@ -291,12 +291,13 @@ def _sync_project(ctx: Ctx, c, entry: dict, state: dict, now: float,
     branches = [b for b in branches if b]
     if branches and not notes_only:
         try:
-            diverged = _fetch_mr_branches(proj, branches)
-            res["branch_warnings"] = [_diverged_warning(b) for b in diverged]
+            blocked_refs = _fetch_mr_branches(proj, branches)
+            res["branch_warnings"] = [_branch_block_warning(e) for e in blocked_refs]
             iid_by_branch = {m.get("source_branch") or "": m.get("iid") for m in mrs}
-            res["blocked"] = [{"iid": iid_by_branch.get(b), "branch": b,
-                               "reason": "diverged from origin"} for b in diverged]
-            blocked = set(diverged)
+            res["blocked"] = [{"iid": iid_by_branch.get(e["branch"]), "branch": e["branch"],
+                               "reason": "ahead of origin" if e["kind"] == "ahead"
+                               else "diverged from origin"} for e in blocked_refs]
+            blocked = {e["branch"] for e in blocked_refs}
             mirror_refs = _mirror_refs_safe(c, repo)
             sent: list[str] = []
             skipped: list[str] = []

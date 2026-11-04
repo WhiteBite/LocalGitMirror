@@ -602,13 +602,15 @@ def test_mr_sync_all_review_oserror_stays_per_mr(tmp_path, monkeypatch):
 def test_mr_sync_all_blocked_carries_iids_for_diverged_branches(tmp_path, monkeypatch):
     opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)
     monkeypatch.setattr(opmod, "_fetch_mr_branches",
-                        lambda proj, branches: ["llm-core"])
+                        lambda proj, branches: [
+                            {"branch": "llm-core", "kind": "diverged",
+                             "ahead": 1, "behind": 1}])
 
     res = opmod.op_mr_sync_all(ctx, {})
     assert res["repos"][0]["blocked"] == [
         {"iid": 24, "branch": "llm-core", "reason": "diverged from origin"}]
     assert res["blocked"] == res["repos"][0]["blocked"]
-    assert "git pull origin llm-core" in res["repos"][0]["branch_warnings"][0]
+    assert "have diverged" in res["repos"][0]["branch_warnings"][0]
     assert sent_calls == []
 
 
