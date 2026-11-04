@@ -20,6 +20,7 @@ import json
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +38,9 @@ from lgm_core.ops import REGISTRY, Ctx, get_op
 
 _SERVER_NAME = "doccache-tools"
 _PROTOCOL_VERSION = "2024-11-05"
+
+# notifications/progress cadence for long tools/call runs (tests shrink this)
+_PROGRESS_INTERVAL_SECONDS = 2.0
 
 
 def _server_version() -> str:
@@ -230,12 +234,33 @@ def _error_result(envelope: dict) -> dict:
     }
 
 
-def _call_tool(name: str, arguments: dict) -> dict:
+def _run_op_with_progress(op, ctx, args: dict, progress) -> tuple[dict, Exception | None]:
+    """Run the op on a worker thread, calling progress() every interval until it ends."""
+    box: dict = {}
+
+    def _runner() -> None:
+        try:
+            box["result"] = op.run(ctx, args)
+        except Exception as e:
+            box["error"] = e
+
+    worker = threading.Thread(target=_runner, daemon=True)
+    worker.start()
+    while worker.is_alive():
+        worker.join(_PROGRESS_INTERVAL_SECONDS)
+        if worker.is_alive():
+            progress()
+    return box.get("result", {}), box.get("error")
+
+
+def _call_tool(name: str, arguments: dict, progress=None) -> dict:
     """Execute an op and return the MCP tools/call result.
 
     Schema violations, LgmErrors, crashes and op results with
     ``success is False`` all return ``isError: true`` with the same JSON
-    error envelope the CLI prints under ``--json``.
+    error envelope the CLI prints under ``--json``. When ``progress`` is given,
+    a long op runs on a worker thread and ``progress`` fires every
+    ``_PROGRESS_INTERVAL_SECONDS`` until it finishes.
     """
     op = get_op(name)
     if op is None:
@@ -270,15 +295,26 @@ def _call_tool(name: str, arguments: dict) -> dict:
     for param in op.params:
         args[param.name] = arguments.get(param.name, param.default)
 
-    try:
-        result = op.run(ctx, args)
-    except LgmError as e:
-        return _error_result({"success": False, "error": {
-            "kind": e.code, "code": e.machine_code, "message": e.message}})
-    except Exception as e:
-        return _error_result({"success": False, "error": {
-            "kind": "crash", "code": None,
-            "message": f"{type(e).__name__}: {e}"}})
+    if progress is None:
+        try:
+            result = op.run(ctx, args)
+        except LgmError as e:
+            return _error_result({"success": False, "error": {
+                "kind": e.code, "code": e.machine_code, "message": e.message}})
+        except Exception as e:
+            return _error_result({"success": False, "error": {
+                "kind": "crash", "code": None,
+                "message": f"{type(e).__name__}: {e}"}})
+    else:
+        result, error = _run_op_with_progress(op, ctx, args, progress)
+        if isinstance(error, LgmError):
+            return _error_result({"success": False, "error": {
+                "kind": error.code, "code": error.machine_code,
+                "message": error.message}})
+        if error is not None:
+            return _error_result({"success": False, "error": {
+                "kind": "crash", "code": None,
+                "message": f"{type(error).__name__}: {error}"}})
 
     if isinstance(result, dict) and result.get("success") is False:
         detail = result.get("error") or result.get("message") \
@@ -311,8 +347,13 @@ def _call_tool(name: str, arguments: dict) -> dict:
 # ── JSON-RPC dispatch ────────────────────────────────────────────────────────
 
 
-def _handle_request(msg: dict) -> dict | None:
-    """Process one JSON-RPC request. Returns a response dict or None (notification)."""
+def _handle_request(msg: dict, write=None) -> dict | None:
+    """Process one JSON-RPC request. Returns a response dict or None (notification).
+
+    ``write`` (a callable taking a message dict) enables progress notifications
+    for a long ``tools/call`` when the client sent a progressToken; None
+    (single-arg callers, tests) keeps the synchronous behaviour.
+    """
     method = msg.get("method", "")
     msg_id = msg.get("id")
     params = msg.get("params") or {}
@@ -354,7 +395,18 @@ def _handle_request(msg: dict) -> dict | None:
     if method == "tools/call":
         tool_name = params.get("name", "")
         arguments = params.get("arguments") or {}
-        result = _call_tool(tool_name, arguments)
+        progress = None
+        token = (params.get("_meta") or {}).get("progressToken")
+        if write is not None and token is not None:
+            counter = {"n": 0}
+
+            def progress() -> None:
+                counter["n"] += 1
+                elapsed = counter["n"] * _PROGRESS_INTERVAL_SECONDS
+                write({"jsonrpc": "2.0", "method": "notifications/progress",
+                       "params": {"progressToken": token, "progress": counter["n"],
+                                  "message": f"{tool_name} still running (~{elapsed:.0f}s)"}})
+        result = _call_tool(tool_name, arguments, progress=progress)
         return {
             "jsonrpc": "2.0",
             "id": msg_id,
@@ -387,7 +439,7 @@ def serve() -> int:
             # EOF — client disconnected.
             break
 
-        response = _handle_request(msg)
+        response = _handle_request(msg, write=lambda m: _write_message(stdout_bin, m))
         if response is not None:
             _write_message(stdout_bin, response)
 
