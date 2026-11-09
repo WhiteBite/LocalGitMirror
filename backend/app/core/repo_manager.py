@@ -115,53 +115,17 @@ class RepoManager:
 
         return sorted(list(repos))
 
-    def _configure_user_from_last_commit(self, workspace: Path):
-        """
-        Configure user.name and user.email based on settings OR detection.
-        Priority:
-        1. Global Settings (if set) -> Force apply
-        2. Existing Repo Config -> Respect it
-        3. Auto-detect from last commit -> Apply
-        """
+    def _apply_configured_identity(self, workspace: Path):
+        """Apply the mirror's configured git identity; never copy the last commit's author."""
         try:
-            # 0. Load global settings
             settings = self.settings_manager.get_all()
             global_name = settings.get("git", {}).get("user_name")
             global_email = settings.get("git", {}).get("user_email")
 
             if global_name and global_email:
-                # Force apply global settings if they exist
                 subprocess.run(["git", "config", "user.name", global_name], cwd=str(workspace))
                 subprocess.run(["git", "config", "user.email", global_email], cwd=str(workspace))
                 console.print(f"[cyan][i] Применена Git идентификация: {global_name} <{global_email}>[/cyan]")
-                return
-
-            # 1. Check if user.name is already configured locally
-            existing_name = subprocess.run(
-                ["git", "config", "user.name"], cwd=str(workspace), capture_output=True, text=True,
-                encoding="utf-8", errors="replace"
-            ).stdout.strip()
-
-            if existing_name:
-                return  # Respect existing config if no global override
-
-            # 2. Auto-detect from last commit
-            proc_name = subprocess.run(
-                ["git", "log", "-1", "--format=%an"], cwd=str(workspace), capture_output=True, text=True,
-                encoding="utf-8", errors="replace"
-            )
-            author_name = proc_name.stdout.strip()
-
-            proc_email = subprocess.run(
-                ["git", "log", "-1", "--format=%ae"], cwd=str(workspace), capture_output=True, text=True,
-                encoding="utf-8", errors="replace"
-            )
-            author_email = proc_email.stdout.strip()
-
-            if author_name and author_email:
-                subprocess.run(["git", "config", "user.name", author_name], cwd=str(workspace))
-                subprocess.run(["git", "config", "user.email", author_email], cwd=str(workspace))
-                console.print(f"[cyan][i] Автоопределена Git идентификация: {author_name} <{author_email}>[/cyan]")
 
         except Exception as e:
             console.print(f"[red][!] Не удалось настроить git пользователя: {e}[/red]")
@@ -205,7 +169,7 @@ class RepoManager:
                 subprocess.run(["git", "reset", "--hard", "HEAD"], cwd=str(workspace), check=True)
 
                 # APPLY IDENTITY CONFIG
-                self._configure_user_from_last_commit(workspace)
+                self._apply_configured_identity(workspace)
 
                 result["success"] = True
                 result["message"] = f"Workspace сброшен до HEAD ({current_branch})"
@@ -265,7 +229,7 @@ class RepoManager:
                 )
 
             # APPLY IDENTITY CONFIG
-            self._configure_user_from_last_commit(workspace)
+            self._apply_configured_identity(workspace)
 
             result["success"] = True
             result["message"] = f"Workspace синхронизирован с {repo_name}"
