@@ -1,9 +1,8 @@
 import pytest
-
-from lgm_core.client import LgmError
-from lgm_core.ops_mr import op_mr_send
-from lgm_core.ops_git import send_branches
 from lgm_core import ops_projects
+from lgm_core.client import LgmError
+from lgm_core.ops_git import send_branches
+from lgm_core.ops_mr import op_mr_send
 from test_pull_worktree import git, incoming
 
 

@@ -10,85 +10,84 @@ moved from the original ``lgm.py`` so the registry is self-contained.
 """
 from __future__ import annotations
 
-import base64
-import hashlib
-import io
-import json
-import os
-import re
-import shutil
-import struct
 import subprocess
-import sys
-import tempfile
-import zipfile
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, Optional
-
-from .config import Config, cfg
-from .client import MirrorClient, LgmError
-from .crypto import encrypt_bundle, decrypt_bundle
 
 # npm helpers — same import the original lgm.py uses.
-from _lgm_npm import (  # type: ignore
-    npm_cache_dir, npm_offline_mirror,
-    npm_find_tarball, _detect_npm_missing, _npm_mirror_rel,
-)
-
-from .op_models import Param, Op, Ctx, _client, _repo_arg, _role_guess
-from .deps_scanner import (
-    gradle_candidate_roots, scan_cache, maven_local_root, _sha1_of,
-    scan_maven_local, maven_local_relpath, _DOC_SUFFIXES,
-    _classify_artifact, _pick_shipable, _ship_rel_for, _pom_packaging,
-    _parent_coord_of_pom, _expand_parent_pom_closure, _GRADLE_INIT_SCRIPT,
-    _read_root_project_name, _detect_java_home, _run_gradle_init,
-    _ensure_mavenlocal_init_script, _maven_local_jars_without_poms,
-    _missing_parent_poms, _fetch_pom_batch, _npmrc_registries,
-    _rewrite_lock_to_npmjs, _yarn_offline_mirror, _yarn_tarball_name,
-    _read_tgz_name_version, _build_yarn_mirror, _set_global_yarn_mirror,
-)
-from .ops_deps import (
-    op_scan, op_pending, op_debug, op_respond, op_apply, op_request,
-    op_fetch_poms,
-)
-from .ops_vault import (
-    scan_maven_local_protected, scan_gradle_cache_protected,
-    build_publication_zip, op_publish,
-)
-from .ops_git import (
-    op_status, op_repos, op_branches, send_branch, send_branches, op_send,
-    op_pull, op_deps_request, op_vault_status, op_branch_delete, op_prune,
-    op_preview_pull, op_has_commits,
-    _GUIDE, op_guide, op_update,
-)
-from .ops_mr import (
-    _MRN_TITLE, _MRN_BRANCH, _parse_mr_notes_head, _mr_list_from_postbox,
-    op_mr_list, _resolve_mr_targets, _fetch_mr_branches, _local_tip,
-    _mirror_refs_safe, _existing_shas, op_mr_send,
-    op_mr_notes, op_mr_replies_send, op_mr_replies_status, op_mr_replies_push,
-    op_mr_pending, op_mr_status, op_mr_overview, op_mr_review_receipts,
-)
-from .ops_chat import (
-    op_chat_send, op_chat_list,
-    op_file_send, op_file_list, op_file_get, op_file_ack,
-    op_config_get, op_config_set,
-)
-from .ops_projects import (
-    op_mr_projects_scan, op_mr_projects_list, op_mr_sync_all,
-    _load_registry,
-)
-from .mr_review_models import (
-    BUDGET_BYTES_MAX, BUDGET_BYTES_MIN, MrReviewError, validate_budget,
-)
-from .mr_review_reader import DEFAULT_BUDGET_BYTES, DEFAULT_CONTEXT_LINES
-from .mr_review_store import MrReviewStore
-from .mr_review_progress import mr_review_progress, mr_review_refresh
+from .client import LgmError
 from .mr_review_environment import mr_review_materialize
 from .mr_review_findings import mr_review_findings
+from .mr_review_models import (
+    BUDGET_BYTES_MAX,
+    BUDGET_BYTES_MIN,
+    MrReviewError,
+    validate_budget,
+)
+from .mr_review_progress import mr_review_progress, mr_review_refresh
+from .mr_review_reader import DEFAULT_BUDGET_BYTES, DEFAULT_CONTEXT_LINES
+from .mr_review_store import MrReviewStore
+from .op_models import Ctx, Op, Param, _client, _repo_arg
+from .ops_chat import (
+    op_chat_list,
+    op_chat_send,
+    op_config_get,
+    op_config_set,
+    op_file_ack,
+    op_file_get,
+    op_file_list,
+    op_file_send,
+)
+from .ops_deps import (
+    op_apply,
+    op_debug,
+    op_fetch_poms,
+    op_pending,
+    op_request,
+    op_respond,
+    op_scan,
+)
+from .ops_git import (
+    op_branch_delete,
+    op_branches,
+    op_deps_request,
+    op_guide,
+    op_has_commits,
+    op_preview_pull,
+    op_prune,
+    op_pull,
+    op_repos,
+    op_send,
+    op_status,
+    op_update,
+    op_vault_status,
+)
+from .ops_mr import (
+    op_mr_list,
+    op_mr_merge,
+    op_mr_notes,
+    op_mr_overview,
+    op_mr_pending,
+    op_mr_replies_push,
+    op_mr_replies_send,
+    op_mr_replies_status,
+    op_mr_review_receipts,
+    op_mr_send,
+    op_mr_status,
+)
+from .ops_projects import (
+    _load_registry,
+    op_mr_projects_list,
+    op_mr_projects_scan,
+    op_mr_sync_all,
+)
 from .ops_review import (
-    mr_review_prepare, mr_review_open, mr_review_read, mr_review_search,
     mr_review_context,
+    mr_review_open,
+    mr_review_prepare,
+    mr_review_read,
+    mr_review_search,
+)
+from .ops_vault import (
+    op_publish,
 )
 
 _BUDGET_HELP = ("Upper bound in UTF-8 bytes for the fully serialized result "
@@ -615,6 +614,28 @@ REGISTRY: list[Op] = [
                   "project for --repo, else GITLAB_PROJECT)"),
         ],
         run=op_mr_status,
+    ),
+    Op(
+        name="mr_merge",
+        summary=("Merge one MR on the work machine. Refuses without confirm=true and on any "
+                 "state/draft/conflict blocker; optionally waits for the pipeline, guards on "
+                 "the head SHA and removes the source branch. Never merges in a batch."),
+        params=[
+            Param("repo", "str", "", "Mirror repository name", required=True),
+            Param("iid", "int", 0, "Merge request iid", required=True, minimum=1),
+            Param("confirm", "bool", False,
+                  "Must be true to actually merge; merging is not reversible", required=True),
+            Param("project", "str", "",
+                  "GitLab project path or numeric id (default: the registered "
+                  "project for --repo, else GITLAB_PROJECT)"),
+            Param("when_pipeline_succeeds", "bool", False,
+                  "Merge as soon as the pipeline succeeds"),
+            Param("remove_source_branch", "bool", False,
+                  "Remove the source branch after a successful merge"),
+            Param("sha", "str", "",
+                  "Merge only if the MR head still equals this SHA (race guard)"),
+        ],
+        run=op_mr_merge,
     ),
     Op(
         name="mr_overview",

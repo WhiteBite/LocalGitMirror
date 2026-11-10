@@ -14,11 +14,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from lgm_core import ops_review
 from lgm_core.client import LgmError
 from lgm_core.mr_review_models import MrReviewError, mcp_result_bytes
 from lgm_core.mr_review_reader import _cursor_digest, open_reader
 from lgm_core.mr_review_search import mr_review_context, mr_review_search
-from lgm_core import ops_review
 from test_mr_review_reader import _fixture, _init_repo, big, huge, rich
 from test_mr_review_store import _git, _manifest
 

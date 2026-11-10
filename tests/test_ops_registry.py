@@ -3,11 +3,9 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lgm_core.ops import REGISTRY, Param, Op, get_op, op_names
+from lgm_core.ops import REGISTRY, Op, Param, get_op, op_names
 
 
 def test_registry_non_empty():
@@ -93,8 +91,8 @@ def test_new_ops_present():
 
 def test_scan_op_runs_without_client():
     """scan op should work without a mirror server (needs_client=False)."""
-    from lgm_core.config import Config
     from lgm_core.client import MirrorClient
+    from lgm_core.config import Config
     from lgm_core.ops import Ctx
     op = get_op("scan")
     config = Config(base_url="http://localhost:1", api_key="", sync_password="")
@@ -110,8 +108,8 @@ def test_scan_op_runs_without_client():
 
 def test_fetch_poms_op_runs_without_client():
     """fetch-poms op should work without a mirror server."""
-    from lgm_core.config import Config
     from lgm_core.client import MirrorClient
+    from lgm_core.config import Config
     from lgm_core.ops import Ctx
     op = get_op("fetch-poms")
     config = Config(base_url="http://localhost:1", api_key="", sync_password="")
@@ -152,6 +150,8 @@ _FROZEN_OPS = {
     "mr_replies_push": ["repo", "iid", "dry_run"],
     "mr_pending": ["repo"],
     "mr_status": ["repo", "iid", "project"],
+    "mr_merge": ["repo", "iid", "confirm", "project", "when_pipeline_succeeds",
+                 "remove_source_branch", "sha"],
     "mr_overview": ["repo", "home"],
     "mr_review_receipts": ["action", "repo", "iid", "dry_run"],
     "mr_review_prepare": ["repo", "iid", "project", "checkout", "notes_only",
@@ -189,7 +189,7 @@ _FROZEN_OPS = {
 
 
 def test_registry_matches_frozen_baseline():
-    assert len(REGISTRY) == len(_FROZEN_OPS) == 51
+    assert len(REGISTRY) == len(_FROZEN_OPS) == 52
     assert [op.name for op in REGISTRY] == list(_FROZEN_OPS)
     for op in REGISTRY:
         assert callable(op.run), f"Op '{op.name}' run is not callable"
@@ -199,7 +199,7 @@ def test_registry_matches_frozen_baseline():
 
 
 def test_facade_reexports_public_api():
-    from lgm_core.ops import REGISTRY, Param, Op, Ctx, get_op, op_names
-    assert REGISTRY is not None and len(REGISTRY) == 51
+    from lgm_core.ops import REGISTRY, Ctx, get_op, op_names
+    assert REGISTRY is not None and len(REGISTRY) == 52
     assert callable(get_op) and callable(op_names)
     assert Param is not None and Op is not None and Ctx is not None

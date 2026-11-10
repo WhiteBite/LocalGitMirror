@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import hashlib
 import re
 import subprocess
 import time
-from datetime import datetime
 from pathlib import Path
 
-from .client import MirrorClient, LgmError
+from .client import LgmError, MirrorClient
 from .config import cfg
 from .git_remote import gitlab_project_for
 from .mr_git_branch import (
@@ -20,18 +18,7 @@ from .mr_git_branch import (
     _negotiate_mr_bases,
 )
 from .mr_notes_parse import (
-    ANCHOR_WINDOW,
-    _HUNK_HEADER,
-    _MRN_BRANCH,
-    _MRN_DETECTED,
-    _MRN_TARGET,
-    _MRN_TITLE,
-    _MRN_UPDATED,
     _MR_CLOSED_FILE,
-    _NOTES_ANCHOR,
-    _NOTES_THREAD_ID,
-    _REPLIES_STATUS_FIELD,
-    _REPLIES_STATUS_MARKER,
     _anchor_clash,
     _anchor_collisions,
     _anchorability_reason,
@@ -40,12 +27,11 @@ from .mr_notes_parse import (
     _discussion_view,
     _iso_age_seconds,
     _parse_compare_ranges,
-    _parse_hunk_new_ranges,
     _parse_mr_notes_head,
     _parse_notes_threads,
     _parse_replies_status,
-    _reply_marker,
     _render_replies_status,
+    _reply_marker,
     _resolve_decision,
     _should_ack,
     _state_with_evidence,
@@ -53,48 +39,29 @@ from .mr_notes_parse import (
 )
 from .mr_replies_publish import (
     _MR_REVIEW_BATCH_FILE,
-    _V2_GATE_FIELDS,
-    _publish_review_batch,
     _push_review_batch,
-    _review_gate,
-    _v2_backfill_ids,
-    _v2_blocked,
-    _v2_dup_result,
-    _v2_finish,
-    _v2_halt,
-    _v2_marker_scan,
-    _v2_position,
-    _v2_post_entry,
-    _v2_result,
-    _v2_target,
 )
 from .mr_review_handoff import HandoffRejection, looks_like_json, parse_and_validate
 from .mr_review_index import imported_review_index
 from .mr_review_models import (
     batch_artifact_path,
     canonical_json,
-    compute_version_fingerprint,
-    parse_review_markers,
-    receipt_note_url,
 )
 from .mr_review_receipts import (
-    open_journal,
     receipt_artifact_match,
     run_receipt_handoff,
     run_receipt_import,
     summarize_receipt_artifacts,
 )
 from .mr_status_overview import (
-    _CI_FAILED,
-    _CI_RUNNING,
-    _compact_publish,
-    _mr_status_item,
     op_mr_overview as _mr_overview_impl,
+)
+from .mr_status_overview import (
     op_mr_status as _mr_status_impl,
 )
 from .op_models import Ctx, _client, _repo_arg
 from .ops_git import send_branches
-
+from .repo_name import remote_slug, sanitize_slug
 
 _MR_NOTES_FILE = re.compile(r"mr-!(\d+)\.md$")
 _NOTE_LGM_MARKER = re.compile(r"<!-- lgm:([0-9a-f]+) -->")
@@ -430,6 +397,21 @@ def _fetch_mr_branches(proj: Path, branches: list[str]) -> list[dict]:
     return blocked
 
 
+def _guard_repo_matches_remote(repo: str, proj: Path) -> None:
+    """Refuse a repo key copied from the folder name when the git remote says otherwise."""
+    slug = remote_slug(proj)
+    if not slug or repo == slug:
+        return
+    if repo != sanitize_slug(proj.name):
+        return
+    raise LgmError(
+        "config",
+        f"--repo '{repo}' is the local folder name, but this checkout's git remote is "
+        f"'{slug}'; the mirror keys repos by remote, so use --repo {slug}",
+        machine_code="repo-remote-mismatch",
+    )
+
+
 def op_mr_send(ctx: Ctx, args: dict) -> dict:
     """Fetch GitLab MR branches into a local project and send them to the mirror.
 
@@ -455,6 +437,8 @@ def op_mr_send(ctx: Ctx, args: dict) -> dict:
     proj = Path(project).resolve()
     if not proj.is_dir():
         raise LgmError("config", f"project not found: {proj}")
+
+    _guard_repo_matches_remote(repo, proj)
 
     gitlab_project = gitlab_project_for(proj)
     targets = _resolve_mr_targets(c, args, project=gitlab_project)
@@ -1216,3 +1200,58 @@ def op_mr_review_receipts(ctx: Ctx, args: dict) -> dict:
                        machine_code="role-unset")
     return {**run_receipt_import(c, repo, iid=iid, dry_run=dry_run),
             "action": action}
+
+
+def op_mr_merge(ctx: Ctx, args: dict) -> dict:
+    """Merge one MR on the work machine; refuses without confirm=true and on any
+    state/draft/conflict blocker, and never merges as part of a batch."""
+    if not args.get("confirm"):
+        raise LgmError("config", "mr_merge refuses without confirm=true; merging is not reversible",
+                       machine_code="confirm-required")
+    c = _client(ctx)
+    repo = _repo_arg(args)
+    project = (str(args.get("project") or "").strip()
+               or _repo_gitlab_project(repo) or cfg("GITLAB_PROJECT"))
+    missing = [k for k in ("GITLAB_URL", "GITLAB_TOKEN") if not cfg(k)]
+    if not project:
+        missing.append("GITLAB_PROJECT")
+    if missing:
+        raise LgmError("config",
+                       "GitLab URL/project/token not configured — set " + ", ".join(missing))
+    role = cfg("LGM_MACHINE_ROLE").strip().lower()
+    if role == "home":
+        raise LgmError("config",
+                       "mr_merge writes to GitLab from the work machine; "
+                       "this machine is home (LGM_MACHINE_ROLE=home)",
+                       machine_code="wrong-machine")
+    if role != "work":
+        raise LgmError("config",
+                       "LGM_MACHINE_ROLE is neither home nor work — merging needs to know "
+                       "this is the work machine; set LGM_MACHINE_ROLE=work",
+                       machine_code="role-unset")
+    iid = int(args.get("iid") or 0)
+    if iid <= 0:
+        raise LgmError("config", "mr_merge requires a positive iid")
+    mr = c.gitlab_get_mr(iid, project)
+    blockers: list[str] = []
+    if mr.get("state") != "opened":
+        blockers.append(f"not_open ({mr.get('state')})")
+    if mr.get("draft") or mr.get("work_in_progress"):
+        blockers.append("draft")
+    if mr.get("has_conflicts") is True or mr.get("merge_status") == "cannot_be_merged":
+        blockers.append("conflict")
+    if blockers:
+        raise LgmError("config", f"MR !{iid} is not mergeable: {', '.join(blockers)}",
+                       machine_code="not-mergeable")
+    when = bool(args.get("when_pipeline_succeeds"))
+    res = c.gitlab_merge_mr(
+        iid, project,
+        sha=str(args.get("sha") or "").strip(),
+        when_pipeline_succeeds=when,
+        remove_source_branch=bool(args.get("remove_source_branch")),
+    )
+    return {"success": True, "repo": repo, "project": project, "iid": iid,
+            "state": res.get("state", ""),
+            "merge_commit_sha": res.get("merge_commit_sha") or "",
+            "web_url": res.get("web_url", ""),
+            "when_pipeline_succeeds": when}

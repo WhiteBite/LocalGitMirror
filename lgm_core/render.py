@@ -41,7 +41,7 @@ def _render_pending(r: dict) -> list[str]:
     items = r.get("items", [])
     out.append(f"  {len(items)} pending request(s)")
     for it in items:
-        out.append(f"  - id={str(it.get('id', '?'))}  size={it.get('size', 0)}  mtime={it.get('mtime', '?')}")
+        out.append(f"  - id={it.get('id', '?')!s}  size={it.get('size', 0)}  mtime={it.get('mtime', '?')}")
     return out
 
 
@@ -70,7 +70,7 @@ def _render_debug(r: dict) -> list[str]:
         items = pending.get("items", [])
         out.append(f"  {len(items)} pending")
         for it in items:
-            out.append(f"  - {str(it.get('id', '?'))}  mtime={it.get('mtime', '?')}")
+            out.append(f"  - {it.get('id', '?')!s}  mtime={it.get('mtime', '?')}")
     responses = mirror.get("responses", {})
     out.append(f"\n--- Available responses for repo='{r.get('repo')}' ---")
     if "error" in responses:
@@ -79,7 +79,7 @@ def _render_debug(r: dict) -> list[str]:
         items = responses.get("items", [])
         out.append(f"  {len(items)} available")
         for it in items:
-            out.append(f"  - {str(it.get('id', '?'))}  size={it.get('size', 0)}")
+            out.append(f"  - {it.get('id', '?')!s}  size={it.get('size', 0)}")
     return out
 
 
@@ -171,13 +171,13 @@ def _render_request(r: dict) -> list[str]:
         return out
     if r.get("posted"):
         resp = r.get("response", {})
-        out.append(f"  OK: id={str(resp.get('id', '?'))} size={resp.get('size', 0):,} bytes")
+        out.append(f"  OK: id={resp.get('id', '?')!s} size={resp.get('size', 0):,} bytes")
         out.append("\n  On the work machine: `python lgm.py respond`")
     return out
 
 
 def _render_fetch_poms(r: dict) -> list[str]:
-    out = [f"\n=== Maven Central pom fetch ==="]
+    out = ["\n=== Maven Central pom fetch ==="]
     out.append(f"  repo: {r.get('repo_url', '?')}")
     out.append(f"\n  TOTAL: fetched={r.get('fetched', 0)}  private/404={r.get('skipped_private', 0)}  failed={r.get('failed', 0)}")
     return out
@@ -195,7 +195,7 @@ def _render_publish(r: dict) -> list[str]:
                        f"{'-' + art['classifier'] if art['classifier'] else ''}.{art['extension']}")
         return out
     resp = r.get("response", {})
-    out.append(f"  ✓ публикация принята")
+    out.append("  ✓ публикация принята")
     out.append(f"    добавлено: {resp.get('added', 0)}")
     out.append(f"    уже было: {resp.get('existed', 0)}")
     out.append(f"    конфликты: {len(resp.get('conflicts', []))}")
@@ -281,7 +281,7 @@ def _render_send(r: dict) -> list[str]:
         return out
     resp = r.get("response", {})
     if "e" in resp:
-        out.append(f"  OK (envelope response)")
+        out.append("  OK (envelope response)")
     else:
         out.append(f"  Response: {resp}")
     return out
@@ -308,7 +308,7 @@ def _render_pull(r: dict) -> list[str]:
 
 def _render_deps_request(r: dict) -> list[str]:
     out = [f"Posted manifest to repo='{r.get('repo')}'"]
-    out.append(f"  id={str(r.get('id', '?'))}  size={r.get('size', 0):,} bytes")
+    out.append(f"  id={r.get('id', '?')!s}  size={r.get('size', 0):,} bytes")
     return out
 
 
@@ -545,7 +545,7 @@ def _render_file_list(r: dict) -> list[str]:
     files = r.get("files") or []
     out = [f"Postbox files for repo='{r.get('repo', '?')}': {r.get('count', len(files))}"]
     for f in files:
-        out.append(f"  - id={str(f.get('id', '?'))}  size={f.get('size', 0):,}  {f.get('path', '?')}")
+        out.append(f"  - id={f.get('id', '?')!s}  size={f.get('size', 0):,}  {f.get('path', '?')}")
     return out
 
 
@@ -994,7 +994,7 @@ def _render_mr_review_progress(r: dict) -> list[str]:
     for unit in r.get("units") or []:
         carry = " [carryover]" if unit.get("carryover") else ""
         absent = "" if unit.get("in_inventory", True) else " [not-in-inventory]"
-        out.append(f"  {str(unit.get('state', '?')):<14} {unit.get('path', '?')} "
+        out.append(f"  {unit.get('state', '?')!s:<14} {unit.get('path', '?')} "
                    f"rev={unit.get('revision', 0)}{carry}{absent}")
         if unit.get("reason"):
             out.append(f"      reason: {unit['reason']}")
@@ -1074,6 +1074,20 @@ def _render_mr_review_findings(r: dict) -> list[str]:
     return out
 
 
+def _render_mr_merge(r: dict) -> list[str]:
+    state = r.get("state", "")
+    scheduled = bool(r.get("when_pipeline_succeeds")) and state != "merged"
+    head = (f"MR !{r.get('iid')} merge scheduled (state={state})" if scheduled
+            else f"MR !{r.get('iid')} merged (state={state})")
+    commit = r.get("merge_commit_sha") or ""
+    if commit:
+        head += f" commit={commit[:10]}"
+    out = [head]
+    if r.get("web_url"):
+        out.append(f"  {r['web_url']}")
+    return out
+
+
 _RENDERERS = {
     "scan": _render_scan,
     "pending": _render_pending,
@@ -1102,6 +1116,7 @@ _RENDERERS = {
     "mr_replies_push": _render_mr_replies_push,
     "mr_pending": _render_mr_pending,
     "mr_status": _render_mr_status,
+    "mr_merge": _render_mr_merge,
     "mr_overview": _render_mr_overview,
     "mr_review_receipts": _render_mr_review_receipts,
     "mr_review_prepare": _render_mr_review_prepare,

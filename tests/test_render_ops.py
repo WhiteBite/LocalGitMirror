@@ -143,6 +143,10 @@ REALISTIC = {
                        "pipeline": {"status": "success", "web_url": "https://ci/41"},
                        "approvals": {"approved": True, "required": 1, "left": 0},
                        "ready": True, "blockers": []}]},
+    "mr_merge": {"success": True, "repo": "phonyx", "project": "kryptonit/phonyx",
+                 "iid": 50, "state": "merged", "merge_commit_sha": "abcdef0123456789",
+                 "web_url": "https://gl/g/p/-/merge_requests/50",
+                 "when_pipeline_succeeds": False},
     "mr_overview": {"success": True, "repo": "", "totals": {
         "repos": 1, "mrs": 2, "replies_pending": 1, "reviews_imported": 1},
         "repos": [{"repo": "phonyx", "count": 2, "items": [

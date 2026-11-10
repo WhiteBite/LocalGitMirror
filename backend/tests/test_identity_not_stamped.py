@@ -5,6 +5,8 @@ whole checkout into that person afterwards."""
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from app.core.repo_manager import RepoManager
 
 
@@ -18,7 +20,16 @@ def _local_identity(path: Path) -> tuple[str, str]:
     return name, email
 
 
-def test_identity_is_not_copied_from_last_commit(tmp_path):
+@pytest.fixture
+def neutral_git(monkeypatch, tmp_path):
+    empty = tmp_path / "empty-gitconfig"
+    empty.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(empty))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+def test_identity_is_not_copied_from_last_commit(neutral_git, tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     _git(workspace, "init")
@@ -34,7 +45,7 @@ def test_identity_is_not_copied_from_last_commit(tmp_path):
     assert _local_identity(workspace) == ("", "")
 
 
-def test_identity_is_applied_from_explicit_setting(tmp_path):
+def test_identity_is_applied_from_explicit_setting(neutral_git, tmp_path):
     workspace = tmp_path / "ws2"
     workspace.mkdir()
     _git(workspace, "init")

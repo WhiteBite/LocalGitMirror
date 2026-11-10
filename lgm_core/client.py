@@ -20,16 +20,16 @@ import json
 import os
 import ssl
 import subprocess
+import urllib.error
 import urllib.parse
 import urllib.request
-import urllib.error
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from .crypto import encrypt_envelope, decrypt_envelope, encrypt_bundle
-from .relay_crypto import RelaySession, RELAY_AAD_POSTBOX, decode_pub_b64
 from .config import cfg
+from .crypto import decrypt_envelope, encrypt_bundle, encrypt_envelope
+from .relay_crypto import RELAY_AAD_POSTBOX, RelaySession, decode_pub_b64
 from .tls_pin import TlsPinMismatchError, pin_https_opener
 
 
@@ -95,7 +95,7 @@ def _ssl_ctx(insecure: bool = True) -> ssl.SSLContext:
     return ctx
 
 
-_user_agent_value: Optional[str] = None
+_user_agent_value: str | None = None
 
 
 def _user_agent() -> str:
@@ -158,8 +158,8 @@ class MirrorClient:
         self.sync_password = sync_password
         self.pin_sha256 = pin_sha256
         self.pin_file = pin_file
-        self._server_pub: Optional[bytes] = None
-        self._opener: Optional[urllib.request.OpenerDirector] = None
+        self._server_pub: bytes | None = None
+        self._opener: urllib.request.OpenerDirector | None = None
 
     # ── low-level helpers ────────────────────────────────────────────────
 
@@ -176,7 +176,7 @@ class MirrorClient:
                 pin_sha256=self.pin_sha256, pin_file=self.pin_file)
         return self._opener.open(req, timeout=timeout)
 
-    def _get_json(self, path: str, timeout: Optional[int] = None) -> dict:
+    def _get_json(self, path: str, timeout: int | None = None) -> dict:
         url = self._url(path)
         req = urllib.request.Request(url, headers=_auth_headers(self.api_key))
         try:
@@ -208,7 +208,7 @@ class MirrorClient:
 
     def _post_json(self, path: str, body: bytes,
                    content_type: str = "application/octet-stream",
-                   timeout: Optional[int] = None) -> dict:
+                   timeout: int | None = None) -> dict:
         url = self._url(path)
         headers = {**_auth_headers(self.api_key), "Content-Type": content_type}
         req = urllib.request.Request(url, data=body, method="POST", headers=headers)
@@ -224,7 +224,7 @@ class MirrorClient:
             raise LgmError("network", str(e)) from None
 
     def _post_multipart(self, path: str, fields: dict, files: dict,
-                        timeout: Optional[int] = None) -> dict:
+                        timeout: int | None = None) -> dict:
         """POST multipart/form-data.
 
         fields: {name: str_value}
@@ -279,8 +279,8 @@ class MirrorClient:
         except Exception:
             return False
 
-    def _download_bytes(self, path: str, headers: Optional[dict] = None,
-                        max_bytes: Optional[int] = None) -> bytes:
+    def _download_bytes(self, path: str, headers: dict | None = None,
+                        max_bytes: int | None = None) -> bytes:
         url = self._url(path)
         req = urllib.request.Request(
             url, headers={**_auth_headers(self.api_key), **(headers or {})})
@@ -358,8 +358,8 @@ class MirrorClient:
         return resp
 
     def sync_apply_known(self, repo: str, commit: str,
-                         branches: Optional[dict] = None,
-                         local_branches: Optional[list] = None) -> dict:
+                         branches: dict | None = None,
+                         local_branches: list | None = None) -> dict:
         """POST /api/documents/link — apply a known commit + branch tips."""
         payload: dict = {"repo": repo, "commit": commit}
         if branches:
@@ -375,7 +375,7 @@ class MirrorClient:
         return resp
 
     def sync_send(self, repo: str, bundle_bytes: bytes,
-                  local_branches: Optional[list] = None) -> dict:
+                  local_branches: list | None = None) -> dict:
         """POST /api/documents/upload — upload an encrypted git bundle.
 
         The bundle is encrypted with ``encrypt_bundle`` (bundle crypto) and
@@ -454,8 +454,8 @@ class MirrorClient:
         """
         return self.sync_delete_ref(repo, branch)
 
-    def prune_branches(self, repo: str, bases: Optional[list] = None,
-                       older_days: int = 0, keep: Optional[list] = None,
+    def prune_branches(self, repo: str, bases: list | None = None,
+                       older_days: int = 0, keep: list | None = None,
                        apply: bool = False) -> dict:
         """POST /api/documents/prune-branches — list/delete prunable branches.
 
@@ -615,6 +615,30 @@ class MirrorClient:
             raise LgmError("network", f"GitLab returned non-dict for approvals: {type(data).__name__}")
         return data
 
+    def gitlab_merge_mr(self, iid: int, project: str = "", *, sha: str = "",
+                        when_pipeline_succeeds: bool = False,
+                        remove_source_branch: bool = False) -> dict:
+        """PUT .../merge_requests/<iid>/merge - merge the MR; optional SHA guard."""
+        url, token, resolved = self._gitlab_config(project)
+        proj_id = urllib.parse.quote(resolved, safe="")
+        try:
+            iid_int = int(iid)
+        except (TypeError, ValueError):
+            raise LgmError("config", f"MR iid must be an integer, got: {iid!r}") from None
+        payload: dict = {}
+        if sha:
+            payload["sha"] = sha
+        if when_pipeline_succeeds:
+            payload["merge_when_pipeline_succeeds"] = True
+        if remove_source_branch:
+            payload["should_remove_source_branch"] = True
+        data = self._gitlab_write(
+            f"{url}/api/v4/projects/{proj_id}/merge_requests/{iid_int}/merge", token, "PUT", payload
+        )
+        if not isinstance(data, dict):
+            raise LgmError("network", f"GitLab returned non-dict for merge: {type(data).__name__}")
+        return data
+
     def gitlab_base_url(self, project: str = "") -> str:
         """Normalized GitLab base URL (no trailing slash) for identity payloads."""
         url, _token, _project = self._gitlab_config(project)
@@ -695,8 +719,8 @@ class MirrorClient:
         )
 
     def gitlab_post_new_discussion(self, iid: int, body: str,
-                                   diff_refs: Optional[dict] = None,
-                                   position: Optional[tuple] = None,
+                                   diff_refs: dict | None = None,
+                                   position: tuple | None = None,
                                    project: str = "") -> dict:
         """POST .../merge_requests/<iid>/discussions — new thread. Anchored to
         the MR diff only when both ``diff_refs`` ({base_sha, start_sha, head_sha})
@@ -862,7 +886,7 @@ class MirrorClient:
         return self._get_json(f"/api/documents/attachment-list?rid={repo_to_rid(repo)}")
 
     def file_sync_fetch(self, repo: str, item_id: str,
-                        max_bytes: Optional[int] = None) -> bytes:
+                        max_bytes: int | None = None) -> bytes:
         """GET /api/documents/attachment-get — relay-sealed blob, opened via X-LGM-Epk."""
         session = self._relay_session()
         cap = {} if max_bytes is None else {"max_bytes": max_bytes + _RELAY_SEAL_SLACK}

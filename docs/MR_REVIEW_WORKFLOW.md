@@ -4,7 +4,7 @@ How an agent on HOME reviews a corporate GitLab MR whose code lives on WORK, usi
 snapshot review subsystem. This is the workflow map; the normative contract (canonical
 JSON, digests, batches, receipts, closed error dictionary) is
 [MR_REVIEW_PROTOCOL.md](MR_REVIEW_PROTOCOL.md), and the authoritative op surface is the
-`REGISTRY` in `lgm_core/ops.py` (frozen at 51 ops by `tests/test_ops_registry.py`).
+`REGISTRY` in `lgm_core/ops.py` (frozen at 52 ops by `tests/test_ops_registry.py`).
 
 Roles: **WORK** is the collector and the only publisher (it has GitLab access);
 **HOME** is the reader/reviewer (no GitLab access, ever). Transport for every artifact
@@ -227,7 +227,7 @@ so a note snippet is either revision-true or honestly absent (identical behavior
 | WORK | `mr_review_prepare`, `mr_replies_push`, `mr_review_receipts action=handoff` (+ IDEA prepare/publish actions) |
 | HOME | `mr_review_open` / `read` / `search` / `context` / `progress` / `refresh` / `materialize` / `findings`, `mr_replies_send`, `mr_review_receipts action=import` |
 
-The op registry is frozen at **51 ops** — nine `mr_review_*` plus `mr_review_receipts`,
+The op registry is frozen at **52 ops** — nine `mr_review_*` plus `mr_review_receipts`,
 the read-only `mr_status` (WORK) and the HOME-side `mr_overview` on top of the legacy
 MR cycle (`_FROZEN_OPS` in
 `tests/test_ops_registry.py`).

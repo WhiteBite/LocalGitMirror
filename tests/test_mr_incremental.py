@@ -1,5 +1,4 @@
 import pytest
-
 from lgm_core.ops_mr import _fetch_mr_branches, op_mr_send
 from test_ops_projects import _prepare_sync
 from test_pull_worktree import git, incoming

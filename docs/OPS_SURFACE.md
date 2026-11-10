@@ -1,6 +1,6 @@
 # LGM op surface
 
-Generated from `lgm_core/ops.py REGISTRY` (51 ops). `Side` is the machine the op is
+Generated from `lgm_core/ops.py REGISTRY` (52 ops). `Side` is the machine the op is
 meant for; `needs_client=no` ops touch only the local review store.
 
 | Op | Params | needs_client | Side |
@@ -32,6 +32,7 @@ meant for; `needs_client=no` ops touch only the local review store.
 | `mr_replies_push` | repo*, iid, dry_run | yes | WORK |
 | `mr_pending` | repo* | yes | any |
 | `mr_status` | repo*, iid, project | yes | WORK |
+| `mr_merge` | repo*, iid*, confirm*, project, when_pipeline_succeeds, remove_source_branch, sha | yes | WORK |
 | `mr_overview` | repo, home | yes | HOME |
 | `mr_review_receipts` | action*, repo*, iid, dry_run | yes | any |
 | `mr_review_prepare` | repo*, iid*, project, checkout, notes_only, work_dir | yes | WORK |
@@ -88,6 +89,7 @@ meant for; `needs_client=no` ops touch only the local review store.
 - **mr_replies_push** - Publish pending mr-replies files from the mirror postbox to GitLab (work side, headless twin of the plugin's push): thread replies, resolve flags, anchored discussions with a general-note fallback when the line is outside the MR diff, exactly-once markers, a status report to mr-replies-status/, and a postbox ack only when every reply reached a terminal outcome. Publishes exactly what the replies file contains.
 - **mr_pending** - One pipeline view per MR: notes freshness (mtime + age), replies pending in the postbox, the last publish outcome and the closed state with evidence (gitlab | marker | note-mtime | expired).
 - **mr_status** - Read-only WORK-side merge readiness for open MRs: every blocker at once (state, draft, detailed_merge_status, conflicts, pipeline, approvals) with a ready flag; never merges or approves.
+- **mr_merge** - Merge one MR on the work machine. Refuses without confirm=true and on any state/draft/conflict blocker; optionally waits for the pipeline, guards on the head SHA and removes the source branch. Never merges in a batch.
 - **mr_overview** - HOME: one compact cross-repo MR queue in a single call — per MR the notes freshness, pending replies, last publish outcome and whether its review snapshot is imported, plus totals. Reads only transferred notes and the review store; no GitLab call, no claim that a review is done.
 - **mr_review_receipts** - Detailed v2 review publication receipts: action=handoff (work) uploads the immutable per-(batch, attempt) receipt artifact for every completed journal attempt to mr-review/receipts/ and acks the batch item only after a successful upload of an all-terminal attempt; action=import (home) stores receipt artifacts in the review store, appends finding delivery revisions and acks the artifact only after a full import.
 - **mr_review_prepare** - WORK: collect one consistent MR review snapshot (metadata, discussions and a self-contained code bundle) and place its artifacts in the encrypted postbox: bundle first, transfer envelope last. Deduplicated by code_id; an aged bundle is refreshed so HOME can still fetch it.
@@ -116,7 +118,7 @@ meant for; `needs_client=no` ops touch only the local review store.
 ## Sides
 
 WORK ops need corporate GitLab access (`mr_send`, `mr_replies_push`, `mr_status`,
-`mr_review_prepare`, `mr_sync_all`; `mr_review_receipts action=handoff`). HOME ops read
+`mr_merge`, `mr_review_prepare`, `mr_sync_all`; `mr_review_receipts action=handoff`). HOME ops read
 transferred notes and the review store (`mr_review_*`, `mr_replies_send`, `mr_overview`).
 Every other op talks to the mirror server or the local filesystem.
 
