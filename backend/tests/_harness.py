@@ -31,7 +31,7 @@ if str(BACKEND_DIR) not in sys.path:
 from fastapi import FastAPI
 
 from app.core import git_bundle
-from app.routers import auth, files, repos, shared, sync, system, bootstrap
+from app.routers import auth, bootstrap, files, repos, shared, sync, system
 
 # All modular routers, in mount order.
 _MODULES = (system, repos, sync, files, shared, auth, bootstrap)

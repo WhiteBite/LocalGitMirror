@@ -81,6 +81,7 @@ def test_empty_password_decrypt_raises():
 def test_key_isolation_from_bundle_crypto():
     """Envelope key must differ from bundle crypto key for the same password."""
     import os
+
     from app.core.bundle_crypto import _derive_key as bundle_derive
 
     pwd = "shared-password"

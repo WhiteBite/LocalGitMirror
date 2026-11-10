@@ -1,12 +1,11 @@
 """Bootstrap router: /api/tools/latest, /api/bootstrap, /api/plugin/repo.xml."""
-import zipfile
 import io
-from pathlib import Path
+import zipfile
 
 from fastapi.testclient import TestClient
 
-from tests import _harness
 from app.core.repo_manager import RepoManager
+from tests import _harness
 
 PASSWORD = "bootstrap-test-pw"
 
@@ -28,7 +27,6 @@ def _build_client(tmp_path, monkeypatch, plugin_zip=True):
         system_logger=None,
         config={"git_port": 0, "web_port": 0, "storage_path": storage},
     )
-    from app.routers import bootstrap
     _harness.inject(repo_manager=rm, system_logger=None, config={})
     return TestClient(app, headers={"Authorization": "Bearer bootstrap-test-key"})
 

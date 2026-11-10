@@ -27,15 +27,13 @@ What it does:
   5. Prints a summary so we can see how much of the 500 MB request is bogus.
 """
 import argparse
+import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
-import json
+from collections import defaultdict
 from pathlib import Path
-from collections import Counter, defaultdict
-
 
 # ── init-script (verbatim copy of buildMissingInitScript) ─────────────────────
 INIT_SCRIPT_TEMPLATE = r"""

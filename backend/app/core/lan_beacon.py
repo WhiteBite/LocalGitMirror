@@ -7,7 +7,6 @@ Falls back to low-frequency UDP broadcast if zeroconf is unavailable.
 import hashlib
 import hmac
 import ipaddress
-import json
 import os
 import socket
 import threading
@@ -37,8 +36,9 @@ class LanBeacon:
     def _start_mdns(self) -> bool:
         """Register service via mDNS. Returns True if successful."""
         try:
-            from zeroconf import Zeroconf, ServiceInfo
             import ipaddress
+
+            from zeroconf import ServiceInfo, Zeroconf
 
             ip = SystemMonitor.get_local_ip()
             ip_bytes = ipaddress.ip_address(ip).packed

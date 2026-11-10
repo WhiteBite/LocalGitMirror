@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -106,7 +105,7 @@ def configure_opencode(install_dir: Path, url: str, key: str) -> None:
 
     config_path.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"[ok] OpenCode MCP configured: {config_path}")
-    print(f"     Restart OpenCode to pick up doccache-tools")
+    print("     Restart OpenCode to pick up doccache-tools")
 
 
 def main() -> None:

@@ -1,10 +1,9 @@
-import pytest
-from playwright.sync_api import Page, expect
-import subprocess
-import time
 import os
 import shutil
 from pathlib import Path
+
+import pytest
+from playwright.sync_api import Page, expect
 
 # Configuration for tests
 BASE_URL = "http://localhost:5173"

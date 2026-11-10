@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .client import LgmError, MirrorClient
 
+
 def _classify_branch(proj: Path, branch: str) -> dict:
     """Compare a local branch to origin by commit counts (local-only, origin-only)."""
     proc = subprocess.run(

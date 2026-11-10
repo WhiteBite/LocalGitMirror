@@ -32,8 +32,8 @@ _PBKDF2_ITERS = 200_000
 @lru_cache(maxsize=64)
 def _derive_key(password: str, salt: bytes) -> bytes:
     try:
-        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
         from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     except ImportError:
         sys.exit("pip install cryptography")
     import hashlib as _hl  # noqa: F401  (kept for parity with original)
@@ -111,8 +111,8 @@ _NONCE = 12
 
 @lru_cache(maxsize=64)
 def _envelope_derive_key(password: str, salt: bytes) -> bytes:
-    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
     kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=_ITER)
     return kdf.derive(password.encode("utf-8"))
 

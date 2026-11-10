@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-
 from lgm_core.client import MirrorClient
 from lgm_core.relay_crypto import RELAY_AAD_POSTBOX, decode_pub_b64
 

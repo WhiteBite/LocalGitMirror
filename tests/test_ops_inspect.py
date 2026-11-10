@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import lgm
 from lgm_core.client import LgmError, MirrorClient
 from lgm_core.config import Config
-from lgm_core.ops import Ctx, REGISTRY, get_op, op_mr_send, op_mr_replies_send, op_prune
+from lgm_core.ops import Ctx, get_op, op_mr_replies_send, op_mr_send, op_prune
 
 
 def _ctx(sync_password: str = "pw") -> Ctx:
@@ -553,7 +553,7 @@ def test_send_created_false_for_existing_repo(tmp_path):
 
 
 def test_mr_send_surfaces_created_flag(tmp_path, monkeypatch):
-    import lgm_core.ops_mr as ops_mr
+    from lgm_core import ops_mr
 
     repo = _repo_with_branch(tmp_path, "b1")
     monkeypatch.setattr(ops_mr, "_fetch_mr_branches", lambda proj, branches: [])
@@ -594,7 +594,7 @@ def test_mr_send_refuses_dirty_worktree(tmp_path):
 
 
 def test_mr_send_untracked_files_do_not_block(tmp_path, monkeypatch):
-    import lgm_core.ops_mr as ops_mr
+    from lgm_core import ops_mr
 
     repo = _repo_with_tracked_file(tmp_path)
     (repo / "untracked.txt").write_text("user data\n", encoding="utf-8")

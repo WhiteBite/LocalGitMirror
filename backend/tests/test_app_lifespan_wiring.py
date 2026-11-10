@@ -14,7 +14,6 @@ Specifically guards against:
   - GET  /api/settings              — depends on settings.settings_manager
 """
 import json
-import os
 import sys
 from pathlib import Path
 

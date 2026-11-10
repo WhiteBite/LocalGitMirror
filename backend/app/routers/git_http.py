@@ -4,8 +4,8 @@ Git-over-HTTP Router and WSGI Integration
 
 import base64
 import os
-from pathlib import Path
 import threading
+from pathlib import Path
 
 from dulwich.repo import Repo
 from dulwich.server import FileSystemBackend

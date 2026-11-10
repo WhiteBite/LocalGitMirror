@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
 
+from .client import LgmError, MirrorClient
 from .config import Config, cfg
-from .client import MirrorClient, LgmError
-
 
 # ── Dataclasses ─────────────────────────────────────────────────────────────
 
@@ -45,7 +45,7 @@ class Op:
     name: str
     summary: str
     params: list[Param] = field(default_factory=list)
-    run: Callable[["Ctx", dict], dict] = field(repr=False)
+    run: Callable[[Ctx, dict], dict] = field(repr=False)
     needs_client: bool = True
 
 

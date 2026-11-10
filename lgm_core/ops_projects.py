@@ -24,11 +24,16 @@ from .mr_review_collect import _discard_tree
 from .mr_review_models import MrReviewError
 from .op_models import Ctx, _client
 from .ops_git import send_branches
-from .ops_review import mr_review_prepare
 from .ops_mr import (
-    _fetch_mr_branches, _local_tip, _mirror_refs_safe, _existing_shas,
-    _branch_block_warning, send_exclusions, _negotiate_mr_bases,
+    _branch_block_warning,
+    _existing_shas,
+    _fetch_mr_branches,
+    _local_tip,
+    _mirror_refs_safe,
+    _negotiate_mr_bases,
+    send_exclusions,
 )
+from .ops_review import mr_review_prepare
 
 _LGM_DIR = Path.home() / ".lgm"
 _REGISTRY_PATH = _LGM_DIR / "mr-projects.json"

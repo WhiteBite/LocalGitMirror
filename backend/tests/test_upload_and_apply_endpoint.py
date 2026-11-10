@@ -10,8 +10,8 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.core.bundle_crypto import MAGIC
 from app.core import git_bundle
+from app.core.bundle_crypto import MAGIC
 from app.routers import sync as api_router
 from tests.conftest import envelope_form_post, parse_envelope
 

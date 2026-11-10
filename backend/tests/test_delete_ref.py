@@ -12,7 +12,6 @@ import subprocess
 import time
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager

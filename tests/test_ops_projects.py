@@ -13,7 +13,6 @@ from lgm_core.git_remote import parse_remote as _parse_remote
 from lgm_core.mr_notes_render import parse_discussions, render_markdown
 from lgm_core.op_models import Ctx
 from lgm_core.ops import get_op
-from lgm_core.ops_projects import op_mr_projects_scan, op_mr_projects_list, op_mr_sync_all
 
 
 def _ctx(sync_password: str = "pw") -> Ctx:
@@ -433,6 +432,7 @@ def test_mr_sync_all_transfers_target_branch_in_notes(tmp_path, monkeypatch):
 
 def test_mcp_transfers_unreviewed_mr_to_home_and_returns_review(tmp_path, monkeypatch):
     import json
+
     import lgm_mcp
 
     opmod, ctx, proj, sent_calls, uploaded = _prepare_sync(tmp_path, monkeypatch)

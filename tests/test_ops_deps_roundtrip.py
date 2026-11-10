@@ -1,11 +1,9 @@
 """op_apply deps-zip consumer contract: maven/legacy layouts, __meta__ lock, npm mirror."""
 import io
 import zipfile
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from lgm_core.crypto import encrypt_bundle
 from lgm_core.ops import Ctx, op_apply
 

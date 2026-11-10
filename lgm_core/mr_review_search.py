@@ -15,8 +15,8 @@ from urllib.parse import unquote_to_bytes
 
 from .mr_review_models import MrReviewError, mcp_result_bytes, validate_budget
 from .mr_review_reader import (
-    DEFAULT_BUDGET_BYTES,
     _RESERVED_BYTES,
+    DEFAULT_BUDGET_BYTES,
     _encode_path,
     decode_cursor,
     encode_cursor,

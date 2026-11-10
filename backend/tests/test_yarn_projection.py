@@ -6,8 +6,6 @@ into a flat directory, clears old projection before rebuild, and handles
 edge cases (missing sha256, missing CAS file).
 """
 
-import json
-from pathlib import Path
 
 import pytest
 

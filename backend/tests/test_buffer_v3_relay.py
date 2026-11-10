@@ -171,7 +171,7 @@ def test_epk_on_legacy_blob_without_password_returns_409(tmp_path, monkeypatch):
     )
 
     got = client.get(
-        f"/api/buffer/legacyblob",
+        "/api/buffer/legacyblob",
         headers={"X-LGM-Epk": _ClientSession(_server_pub()).epk_b64()},
     )
     assert got.status_code == 409

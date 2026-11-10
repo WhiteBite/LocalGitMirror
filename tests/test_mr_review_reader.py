@@ -512,7 +512,7 @@ def test_file_view_symlink_gitlink_binary_nonutf8_unicode(rich):
     assert "UTF-8" in item["limitation"]
 
     pages = _walk(rich.reader, view="file", paths=["unicode/файл.txt"], side="new")
-    assert _file_content(pages, "unicode/файл.txt") == "содержимое файла\n".encode("utf-8")
+    assert _file_content(pages, "unicode/файл.txt") == "содержимое файла\n".encode()
 
 
 def test_file_view_huge_line_reassembly(huge):

@@ -24,7 +24,6 @@ from app.core.corporate_tools import (
 )
 from app.routers import mirror as mirror_mod
 
-
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def make_tool_tarball(name: str, version: str, bin_entry: dict | str | None = None) -> bytes:

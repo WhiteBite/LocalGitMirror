@@ -14,12 +14,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from test_mr_review_store import _bundle, _git, _manifest, _ordinary_mirror
-
 from lgm_core import mr_review_models as m
 from lgm_core.mr_review_findings import LIST_PAGE_MAX, mr_review_findings
 from lgm_core.mr_review_models import MrReviewError
 from lgm_core.mr_review_store import MrReviewStore, import_snapshot
+from test_mr_review_store import _bundle, _git, _manifest, _ordinary_mirror
 
 ANCHOR = {"old_path": "src/app.py", "new_path": "src/app.py", "side": "new", "line": 1}
 GITLAB_URL = "https://gitlab.example.com"

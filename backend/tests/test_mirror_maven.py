@@ -10,9 +10,7 @@ fail-closed по защищённым группам, отказ принима�
 import base64
 import io
 import json
-import os
 import zipfile
-from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.x25519 import (

@@ -21,20 +21,16 @@ import base64
 import json
 import subprocess
 import time
-import tempfile
 from pathlib import Path
 
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
 from tests import _harness
-from tests.conftest import envelope_post, envelope_form_post, parse_envelope
-
+from tests.conftest import envelope_form_post, envelope_post, parse_envelope
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helpers

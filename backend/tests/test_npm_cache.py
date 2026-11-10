@@ -8,7 +8,6 @@ npm publish endpoint.
 import base64
 import io
 import json
-import os
 import tarfile
 import threading
 import zipfile
@@ -23,7 +22,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core import hybrid_crypto as hc
-from app.core.artifact_store import ArtifactStore, sha256_bytes
 from app.core.bundle_crypto import encrypt_bundle_bytes
 from app.core.npm_cache import (
     DEFAULT_PROTECTED_NPM_SCOPES,
@@ -94,7 +92,8 @@ def _setup_npm_cache(cache_root: Path, packages: list) -> None:
 
     for name, version, tarball_bytes in packages:
         # Compute hashes
-        import hashlib, base64
+        import base64
+        import hashlib
         sha512 = hashlib.sha512(tarball_bytes).digest()
         sha512_hex = sha512.hex()
         integrity = f"sha512-{base64.b64encode(sha512).decode()}"
@@ -258,7 +257,8 @@ def _make_npm_publication(packages: dict) -> bytes:
             filename = f"{name.replace('/', '-')}-{version}.tgz"
             zf.writestr(f"npm/tarballs/{filename}", tarball_bytes)
 
-            import hashlib, base64
+            import base64
+            import hashlib
             sha512 = hashlib.sha512(tarball_bytes).digest()
             integrity = f"sha512-{base64.b64encode(sha512).decode()}"
             shasum = hashlib.sha1(tarball_bytes).hexdigest()

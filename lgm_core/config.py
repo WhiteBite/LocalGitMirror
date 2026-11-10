@@ -98,7 +98,7 @@ class Config:
         machine_role: str = "",
         timeout: int = 0,
         env_path: Path | None = None,
-    ) -> "Config":
+    ) -> Config:
         """Build a Config from .env → process env → explicit overrides.
 
         Explicit (non-empty) overrides always win.  ``insecure_tls`` comes

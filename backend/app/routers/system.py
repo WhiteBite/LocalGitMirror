@@ -82,8 +82,9 @@ async def get_connection_info(request: Request):
     clients; any other peer gets ``api_key_set`` / ``sync_password_set``
     booleans and a config template without the secret values.
     """
-    from app.core.system_monitor import SystemMonitor
     from pathlib import Path as _Path
+
+    from app.core.system_monitor import SystemMonitor
 
     local_ip = SystemMonitor.get_local_ip()
     web_port = config.get("web_port", 443)

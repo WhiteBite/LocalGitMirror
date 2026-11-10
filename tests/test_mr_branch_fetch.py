@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import lgm_core.ops_mr as ops_mr
+from lgm_core import ops_mr
 from lgm_core.client import MirrorClient
 from lgm_core.config import Config
 from lgm_core.op_models import Ctx

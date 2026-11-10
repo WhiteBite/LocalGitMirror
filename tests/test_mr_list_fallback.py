@@ -2,7 +2,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from lgm_core.client import LgmError
 from lgm_core.ops import (
     Ctx,
@@ -161,7 +160,7 @@ def test_mr_replies_send_counts_size_in_bytes():
                              {"repo": "r1", "iid": 7, "text": body})
     assert res["success"] is True
     _, _, plain_size, data = client.sent
-    expected = f"# MR !7\n\n{body}".encode("utf-8")
+    expected = f"# MR !7\n\n{body}".encode()
     assert plain_size == len(expected)
     assert data == expected
 

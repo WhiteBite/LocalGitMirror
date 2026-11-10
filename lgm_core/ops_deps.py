@@ -8,26 +8,41 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from .config import cfg
-from .client import LgmError
-from .crypto import encrypt_bundle, decrypt_bundle
-from .op_models import Ctx, _client, _repo_arg
-from .deps_scanner import (
-    gradle_candidate_roots, scan_cache, maven_local_root, scan_maven_local,
-    maven_local_relpath, _classify_artifact, _pick_shipable, _pom_packaging,
-    _expand_parent_pom_closure, _read_root_project_name, _detect_java_home,
-    _run_gradle_init, _ensure_mavenlocal_init_script,
-    _maven_local_jars_without_poms, _missing_parent_poms, _fetch_pom_batch,
-    _rewrite_lock_to_npmjs, _yarn_offline_mirror, _build_yarn_mirror,
-    _set_global_yarn_mirror,
-)
-
 # npm helpers — same import the original lgm.py uses.
 from _lgm_npm import (  # type: ignore
-    npm_cache_dir, npm_offline_mirror,
-    npm_find_tarball, _detect_npm_missing, _npm_mirror_rel,
+    _detect_npm_missing,
+    _npm_mirror_rel,
+    npm_cache_dir,
+    npm_find_tarball,
+    npm_offline_mirror,
 )
 
+from .client import LgmError
+from .config import cfg
+from .crypto import decrypt_bundle, encrypt_bundle
+from .deps_scanner import (
+    _build_yarn_mirror,
+    _classify_artifact,
+    _detect_java_home,
+    _ensure_mavenlocal_init_script,
+    _expand_parent_pom_closure,
+    _fetch_pom_batch,
+    _maven_local_jars_without_poms,
+    _missing_parent_poms,
+    _pick_shipable,
+    _pom_packaging,
+    _read_root_project_name,
+    _rewrite_lock_to_npmjs,
+    _run_gradle_init,
+    _set_global_yarn_mirror,
+    _yarn_offline_mirror,
+    gradle_candidate_roots,
+    maven_local_relpath,
+    maven_local_root,
+    scan_cache,
+    scan_maven_local,
+)
+from .op_models import Ctx, _client, _repo_arg
 
 # ── Existing commands (converted to return dicts) ───────────────────────────
 

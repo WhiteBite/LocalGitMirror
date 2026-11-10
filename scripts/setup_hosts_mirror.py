@@ -15,10 +15,10 @@ Prerequisites:
   - Admin privileges (for hosts file)
 """
 
-import subprocess
-import sys
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 HOSTS_FILE = Path(r"C:\Windows\System32\drivers\etc\hosts")
@@ -305,7 +305,7 @@ def install() -> None:
     if is_admin():
         add_hosts_entry()
     else:
-        print(f"  hosts: SKIP (admin required) — add manually:")
+        print("  hosts: SKIP (admin required) — add manually:")
         print(f"        127.0.0.1 {HOSTNAME}")
 
     # 2. Generate CA + cert

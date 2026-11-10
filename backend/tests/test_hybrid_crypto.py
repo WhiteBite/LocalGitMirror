@@ -30,7 +30,6 @@ from app.core.repo_manager import RepoManager
 from app.routers import sync as sync_mod
 from tests import _harness
 
-
 # ───────────────────────── simulated work-PC client ─────────────────────────
 
 

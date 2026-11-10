@@ -94,14 +94,13 @@ class _PostboxControl:
 
 @pytest.fixture(scope="session")
 def postbox(tmp_path_factory):
-    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-    from fastapi import FastAPI
-    from fastapi.responses import JSONResponse
-
     from app.core import sync_envelope
     from app.core.repo_manager import RepoManager
     from app.routers import auth as auth_mod
     from app.routers import file_sync as file_sync_mod
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+    from fastapi import FastAPI
+    from fastapi.responses import JSONResponse
 
     storage = tmp_path_factory.mktemp("postbox") / "storage"
     storage.mkdir(parents=True)

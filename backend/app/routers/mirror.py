@@ -28,16 +28,16 @@ import re
 import shutil
 import tempfile
 import zipfile
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 from urllib.parse import unquote
-
-from dataclasses import asdict
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
+from app.core import corporate_tools as ct_core
 from app.core import hybrid_crypto
 from app.core.artifact_publication import (
     MAX_PUBLICATION_ENCRYPTED,
@@ -49,7 +49,6 @@ from app.core.artifact_publication import (
 )
 from app.core.artifact_store import ArtifactStore, normalize_maven_path
 from app.core.bundle_crypto import decrypt_dump_bytes
-from app.core import corporate_tools as ct_core
 from app.core.corporate_tools import (
     get_path_instructions,
     install_tool,
@@ -65,9 +64,9 @@ from app.core.npm_cache import (
 from app.core.vault_backup import (
     _BACKUP_STATE_DIR,
     _CAS_DIR,
+    _VERIFY_STATE,
     _load_last_backup,
     _state_dir,
-    _VERIFY_STATE,
     restore_from_backup,
     run_backup,
 )

@@ -19,9 +19,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from test_mr_replies_push import FakeClient, _empty_registry, work_env  # noqa: F401
-from test_mr_review_publish import PublishClient
-
 from lgm_core.mr_review_handoff import (
     HandoffRejection,
     looks_like_json,
@@ -31,6 +28,8 @@ from lgm_core.mr_review_handoff import (
 from lgm_core.mr_review_models import canonical_json
 from lgm_core.op_models import Ctx
 from lgm_core.ops import op_mr_replies_push, op_mr_replies_send
+from test_mr_replies_push import FakeClient, _empty_registry, work_env  # noqa: F401
+from test_mr_review_publish import PublishClient
 
 _NOTES_MD = "\n".join([
     "# MR !7 — Title seven",

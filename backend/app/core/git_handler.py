@@ -9,7 +9,7 @@ from typing import Callable, Optional
 
 from dulwich.errors import NotGitRepository
 from dulwich.repo import Repo
-from dulwich.server import TCPGitServer, ReceivePackHandler, UploadPackHandler
+from dulwich.server import ReceivePackHandler, TCPGitServer
 from rich.console import Console
 
 from app.core.logger import get_logger
@@ -166,7 +166,7 @@ class GitHandler:
                         self._server.server_close()
                     except Exception:
                         pass
-                
+
                 shutdown_thread = threading.Thread(target=shutdown_server, daemon=True)
                 shutdown_thread.start()
                 shutdown_thread.join(timeout=1.0)  # Wait max 1 second

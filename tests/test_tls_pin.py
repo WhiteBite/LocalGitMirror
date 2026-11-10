@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
-
 from generate_cert import generate_self_signed_cert
 from lgm_core.client import MirrorClient
 from lgm_core.config import Config

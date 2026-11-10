@@ -1,8 +1,7 @@
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
-
 from lgm_core.client import LgmError, MirrorClient
 from lgm_core.config import Config
 from lgm_core.crypto import encrypt_bundle

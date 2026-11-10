@@ -22,7 +22,13 @@ from lgm_core.mr_review_environment import (
 )
 from lgm_core.mr_review_models import MrReviewError, canonical_json, sha256_hex
 from lgm_core.mr_review_store import MrReviewStore, import_snapshot
-from test_mr_review_store import _bundle, _git, _manifest, _mirror_state, _ordinary_mirror
+from test_mr_review_store import (
+    _bundle,
+    _git,
+    _manifest,
+    _mirror_state,
+    _ordinary_mirror,
+)
 
 IS_WINDOWS = os.name == "nt"
 _EMPTY_DIGEST = hashlib.sha256(b"").hexdigest()

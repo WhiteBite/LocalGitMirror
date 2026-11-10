@@ -11,7 +11,6 @@ Checks:
   5. No revealing X-Sync-Probe header is present
 """
 import sys
-import struct
 import tempfile
 from pathlib import Path
 
@@ -22,11 +21,12 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app.core.bundle_crypto import decrypt_dump_to_bundle, MAGIC
+import pytest
+
 from app.core import sync_envelope
+from app.core.bundle_crypto import MAGIC, decrypt_dump_to_bundle
 from app.routers import auth as auth_router
 from app.routers import sync as api_router
-import pytest
 
 
 def _make_client(monkeypatch, password: str = "test-probe-pw") -> TestClient:

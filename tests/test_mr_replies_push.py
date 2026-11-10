@@ -21,7 +21,7 @@ from lgm_core.render import render
 
 
 def _marker(iid: int, key: str, body: str) -> str:
-    digest = hashlib.sha1(f"{iid}|{key}|{body}".encode("utf-8")).digest()
+    digest = hashlib.sha1(f"{iid}|{key}|{body}".encode()).digest()
     return f"<!-- lgm:{digest[:4].hex()} -->"
 
 

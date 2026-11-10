@@ -17,13 +17,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from test_mr_replies_push import FakeClient, _empty_registry, work_env  # noqa: F401
-
 from lgm_core.client import LgmError
 from lgm_core.mr_review_models import compute_version_fingerprint, review_marker
+from lgm_core.mr_review_receipts import journal_path
 from lgm_core.op_models import Ctx
 from lgm_core.ops import op_mr_replies_push
-from lgm_core.mr_review_receipts import journal_path
+from test_mr_replies_push import FakeClient, _empty_registry, work_env  # noqa: F401
 
 _FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "mr_review_publish"
                        / "publish_batch.json").read_text(encoding="utf-8"))

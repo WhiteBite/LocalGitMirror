@@ -64,8 +64,9 @@ def sync_password_probe():
     probe_data = b"SYNC-PROBE\n"
     salt = os.urandom(16)
     nonce = os.urandom(12)
-    from app.core.bundle_crypto import _derive_key
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    from app.core.bundle_crypto import _derive_key
     key = _derive_key(password, salt)
     aesgcm = AESGCM(key)
     ciphertext = aesgcm.encrypt(nonce, probe_data, None)

@@ -30,8 +30,7 @@ def parse_remote(url: str) -> tuple[str, str]:
         body = url.split("://", 1)[-1]
         host, _, path = body.partition("/")
     path = path.strip().strip("/")
-    if path.endswith(".git"):
-        path = path[:-4]
+    path = path.removesuffix(".git")
     return host.lower(), path
 
 

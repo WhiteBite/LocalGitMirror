@@ -16,9 +16,6 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from test_mr_review_findings import _finding, _listed, _rev, _save
-from test_mr_review_store import _bundle, _git, _manifest, _ordinary_mirror
-
 from lgm_core import mr_review_models as m
 from lgm_core.mr_review_models import MrReviewError
 from lgm_core.mr_review_progress import (
@@ -28,6 +25,8 @@ from lgm_core.mr_review_progress import (
 )
 from lgm_core.mr_review_reader import encode_cursor, open_reader
 from lgm_core.mr_review_store import MrReviewStore, import_snapshot
+from test_mr_review_findings import _finding, _listed, _rev, _save
+from test_mr_review_store import _bundle, _git, _manifest, _ordinary_mirror
 
 GITLAB_URL = "https://gitlab.example.com"
 REPO_ROOT = Path(__file__).resolve().parent.parent

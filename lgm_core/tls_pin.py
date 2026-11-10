@@ -37,7 +37,7 @@ class TlsPinStore:
             self._pins = {}
 
     @classmethod
-    def default(cls) -> "TlsPinStore":
+    def default(cls) -> TlsPinStore:
         override = os.environ.get("LGM_TLS_PIN_FILE", "")
         return cls(Path(override) if override
                    else Path.home() / ".lgm" / "tls-pins.json")

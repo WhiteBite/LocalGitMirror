@@ -3,15 +3,15 @@ import sys
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "backend"))
 
 from app.core import git_bundle
-from app.core.envelope_crypto import encrypt_envelope  # noqa: E402
-from app.routers import sync  # noqa: E402
+from app.core.envelope_crypto import encrypt_envelope
+from app.routers import sync
 
 
 def _init_repo(path: Path, branch: str):

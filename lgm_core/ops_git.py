@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import subprocess
 import tempfile
 import urllib.request
 import zipfile
-import io
 from pathlib import Path, PurePosixPath
 
 from .client import LgmError
@@ -14,7 +14,6 @@ from .crypto import decrypt_bundle
 from .git_pull import fetch_bundle
 from .op_models import Ctx, _client, _repo_arg, _role_guess
 from .runtime_diagnostics import runtime_diagnostics
-
 
 # ── New ops ──────────────────────────────────────────────────────────────────
 

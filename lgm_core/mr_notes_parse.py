@@ -168,7 +168,7 @@ def _reply_marker(iid: int, reply: dict) -> str:
     key = ("t:" + reply["thread_id"] if reply["kind"] == "thread"
            else f"a:{reply['file']}:{reply['line']}" if reply["kind"] == "new_anchored"
            else "g")
-    digest = hashlib.sha1(f"{iid}|{key}|{reply['body']}".encode("utf-8")).digest()
+    digest = hashlib.sha1(f"{iid}|{key}|{reply['body']}".encode()).digest()
     return f"<!-- lgm:{digest[:4].hex()} -->"
 
 

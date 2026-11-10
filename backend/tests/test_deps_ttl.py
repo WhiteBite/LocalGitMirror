@@ -5,10 +5,7 @@ glob pattern not matching .bin files, deleting the wrong files, etc.
 No running server needed — exercises _cleanup_stale() as a pure function.
 """
 import os
-import time
 from pathlib import Path
-
-import pytest
 
 from app.routers.deps import _cleanup_stale
 

@@ -29,10 +29,9 @@ import struct
 from functools import lru_cache
 from pathlib import Path
 
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-
 
 # Legacy magic kept only for read-back compatibility
 MAGIC = b"LGMSTRL1"

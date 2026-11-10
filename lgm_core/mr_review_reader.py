@@ -14,8 +14,9 @@ import codecs
 import json
 import re
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from .mr_review_git import MrReviewGit, RawDiffEntry, resolve_contained
 from .mr_review_models import (

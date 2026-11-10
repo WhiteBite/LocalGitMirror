@@ -5,7 +5,6 @@ Main application setup and configuration
 
 import asyncio
 import os
-import stat
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -15,16 +14,13 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.security.api_key import APIKeyHeader
 from rich.console import Console
-from starlette.status import HTTP_403_FORBIDDEN
 
 # Import core modules
 from app.core import (
     GitHandler,
-    GitWorkspace,
     RepoManager,
     SettingsManager,
     SharedManager,
-    SystemMonitor,
     get_logger,
 )
 from app.core.vault_backup import (
@@ -148,15 +144,16 @@ async def lifespan(app: FastAPI):
     mirror.system_logger = system_logger
 
     import asyncio as _asyncio
+
     from app.routers import websocket as _websocket_mod
     _websocket_mod.set_main_loop(_asyncio.get_running_loop())
 
     from app.core import git_bundle, sync_envelope
-    from app.routers import system as system_router_mod
-    from app.routers import repos as repos_router_mod
-    from app.routers import sync as sync_router_mod
     from app.routers import files as files_router_mod
+    from app.routers import repos as repos_router_mod
     from app.routers import shared as shared_router_mod
+    from app.routers import sync as sync_router_mod
+    from app.routers import system as system_router_mod
 
     # system
     system_router_mod.git_handler = git_handler
@@ -389,10 +386,21 @@ async def public_capabilities():
 
 # Include routers
 from app.routers import (
-    auth_router, deps_router, settings_router, web_router, websocket_router,
-    system_router, repos_router, sync_router, files_router, shared_router,
-    plugin_router, buffer_router, file_sync_router, mirror_router,
+    auth_router,
     bootstrap_router,
+    buffer_router,
+    deps_router,
+    file_sync_router,
+    files_router,
+    mirror_router,
+    plugin_router,
+    repos_router,
+    settings_router,
+    shared_router,
+    sync_router,
+    system_router,
+    web_router,
+    websocket_router,
 )
 
 # deps router is wired to repo_manager / system_logger inside the lifespan

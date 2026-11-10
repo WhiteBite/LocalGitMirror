@@ -1,5 +1,10 @@
 from tests.test_export_cache import (
-    PASSWORD, _make_repo, _export, _bundle_refs, _push_commit, _run_git,
+    PASSWORD,
+    _bundle_refs,
+    _export,
+    _make_repo,
+    _push_commit,
+    _run_git,
 )
 
 

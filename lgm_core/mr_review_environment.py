@@ -26,11 +26,11 @@ import sqlite3
 import subprocess
 import threading
 import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
 
 from .mr_review_git import resolve_contained
 from .mr_review_models import MrReviewError, canonical_json, sha256_hex

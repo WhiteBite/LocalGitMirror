@@ -6,12 +6,11 @@ import json
 import zipfile
 from pathlib import Path
 
-from .config import cfg
 from .client import LgmError
+from .config import cfg
 from .crypto import encrypt_bundle
-from .op_models import Ctx, _client
 from .deps_scanner import gradle_candidate_roots
-
+from .op_models import Ctx, _client
 
 # ── Protected-groups scanners (for publish) ─────────────────────────────────
 

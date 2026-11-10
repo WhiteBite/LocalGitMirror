@@ -11,7 +11,6 @@ from pathlib import Path
 
 from .config import cfg
 
-
 # ── Gradle cache scanner (moved from lgm.py) ────────────────────────────────
 
 def gradle_candidate_roots() -> list[Path]:
@@ -517,8 +516,8 @@ def _missing_parent_poms() -> list[tuple[str, str, str, Path]]:
 
 
 def _fetch_pom_batch(repo_url: str, targets, dry_run: bool) -> tuple[int, int, int]:
-    import urllib.request
     import urllib.error
+    import urllib.request
     fetched = skipped_private = failed = 0
     for group, name, version, jar_path in targets:
         group_url = group.replace(".", "/")

@@ -45,7 +45,7 @@ from .mr_review_models import (
     validate_batch,
     validate_finding,
 )
-from .mr_review_store import MrReviewStore, normalize_gitlab_url, _now
+from .mr_review_store import MrReviewStore, _now, normalize_gitlab_url
 
 LIST_PAGE_MAX = 50
 LIST_PAGE_DEFAULT = 50

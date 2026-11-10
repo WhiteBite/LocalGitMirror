@@ -15,7 +15,6 @@ import os
 import time
 from pathlib import Path
 
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.bundle_crypto import decrypt_dump_bytes, encrypt_bundle_bytes

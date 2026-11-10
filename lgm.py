@@ -24,8 +24,8 @@ import argparse
 import json
 import sys
 
+from lgm_core.client import LgmError, MirrorClient
 from lgm_core.config import Config
-from lgm_core.client import MirrorClient, LgmError
 from lgm_core.ops import REGISTRY, Ctx, get_op
 from lgm_core.render import render
 

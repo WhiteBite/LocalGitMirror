@@ -2,8 +2,8 @@
 from types import SimpleNamespace
 
 from lgm_core.client import LgmError
-from lgm_core.ops_git import _local_tools_version, op_status
 from lgm_core.op_models import Ctx
+from lgm_core.ops_git import _local_tools_version, op_status
 
 
 class _Client:

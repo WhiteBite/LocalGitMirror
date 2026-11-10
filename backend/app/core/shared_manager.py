@@ -273,7 +273,7 @@ class SharedManager:
             # Auto-rotate backup files
             if target_file.name == "sys_log_chunk.bin":
                 self._rotate_backup_file(folder_path, target_file)
-            
+
             # Auto-rotate sync dumps
             if target_file.name == "core_dump_report.dmp":
                 self._rotate_sync_dump(folder_path, target_file)
@@ -310,26 +310,26 @@ class SharedManager:
             timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             new_name = f"chunk_{timestamp}.bin"
             new_path = folder_path / new_name
-            
+
             bin_file.rename(new_path)
-            
+
             if not self.silent_mode:
                 self.logger.info("Бэкап ротирован", {"old": bin_file.name, "new": new_name})
-            
+
             # Cleanup old backups (keep last 7 days)
             self._cleanup_old_backups(folder_path)
-            
+
         except Exception as e:
             if not self.silent_mode:
                 self.logger.error("Не удалось ротировать бэкап", {"error": str(e)})
-    
+
     def _cleanup_old_backups(self, folder_path: Path):
         """Delete backups older than 7 days"""
         try:
             from datetime import timedelta
-            
+
             cutoff_date = datetime.now() - timedelta(days=7)
-            
+
             for backup_file in folder_path.glob("chunk_*.bin"):
                 try:
                     file_time = datetime.fromtimestamp(backup_file.stat().st_mtime)
@@ -339,37 +339,37 @@ class SharedManager:
                             self.logger.info("Удален старый бэкап", {"file": backup_file.name})
                 except Exception:
                     continue
-                    
+
         except Exception as e:
             if not self.silent_mode:
                 self.logger.error("Не удалось очистить старые бэкапы", {"error": str(e)})
-    
+
     def _rotate_sync_dump(self, folder_path: Path, dmp_file: Path):
         """Rotate sync dump file with timestamp"""
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             new_name = f"dump_{timestamp}.dmp"
             new_path = folder_path / new_name
-            
+
             dmp_file.rename(new_path)
-            
+
             if not self.silent_mode:
                 self.logger.info("Sync dump ротирован", {"old": dmp_file.name, "new": new_name})
-            
+
             # Cleanup old dumps (keep last 7 days)
             self._cleanup_old_dumps(folder_path)
-            
+
         except Exception as e:
             if not self.silent_mode:
                 self.logger.error("Не удалось ротировать dump", {"error": str(e)})
-    
+
     def _cleanup_old_dumps(self, folder_path: Path):
         """Delete dumps older than 7 days"""
         try:
             from datetime import timedelta
-            
+
             cutoff_date = datetime.now() - timedelta(days=7)
-            
+
             for dump_file in folder_path.glob("dump_*.dmp"):
                 try:
                     file_time = datetime.fromtimestamp(dump_file.stat().st_mtime)
@@ -379,17 +379,17 @@ class SharedManager:
                             self.logger.info("Удален старый dump", {"file": dump_file.name})
                 except Exception:
                     continue
-                    
+
         except Exception as e:
             if not self.silent_mode:
                 self.logger.error("Не удалось очистить старые dumps", {"error": str(e)})
-    
+
     def get_latest_sync_dump(self, folder: str) -> Optional[Path]:
         """Get latest sync dump file"""
         folder_path = _safe_join(self.shared_root, folder)
         if folder_path is None or not folder_path.exists():
             return None
-        
+
         dumps = sorted(folder_path.glob("dump_*.dmp"), key=lambda p: p.stat().st_mtime, reverse=True)
         return dumps[0] if dumps else None
     def delete_file(self, folder: str, file_path: str) -> Dict:

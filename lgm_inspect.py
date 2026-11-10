@@ -1,13 +1,15 @@
 """One-shot script: decode all pending manifests and show missing coords."""
-import json, sys, tempfile, pathlib
-
 # Import only the helpers we need, skip main()
-import importlib.util, types
+import importlib.util
+import json
+import pathlib
+import tempfile
 
 _spec = importlib.util.spec_from_file_location("lgm_mod", r"d:\Sources\WhiteBite\LocalGitMirror\lgm.py")
 _mod  = importlib.util.module_from_spec(_spec)
 # Patch out argparse.ArgumentParser.parse_args so main() never runs
 import argparse as _ap
+
 _orig_parse = _ap.ArgumentParser.parse_args
 _ap.ArgumentParser.parse_args = lambda *a, **kw: None
 try:

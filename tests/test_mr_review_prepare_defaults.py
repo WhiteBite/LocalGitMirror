@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import lgm_core.ops as ops
+from lgm_core import ops
 from lgm_core.client import LgmError, MirrorClient
 from lgm_core.config import Config
 from lgm_core.ops import Ctx, get_op

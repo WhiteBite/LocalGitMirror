@@ -8,12 +8,11 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Import lgm_mcp as a module (it's at repo root).
 import importlib
+
 spec = importlib.util.spec_from_file_location(
     "lgm_mcp", str(Path(__file__).resolve().parent.parent / "lgm_mcp.py")
 )

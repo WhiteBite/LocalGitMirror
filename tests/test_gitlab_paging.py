@@ -1,7 +1,8 @@
 """X-Next-Page pagination for gitlab_list_mrs."""
 import sys
-import pytest
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 

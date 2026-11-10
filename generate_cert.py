@@ -1,13 +1,12 @@
 import datetime
+import ipaddress
 import socket
 import sys
+
 from cryptography import x509
-from cryptography.x509.oid import NameOID
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
-from cryptography.hazmat.primitives import serialization
-from pathlib import Path
-import ipaddress
+from cryptography.x509.oid import NameOID
 
 
 def generate_self_signed_cert(cert_path="cert.pem", key_path="key.pem", custom_ip=None):

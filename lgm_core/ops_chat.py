@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from .client import LgmError
-from .crypto import encrypt_bundle, decrypt_bundle
+from .crypto import decrypt_bundle, encrypt_bundle
 from .op_models import Ctx, _client
 
 
@@ -42,10 +42,8 @@ def op_chat_list(ctx: Ctx, args: dict) -> dict:
         count = int(args.get("count", 20) or 20)
     except (TypeError, ValueError):
         count = 20
-    if count < 1:
-        count = 1
-    if count > 100:
-        count = 100
+    count = max(count, 1)
+    count = min(count, 100)
 
     c = _client(ctx)
     listing = c.buffer_list()

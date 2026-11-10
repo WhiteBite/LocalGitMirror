@@ -7,10 +7,9 @@ stores the CIPHERTEXT size (plain + 16-byte GCM tag).
 import os
 import struct
 
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
-
 from lgm_core.crypto import decrypt_bundle, encrypt_bundle
 
 PASSWORD = "test-sync-password"

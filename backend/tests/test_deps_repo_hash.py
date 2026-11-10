@@ -4,17 +4,14 @@ Tests catch real bugs: hash collision, wrong hash length, migration not firing,
 plain-name dir still accessible after migration, two repos sharing a dir.
 """
 import json
-import time
 from pathlib import Path
 
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.repo_manager import RepoManager
 from app.routers import deps as deps_router
 from app.routers.deps import _deps_repo_hash, _requests_dir, _responses_dir
-
 
 # ── pure hash logic ───────────────────────────────────────────────────────────
 

@@ -17,7 +17,6 @@ Methods: initialize, notifications/initialized, ping, tools/list, tools/call.
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import threading
@@ -29,8 +28,8 @@ _REPO_ROOT = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+from lgm_core.client import LgmError, MirrorClient
 from lgm_core.config import Config
-from lgm_core.client import MirrorClient, LgmError
 from lgm_core.mr_review_models import mcp_result_bytes
 from lgm_core.ops import REGISTRY, Ctx, get_op
 

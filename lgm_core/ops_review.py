@@ -38,6 +38,8 @@ from .mr_review_reader import (
 )
 from .mr_review_search import (
     mr_review_context as _search_context,
+)
+from .mr_review_search import (
     mr_review_search as _search_hits,
 )
 from .mr_review_store import MrReviewStore

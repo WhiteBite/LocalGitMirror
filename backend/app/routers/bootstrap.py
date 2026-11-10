@@ -21,7 +21,6 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, Response
 
 from app.core.bundle_crypto import encrypt_bundle_bytes
-from app.core.envelope_crypto import encrypt_envelope
 
 router = APIRouter(prefix="/api", tags=["bootstrap"])
 
